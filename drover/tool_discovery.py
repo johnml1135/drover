@@ -98,7 +98,8 @@ resolve_codex() {
             ;;
     esac
 
-    if [ -f "$real" ]; then
+    magic="$(od -An -tx1 -N4 -- "$real" 2>/dev/null | tr -d '[:space:]')"
+    if [ "$magic" != "7f454c46" ]; then
         first_line="$(head -n 1 -- "$real" 2>/dev/null || true)"
         case "$first_line" in
             *node*)

@@ -84,6 +84,30 @@ class ToolDiscovery(unittest.TestCase):
         native.chmod(0o755)
         self.assertEqual(self.probe(), ({"codex": str(native)}, {}))
 
+    def test_direct_native_codex_with_node_before_first_newline_is_accepted(self):
+        for directory in (self.bin, self.nvm_bin("v22.4.1")):
+            with self.subTest(directory=directory):
+                native = directory / "codex"
+                native.parent.mkdir(parents=True, exist_ok=True)
+                native.write_bytes(b"\x7fELF\x00node in native binary\n")
+                native.chmod(0o755)
+                try:
+                    self.assertEqual(self.probe(), ({"codex": str(native)}, {}))
+                finally:
+                    native.unlink()
+
+    def test_direct_codex_node_shim_is_rejected_with_a_clear_reason(self):
+        for directory in (self.bin, self.nvm_bin("v22.4.1")):
+            with self.subTest(directory=directory):
+                shim = directory / "codex"
+                shim.parent.mkdir(parents=True, exist_ok=True)
+                shim.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+                shim.chmod(0o755)
+                try:
+                    self.assertEqual(self.probe(), ({}, {"codex": NODE_SHIM_REASON}))
+                finally:
+                    shim.unlink()
+
     def test_nvm_codex_shim_resolves_native_and_rejects_invalid_or_missing_native(self):
         node_bin = self.nvm_bin("v22.4.1")
         package = node_bin.parent / "lib" / "node_modules" / "@openai" / "codex"
