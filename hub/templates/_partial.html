@@ -1,0 +1,5 @@
+{% from "_macros.html" import dispatch_ctl %}
+{% block content %}{% endblock %}
+<span id="updated" hx-swap-oob="true">{{ updated }}</span>
+<span id="badge" class="badge" hx-swap-oob="true" {% if not unread %}hidden{% endif %}>{{ unread }}</span>
+<div id="dispatch-ctl" hx-swap-oob="true">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','runs','landing','health') else '/health') }}</div>

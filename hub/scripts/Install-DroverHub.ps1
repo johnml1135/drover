@@ -1,0 +1,25 @@
+<#
+Registers the per-user scheduled task 'DroverHub': runs at logon, restarts on
+failure every 1 minute up to 999 times. Does not need elevation.
+Owner runs this; the build slice does not.
+#>
+param(
+    [string]$HubDir = (Split-Path -Parent $PSScriptRoot),
+    [string]$Uv = "$env:USERPROFILE\.local\bin\uv.exe",
+    [string]$Root = (Join-Path $env:USERPROFILE '.drover')    # the state directory (Install-Drover.ps1 passes the config's)
+)
+$ErrorActionPreference = 'Stop'
+$droverDir = Split-Path -Parent $HubDir   # `hub` and `drover` import from here
+$action = New-ScheduledTaskAction -Execute $Uv `
+    -Argument "run --project `"$HubDir`" python -m hub" -WorkingDirectory $droverDir
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$settings = New-ScheduledTaskSettingsSet -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+New-Item -ItemType Directory -Force $Root | Out-Null
+# Owner-only: the hub token lives here
+icacls $Root /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+Register-ScheduledTask -TaskName 'DroverHub' -Action $action -Trigger $trigger `
+    -Settings $settings -Description 'Drover Hub (ledger, API, website, watchdog)' -Force
+Write-Host "Registered DroverHub. Start now with: Start-ScheduledTask -TaskName DroverHub"

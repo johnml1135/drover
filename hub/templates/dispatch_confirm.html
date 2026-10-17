@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Turn dispatch on?</h2>
+<section class="card">
+  <p>Dispatch is <strong>{{ dispatch.label }}</strong>. Turning it on lets the dispatcher start workers on approved tasks,
+  which spends Claude and Codex allowance. You can pause again at any time; running work is not stopped.</p>
+  <form method="post" action="/dispatch/toggle" class="actions">
+    <input type="hidden" name="enable" value="1"><input type="hidden" name="confirm" value="yes"><input type="hidden" name="next" value="/health">
+    <button class="btn ok">Yes, turn dispatch on</button>
+    <a class="btn" href="/health">Cancel</a>
+  </form>
+</section>
+{% endblock %}

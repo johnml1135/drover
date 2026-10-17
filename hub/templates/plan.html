@@ -1,0 +1,49 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% from "_macros.html" import comment_btn, badge %}
+{% macro task_li(t, draggable) %}
+<li class="task" data-id="{{ t.id }}">
+  <div class="main"><strong>{{ t.title }}</strong>
+    {{ badge(t.state) }}{% if t.repo %} {{ badge(t.repo) }}{% endif %}{% if t.model %} {{ badge(t.model) }}{% endif %}</div>
+  <div class="actions">
+    {% if draggable %}
+    <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"task","id":t.id|string,"move":"up"}|tojson|forceescape }}' data-move="task:{{ t.id }}:up" hx-target="#content" aria-label="Move {{ t.title }} up">Move up</button>
+    <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"task","id":t.id|string,"move":"down"}|tojson|forceescape }}' data-move="task:{{ t.id }}:down" hx-target="#content" aria-label="Move {{ t.title }} down">Move down</button>
+    {% endif %}
+    {{ comment_btn('task', t.id) }}
+  </div>
+  {% if draggable %}<span class="grip" role="img" aria-label="Drag handle">&#8942;&#8942;</span>{% endif %}
+</li>
+{% endmacro %}
+{% block content %}
+<h2>Plan</h2>
+<div class="seg" role="group" aria-label="Group by">
+  {% for g in groups %}<a class="chip{% if g == group %} on{% endif %}" href="/plan?group={{ g }}"{% if g == group %} aria-current="true"{% endif %}>{{ g }}</a>{% endfor %}
+</div>
+<div class="chips" aria-label="Filters">
+  {% for f, vals in chips.items() %}{% for v in vals %}
+  {% set on = filters.get(f) == v %}
+  <a class="chip{% if on %} on{% endif %}" href="/plan?group={{ group }}&{{ f }}={{ '' if on else v|urlencode }}">{{ 'low confidence' if f == 'low' else f ~ ': ' ~ v }}</a>
+  {% endfor %}{% endfor %}
+</div>
+{% if group == 'epic' %}
+<div id="epics" class="sortable" data-kind="epic">
+{% for e in epics %}
+  <details class="card epic" data-id="{{ e.id }}" open>
+    <summary><span class="etitle">{{ e.title }}</span> <span class="muted">#{{ loop.index }}</span></summary>
+    <div class="actions">
+      <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"epic","id":e.id|string,"move":"up"}|tojson|forceescape }}' data-move="epic:{{ e.id }}:up" hx-target="#content" aria-label="Move epic {{ e.title }} up">Move up</button>
+      <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"epic","id":e.id|string,"move":"down"}|tojson|forceescape }}' data-move="epic:{{ e.id }}:down" hx-target="#content" aria-label="Move epic {{ e.title }} down">Move down</button>
+      {{ comment_btn('epic', e.id) }}
+    </div>
+    <ul class="tasks sortable" data-kind="task">{% for t in e.tasks %}{{ task_li(t, not filters) }}{% endfor %}</ul>
+    <span class="grip epic-grip" role="img" aria-label="Drag epic handle">&#8942;&#8942;</span>
+  </details>
+{% else %}<p class="muted empty">No epics.</p>{% endfor %}
+</div>
+{% else %}
+{% for name, ts in buckets %}
+<details class="card" open><summary>{{ name }} <span class="muted">({{ ts|length }})</span></summary>
+  <ul class="tasks">{% for t in ts %}{{ task_li(t, false) }}{% endfor %}</ul></details>
+{% else %}<p class="muted empty">No tasks.</p>{% endfor %}
+{% endif %}
+{% endblock %}

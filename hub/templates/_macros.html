@@ -1,0 +1,22 @@
+{% macro comment_btn(kind, iid) -%}
+<button type="button" class="btn ghost" aria-label="Comments on {{ kind }} {{ iid }}"
+  hx-get="/items/{{ kind }}/{{ iid }}/comments" hx-target="#sheet-body" hx-swap="innerHTML">Comments</button>
+{%- endmacro %}
+{% macro badge(text, cls='') -%}<span class="pill {{ cls }}">{{ text }}</span>{%- endmacro %}
+{% macro decide(kind, iid) -%}
+<div class="actions">
+  <form method="post" action="/items/{{ kind }}/{{ iid }}/approve" hx-post="/items/{{ kind }}/{{ iid }}/approve" hx-target="#content" hx-swap="innerHTML"><button class="btn ok">Approve</button></form>
+  <form method="post" action="/items/{{ kind }}/{{ iid }}/reject" hx-post="/items/{{ kind }}/{{ iid }}/reject" hx-target="#content" hx-swap="innerHTML" data-undo="Rejected {{ kind }} {{ iid }}"><button class="btn danger">Reject</button></form>
+  {{ comment_btn(kind, iid) }}
+</div>
+{%- endmacro %}
+{% macro dispatch_ctl(dispatch, next='/health') -%}
+<span class="dispatch {{ 'on' if dispatch.enabled else 'off' }}">
+  <span class="pill {{ 'ok' if dispatch.enabled else 'warn' }}" role="status" aria-label="Dispatch {{ dispatch.label }}">{{ dispatch.label }}</span>
+  {% if dispatch.enabled %}
+  <form method="post" action="/dispatch/toggle"><input type="hidden" name="enable" value="0"><input type="hidden" name="next" value="{{ next }}"><button class="btn">Pause</button></form>
+  {% else %}
+  <a class="btn" href="/dispatch/confirm">Turn on...</a>
+  {% endif %}
+</span>
+{%- endmacro %}

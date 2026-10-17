@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "defaults": {
+    "tau": 0.8,
+    "mode": "shadow",
+    "model": "nimble-v3",
+    "shadow_compare_model": "nimble"
+  },
+  "questions": {
+    "gate_failure_class": {
+      "type": "choice",
+      "criteria_version": 1,
+      "instructions": "Classify the root cause of this gate failure from the parsed failure excerpt.",
+      "criteria": {
+        "syntax": "The code does not parse or compile because of a typo, bracket, indentation or grammar error.",
+        "type": "A type, signature or missing-symbol error: the code parses but names or types do not line up.",
+        "test_logic": "The code builds and runs but an assertion fails because behaviour is wrong or the test expectation is wrong.",
+        "build_system": "Project files, dependencies, restore, packaging or generated-code configuration are broken.",
+        "env_flaky": "Environment, timing, network, disk, lock or resource trouble; a rerun might pass.",
+        "scope_violation": "The change touches files or behaviour outside the task's declared scope."
+      }
+    },
+    "retry_or_escalate": {
+      "type": "noul",
+      "criteria_version": 1,
+      "instructions": "Given the failure class, attempt count and diff stats, should this task be escalated to a stronger tier rather than retried by the same worker?"
+    },
+    "task_size": {
+      "type": "score",
+      "criteria_version": 1,
+      "instructions": "Judge the size of this task from its record and scope file stats.",
+      "criteria": ["S", "M", "L"]
+    },
+    "task_risk": {
+      "type": "score",
+      "criteria_version": 1,
+      "instructions": "Judge the risk of this task: could a defect cause data loss, broken builds on main, or hard-to-reverse effects?",
+      "criteria": ["low", "high"]
+    },
+    "harness_pick": {
+      "type": "choice",
+      "criteria_version": 0,
+      "instructions": "PLACEHOLDER: pick the harness setup (model, brief template, gate profile) for this task.",
+      "criteria": {
+        "cheap_worker": "PLACEHOLDER: a small, well-scoped task suited to a cheap worker.",
+        "standard_worker": "PLACEHOLDER: a typical task suited to the standard worker.",
+        "top_worker": "PLACEHOLDER: a large or risky task that needs the top model."
+      }
+    },
+    "note_admit": {
+      "type": "noul",
+      "criteria_version": 1,
+      "instructions": "Is this worker note non-redundant given the last three notes on the task, and useful to a later reader? Answer true to admit it to the ledger."
+    },
+    "lane_stuck": {
+      "type": "noul",
+      "criteria_version": 1,
+      "instructions": "Given the pane tail and timer facts, is this task's worker stuck rather than working?"
+    },
+    "plan_wrong": {
+      "type": "noul",
+      "criteria_version": 1,
+      "instructions": "Is the plan, rather than the code, what is wrong for this task?"
+    },
+    "landed_diff_stale": {
+      "type": "noul",
+      "criteria_version": 1,
+      "instructions": "Has the landed diff made the waiting task's brief stale?"
+    },
+    "batch_culprit": {
+      "type": "choice",
+      "criteria_version": 1,
+      "dynamic": true,
+      "instructions": "A landing batch went red. Which task in the batch owns the failure? Criteria are supplied per call: one label per task.",
+      "criteria": {}
+    },
+    "branch_superseded": {
+      "type": "noul",
+      "criteria_version": 1,
+      "instructions": "Is this unmerged branch superseded or obsolete, so that deleting it loses nothing of value?"
+    }
+  }
+}

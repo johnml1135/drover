@@ -1,0 +1,16 @@
+[project]
+name = "drover-hub"
+version = "0.1.0"
+description = "Drover Hub: Windows process that owns the ledger, serves the API and website, and runs the watchdog."
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.135.0",
+    "uvicorn>=0.30",
+    "jinja2>=3.1",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["httpx2"]

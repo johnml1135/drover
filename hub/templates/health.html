@@ -1,0 +1,42 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% from "_macros.html" import badge, dispatch_ctl %}
+{% block content %}
+<h2>Dispatch</h2>
+<section class="card"><p>Dispatch is <strong>{{ dispatch.label }}</strong>. New installs start paused; only the owner can change this.</p>
+  {{ dispatch_ctl(dispatch, '/health') }}</section>
+<h2>Resources</h2>
+<div class="grid">
+{% for r in h.resources or [] %}
+<section class="card"><h3>{{ r.name }} {{ badge(r.verdict, 'ok' if r.verdict == 'ok' else 'warn' if r.verdict in ('queue','warn') else 'bad') }}</h3><p>{{ r.value }}</p></section>
+{% else %}<p class="muted">No resource data.</p>{% endfor %}
+</div>
+<h2>Allowance</h2>
+{% for a in h.allowance or [] %}
+<section class="card"><h3>{{ a.plan }} <span class="muted">{{ a.window }}</span></h3>
+  <progress max="100" value="{{ a.used_pct }}" aria-label="{{ a.plan }} {{ a.window }} used">{{ a.used_pct }}%</progress>
+  <p>{{ a.used_pct }}% used. Resets in <strong>{{ a.resets_in }}</strong>.{% if a.reserve %} Protected director reserve: {{ a.reserve }}.{% endif %}</p></section>
+{% else %}<p class="muted">No allowance data.</p>{% endfor %}
+<h2>Dispatcher</h2>
+<section class="card"><dl class="kv">
+  <dt>State</dt><dd><strong>{{ (h.dispatcher or {}).state or 'unknown' }}</strong></dd>
+  <dt>Heartbeat age</dt><dd>{{ h.heartbeat_age or 'unknown' }}</dd>
+  {% if (h.dispatcher or {}).error %}<dt>Last error</dt><dd>{{ h.dispatcher.error }}</dd>{% endif %}
+  <dt>WSL keepalive</dt><dd>{{ (h.keepalive or {}).state or 'unknown' }}</dd>
+</dl></section>
+<h2>WSL tools</h2>
+<section class="card"><dl class="kv">
+  <dt>claude</dt><dd><code>{{ (h.tools or {}).claude or 'not discovered' }}</code></dd>
+  <dt>codex</dt><dd><code>{{ (h.tools or {}).codex or 'not discovered' }}</code></dd>
+</dl></section>
+{% if h.ollama is defined %}
+<h2>Ollama</h2>
+<section class="card"><p>{{ badge('reachable' if h.ollama.reachable else 'unreachable', 'ok' if h.ollama.reachable else 'bad') }}
+  {% if h.ollama.p95_ms is not none %} p95 <strong>{{ h.ollama.p95_ms }} ms</strong> (target under 2000){% else %} <span class="muted">No bench data.</span>{% endif %}</p></section>
+{% endif %}
+{% if h.disks %}
+<h2>Disk free</h2>
+<div class="grid">{% for d in h.disks %}<section class="card"><h3>{{ d.name }}</h3><p>{{ d.free_gb if d.free_gb is not none else 'unknown' }}{% if d.free_gb is not none %} GB{% endif %}</p></section>{% endfor %}</div>
+{% endif %}
+<h2>Watchdog actions</h2>
+<ul class="log">{% for w in h.watchdog or [] %}<li><span class="muted">{{ w.at }}</span> {{ w.action }}</li>{% else %}<li class="muted">None.</li>{% endfor %}</ul>
+{% endblock %}

@@ -1,0 +1,21 @@
+# Fictional consumer. Paired work builds against the acme-lib provider branch.
+name = "acme-app"
+repo = "~/repos/acme-app"
+consumes = ["acme-lib"]
+[run]
+platforms = ["windows", "wsl"]
+default = "wsl"
+[gate]
+platform = "wsl"
+unknown = false
+[gate.commands]
+full = ["python3", "-m", "unittest", "discover"]
+# Optional reviewer routing (otherwise uses the configured default reviewer):
+# [review]
+# backend = "codex"
+# model = "gpt-6.1-sol"
+# effort = "xhigh"
+# seat = "codex"  # optional: pin a seat instead of choosing by priority and available capacity
+[land]
+policy = "batch"
+push = false

@@ -1,0 +1,186 @@
+# drover.example.toml: every configuration key, with its default.
+#
+# Copy to %USERPROFILE%\.drover\config.toml (or run `python -m drover init`, which writes one for your machine).
+# Anything you leave out takes the value shown here, and the defaults reproduce Drover's built-in behaviour.
+# Layers, lowest first: this file's defaults, <home>/config.toml, <drover checkout>/.drover/config.toml (an optional
+# overlay; DROVER_OVERLAY names another file), then DROVER_* environment variables. DROVER_HOME names the folder
+# holding config.toml (default ~/.drover). Every scalar key can be set from the environment as DROVER_<SECTION>_<KEY>, for example
+# DROVER_HUB_UI_PORT=9000, DROVER_PATHS_STATE_DIR=D:\drover, DROVER_DECIDER_DEVICE=cpu; lists are comma-separated.
+# Older names still work: DROVER_OLLAMA_URL, DROVER_REPOS_DIR, DROVER_WSL_USER, DROVER_WSL_DISTRO.
+# Check a file with: python -m drover config --check FILE      Show the effective values: python -m drover config --show
+#
+# Where config and the tuner both own a value (parallel_cap, tau, landing_batch_size), config is only the starting
+# value: a value the tuner or the ledger has set wins.
+
+# Where the per-repository repos/*.toml live. Empty = <state_dir>\repos. While that folder does not exist the
+# examples shipped in the repository's repos/ folder require DROVER_EXAMPLES=1. A legacy programs/ folder
+# is read with a warning only when repos/ is missing. DROVER_REPO_CONFIGS_DIR overrides this key.
+repos_dir = ""
+
+[paths]
+# The state dir holds ledger.db, runs\, rescue\, hub-token, dispatcher.lock, config.toml and repos\, under an
+# owner-only ACL. Empty = the folder holding config.toml: %USERPROFILE%\.drover.
+state_dir = ""
+# Bare repo names (the website's import) resolve under this folder.
+repos_root = "~/repos"
+# Empty = a <repo>.worktrees folder next to each repo (a repo's own `worktrees` key wins); or one shared root.
+worktrees = ""
+# The WSL distro that serves as the worker pool.
+wsl_distro = "Ubuntu"
+# The user inside that distro. Empty = your Windows user name.
+wsl_user = ""
+
+# Seats: one entry per Claude or Codex account the dispatcher may send workers to. [[seats]] replaces the default
+# pair below as a whole; give every seat you want. Exactly one seat must be the director, and it must be a Claude seat.
+# The router tries seats by priority (the lowest number first); seats of equal priority share work in proportion to
+# their allowance headroom. A seat's reserve is allowance kept back from workers; the director seat additionally holds
+# director_reserve_pct back from every other worker on its backend, so the director is never starved.
+# Allowance is read once per backend for now (one Claude reading, one Codex reading); a reading per config_dir is
+# deferred, so two seats of one backend share one allowance reading.
+[[seats]]
+name = "claude"             # letters, digits, . _ - ; unique
+backend = "claude"          # claude | codex
+priority = 1                # lower is tried first
+max_workers = 0             # workers at once on this seat; 0 = no per-seat limit (parallel_cap still applies)
+reserve_pct = 10.0          # allowance % never spent
+director = true             # exactly one seat; Claude only
+director_reserve_pct = 25.0 # director seat only: extra % that other Claude workers must leave
+placement = "windows"       # windows | wsl: where this seat's workers run (a linux-tagged task may still go to WSL on a windows Claude seat)
+binary = "claude"           # the executable; a bare name is looked up on PATH (in WSL: the path the hub discovered)
+config_dir = ""             # sets CLAUDE_CONFIG_DIR (claude) or CODEX_HOME (codex) for this seat's workers; empty = the CLI's default
+
+[[seats]]
+name = "codex"
+backend = "codex"
+priority = 1
+max_workers = 0
+reserve_pct = 10.0
+director = false
+director_reserve_pct = 0.0
+placement = "wsl"           # a codex seat must be wsl: Codex shelling out on Windows corrupts the Windows login registry (ADR 0002)
+binary = "codex"
+sandbox = "workspace-write" # read-only is also supported; bypassing the sandbox is never allowed
+config_dir = ""
+
+[models]
+review = "sonnet-5.5"       # the reviewer model
+director = "opus-5.5"       # the director and planner model; it must be on the claude ladder
+
+[models.ids]                # the name used in Drover -> the id passed to the CLI (unlisted names pass through)
+"haiku-5.5" = "claude-haiku-5-5"
+"sonnet-5.5" = "claude-sonnet-5-5"
+"opus-5.5" = "claude-opus-5-5"
+
+[models.efforts]            # reasoning effort by tier: the first rung of a ladder is "cheap", the last is "top"
+cheap = "xhigh"             # cheap models (Haiku, Luna) always run at this effort
+mid = "high"
+top = "high"
+small_claude = "max"        # the router's effort for a small task when its model is not on a cheap rung
+small_codex = "xhigh"
+
+[models.ladders]            # cheapest first; a task escalates one rung after every second failure
+claude = ["haiku-5.5", "sonnet-5.5", "opus-5.5"]
+codex = ["gpt-6-luna", "gpt-6.1-sol"]
+
+[models.start]              # the rung a task of each size starts on (0 = cheapest)
+S = 0
+M = 1
+L = 1
+
+[capacity]
+parallel_cap = 4            # workers at once, all seats; the tuner may move it by one either way
+
+# Trackers: resource checks before new work starts. queue = start nothing new, hold = stop everything. A [[trackers]]
+# entry with the name of a built-in one overrides just the keys you give; a new name adds a tracker; enabled = false
+# switches one off. Unknown facts never block. (The old resources.toml in the state dir is still read and overrides
+# the matching trackers.)
+[[trackers]]
+kind = "load"               # 5-minute load average per core
+name = "load"
+queue_per_core = 2.5
+hold_per_core = 3.5
+
+[[trackers]]
+kind = "ram"                # MemAvailable on WSL, available physical memory on Windows
+name = "ram"
+queue_base_gb = 6.0         # queue below this, plus resident Ollama RAM (Windows)...
+queue_per_worker_gb = 0.5   # ...plus this per new worker
+hold_gb = 4.0
+
+[[trackers]]
+kind = "disk"
+name = "h"
+path = "~/repos"                # where to measure
+wsl_source = "vhdx"         # on WSL: path (measure `path`), vhdx (the drive holding the distro's ext4.vhdx), home (WSL's ext4)
+queue_gb = 75.0
+hold_gb = 25.0
+
+[[trackers]]
+kind = "disk"
+name = "wsl"
+path = ""
+wsl_source = "home"         # WSL's own ext4; unknown (never blocks) when the hub runs on Windows
+queue_gb = 75.0
+hold_gb = 25.0
+
+[[trackers]]
+kind = "disk"
+name = "c"
+path = 'C:\'
+wsl_source = "path"
+queue_gb = 50.0
+hold_gb = 25.0
+
+[[trackers]]
+kind = "vram"               # GPU memory in use, percent
+name = "vram"
+fallback_pct = 80.0         # above this the decider falls back (see [decider] device)
+queue_pct = 0.0             # 0 = never queues on VRAM
+hold_pct = 0.0
+
+[[trackers]]
+kind = "wsl"                # is the distro up, and its memory against the .wslconfig cap
+name = "wsl-up"             # blocks only work that needs WSL (WSL workers and WSL gates), never Windows work
+distro = ""                 # empty = paths.wsl_distro
+queue_mem_pct = 0.0         # queue WSL work above this % of the cap (0 = off)
+hold_mem_pct = 0.0
+
+[policy]
+tau = 0.8                   # the decider's starting confidence threshold; the tuner moves it
+landing_batch_size = 3      # 1..5, the starting landing batch size; the tuner moves it
+tuner_cadence_days = [1, 1, 2, 3, 5, 7]   # days between tuning passes by step, then the last value forever
+push = false                # default for repos that do not set [land] push: land on local main only
+
+[decider]
+commercial_use = false      # choose model licences that permit your intended use
+url = ""                    # empty = find Ollama (DROVER_OLLAMA_URL, else the Windows host from WSL, else localhost:11434)
+device = "gpu"              # auto | gpu | cpu. Both placements use /v1/systemone, without options.
+                            # cpu selects <name>-cpu; auto selects it while VRAM > the vram tracker's fallback_pct.
+                            # Create missing CPU variants first: python -m drover.decide ensure-cpu-models
+                            # (init also does this for cpu/auto). Variants inherit the model with num_gpu=0.
+mode = "shadow"             # shadow | live: the default for questions that do not set their own
+timeout_s = 5.0
+ollama_models = ""          # informational: where you keep the models (OLLAMA_MODELS); `init` prints the setx for it
+
+[decider.models]
+primary = "nimble-v3"
+shadow = "nimble"           # runs alongside the primary in shadow mode
+long_state = "nimble"       # used when the state is over 32K tokens
+
+[hub]
+ui_port = 8765
+api_port = 8766             # the WSL-facing API; off unless api_listen_wsl is true
+tailscale = true            # false: no tailscale lookups, the UI answers loopback only
+allowed_logins = []         # Tailscale logins allowed to use the UI; empty = this machine's owner
+api_listen_wsl = false
+
+[hub.auth]
+mode = "tailscale"          # the only mode today
+# Reserved for Google OIDC SSO on larger networks; accepted and ignored for now.
+issuer = ""
+client_id = ""
+allowed_emails = []
+
+[config_sync]
+remote = ""                  # optional private git remote URL; it MUST be private
+auto_push = true             # push after local configuration/decision commits; failure is nonfatal

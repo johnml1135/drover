@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Drover</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+{% from "_macros.html" import dispatch_ctl %}
+<body data-tab="{{ tab }}">
+<header class="top">
+  <h1>Drover</h1>
+  <div id="dispatch-ctl">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','runs','landing','health') else '/health') }}</div>
+  <nav class="tabs" aria-label="Sections">
+    {% for key, label in tabs %}
+    <a href="/{{ key }}" class="tab{% if key == tab %} on{% endif %}"{% if key == tab %} aria-current="page"{% endif %}>
+      <span class="ico" aria-hidden="true">{{ loop.index }}</span><span>{{ label }}</span>{% if key == 'inbox' %}<span id="badge" class="badge" {% if not unread %}hidden{% endif %}>{{ unread }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </nav>
+  <div class="refresh">
+    <span class="muted">Updated <span id="updated">{{ updated }}</span></span>
+    <button type="button" id="refresh" class="btn">Refresh</button>
+  </div>
+</header>
+<button type="button" id="new-updates" class="newpill" hidden>New updates - tap to refresh</button>
+<main id="content" data-tab="{{ tab }}">{% block content %}{% endblock %}</main>
+<div id="toast" aria-live="polite"></div>
+<dialog id="sheet" class="sheet" aria-label="Comments">
+  <button type="button" class="btn ghost close" id="sheet-close">Close</button>
+  <div id="sheet-body"></div>
+</dialog>
+<div id="live" hx-ext="sse" sse-connect="/events" sse-swap="message,update,changed,ledger" hx-swap="none" hidden></div>
+<script src="/static/vendor/htmx.min.js"></script>
+<script src="/static/vendor/htmx-ext-sse.js"></script>
+<script src="/static/vendor/Sortable.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% from "_macros.html" import comment_btn, badge, decide %}
+{% block content %}
+<h2>Needs me</h2>
+{% if not (questions or owner_items or imports or tuner or garden or failed) and not low %}<p class="muted empty">Nothing needs you.</p>{% endif %}
+
+{% for q in questions %}
+<section class="card question" id="q-{{ q.id }}">
+  <h3>{{ q.title }}</h3>
+  <p>{{ q.body }}</p>
+  <form method="post" action="/questions/{{ q.id }}/answer" hx-post="/questions/{{ q.id }}/answer" hx-target="#content" hx-swap="innerHTML" hx-disabled-elt="find button.submit">
+    {% for o in q.options or [] %}
+    <label class="opt{% if o.recommended %} rec{% endif %}">
+      <input type="radio" name="option" value="{{ o.id }}">
+      <span>{{ o.label }}{% if o.recommended %} <span class="pill ok">Recommended</span>{% endif %}</span>
+    </label>
+    {% endfor %}
+    <label for="t-{{ q.id }}" class="muted">Or write your own answer (with an option selected it is sent as "option + note")</label>
+    <textarea id="t-{{ q.id }}" name="text" rows="2" data-draft></textarea>
+    <p class="err" role="alert" hidden></p>
+    <div class="actions"><button class="btn ok submit">Submit answer</button>{{ comment_btn('question', q.id) }}</div>
+  </form>
+</section>
+{% endfor %}
+
+{% if owner_items %}<h2>Needs owner</h2>{% endif %}
+{% for it in owner_items %}
+<section class="card"><h3>{{ it.title }}</h3><p>{{ it.reason }}</p>{{ decide('owner', it.id) }}</section>
+{% endfor %}
+
+{% if imports or low or low_count %}
+<h2>Import approvals</h2>
+<div class="chips" aria-label="Import filters">
+  <a class="chip{% if low %} on{% endif %}" href="/inbox{{ '' if low else '?low=1' }}"{% if low %} aria-current="true"{% endif %}>low confidence ({{ low_count }})</a>
+</div>
+<form method="post" action="/imports/approve" hx-post="/imports/approve" hx-target="#content" hx-swap="innerHTML" id="imports">
+  {% for g in import_groups %}
+  <section class="epicgroup">
+    <h3>{{ g.epic or '(no epic)' }} <span class="muted">({{ g['items']|length }})</span></h3>
+    {% if g.epic_id %}
+    <button class="btn ok" type="submit" name="epic_id" value="{{ g.epic_id }}" formaction="/imports/approve-epic" hx-post="/imports/approve-epic"
+      hx-target="#content" hx-confirm="Approve all {{ g['items']|length }} proposed tasks in this epic?">Approve all in epic</button>
+    {% endif %}
+  {% for it in g['items'] %}
+  <div class="card row">
+    <label class="check big"><input type="checkbox" name="id" value="{{ it.id }}" aria-label="Select {{ it.title }}"> <span>{{ it.title }}</span></label>
+    {% if it.repo %}{{ badge(it.repo) }}{% endif %}{% if it.low_confidence %} {{ badge('low confidence', 'warn') }}{% endif %}
+    <div class="actions">
+      <button class="btn ok" formaction="/items/import/{{ it.id }}/approve" hx-post="/items/import/{{ it.id }}/approve" hx-target="#content" type="submit">Approve</button>
+      <button class="btn danger" formaction="/items/import/{{ it.id }}/reject" hx-post="/items/import/{{ it.id }}/reject" hx-target="#content" type="submit" data-undo-btn="Rejected import {{ it.id }}">Reject</button>
+      {{ comment_btn('import', it.id) }}
+    </div>
+  </div>
+  {% endfor %}
+  </section>
+  {% else %}<p class="muted empty">No low-confidence imports.</p>{% endfor %}
+  <button class="btn ok bulk">Approve selected</button>
+</form>
+{% endif %}
+
+{% if tuner %}<h2>Tuner proposals</h2>{% endif %}
+{% for p in tuner %}
+{% if p.question %}
+<section class="card question" id="tq-{{ p.id }}"><h3>{{ p.title }}</h3><p>{{ p.summary }}</p>
+  <form method="post" action="/questions/{{ p.id }}/answer" hx-post="/questions/{{ p.id }}/answer" hx-target="#content" hx-swap="innerHTML">
+    {% for o in p.options or [] %}<label class="opt{% if o.recommended %} rec{% endif %}"><input type="radio" name="option" value="{{ o.id }}"><span>{{ o.label }}{% if o.recommended %} <span class="pill ok">Recommended</span>{% endif %}</span></label>{% endfor %}
+    <div class="actions"><button class="btn ok submit">Submit answer</button>{{ comment_btn('question', p.id) }}</div>
+  </form></section>
+{% else %}
+<section class="card"><h3>{{ p.title }}</h3><p>{{ p.summary }}</p>{{ decide('tuner', p.id) }}</section>
+{% endif %}
+{% endfor %}
+
+{% if garden %}<h2>Garden deletions</h2>{% endif %}
+{% for b in garden %}
+<section class="card"><h3>{{ b.title }}</h3>
+  {% if b.recommendation %}<p class="muted">Recommendation: {{ b.recommendation }}</p>{% endif %}
+  <ul>{% for x in b['items'] %}<li>{{ x }}</li>{% endfor %}</ul>
+  {{ decide('garden', b.id) }}
+  {% if b.entries %}<div class="actions"><a class="btn" href="/inbox?review={{ b.id|urlencode }}">Review individually</a></div>{% endif %}</section>
+{% endfor %}
+{% if review_batch %}
+<h2>Review individually: {{ review_batch.title }}</h2>
+<form method="post" action="/garden/{{ review_batch.id }}/approve-rows" hx-post="/garden/{{ review_batch.id }}/approve-rows" hx-target="#content" hx-swap="innerHTML" class="card">
+  <p class="muted">Only the ticked rows are approved for removal. Unticked rows are kept.</p>
+  {% for r in review_batch.entries %}
+  <label class="check big"><input type="checkbox" name="branch" value="{{ r.branch }}"> <span>{{ r.branch }} <span class="muted">{{ r.reason }}</span></span></label>
+  {% endfor %}
+  <button class="btn ok bulk">Approve ticked rows</button>
+</form>
+{% endif %}
+
+{% if failed %}<h2>Failed and blocked</h2>{% endif %}
+{% for f in failed %}
+<section class="card"><h3>{{ f.title }} {{ badge(f.state, 'bad') }}</h3><p>{{ f.reason }}</p>
+  <div class="actions">{{ comment_btn('task', f.id) }}</div></section>
+{% endfor %}
+{% endblock %}

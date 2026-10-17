@@ -1,0 +1,20 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% from "_macros.html" import comment_btn, badge %}
+{% block content %}
+<h2>Landing queue</h2>
+<ol class="queue">
+{% for q in queue %}<li class="card"><strong>{{ q.title }}</strong> {{ badge(q.state) }} {{ comment_btn('task', q.id) }}</li>
+{% else %}<li class="muted empty">Queue is empty.</li>{% endfor %}
+</ol>
+<h2>Current batch</h2>
+{% if batch %}
+<section class="card"><p>{{ batch.status }}</p>
+  <ul>{% for t in batch.tasks %}<li>{{ t.title or t }}</li>{% endfor %}</ul></section>
+{% else %}<p class="muted">No batch running.</p>{% endif %}
+<h2>Gate status</h2>
+<section class="card"><dl class="kv">
+  <dt>Status</dt><dd>{{ gate.status or 'unknown' }}</dd>
+  <dt>Median gate</dt><dd>{{ gate.median or '-' }}</dd>
+  <dt>Red rate</dt><dd>{{ gate.red_rate or '-' }}</dd>
+</dl></section>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% from "_macros.html" import comment_btn, badge %}
+{% block content %}
+{% if run %}
+<p><a href="/runs">&larr; All runs</a></p>
+<h2>Run {{ run.id }}: {{ run.task }}</h2>
+{% include "_runtail.html" %}
+{% else %}
+<h2>Runs</h2>
+{% for r in runs %}
+<section class="card run">
+  <h3><a href="/runs/{{ r.id }}">{{ r.task or r.id }}</a> {{ badge(r.outcome, 'ok' if r.outcome in ('landed','passed','ok') else 'bad' if r.outcome in ('failed','error') else '') }}</h3>
+  <dl class="kv">
+    <dt>Model</dt><dd>{{ r.model }}{% if r.effort %} / {{ r.effort }}{% endif %}</dd>
+    <dt>Backend</dt><dd>{{ r.backend }}</dd>
+    <dt>Tokens</dt><dd>{{ r.tokens }}</dd>
+    <dt>Allowance</dt><dd>{{ r.allowance_used }}</dd>
+    <dt>Wall time</dt><dd>{{ r.wall_time }}</dd>
+  </dl>
+  <div class="actions"><a class="btn" href="/runs/{{ r.id }}">Live output</a>{{ comment_btn('run', r.id) }}</div>
+</section>
+{% else %}<p class="muted empty">No runs yet.</p>{% endfor %}
+<h2>Decider accuracy</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Question</th><th>Shadow</th><th>Live</th><th>n</th></tr></thead>
+  <tbody>{% for d in decider %}<tr><td>{{ d.question }}</td><td>{{ d.shadow }}</td><td>{{ d.live }}</td><td>{{ d.n }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">No decisions yet.</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+{% endblock %}

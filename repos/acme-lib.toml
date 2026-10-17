@@ -1,0 +1,14 @@
+# Fictional provider. Copy to ~/.drover/repos/ and set your repo path.
+name = "acme-lib"
+repo = "~/repos/acme-lib"
+[run]
+platforms = ["windows", "wsl"]
+default = "windows"
+[gate]
+platform = "windows"
+unknown = false
+[gate.commands]
+full = ["python", "-m", "unittest", "discover"]
+[land]
+policy = "batch"
+push = false
