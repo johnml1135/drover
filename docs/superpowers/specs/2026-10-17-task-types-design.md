@@ -29,6 +29,7 @@ All current-behavior claims below use this inventory. `main:` means commit `acd5
 | E13 | `T7:drover/brief.py:59-68`, `T7:hub/task_views.py:51-55,130-172`, `T7:hub/templates/_task_card.html:1-16`, `T7:hub/templates/task.html:14-44`, `T7:hub/api.py:37-68`: type/access brief, safe Markdown, cached repo state, fixed card/page/edit controls and API fields. |
 | E14 | `main:drover/ledger/db.py:72-88`: forward migrations each run transactionally. `main:drover/ledger/board.py:5,25-41`: board groups fixed statuses and counts landed events. |
 | E15 | `main:drover/port.py:1-4,44-70,135-147`: dispatcher uses DirectPort; HttpPort is an unwired compatibility stub. `main:hub/dispatch.py:24-53,146-157`: HubPort wraps the dispatcher operations and LandingService selects literal reviewed status. |
+| E16 | `main:drover/runner.py:81-100,103-125,147-171,437-439`: action parsing drops artifact metadata, done without SHA becomes blocked/no-sha, only final assistant/result frames can report success, and parsed records persist to record.json. `main:drover/launch.py:52,311-334`: launch aliases that parser and revalidates recovered records with runner._record_from before returning completion. |
 
 ## Alternatives and lessons
 
@@ -111,20 +112,23 @@ review: {required: true, role: reviewer}
 landing: {mode: spec-only, artifact: "${framework.design}", plan: "${framework.plan}"}
 followups:
   allowed: [grill, implementation, docs]
-  propose_requires: [grill-complete]
+  propose_requires:
+    implementation: [grill-complete]
+    grill: []
+    docs: []
 lifecycle: standard-v1
 forms:
   create:
-    fields: [title, repo, goal, target, compatibility, evidence]
+    fields: [title, repo, goal, problem, target, compatibility, evidence]
     web: {layout: stacked}
-    cli: {mode: sequential, order: [title, repo, goal, target, compatibility, evidence]}
+    cli: {mode: sequential, order: [title, repo, goal, problem, target, compatibility, evidence]}
   answer:
     fields: []
     web: {layout: stacked}
     cli: {mode: sequential, order: []}
 ```
 
-Creating `{type:"api-spec", repo:"acme-app", fields:{target:"orders"}}` materializes compatibility=`additive`, evidence=`[]`, the read ref, acceptance defaults and spec-only delivery. It starts proposed, pins the resolved hash and displays target/compatibility on card and all three on page. Owner approval creates the approved execution revision. The agent writes only approved framework artifact paths; it can propose a grill. Until the grill is complete, proposing implementation returns a prerequisite error. Reloading an extension with a different model leaves this task unchanged; an owner can explicitly upgrade it while proposed/draft and review the diff.
+Creating `{"type":"api-spec","title":"Design orders API","repo":"acme-app","goal":"Specify an additive orders API","scope_files":["docs/superpowers/"],"fields":{"problem":"Clients need a stable orders contract","target":"orders"}}` materializes compatibility=`additive`, evidence=`[]`, the read ref, acceptance defaults and spec-only delivery. It starts proposed, pins the resolved hash and displays target/compatibility on card and inherited problem plus target/compatibility/evidence on page. Both channel forms collect the inherited required problem; omitting it fails validation. Owner approval creates the approved execution revision. The agent writes only approved framework artifact paths; it can propose a grill. Until the grill is complete, proposing implementation returns a prerequisite error. Reloading an extension with a different model leaves this task unchanged; an owner can explicitly upgrade it while proposed/draft and review the diff.
 
 Templates use a small placeholder allowlist (`repo`, `default_branch`, task identity, core/custom values, framework outputs, registered model paths); unknown placeholders fail. No expressions, shell expansion, executable templates or arbitrary includes. Custom values render as escaped text. Resolve task-dependent paths after ID creation within the creation transaction; enforce normalized, repo-relative artifact/scope paths and reject traversal, symlink escape and absolute paths.
 
@@ -163,7 +167,7 @@ All rows are new recommended defaults, not descriptions of today's behavior. `ba
 
 Read-only agent types use sandbox=read-only; write-enabled types use sandbox=workspace-write, constrained to their approved scope and pinned rules. Owner-answer starts no worker sandbox. Every agent type defaults read_access to its registered repo's default branch; owner-answer reads only task context and supplied links. Every type uses standard-v1 unless stated: research/investigation/review/grill use artifact-v1; owner-answer uses owner-v1. Acceptance defaults require cited evidence for research/investigation, framework design/plan/task list for spec, acceptance + test evidence for implementation/fix, SHA findings for review, accurate links/content for docs, transformation/diff accounting for mechanical, and resolved frontier plus linked decisions for grill. Type defaults append to task acceptance with stable deduplication, never erase explicit criteria.
 
-Allowed follow-ups: research → investigation/spec/grill; investigation → fix/spec/grill; spec → grill/implementation/docs; implementation/fix → fix/docs/review/grill; review → fix/docs/owner-answer; docs/mechanical → docs/fix; grill → owner-answer/docs/spec; owner-answer → none. All agent types may request owner-answer operationally. Follow-ups are proposed with parent links/provenance, never auto-approved. `propose_requires` is checked at creation of a follow-up, not just dispatch; a spec can require grill-complete before implementation tasks even appear. T-b may extend allowed task types without core enum edits.
+Allowed follow-ups: research → investigation/spec/grill; investigation → fix/spec/grill; spec → grill/implementation/docs; implementation/fix → fix/docs/review/grill; review → fix/docs/owner-answer; docs/mechanical → docs/fix; grill → owner-answer/docs/spec; owner-answer → none. All agent types may request owner-answer operationally. Follow-ups are proposed with parent links/provenance, never auto-approved. `followups.propose_requires` maps destination type IDs to guard lists, checked at creation of that follow-up, not just dispatch. Keys must be in `allowed`; absent keys mean no extra guards, and global lists/wildcards are invalid. The worked extension requires `{implementation: [grill-complete], grill: [], docs: []}`: implementation proposals require the exact target version's completed grill (or audited owner waiver), while prerequisite grill and docs proposals remain possible before that result. Operational owner-answer requests remain available independently of this allowlist. T-b may extend allowed task types without core enum edits.
 
 ## Lifecycle contract and execution invariants
 
@@ -185,6 +189,8 @@ Kernel invariants apply across all graphs:
 - Per-state actors/guards can narrow these rules, not weaken them. Reject graphs without required phase reachability and terminal exits, invalid actor/action combinations or mandatory-stage bypass paths.
 
 Action vocabulary: create-worktree, resolve-reads, launch-worker, run-gate, request-review, enqueue-landing, persist-artifact, create-owner-task, notify-owner, resume-worker, propose-followups. No shell/Python hooks; repo gate commands remain separately approved repo config (E8). On transition, atomically validate expected task revision/actor/guards, update state and append event plus durable action-outbox rows. Dispatch actions after commit with `(transition_event_id, action_index)` idempotency keys; persist intent/result and recover incomplete actions. Crash after launching checks run nonce/PID before retry; crash during an unprovable external effect goes needs-owner. Exit actions precede entry actions, ordered within the outbox; phase advancement waits for required action evidence. Audit records state/phase before/after, actor identity, request key, type/lifecycle/policy versions and evidence hashes; retain E4's append-only history.
+
+Worker completion protocol (new; E16 identifies the incompatible current parser): repo-changing workers keep `ready_to_commit` with commit_message or `done` with valid commit SHA. No-repo-change workers submit the result through the run-authenticated artifact API, then emit `{"status":"done","sha":"","artifact":{"uri":"hub:tasks/T-n/result.md","sha256":"<64 lowercase hex>"},"blocker":null,"note":"Evidence ready"}`. The artifact URI must be a normalized hub task-result URI; SHA and artifact are mutually exclusive. Missing both retains blocked/no-sha; malformed/ambiguous artifact records become blocked/invalid-artifact. Parsing validates structure, preserves artifact metadata through record.json and launch recovery, and keeps bounded scanning and trusted-final-frame rules. It does not prove completion: dispatcher checks the pinned delivery mode is no-repo-change, URI belongs to this task, content/hash and authenticated run receipt exist, and required acceptance/review evidence is present. A repo-changing task presenting only an artifact is rejected and still requires commit/gate/review/landing SHA evidence; worker claims cannot change delivery mode. Restart reuses the durable artifact receipt idempotently; it never fabricates a SHA or completes from an unframed/tool record.
 
 ## Storage, validation and T-7 migration
 
