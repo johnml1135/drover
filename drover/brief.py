@@ -23,6 +23,9 @@ REVIEW_RECORD = (
     "## Finish\n"
     "You are a fresh reviewer: you did not write this code. Judge only the diff against the task and its acceptance "
     "list; read the worktree when the diff is truncated or unclear. Do not change any file.\n"
+    "You must NOT run tests, builds or other commands that need write access. "
+    "Acceptance items about tests passing are satisfied by the gate. "
+    "Checks you cannot perform are not grounds for HOLD; mention them in note.\n"
     "End your final message with exactly one JSON object and nothing after it:\n"
     '{"status": "done", "sha": "<the reviewed sha>", "verdict": "LAND@<the reviewed sha>" | "HOLD", '
     '"findings": ["<one concrete problem per entry, with file and line>"], "note": "<=300 chars"}\n'
@@ -97,15 +100,24 @@ def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pin
     return {"system_append": system, "user_prompt": user, "tokens": tokens, "budget": budget}
 
 
-def assemble_review(task, diff, sha, base, pinned=None):
+def assemble_review(task, diff, sha, base, pinned=None, gate=None):
     """The reviewer's brief: pinned block, the task with its acceptance, and `git diff <base>...<sha>` cut to the review
     budget (the tail of an over-long diff is dropped and says so). -> {'system_append','user_prompt','tokens','budget','truncated'}."""
     budget = REVIEW_BUDGET_TOKENS[task.get("size", "M")]
     system = pinned if pinned is not None else pinned_text()
+    receipt = (gate or {}).get("receipt") or {}
+    summary = [f"{k}: {receipt[k]}" for k in ("kind", "status") if receipt.get(k) is not None]
+    duration = (gate or {}).get("duration_s")
+    if duration is not None:
+        summary.append(f"duration: {duration:.3f} s")
+    gate_text = f"Drover's gate already ran the repo's test command on this exact SHA ({sha}) and passed."
+    if summary:
+        gate_text += "\nGate receipt: " + "; ".join(summary)
 
     def build(d):
         return "\n\n".join(p for p in (
-            _task_block(task), f"## Diff under review\n`git diff {base}...{sha}`\n```diff\n{d}\n```", REVIEW_RECORD) if p)
+            _task_block(task), _section("Gate", gate_text),
+            f"## Diff under review\n`git diff {base}...{sha}`\n```diff\n{d}\n```", REVIEW_RECORD) if p)
     room = budget - estimate_tokens(system + build(""))
     if room < 200:
         raise BriefTooLarge(f"review brief for {task['id']} leaves no room for a diff in the {budget}-token budget")

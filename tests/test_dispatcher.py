@@ -1138,6 +1138,15 @@ class Polish(HardeningFixtures):
 class Briefs(unittest.TestCase):
     T = {"id": "T1", "title": "Do it", "goal": "g", "acceptance": ["a"], "size": "S", "scope_files": ["a.py:10-20"]}
 
+    def test_review_relies_on_the_gate_and_forbids_write_commands(self):
+        sha = "a" * 40
+        b = brief.assemble_review(self.T, "+fix", sha, "main")
+        u = b["user_prompt"]
+        self.assertIn(f"Drover's gate already ran the repo's test command on this exact SHA ({sha}) and passed", u)
+        self.assertIn("must NOT run tests, builds or other commands that need write access", u)
+        self.assertIn("Acceptance items about tests passing are satisfied by the gate", u)
+        self.assertIn("Checks you cannot perform are not grounds for HOLD; mention them in note", u)
+
     def test_pinned_system_only_and_order(self):
         pin = brief.pinned_text()
         b = brief.assemble(self.T, retry_excerpt="boom", handoff="HAND", notes=["NOTE"])

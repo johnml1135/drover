@@ -785,7 +785,9 @@ class Dispatcher:
         if placement == "wsl" and self._wsl_blocked():
             return False
         repo, base = repos_mod.native(task["worktree"]), pl.base_ref(prog)
-        b = brief_mod.assemble_review(task, pl.diff_text(repo, base, sha), sha, base)
+        gate = self._event_for("gate-done", "run", worker["id"]).get("g") \
+            or contract.parse_gate_receipt(worker.get("gate_receipt"))
+        b = brief_mod.assemble_review(task, pl.diff_text(repo, base, sha), sha, base, gate=gate)
         return self._spawn(task, route, policy, placement, task["worktree"], b, "review",
                            {"sha": sha, "worker_run": worker["id"]}) is not None
 
@@ -817,8 +819,8 @@ class Dispatcher:
             p.finish_run(run_id, "land", review_verdict=f"LAND@{sha}", note=(rec.get("note") or None), **usage)
             p.append_event("review-done", {"run": run_id, "verdict": f"LAND@{sha}", "findings": rec["findings"]}, task_id)
             return p.set_status(task_id, "reviewed", reason=f"review LAND@{sha[:12]}")
-        if verdict == "HOLD":
-            findings = "\n".join(f"- {f}" for f in rec["findings"]) or "- (the reviewer gave no findings)"
+        if verdict == "HOLD" and rec["findings"]:
+            findings = "\n".join(f"- {f}" for f in rec["findings"])
             excerpt = "Review HOLD. Findings:\n" + findings
             p.finish_run(run_id, "hold", review_verdict="HOLD", note=(rec.get("note") or None),
                          gate_receipt=contract.gate_receipt(False, excerpt=excerpt, review=True), **usage)

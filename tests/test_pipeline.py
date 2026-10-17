@@ -686,6 +686,15 @@ class CodexReview(Base):
         self.assertEqual(self.fl.of("review")[0]["effort"], "low")
 
 class GateAndReview(Base):
+    def test_review_brief_includes_the_passed_gate_receipt_summary(self):
+        tid, sha = self.to_gated()
+        g = ops.events(self.conn, task_id=tid, kind="gate-done")[-1]["data"]["g"]
+        u = self.fl.of("review")[0]["user_prompt"]
+        self.assertIn(f"exact SHA ({sha}) and passed", u)
+        self.assertIn("kind: full", u)
+        self.assertIn("status: passed", u)
+        self.assertIn(f"duration: {g['duration_s']:.3f} s", u)
+
     def test_green_gate_goes_to_gated_with_a_receipt_for_the_exact_sha(self):
         tid, sha = self.to_gated()
         self.assertEqual(self.status(tid), "gated")
@@ -791,6 +800,33 @@ class GateAndReview(Base):
         # a second failure steps the worker up a tier, from the worker's model not the reviewer's
         nxt = dispatcher.next_tier(runs, {"backend": "claude", "model": "haiku-5.5"})
         self.assertEqual(nxt["backend"], dispatcher.fail_runs(runs)[0]["backend"])
+
+    def test_hold_without_findings_retries_review_until_the_review_limit(self):
+        tid, sha = self.to_gated()
+        for attempt in range(1, dispatcher.MAX_REVIEW_TRIES + 1):
+            spec = self.fl.of("review")[-1]
+            self.fl.handles[spec["run_id"]].result = result("done", json.dumps(
+                {"verdict": "HOLD", "findings": [], "note": "No blocking code findings; no writable temporary directory"}))
+            self.d.tick()
+            runs = ops.list_runs(self.conn, tid)
+            reviews = [r for r in runs if r["role"] == "review"]
+            with self.subTest(attempt=attempt):
+                self.assertEqual(dispatcher.failures(runs), 0)
+                self.assertEqual(runs[0]["outcome"], "gated")
+                self.assertEqual([r["outcome"] for r in reviews[:attempt]], ["no-record"] * attempt)
+                self.assertTrue(all(r["review_verdict"] is None for r in reviews))
+                self.assertEqual(len(self.fl.of("worker")), 1)
+                self.assertEqual(len(self.fl.of("gate")), 1)
+                self.assertFalse(landing.review_landed(self.conn, tid, sha))
+                if attempt < dispatcher.MAX_REVIEW_TRIES:
+                    self.assertEqual(self.status(tid), "gated")
+                    self.assertEqual(len(reviews), attempt + 1)
+                    self.assertIsNone(reviews[-1]["outcome"])
+                else:
+                    self.assertEqual(self.status(tid), "needs-owner")
+                    self.assertEqual(len(reviews), dispatcher.MAX_REVIEW_TRIES)
+        for kind in ("retry", "escalate", "replan-request"):
+            self.assertEqual(ops.events(self.conn, task_id=tid, kind=kind), [])
 
     def test_a_review_in_flight_is_adopted_after_a_restart_not_requeued(self):
         tid, sha = self.to_gated()
