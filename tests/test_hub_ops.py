@@ -18,7 +18,7 @@ except ImportError as exc:  # hub deps are third-party; skip when absent
     raise unittest.SkipTest(f"hub deps missing: {exc}")
 
 from drover import importer, tuner
-from drover.tool_discovery import NODE_SHIM_REASON
+from drover.tool_discovery import CLAUDE_NODE_SHIM_REASON, NODE_SHIM_REASON
 from drover.ledger import ops
 from tests.test_importer import QUESTIONS, sample
 
@@ -366,6 +366,14 @@ class TestWslDiscovery(Base):
         self.wsl.rc, self.wsl.discovery = 1, "/usr/bin/evil/claude\n"
         self.svc.discover_tools()
         self.assertEqual(self.store.get_settings()["wsl_bin_claude"], "/usr/bin/claude")
+
+    def test_claude_shim_rejection_is_reported_in_the_discovery_event(self):
+        self.wsl.discovery = f"DROVER_ERROR|claude|{CLAUDE_NODE_SHIM_REASON}\n"
+        self.assertNotIn("claude", self.svc.discover_tools())
+        self.assertNotIn("wsl_bin_claude", self.store.get_settings())
+        event = self.store.list_events(kind="wsl.tools")[-1]["data"]
+        self.assertIn("claude", event["missing"])
+        self.assertEqual(event["reasons"], {"claude": CLAUDE_NODE_SHIM_REASON})
 
     @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
     def test_nvm_codex_resolves_to_the_newest_vendored_native_binary(self):

@@ -473,11 +473,12 @@ class Tools(Base):
         with mock.patch.object(wizard, "is_windows", return_value=False), mock.patch("pathlib.Path.exists", return_value=False):
             self.assertEqual(wizard._windows_exe("claude"), (None, False))
 
-    def test_wizard_reports_the_wsl_codex_native_path_from_the_shared_resolver(self):
+    def test_wizard_reports_wsl_native_paths_from_the_shared_resolver(self):
         from unittest import mock
         native = ("/home/u/.nvm/versions/node/v22.4.1/lib/node_modules/@openai/codex/node_modules/"
                   "@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
-        done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\n".encode(), returncode=0)
+        claude = "/home/u/.nvm/versions/node/v22.4.1/bin/claude"
+        done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\nDROVER_TOOL|claude|{claude}\n".encode(), returncode=0)
         with mock.patch.object(wizard, "is_windows", return_value=True), \
                 mock.patch.object(wizard, "_windows_exe", return_value=(None, True)), \
                 mock.patch.object(wizard, "detect_distros", return_value=[
@@ -486,6 +487,7 @@ class Tools(Base):
                 mock.patch.object(wizard, "_run", return_value=done) as run:
             found = wizard.detect_tools("Ubuntu")
         self.assertEqual(found["codex"]["wsl"], native)
+        self.assertEqual(found["claude"]["wsl"], claude)
         self.assertEqual(run.call_args.args[0],
                          ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-lc", DISCOVERY_SCRIPT])
 
