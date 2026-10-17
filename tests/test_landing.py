@@ -1,7 +1,9 @@
 import sys
+import subprocess
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from unittest.mock import patch
 
 from drover import gate, landing
 from drover.ledger import db as ledger_db
@@ -67,6 +69,84 @@ class LandingCase(unittest.TestCase):
     def land(self, **kw):
         kw.setdefault('decider', fake_decider())
         return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kw)
+
+
+class WorktreeTests(LandingCase):
+    def test_legacy_git_falls_back_only_for_native_landing_worktrees(self):
+        real = landing.git
+        base = self.r.git('rev-parse', 'main')
+        self.r.git('config', 'core.autocrlf', 'true')
+        calls = []
+
+        def git(repo, *args, **kw):
+            if 'add' in args:
+                calls.append(args)
+                if '--relative-paths' in args:
+                    return subprocess.CompletedProcess(args, 129, '', "error: unknown option `relative-paths'")
+            return real(repo, *args, **kw)
+
+        with patch.object(landing, 'git', git), patch.object(landing.worktrees, 'cross_os', return_value=True):
+            with self.assertRaisesRegex(gate.GateError, 'both Windows and WSL: update git'):
+                landing.build_tip(self.r.repo, self.work, base, [])
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(self.work.exists())
+        calls.clear()
+        with patch.object(landing, 'git', git), patch.object(landing.worktrees, 'cross_os', return_value=False):
+            landing.build_tip(self.r.repo, self.work, base, [])
+        self.assertEqual(len(calls), 2)
+        for args in calls:
+            self.assertEqual(args[:4], ('-c', 'core.autocrlf=false', 'worktree', 'add'))
+        self.assertEqual((self.work / 'base.txt').read_bytes(), b'base\n')
+
+    def test_landing_does_not_retry_an_unrelated_error_mentioning_relative_paths(self):
+        def git(repo, *args, **kw):
+            return subprocess.CompletedProcess(args, 128, '', 'fatal: relative-paths metadata is corrupt')
+
+        with patch.object(landing, 'git', side_effect=git) as run:
+            with self.assertRaisesRegex(gate.GateError, 'metadata is corrupt'):
+                landing.build_tip(self.r.repo, self.work, 'a' * 40, [])
+        self.assertEqual(run.call_count, 1)
+
+    def test_reused_absolute_gitdir_is_repaired_before_git_opens_it(self):
+        base = self.r.git('rev-parse', 'main')
+        self.r.git('worktree', 'add', '--no-relative-paths', '-q', '--detach', str(self.work), base)
+        pointer = (self.work / '.git').read_text().strip().removeprefix('gitdir: ')
+        self.assertTrue(Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute())
+        real = landing.git
+
+        def git(repo, *args, **kw):
+            if Path(repo) == self.work:
+                pointer = (self.work / '.git').read_text().strip().removeprefix('gitdir: ')
+                self.assertFalse(Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute())
+            return real(repo, *args, **kw)
+
+        with patch.object(landing, 'git', git):
+            tip, applied, conflicts = landing.build_tip(self.r.repo, self.work, base, [])
+        self.assertEqual((tip, applied, conflicts), (base, [], []))
+        self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=self.work), base)
+
+    def test_landing_worktree_uses_a_relative_gitdir_and_disables_autocrlf(self):
+        self.r.git('config', 'core.autocrlf', 'true')
+        base = self.r.git('rev-parse', 'main')
+        tip, applied, conflicts = landing.build_tip(self.r.repo, self.work, base, [])
+        pointer = (self.work / '.git').read_text().strip().removeprefix('gitdir: ')
+        self.assertFalse(Path(pointer).is_absolute())
+        self.assertFalse(PureWindowsPath(pointer).is_absolute())
+        self.assertEqual((tip, applied, conflicts), (base, [], []))
+        self.assertEqual((self.work / 'base.txt').read_bytes(), b'base\n')
+
+
+class ReceiptLogTests(unittest.TestCase):
+    def test_wsl_receipt_log_is_mapped_before_reading_the_full_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'gate.log'
+            log.write_text('FAILED src/check.py::test_check - bad content\n' + 'output\n' * 30)
+            receipt = {'log': '/mnt/c/acme-lib/runs/gate.log', 'log_tail': ['output'] * 20}
+            tasks = [{'id': 'T-1', 'files': ['src/check.py']}]
+            with patch.object(landing.config, 'native', return_value=str(log)) as native:
+                failures = landing._failures(receipt, tasks)
+            self.assertEqual(landing.owners_of(failures, tasks), ['T-1'])
+            native.assert_called_once_with('/mnt/c/acme-lib/runs/gate.log')
 
 
 class FormationTests(LandingCase):

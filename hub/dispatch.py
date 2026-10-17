@@ -134,13 +134,15 @@ class LandingService:
                     "--out", runner.to_wsl_path(str(out)), "--repo", runner.to_wsl_path(str(worktree)), "--base",
                     base_ref, "--priority", "P1", "--json", "--", *command]
             try:
-                self.run(argv, capture_output=True, text=True, timeout=timeout_s)
+                proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 raise gate.GateError(f"the WSL gate timed out after {timeout_s:g}s")
             try:
                 return json.loads(out.read_text(encoding="utf-8"))
             except (OSError, ValueError) as e:
-                raise gate.GateError(f"the WSL gate wrote no receipt: {e}")
+                stderr = '\n'.join((proc.stderr or '').splitlines()[-20:])
+                raise gate.GateError(f"the WSL gate wrote no receipt (wsl.exe return code {proc.returncode}): {e}"
+                                     + (f"\nstderr:\n{stderr}" if stderr else '')) from e
         return run
 
     def tick(self):

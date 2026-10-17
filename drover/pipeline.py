@@ -12,7 +12,7 @@ import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, garden, gate, launch, repos, runner
+from . import config, garden, gate, launch, repos, runner, worktrees
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -300,7 +300,7 @@ class Pipeline:
     def _cross_os(dest):
         """True when both Windows and WSL can open `dest` (a drive path or /mnt/<d>/...), so its gitdir pointers must
         not be absolute."""
-        return not launch.is_linux_native(str(dest)) or repos.WIN_RE.match(str(dest)) is not None
+        return worktrees.cross_os(dest)
 
     def _add(self, repo, dest, branch, base, remote="origin"):
         """git worktree add on the branch: an existing local branch is checked out, a remote branch is tracked, a new
@@ -314,14 +314,7 @@ class Pipeline:
             tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
         else:
             tail = ["-b", branch, str(dest), base]
-        r = git(repo, "-c", "core.autocrlf=false", "worktree", "add", "--relative-paths", *tail)
-        if r.returncode and "relative-paths" in r.stderr:
-            if self._cross_os(dest):
-                raise WorktreeRefused("this git has no `worktree add --relative-paths`, and a worktree under "
-                                      f"{dest} is opened from both Windows and WSL: update git (2.48 or newer)")
-            r = git(repo, "-c", "core.autocrlf=false", "worktree", "add", *tail)
-        if r.returncode:
-            raise WorktreeRefused(f"git worktree add failed: {r.stderr.strip()[-300:]}")
+        worktrees.add(repo, dest, *tail, git=git, error=WorktreeRefused, shared=self._cross_os(dest))
 
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):

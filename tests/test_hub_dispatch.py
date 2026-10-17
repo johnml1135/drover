@@ -1,6 +1,7 @@
 """The dispatcher inside the hub: thread, single-instance lock, CLI refusal, ledger exclusion, contract parsers."""
 import io
 import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -8,10 +9,10 @@ import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 
-from drover import contract, dispatcher
+from drover import contract, dispatcher, gate
 from drover.ledger import connect, ops
 from drover.lock import FileLock, LockHeld
-from hub.dispatch import DispatcherService, HubPort
+from hub.dispatch import DispatcherService, HubPort, LandingService
 from hub.events import Bus
 from hub.settings import Settings
 from hub.store import Store
@@ -33,6 +34,24 @@ class Base(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.settings = Settings(token="t", dispatcher_lock=Path(self.lock), dispatch_interval_s=0.02,
                                  runs_dir=Path(self.tmp.name) / "runs")
+
+
+class WslGate(Base):
+    def test_missing_receipt_reports_return_code_and_last_twenty_stderr_lines(self):
+        stderr = '\n'.join(['old diagnostic'] + [f'diagnostic {n}' for n in range(19)] + ['fatal: invalid gitdir'])
+
+        def run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 2, '', stderr)
+
+        svc = LandingService(self.store, self.settings, run=run)
+        check = svc._wsl_gate(['python3', '-m', 'unittest'], 'main', self.settings.runs_dir)
+        with self.assertRaises(gate.GateError) as cm:
+            check(Path(self.tmp.name) / 'acme-lib', 'a' * 40, [])
+        message = str(cm.exception)
+        self.assertIn('return code 2', message)
+        self.assertIn('fatal: invalid gitdir', message)
+        self.assertIn('diagnostic 0', message)
+        self.assertNotIn('old diagnostic', message)
 
 
 class FakeDispatcher:

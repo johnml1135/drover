@@ -14,9 +14,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from . import config, gate
+from . import config, gate, worktrees
 from .ledger import ops
 from .ledger.db import connect, default_path, tx
 
@@ -161,7 +161,11 @@ def build_tip(repo, worktree, base_sha, tasks):
     """Replay each task's commits onto base_sha in `worktree`. -> (tip sha, applied tasks with last_sha, conflicted ids)."""
     worktree = Path(worktree)
     if not (worktree / '.git').exists():
-        git(repo, 'worktree', 'add', '-q', '--detach', str(worktree), base_sha)
+        worktrees.add(repo, worktree, '-q', '--detach', str(worktree), base_sha, git=git, error=gate.GateError)
+    else:
+        pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
+        if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():
+            git(repo, 'worktree', 'repair', '--relative-paths', str(worktree))
     git(worktree, 'reset', '-q', '--hard')
     git(worktree, 'checkout', '-q', '--detach', base_sha)
     git(worktree, 'clean', '-fdq')
@@ -478,7 +482,7 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
 
 def _failures(receipt, tasks):
     try:
-        text = Path(receipt['log']).read_text(errors='replace')
+        text = Path(config.native(receipt['log'])).read_text(errors='replace')
     except OSError:
         text = '\n'.join(receipt.get('log_tail') or [])
     return gate.parse_failures(text, [p for t in tasks for p in t['files']])
