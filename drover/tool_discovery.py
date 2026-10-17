@@ -77,7 +77,7 @@ resolve_codex() {
     local path real root vendor native magic first_line
     path="$1"
     valid_candidate_path "$path" codex || return 1
-    [ -x "$path" ] || return 1
+    [ -f "$path" ] && [ -x "$path" ] || return 1
     real="$(readlink -f -- "$path" 2>/dev/null || true)"
     [ -n "$real" ] || real="$path"
 

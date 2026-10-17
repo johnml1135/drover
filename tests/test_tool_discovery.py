@@ -76,6 +76,14 @@ class ToolDiscovery(unittest.TestCase):
         self.install(self.nvm_bin("v22.4.1"), node=True)
         self.assertEqual(self.probe(), ({"claude": expected}, {}))
 
+    def test_newer_codex_directory_does_not_hide_older_nvm_native_codex(self):
+        (self.nvm_bin("v22.4.1") / "codex").mkdir(parents=True, mode=0o755)
+        native = self.nvm_bin("v20.1.0") / "codex"
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b"\x7fELFfake native binary")
+        native.chmod(0o755)
+        self.assertEqual(self.probe(), ({"codex": str(native)}, {}))
+
     def test_nvm_codex_shim_resolves_native_and_rejects_invalid_or_missing_native(self):
         node_bin = self.nvm_bin("v22.4.1")
         package = node_bin.parent / "lib" / "node_modules" / "@openai" / "codex"
