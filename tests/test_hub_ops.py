@@ -395,6 +395,47 @@ class TestWslDiscovery(Base):
             self.assertNotIn(str(home / ".nvm" / "versions" / "node" / "v22.4.1" / "bin" / "codex"),
                              run.stdout)
 
+    def test_invalid_windows_wrapper_does_not_hide_nvm_codex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            package = home / ".nvm" / "versions" / "node" / "v22.4.1" / "lib" / "node_modules" / "@openai" / "codex"
+            shim = package / "bin" / "codex.js"
+            shim.parent.mkdir(parents=True)
+            shim.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+            shim.chmod(0o755)
+            launcher = home / ".nvm" / "versions" / "node" / "v22.4.1" / "bin" / "codex"
+            launcher.parent.mkdir(parents=True)
+            launcher.symlink_to(shim)
+            native = package / "node_modules" / "@openai" / "codex-linux-x64" / "vendor" / \
+                "x86_64-unknown-linux-musl" / "bin" / "codex"
+            native.parent.mkdir(parents=True)
+            native.write_bytes(b"\x7fELF" + b"fake native binary")
+            native.chmod(0o755)
+
+            bash_env = home / "bash_env"
+            bash_env.write_text(
+                "command() {\n"
+                "    if [ \"$1\" = \"-v\" ] && [ \"$2\" = \"codex\" ]; then\n"
+                "        printf '%s\\n' '/mnt/c/Users/me/AppData/Roaming/npm/codex'\n"
+                "        return 0\n"
+                "    fi\n"
+                "    builtin command \"$@\"\n"
+                "}\n"
+                "[() {\n"
+                "    if [[ \"$1\" = \"-x\" && \"$2\" = \"/mnt/c/Users/me/AppData/Roaming/npm/codex\" ]]; then\n"
+                "        return 0\n"
+                "    fi\n"
+                "    builtin '[' \"$@\"\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            run = subprocess.run(["bash", "-c", DISCOVERY_SCRIPT], capture_output=True, text=True, check=True,
+                                 env={**os.environ, "HOME": tmp, "PATH": "/usr/bin:/bin",
+                                      "BASH_ENV": str(bash_env)})
+            self.assertEqual(parse_discovery(run.stdout), {"codex": str(native)})
+            self.assertNotIn("DROVER_TOOL|codex|/mnt/c/", run.stdout)
+
     def test_shim_only_reports_a_clear_event_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

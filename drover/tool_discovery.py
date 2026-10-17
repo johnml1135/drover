@@ -23,9 +23,19 @@ if [ -n "$claude_path" ] && [ -x "$claude_path" ]; then
 fi
 
 codex_reason=""
+valid_codex_path() {
+    local path="$1"
+    case "$path" in
+        /mnt/*|*//*|*/./*|*/../*) return 1 ;;
+    esac
+    [[ "$path" =~ ^/[A-Za-z0-9._+@:=,/-]+$ ]] || return 1
+    [ "${path##*/}" = "codex" ]
+}
+
 resolve_codex() {
     local path real root vendor native magic first_line
     path="$1"
+    valid_codex_path "$path" || return 1
     [ -x "$path" ] || return 1
     real="$(readlink -f -- "$path" 2>/dev/null || true)"
     [ -n "$real" ] || real="$path"
@@ -35,6 +45,7 @@ resolve_codex() {
             root="${real%/bin/codex.js}"
             vendor="$root/node_modules/@openai/codex-linux-x64/vendor"
             for native in "$vendor"/*/bin/codex; do
+                valid_codex_path "$native" || continue
                 [ -f "$native" ] && [ -x "$native" ] || continue
                 magic="$(od -An -tx1 -N4 -- "$native" 2>/dev/null | tr -d '[:space:]')"
                 [ "$magic" = "7f454c46" ] || continue
