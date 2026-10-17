@@ -1,0 +1,260 @@
+[
+  {
+    "title": "Define the reload protocol, activity barrier and crash-safe journal",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/reload_protocol.py, tests/test_reload_protocol.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: none blocking; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Produce PROTOCOL=1, RUN_FORMAT=1; validate_record(kind: str, value: dict) -> dict; atomic_json(path: Path, value: dict) -> None; Journal(root: Path).append(kind: str, data: dict) -> dict and .replay(after: int) -> list[dict]. Produce ActivityBarrier with try_enter(kind: str, *, control: bool=False) -> context-manager-or-None, close(generation: int) -> None, seal(generation: int) -> None, reopen(generation: int) -> None, snapshot() -> dict. A returned section counts immediately, before __enter__; __exit__ always releases. Snapshot has generation, closed, sealed, active_sections and counts by kind. close denies work; counted control=True sections may enter until seal denies all admission. Matching reopen unseals. Admission close and section acquisition share one mutex. The module runs standalone with only stdlib imports.\n\nWork: Implement the protocol records and enums from the design, strict full lowercase 40-hex SHAs and increasing generations/sequences. Journal append uses one immutable sequence file per event before replacing state; recover a complete journal record whose state update was interrupted. Exclude partial files, detect gaps/corruption, and block unknown versions. Child and parent writers never overwrite each other's records. Atomic writes flush and fsync before replace. An installer-supplied state root carries owner ACLs; never log secrets. A stale generation cannot reopen a current barrier. This foundational module must import without FastAPI or the drover package.\n\nVerification: run the focused test tests.test_reload_protocol using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #0 for test steps.",
+    "acceptance": [
+      "Barrier close races atomically with acquisition; an already acquired section can finish, and all later acquisition is denied until matching reopen.",
+      "Torn state after durable journal append replays exactly once; malformed/gapped/unknown-version data fails closed without changing active SHA.",
+      "Record validation covers every field in the spec worked example; journal event IDs support transactional ledger mirroring deduplication."
+    ],
+    "scope_files": [
+      "hub/reload_protocol.py",
+      "tests/test_reload_protocol.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "low",
+    "deps": []
+  },
+  {
+    "title": "Export and validate immutable hub releases",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/runtime.py, tests/test_hub_runtime.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume reload_protocol validators/atomic_json. Produce prepare_release(source: Path, sha: str, root: Path, enrolled: dict) -> dict (manifest including release_path); check_eligibility(enrolled: dict, running_sha: str, target_sha: str, ledger_schema: int) -> dict with eligible:bool and reasons:list[str]; child_command(enrolled: dict, release: dict, generation: int, instance: str) -> tuple[list[str], dict[str,str], str] returning argv, env, cwd. Inject Git, disk and interpreter probes via keyword adapters for tests. No drover/application imports.\n\nWork: Export exact Git objects with git archive to a temporary release, validate ZIP paths/types/expanded bytes, hash contents and atomically rename. Reuse only verified identical releases; retain every release. Compare canonical Git common-dir/default-branch identity, source cleanliness, exact HEAD/target ancestry, schema-file blob, hub dependency files, protocol/run format, interpreter identity and bootstrap blobs (four Python peers, Start-DroverHub.ps1 and both installer scripts). Refuse bootstrap, schema or dependency changes for auto and manual reload. Runtime does not query SQLite: ledger_schema is supplied by the child. Enrolled absolute state/config/overlay/repo/token paths stay fixed; launcher imports only from release, uses the existing Windows venv Python directly, and removes inherited project PYTHONPATH. Frozen files must support both package imports in the child and standalone sibling imports in bootstrap, selected by __package__. Require WSL reachability when reported WSL runs need it. Require free bytes >= 2 * expanded archive bytes + 256 MiB and expanded size <= 128 MiB. No Git ref mutation, worktree, install or release deletion.\n\nVerification: run the focused test tests.test_hub_runtime using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #1 for test steps.",
+    "acceptance": [
+      "Temporary real Git repos prove exact SHA export and unchanged main/dirty files; injected archive traversal, links, corruption and insufficient disk are refused.",
+      "Schema/dependency/bootstrap/interpreter changes produce explicit pending reasons before drain; non-descendants and wrong source checkout are refused.",
+      "A path containing spaces yields safe argv/env/CWD; candidate imports/overlay and WSL runner roots cannot fall back to mutable source."
+    ],
+    "scope_files": [
+      "hub/runtime.py",
+      "tests/test_hub_runtime.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "low",
+    "deps": [
+      "#0"
+    ]
+  },
+  {
+    "title": "Model reload transitions and the persistent retry budget",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/reload_machine.py, tests/test_reload_machine.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume protocol records. Produce transition(state: dict, event: dict, now: float) -> tuple[dict, list[dict]]: a pure reducer returning next state and ordered effect descriptions. Effects use {kind,data}; kinds are stage, command, spawn, probe, terminate_validation_pid, bridge_start, bridge_stop, latch, notify. Stable supervisor owns execution; no process, filesystem or SQLite access in reducer.\n\nWork: Define idle/pending/draining/stopping/validating/committed and blocked/rolling_back/rolled_back/failed transitions exactly as the design. Coalesce newest descendant before draining only; pin target thereafter. Drain timeout 900s blocks without kill, shutdown timeout 30s blocks, readiness timeout 60s includes 15 stable advancing-heartbeat seconds, failed validation shutdown grace 10s. One fallback only; two attempts per ten minutes including fallback, persisted failed latch survives scheduled-task relaunch. Only healthy candidate commit changes active/previous. Fallback disables auto and keeps admission closed; cancel then explicitly resumes it. Distinguish intentional exit 75, owner stop, unexpected exit and identity uncertainty. Stale events cannot change state.\n\nVerification: run the focused test tests.test_reload_machine using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #2 for test steps.",
+    "acceptance": [
+      "A failed candidate selects A once while main/ledger effects are absent; a failed fallback latches and restart cannot clear the latch.",
+      "Drain/shutdown timeout effects never include termination; only a proven validation-only PID may request bounded termination.",
+      "Auto off before drain cancels automatic work; after drain it never tears down the handoff; owner preference updates are preserved."
+    ],
+    "scope_files": [
+      "hub/reload_machine.py",
+      "tests/test_reload_machine.py"
+    ],
+    "priority": "P1",
+    "size": "S",
+    "risk": "low",
+    "deps": [
+      "#0"
+    ]
+  },
+  {
+    "title": "Supervise one hub child and perform verified startup rollback",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/supervisor.py, tests/test_hub_supervisor.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0, #1, #2; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume runtime.prepare_release/check_eligibility/child_command and protocol Journal/atomic_json. Consume reload_machine.transition as a frozen bootstrap peer (installer must copy reload_machine.py too). Produce Supervisor(enrollment: dict, adapters: object).step() -> dict and main(argv: list[str]|None=None) -> int. Adapters expose spawn(argv,env,cwd), identity(pid), poll(pid), probe(url), terminate(pid), git(...), disk(...), clock(), sleep(seconds), bridge_start(distro,seconds), bridge_stop(handle), lock(path). Native Windows lock is implemented locally or in reload_protocol, without importing drover. The installed parent uses only stdlib/bootstrap peers.\n\nWork: Execute durable reducer effects with idempotent journal/state writes and a supervisor.lock. Resolve request/control records by generation/instance and challenge-response (command action=probe with fresh challenge UUID echoed in child status on its next heartbeat), never PID file alone. Wait for observed old PID exit plus dispatcher-lock availability before replacement or fallback; recheck source HEAD/cleanliness, compatibility and interpreter identity immediately before drain and spawn; never steal locks or create a second hub. Probe loopback /api/v1/hub/ready for exact protocol/SHA/generation/instance, recovery=true, lock=true, and advancing heartbeat for 15 continuous seconds within 60s. Failures close validation-only child cooperatively, then after 10s may terminate its verified PID, never its tree; uncertainty blocks. On a parent restart reattach matching live child; unknown child blocks. Persist failure budget/latch and quarantine. Unexpected active-child exit restarts committed SHA in recovery-only mode, with no fabricated drain. When live WSL runs were reported, own one bounded 300s keepalive bridge and stop only that created handle after the new watchdog acknowledges demand. Reserve logging for bounded errors without env/token dumps.\n\nVerification: run the focused test tests.test_hub_supervisor using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #3 for test steps.",
+    "acceptance": [
+      "Fake process/HTTP/clock adapters prove no overlap of old/new PIDs and correct lock sequencing through success, import/bind failure and hung validation child.",
+      "Stale health or reused PID never commits or receives a signal; lock contention and old shutdown overrun block with no kill.",
+      "Crash/restart at every effect boundary preserves active pointer and exactly one fallback; scheduled-task restart honors failed latch.",
+      "Parent imports and status work without hub dependencies; WSL bridge survives the child gap and only its own exact handle is stopped."
+    ],
+    "scope_files": [
+      "hub/supervisor.py",
+      "tests/test_hub_supervisor.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "high",
+    "deps": [
+      "#0",
+      "#1",
+      "#2"
+    ]
+  },
+  {
+    "title": "Fence dispatcher admission and prove landing and gates have drained",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/dispatch.py, drover/dispatcher.py, tests/test_reload_dispatch.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume ActivityBarrier. Extend Dispatcher(..., activity=None) and DispatcherService(..., activity=None, on_landed=None); old callers retain behavior. Produce Dispatcher.reload_snapshot() -> dict with ack_generation, recovery_complete, scan_known, open_gate_ids, unresolved_launches, unsafe_detached_ids, wsl_live_run_ids and idle. Produce DispatcherService.reload_snapshot() -> dict including landing_idle and landing_ack_generation; on_landed(result: dict, repo_identity: dict) -> None fires after successful full landing cleanup. DispatcherService.stop(timeout=30) -> bool returns false while either thread lives and never releases dispatcher.lock early.\n\nWork: Guard each gate/review/worker admission and entire claim/launch handshake, not just top of tick; guard entire LandingService._land_repo call through finally, cleanup, recording and callback. With barrier closed continue heartbeat/reap/recover/watch and terminal gate ingestion, but launch no follow-on platform gate, review, repair or landing. Wait for every open gate run to end in ledger; healthy worker/review lifetimes remain detached and are excluded from section counts. Inspect status detachment evidence for live Windows runs; unknown/in-job blocks. Report unknown scan/recovery/unresolved launch as blockers, not empty work. Inject activity into landing and default dispatcher without changing admission capacity or push policy. Close per-thread Store connections on normal exit; release dispatcher lock only after both landing and dispatcher threads exit. Current reference: hub/dispatch.py:146-185,235-278 and drover/dispatcher.py:987-1066,1195-1243.\n\nVerification: run the focused test tests.test_reload_dispatch using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #4 for test steps.",
+    "acceptance": [
+      "Use deterministic thread barriers: request drain between eligibility check and claim; no post-close claim or run starts, while a pre-close handshake completes.",
+      "Long full batch gate outlives landing-lock TTL and stop timeout: snapshot remains busy and dispatcher lock stays held until the landing thread exits.",
+      "A first-platform gate finishing during drain records its exact receipt but does not launch the next platform; queued worker results are retained.",
+      "Unknown scan, starting/cancelling launch, unknown/in-job Windows run blocks; safe Windows/WSL worker and review IDs remain unchanged."
+    ],
+    "scope_files": [
+      "hub/dispatch.py",
+      "drover/dispatcher.py",
+      "tests/test_reload_dispatch.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "high",
+    "deps": [
+      "#0"
+    ]
+  },
+  {
+    "title": "Park service mutations and preserve WSL demand during handoff",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/services.py, hub/watchdog.py, tests/test_reload_services.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume ActivityBarrier. Extend Services(..., activity=None), Services.reload_snapshot() -> dict with idle and ack_generation, Services.stop(timeout=30) -> bool. Extend Watchdog(..., live_wsl_runs=None) with an injected callable returning known live WSL run IDs; Watchdog.reload_snapshot() -> dict reports thread_idle and keepalive demand/ownership; Watchdog.stop(timeout=30) -> bool joins its thread. Existing constructors and behavior remain compatible when callbacks omitted.\n\nWork: Fence garden row, tuner pass and discovery mutation boundaries; finish an admitted unit, then park. Do not mark a partially parked garden batch done: retain per-row receipts and use existing resume_garden handling after commit. No new mutation while candidate validates. Watchdog may keep WSL warm during drain/recovery; live WSL runs sustain demand even if the old _wsl_needed note expires. Report keepalive ownership to parent so its own bridge overlaps until the new watchdog holds demand; do not stop WSL or another process. Thread owners close their connections when exiting. Existing services methods are at hub/services.py:118-136,200-225,249-278 and watchdog behavior at hub/watchdog.py:54-89,104-120.\n\nVerification: run the focused test tests.test_reload_services using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #5 for test steps.",
+    "acceptance": [
+      "Drain during a garden row finishes that row once, parks before next row, and resume performs only remaining approved rows.",
+      "A long tuner/discovery operation blocks idle acknowledgment until it exits; shutdown returns false if any service thread remains alive.",
+      "An expired WSL-needed note with known live WSL runs keeps demand alive across parent bridge/new watchdog overlap; no unrelated PID is signaled."
+    ],
+    "scope_files": [
+      "hub/services.py",
+      "hub/watchdog.py",
+      "tests/test_reload_services.py"
+    ],
+    "priority": "P1",
+    "size": "S",
+    "risk": "low",
+    "deps": [
+      "#0"
+    ]
+  },
+  {
+    "title": "Coordinate self-change detection, drain acknowledgments and durable history",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/reload.py, tests/test_hub_reload.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0, #1, #4, #5; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume ActivityBarrier, Journal, runtime.check_eligibility and dispatcher/services reload_snapshot contracts. Produce ReloadCoordinator(store, settings, enrollment, activity, dispatch_snapshot, services_snapshot, watchdog_snapshot, adapters).request(action: str, source: str, key: str) -> dict; .set_auto(enabled: bool) -> dict; .on_landed(result: dict, repo_identity: dict) -> None; .tick() -> dict; .snapshot() -> dict; .ready() -> tuple[bool,dict]; .start() -> None; .stop(timeout:float=30) -> bool. Coordinator never launches or kills a process. Use enrollment protocol and exact source identity, not snapshot __file__.\n\nWork: Identify successful completed self-landings by persisted batch ID/tip, enrolled canonical Git common-dir/branch and exact local source HEAD; detect hub/ or drover/ changes with git diff --name-only --no-renames running_sha tip -- hub/ drover/. Other repo, remote-only, failed or unrecorded tips do not reload; docs-only stays idle. Every 30s and at startup reconcile persisted landed batches to recover missed callback; use idempotency key landing:<repo>:<batch_id>:<tip>. Auto off still surfaces pending. set_auto enqueues a set_auto request with enabled:boolean; parent state is authoritative and journal mirroring projects hub_auto_reload, including false after fallback. Stage eligibility failures remain pending without draining. Close barrier on current-generation drain command, aggregate fresh participants plus live gate/detachment/scan proof, write child status and signal shutdown only when all safe. Keep child recovery-only until matching parent committed pointer; fallback remains closed until retry or cancel. Mirror journal events transactionally with ID deduplication and reserve hub.reload events for trusted paths. Tick coordinator every 1s; increment its heartbeat sequence only after a recovery tick is acknowledged, while dispatcher thread is alive and last acknowledgment age <=45s. Readiness requires that fresh per-instance heartbeat sequence, successful dispatcher lock/recovery, and owner UI listener binding, with optional missing WSL listener degraded. No DB migration/restore or owner dispatch preference overwrite.\n\nVerification: run the focused test tests.test_hub_reload using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #6 for test steps.",
+    "acceptance": [
+      "Full Git/temporary-ledger fixture covers deletes/renames, other repo, docs-only, remote-only, stale tip, missed callback, duplicate key and pre-drain coalescing.",
+      "Gate/landing/services/API acknowledgments must all match generation; unknown recovery/scan/detachment cannot produce drained.",
+      "A worker completion during drain is retained; persisted stale heartbeat cannot produce ready; startup and fallback never reopen admission prematurely.",
+      "Journal transitions written without a hub are mirrored once on recovery, including rollback failures."
+    ],
+    "scope_files": [
+      "hub/reload.py",
+      "tests/test_hub_reload.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "high",
+    "deps": [
+      "#0",
+      "#1",
+      "#4",
+      "#5"
+    ]
+  },
+  {
+    "title": "Expose owner reload controls and reconnect-aware status",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/reload_api.py, hub/api.py, hub/store.py, hub/templates/health.html, hub/templates/_reload.html, hub/static/app.js, tests/test_reload_controls.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0, #6; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume ReloadCoordinator.request/set_auto/snapshot/ready. Produce hub.reload_api.router (JSON), .ui_router (forms), and .ready_router (loopback-only readiness). GET /api/v1/hub/reload returns snapshot; POST accepts action=request|retry|cancel and an idempotency key, returns 202 with request/status; PUT /api/v1/hub/reload/auto accepts enabled:boolean. GET /api/v1/hub/ready returns 200 or 503 from coordinator.ready, exposing only readiness identity fields; require loopback socket peer and owner UI local port, with no bearer credential. Other reload routes remain owner-only. UI POST /hub/reload and /hub/reload/auto delegate to the same controller and redirect to /health. Extend UiView(..., reload=None).health() to include reload card data; existing callers keep working.\n\nWork: Use existing owner identity and CSRF gates; a bearer token cannot request, retry, cancel, toggle auto or forge hub.reload events. Add event/setting prefix reservations in hub/api.py; reject all generic writes to reload-owned settings even for owner; dedicated auto control enqueues set_auto and returns 202, with parent-authoritative state mirrored into ledger. Surface current SHA, pending candidate, auto flag, phase, blocker, last error/time and supported start command when unsupervised. Include Reload now, Retry and Cancel drain only where allowed; no force control. Keep /api/v1/health backward compatible as liveness, separate from ready. On a changed instance UUID after SSE reconnect fetch fresh status and resync current page regardless of old Last-Event-ID; do not wait for higher SSE IDs. Current owner checks: hub/api.py:161-172,279-285,352-362; existing health template: hub/templates/health.html:4-25; memory SSE IDs: hub/events.py:29-54.\n\nVerification: run the focused test tests.test_reload_controls using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #7 for test steps.",
+    "acceptance": [
+      "Owner actions succeed; bearer-token and cross-site actions return 403, invalid body/action/key return 422, and generic setting/event injection cannot change state.",
+      "Manual Reload now/Retry/Cancel are idempotent and do not bypass blockers or write an arbitrary SHA/ref/path/command.",
+      "Unsupervised UI disables actions; startup-only ready response proves SHA/generation/instance/recovery/lock and returns 503 before readiness.",
+      "Reconnect with reset SSE IDs and a changed UUID refreshes the page/status; unchanged UUID avoids a reload loop."
+    ],
+    "scope_files": [
+      "hub/reload_api.py",
+      "hub/api.py",
+      "hub/store.py",
+      "hub/templates/health.html",
+      "hub/templates/_reload.html",
+      "hub/static/app.js",
+      "tests/test_reload_controls.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "low",
+    "deps": [
+      "#0",
+      "#6"
+    ]
+  },
+  {
+    "title": "Wire supervised startup, API mutation fencing and complete graceful exit",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/__main__.py, hub/app.py, hub/settings.py, tests/test_reload_lifecycle.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0, #3, #4, #5, #6, #7; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume ReloadCoordinator, reload_api router/ui_router/ready_router, shared ActivityBarrier, dispatcher/services/watchdog extensions. Extend Settings with optional enrollment, runtime_sha, generation, instance and supervisor-control paths, all absent for legacy tests. Extend create_app with injectable reload coordinator/activity factory. Extend serve(app, settings, discover=..., stop_requested=None) to stop UI server, API listener and adapter loop together; main(argv=None) returns 75 only after proven drained supervised shutdown, 0 for owner stop, nonzero startup failure. app.state.shutdown() -> bool reports all threads stopped, without closing store before that proof.\n\nWork: Validate stable enrollment/control version and generation before Store opens/migrates; lock candidate admission before app creation. Build one coordinator/barrier shared by dispatch, services and routers, pass WSL live demand to watchdog and reload status to UiView. Count admitted HTTP mutation requests in the same barrier before routing; once closed, return 503/Retry-After:5 for new mutations except reload control/status and owner dispatch preference changes, with permitted controls admitted through activity.try_enter(\"api-control\", control=True) and counted to finish before final exit. At stopping call activity.seal(generation). After drained/stopping, deny all new mutations including permitted controls and wait for existing controls to finish before exit. Existing reads/liveness remain available. Set UI-bound readiness only after actual bind. Start candidate recovery-only, keep services parked until commit, and never change dispatch_enabled as part of reload. Coordinate parent command to stop both listeners (including missing/changed WSL adapter) and join all background threads/close connections, release lock only after landing and dispatch exit. Direct -m hub remains diagnostic and advertises reload unavailable. Main references: hub/__main__.py:43-49,76-125; hub/app.py:16-53,59-69.\n\nVerification: run the focused test tests.test_reload_lifecycle using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #8 for test steps.",
+    "acceptance": [
+      "No claim, run-start or service mutation can occur between candidate process creation and parent commit, including through existing API endpoints.",
+      "A long admitted HTTP mutation prevents drain completion; later mutation gets 503 with Retry-After:5; owner pause during drain remains paused after success.",
+      "One explicit stop ends UI and optional API/adapter loop, joins every service/dispatcher/landing thread, then returns 75; timeout cannot release dispatcher lock or close active connections.",
+      "Unknown protocol fails before ledger open; actual UI bind failure never reports ready; direct legacy tests still construct app with reload unavailable."
+    ],
+    "scope_files": [
+      "hub/__main__.py",
+      "hub/app.py",
+      "hub/settings.py",
+      "tests/test_reload_lifecycle.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "high",
+    "deps": [
+      "#0",
+      "#3",
+      "#4",
+      "#5",
+      "#6",
+      "#7"
+    ]
+  },
+  {
+    "title": "Provide one non-elevated owner start command and enroll the stable bootstrap",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only hub/scripts/Start-DroverHub.ps1, hub/scripts/Install-DroverHub.ps1, hub/scripts/Install-Drover.ps1, hub/scripts/README-INSTALL.md, README.md, tests/powershell/test_hub_launcher.ps1\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #0, #1, #2, #3, #8; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume standalone bootstrap supervisor.py/runtime.py/reload_protocol.py/reload_machine.py and enrollment protocol. Produce ./hub/scripts/Start-DroverHub.ps1 [-Status|-Stop], resolving source root from PSScriptRoot in source mode or enrollment in installed mode, with registered config/venv. Existing Install-DroverHub.ps1 explicitly enrolls a stopped clean baseline, copies all four bootstrap peers into state/hub-runtime/bootstrap/v1, and also freezes the wrapper and registers DroverHub to invoke that installed copy. Compatibility digests cover the wrapper and both installer scripts. Keep installer parameters backward compatible. Enrollment fixes native paths, interpreter identity, schema baseline and Git identity without installing on start.\n\nWork: Default wrapper starts one foreground supervisor or returns existing status; Status works without HTTP and Stop requests safe drain/no restart. Pass arguments as arrays with correct quoting for scheduled-task paths; no hand-written uv/PYTHONPATH command, execution-policy bypass, automatic package install, elevation or process-name kill. Refuse legacy/unknown running dispatcher instead of stopping it. Honor persistent failure latch. Existing Install-Drover.ps1 may retain its explicit owner-requested setup sync but print the new supported start command. Owner-only state ACL applies to bootstrap/control/release data. Document migration, auto-off first run, successful manual test before enabling auto, standalone CLI coordination rule, same-schema-only rollback with main unchanged, recovery/latch reset by stopped owner repair and safe release retention. Update both README entrypoints. Existing installer/start evidence: hub/scripts/Install-DroverHub.ps1:13-25, hub/scripts/Install-Drover.ps1:88-112, README.md:24-28.\n\nVerification: run the focused test powershell using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #9 for test steps.",
+    "acceptance": [
+      "An injectable PowerShell harness runs wrapper/install argument construction from an unrelated CWD and a checkout with spaces without registering a task or launching a real hub.",
+      "Duplicate start is idempotent; Status works offline; Stop leaves detached workers alone; missing venv/enrollment and live legacy dispatcher fail with useful installation guidance.",
+      "Scheduled task and manual command use the same installed supervisor and state paths; start/reload never run uv sync or install anything.",
+      "Owner guide includes a Windows+WSL in-flight survival and failed-candidate rollback rehearsal, with exact expected SHAs/run IDs/main state."
+    ],
+    "scope_files": [
+      "hub/scripts/Start-DroverHub.ps1",
+      "hub/scripts/Install-DroverHub.ps1",
+      "hub/scripts/Install-Drover.ps1",
+      "hub/scripts/README-INSTALL.md",
+      "README.md",
+      "tests/powershell/test_hub_launcher.ps1"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "low",
+    "deps": [
+      "#0",
+      "#1",
+      "#2",
+      "#3",
+      "#8"
+    ]
+  },
+  {
+    "title": "Exercise successful replacement and rollback with detached runs",
+    "repo": "drover",
+    "goal": "Type: implementation\nRepo: drover (default branch main)\nWrite access: yes, only tests/test_reload_integration.py\nRead access: drover@main and the design/plan in docs/superpowers/; dependency interfaces on main after their landing\nBranch/worktree: NEW — Drover allocates an isolated branch and worktree from main for this task; use only that assigned checkout\nConnected tasks: blocks on #3, #4, #5, #6, #7, #8, #9; related T-8 and T-5 are not prerequisites\n\nRead docs/superpowers/specs/2026-10-17-self-reload-design.md before editing; it is the normative proposed contract. This is implementation work, not permission to install or operate a live service. Use only the existing stdlib and installed hub dependencies; keep Windows hub/ledger ownership, exact-SHA gates, landing policy and detached runner files intact. Auto-reload defaults off. No schema migration, dependency addition, package install, push, deploy, live scheduled-task operation or automatic Git reset. Work only in the assigned worktree. Codex leaves changes ready_to_commit without git add/commit. Use injected machine adapters and temporary local state for tests. \n\nInterfaces: Consume installed-bootstrap and hub-child protocol end to end; no new production API. Use temporary local Git repos, state, ledgers and stdlib synthetic runners, injectable OS/HTTP/clock adapters and bounded subprocesses. Preserve the same supervisor/child entrypoints tested above; no real services, owner data or package installs. Windows survival scenarios are explicitly Windows-only and must execute on an authorized Windows worker; WSL CI uses fakes and temporary native ledgers.\n\nWork: Build one integrated fixture: enrolled A, recorded self-landed B, safe detached Windows worker plus WSL review, outstanding task gate and a full landing operation. Request reload, prove no replacement until gate receipt and whole landing finish, complete an existing worker during outage, then validate B and commit once with preserved run IDs. Next exercise import failure B/fallback A, stuck validation child, failing fallback and supervisor restart from interrupted durable transitions. Assert main is never reset, landed tasks stay landed, no ledger restore occurs, adoption/reaping happens exactly once and failed latch prevents endless restart. Include owner changing dispatch preference while draining and optional WSL listener unavailable. Tests must fail clearly, rather than silently claiming Windows behavior from a skipped run.\n\nVerification: run the focused test tests.test_reload_integration using the preinstalled interpreter; new platform-independent tests must execute, not skip. Required Windows-only checks need an authorized Windows worker and an actual passing receipt. See the implementation plan task #10 for test steps.",
+    "acceptance": [
+      "Automated integration passes with zero duplicate worker/review/gate starts and immutable source/main history through success and fallback.",
+      "Real Windows PID/job detachment smoke plus WSL live-run adoption is an explicit required gate receipt before feature enrollment; it is not satisfied by mocked POSIX coverage.",
+      "Full existing unittest suite passes in the preinstalled hub environment; no skips in new platform-independent reload tests, and required Windows scenarios are separately reported.",
+      "Scope stays tests-only; production gaps discovered here are reported to owning tasks, not fixed outside this task scope."
+    ],
+    "scope_files": [
+      "tests/test_reload_integration.py"
+    ],
+    "priority": "P1",
+    "size": "M",
+    "risk": "high",
+    "deps": [
+      "#3",
+      "#4",
+      "#5",
+      "#6",
+      "#7",
+      "#8",
+      "#9"
+    ]
+  }
+]
