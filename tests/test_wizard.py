@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from drover import config, repos, wizard
+from drover.tool_discovery import DISCOVERY_SCRIPT
 
 DRIVES = [{"path": "C:\\", "free_gb": 200.0, "total_gb": 500.0}, {"path": "R:\\", "free_gb": 600.0, "total_gb": 1000.0}]
 REPOS = [{"name": "alpha", "path": "R:\\repos\\alpha"}, {"name": "beta", "path": "R:\\repos\\beta"}]
@@ -471,6 +472,22 @@ class Tools(Base):
             self.assertEqual(wizard._windows_exe("claude"), (None, True))
         with mock.patch.object(wizard, "is_windows", return_value=False), mock.patch("pathlib.Path.exists", return_value=False):
             self.assertEqual(wizard._windows_exe("claude"), (None, False))
+
+    def test_wizard_reports_the_wsl_codex_native_path_from_the_shared_resolver(self):
+        from unittest import mock
+        native = ("/home/u/.nvm/versions/node/v22.4.1/lib/node_modules/@openai/codex/node_modules/"
+                  "@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
+        done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\n".encode(), returncode=0)
+        with mock.patch.object(wizard, "is_windows", return_value=True), \
+                mock.patch.object(wizard, "_windows_exe", return_value=(None, True)), \
+                mock.patch.object(wizard, "detect_distros", return_value=[
+                    {"name": "Ubuntu", "state": "Running", "version": 2, "default": True}
+                ]), \
+                mock.patch.object(wizard, "_run", return_value=done) as run:
+            found = wizard.detect_tools("Ubuntu")
+        self.assertEqual(found["codex"]["wsl"], native)
+        self.assertEqual(run.call_args.args[0],
+                         ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-lc", DISCOVERY_SCRIPT])
 
 
 class Benchmark(Base):

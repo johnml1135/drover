@@ -21,6 +21,7 @@ import tomllib
 from pathlib import Path
 
 from . import config, decisions, repos
+from .tool_discovery import DISCOVERY_SCRIPT, parse_discovery
 
 # The thresholds settled in plan section 12 were set for the owner's machine: 64 GB RAM (queue 6 GB free, hold 4 GB),
 # C: of 476 GB (queue 50, hold 25) and a 931 GB data drive (queue 75, hold 25). Levels scale from those, so that machine
@@ -226,17 +227,21 @@ def detect_tools(distro=None):
     when the distro is already running (asking boots it)."""
     out = {t: {"windows": None, "wsl": None} for t in config.BACKENDS}
     probed = {"windows": False, "wsl": False}
+    on_windows = is_windows()
     for t in out:
         out[t]["windows"], probed["windows"] = _windows_exe(t)
-        if not is_windows():
-            out[t]["wsl"], probed["wsl"] = shutil.which(t), True
-    if is_windows() and distro and any(d["name"] == distro and d["state"] == "Running" for d in detect_distros()):
+    if not on_windows:
         probed["wsl"] = True
-        r = _run(["wsl.exe", "-d", distro, "--exec", "bash", "-lc", "command -v claude; command -v codex"], 30)
-        for line in _decode(r.stdout).splitlines() if r else ():
-            for t in out:
-                if line.strip().endswith("/" + t):
-                    out[t]["wsl"] = line.strip()
+        r = _run(["bash", "-lc", DISCOVERY_SCRIPT], 30)
+        found = parse_discovery(_decode(r.stdout)) if r and r.returncode == 0 else {}
+        for t in out:
+            out[t]["wsl"] = found.get(t)
+    elif distro and any(d["name"] == distro and d["state"] == "Running" for d in detect_distros()):
+        probed["wsl"] = True
+        r = _run(["wsl.exe", "-d", distro, "--exec", "bash", "-lc", DISCOVERY_SCRIPT], 30)
+        found = parse_discovery(_decode(r.stdout)) if r and r.returncode == 0 else {}
+        for t in out:
+            out[t]["wsl"] = found.get(t)
     out["_probed"] = probed
     return out
 

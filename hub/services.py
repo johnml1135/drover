@@ -14,12 +14,12 @@ import urllib.request
 from pathlib import Path
 
 from drover import config, importer, tuner
+from drover.tool_discovery import DISCOVERY_SCRIPT, parse_discovery_result
 from drover.ledger import ops
 
 log = logging.getLogger("hub.services")
 
 TOOLS = ("claude", "codex")
-DISCOVERY_SCRIPT = "command -v claude; command -v codex"  # fixed text: no task input ever reaches wsl.exe
 ABS_POSIX = re.compile(r"^/[A-Za-z0-9._+@:=,/-]+$")
 DAY_S = 86400
 
@@ -39,13 +39,7 @@ def valid_tool_path(line: str, tool: str) -> str | None:
 
 def parse_discovery(output: str) -> dict:
     """{tool: path} for each tool whose path validates. Login-shell noise, aliases and extra lines are ignored."""
-    found = {}
-    for line in output.splitlines():
-        for tool in TOOLS:
-            p = valid_tool_path(line, tool)
-            if p and tool not in found:
-                found[tool] = p
-    return found
+    return parse_discovery_result(output)[0]
 
 
 REPO_NAME = re.compile(r"[A-Za-z0-9._-]+")
@@ -156,13 +150,13 @@ class Services:
         self._tried = self.clock()
         rc, out = self.wsl(["-d", self.distro(), "--exec", "bash", "-lc", DISCOVERY_SCRIPT],
                            self.settings.wsl_timeout_s)
-        found = parse_discovery(out) if rc == 0 else {}
+        found, reasons = parse_discovery_result(out) if rc == 0 else ({}, {})
         have = self.store.get_settings()
         patch = {f"wsl_bin_{t}": p for t, p in found.items() if have.get(f"wsl_bin_{t}") != p}
         if patch:
             self.store.update_settings(patch, author="wizard")
         missing = [t for t in TOOLS if t not in found]
-        self.store.add_event("wsl.tools", "hub", {"found": found, "missing": missing, "rc": rc})
+        self.store.add_event("wsl.tools", "hub", {"found": found, "missing": missing, "reasons": reasons, "rc": rc})
         return found
 
     def check_wsl(self):
