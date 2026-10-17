@@ -330,7 +330,7 @@ class Dispatcher:
         if spec.get("write", p.get_task(task_id).get("write", True)) is False and st in ("done", "ready_to_commit"):
             p.finish_run(run_id, "read-only-done", note=note, **usage)
             p.append_event("read-only-done", {"run": run_id, "note": note}, task_id)
-            return p.set_status(task_id, "needs-owner", reason="Read-only work completed; review the run output")
+            return p.set_status(task_id, "needs-owner", reason="Read-only work completed; approve to accept the findings and complete the task")
         if st == "timeout":
             p.finish_run(run_id, "timeout", note=f"timeout: {result.get('timeout')}"[:300], **usage)
             self._failed(task_id, run_id, f"worker timed out ({result.get('timeout')})")

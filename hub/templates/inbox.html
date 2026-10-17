@@ -25,7 +25,7 @@
 
 {% if owner_items %}<h2>Needs owner</h2>{% endif %}
 {% for it in owner_items %}
-<section class="card">{% with t=it %}{% include "_task_card.html" %}{% endwith %}{{ decide('owner', it.id) }}</section>
+<section class="card">{% with t=it %}{% include "_task_card.html" %}{% endwith %}{{ decide('owner', it.id, 'Accept findings' if it.can_accept_findings else 'Approve') }}</section>
 {% endfor %}
 
 {% if imports or low or low_count %}

@@ -16,6 +16,25 @@ from . import config, repos, task_context
 _LOCK = threading.Lock()
 
 
+def check_read_roots(cwd, paths):
+    """Reject inputs covered by the Codex worker's writable workspace root."""
+    workspace = Path(repos.native(cwd)).resolve()
+
+    def parts(path):
+        values = path.parts
+        # Windows drive mounts can be case insensitive even when the hub is
+        # running in WSL. Resolve symlinks first, then compare conservatively.
+        if os.name == 'nt' or (len(values) > 2 and values[1] == 'mnt' and len(values[2]) == 1):
+            return tuple(p.casefold() for p in values)
+        return values
+
+    writable = parts(workspace)
+    for path in paths:
+        read = parts(Path(repos.native(path)).resolve())
+        if read[:len(writable)] == writable or writable[:len(read)] == read:
+            raise ValueError(f'read-only checkout inside or containing writable workspace: {path}')
+
+
 def _git(path, *args):
     r = subprocess.run(['git', '--no-optional-locks', '-C', str(path), *args],
                        capture_output=True, text=True, timeout=60)
@@ -38,6 +57,7 @@ def make_writable(path):
 
 
 def _readonly(path):
+    # Defense in depth only; Codex's filesystem sandbox enforces read access.
     for root, dirs, files in os.walk(path, topdown=False):
         for name in files:
             p = Path(root) / name

@@ -3,9 +3,9 @@
   hx-get="/items/{{ kind }}/{{ iid }}/comments" hx-target="#sheet-body" hx-swap="innerHTML">Comments</button>
 {%- endmacro %}
 {% macro badge(text, cls='') -%}<span class="pill {{ cls }}">{{ text }}</span>{%- endmacro %}
-{% macro decide(kind, iid) -%}
+{% macro decide(kind, iid, approve_label='Approve') -%}
 <div class="actions">
-  <form method="post" action="/items/{{ kind }}/{{ iid }}/approve" hx-post="/items/{{ kind }}/{{ iid }}/approve" hx-target="#content" hx-swap="innerHTML"><button class="btn ok">Approve</button></form>
+  <form method="post" action="/items/{{ kind }}/{{ iid }}/approve" hx-post="/items/{{ kind }}/{{ iid }}/approve" hx-target="#content" hx-swap="innerHTML"><button class="btn ok">{{ approve_label }}</button></form>
   <form method="post" action="/items/{{ kind }}/{{ iid }}/reject" hx-post="/items/{{ kind }}/{{ iid }}/reject" hx-target="#content" hx-swap="innerHTML" data-undo="Rejected {{ kind }} {{ iid }}"><button class="btn danger">Reject</button></form>
   {{ comment_btn(kind, iid) }}
 </div>

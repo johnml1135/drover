@@ -135,6 +135,13 @@ class Store:
         return t
 
     @_translate
+    def accept_read_only(self, tid):
+        """The authenticated owner accepts the latest successful findings."""
+        t = ops.accept_read_only(self.conn, tid, actor='owner')
+        self._changed('task.status', id=tid, status=t['status'])
+        return t
+
+    @_translate
     def claim_next(self, worker):
         t = ops.claim_next(self.conn, dict(worker))
         if t:
@@ -420,6 +427,7 @@ class UiView:
             "SELECT task_id, kind FROM task_deps WHERE depends_on=? ORDER BY task_id", (tid,))]
         related = ops.related_of(self.c, tid)
         task = {**task, "state": task["status"], "reason": self._reason(task),
+                "can_accept_findings": ops.read_only_result(self.c, task) is not None,
                 "deps": deps, "dependents": incoming, "related": related,
                 "connected_count": len({d["depends_on"] for d in deps} |
                                        {d["task_id"] for d in incoming} | set(related))}
@@ -617,6 +625,8 @@ class UiView:
                 self.s.set_status(iid, "cancelled", "owner", "owner rejected")
             elif t["status"] in ("proposed", "draft"):
                 self.s.approve(iid)
+            elif ops.read_only_result(self.c, t) is not None:
+                self.s.accept_read_only(iid)
             else:
                 self.s.set_status(iid, "ready", "owner", "owner approved")
         elif kind == "garden" and decision == "approve":

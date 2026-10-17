@@ -14,7 +14,50 @@ class AccessTests(unittest.TestCase):
                     system_append='', user_prompt='', write=False, read_dirs=['H:\\read'])
         argv, _ = launch.build_argv(spec)
         self.assertEqual(argv[argv.index('-s') + 1], 'read-only')
-        self.assertEqual(argv[argv.index('--add-dir') + 1], '/mnt/h/read')
+        self.assertNotIn('--add-dir', argv)
+
+    def test_codex_read_inputs_never_become_writable_roots(self):
+        for placement in ('windows', 'wsl'):
+            with self.subTest(placement=placement):
+                spec = dict(backend='codex', model='codex', cwd='H:\\work', placement=placement,
+                            system_append='', user_prompt='', write=True, read_dirs=['H:\\reads\\p'])
+                argv, _ = launch.build_argv(spec)
+                self.assertEqual(argv[argv.index('-s') + 1], 'workspace-write')
+                self.assertNotIn('--add-dir', argv)
+                self.assertIn('sandbox_workspace_write.writable_roots=[]', argv)
+                self.assertIn('sandbox_workspace_write.exclude_slash_tmp=true', argv)
+                self.assertIn('sandbox_workspace_write.exclude_tmpdir_env_var=true', argv)
+                self.assertIn('approval_policy="never"', argv)
+
+    def test_codex_refuses_read_snapshot_inside_writable_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = dict(backend='codex', model='codex', cwd=tmp, placement='wsl',
+                        system_append='', user_prompt='', write=True, read_dirs=[str(Path(tmp) / 'read')])
+            with self.assertRaisesRegex(ValueError, 'inside.*writable'):
+                launch.build_argv(spec)
+            # A read-only worker may use its first snapshot as cwd.
+            launch.build_argv(dict(spec, write=False, read_dirs=[tmp]))
+
+    def test_read_root_checks_windows_case_and_symlinks(self):
+        with self.assertRaisesRegex(ValueError, 'writable'):
+            task_access.check_read_roots('H:\\WORK', ['h:\\work\\read'])
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / 'workspace'
+            workspace.mkdir()
+            alias = Path(tmp) / 'alias'
+            try:
+                alias.symlink_to(workspace, target_is_directory=True)
+            except OSError:
+                self.skipTest('directory symlinks unavailable')
+            with self.assertRaisesRegex(ValueError, 'writable'):
+                task_access.check_read_roots(workspace, [alias])
+
+    def test_scratch_cannot_overlap_a_read_snapshot(self):
+        spec = dict(backend='codex', model='codex', cwd='H:\\work', placement='wsl',
+                    system_append='', user_prompt='', scratch_dir='H:\\reads\\p\\temp',
+                    read_dirs=['H:\\reads\\p'])
+        with self.assertRaisesRegex(ValueError, 'writable'):
+            launch.build_argv(spec)
 
     def test_isolated_branch_read_and_change_detection(self):
         with tempfile.TemporaryDirectory() as tmp:

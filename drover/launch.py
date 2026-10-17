@@ -13,13 +13,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections import deque
 from pathlib import Path
 
-from . import config
+from . import config, task_access
 from . import runner
 from .runner import ScanError
 
@@ -83,11 +84,26 @@ def build_argv(spec):
         if sandbox not in ("read-only", "workspace-write"):
             raise ValueError(f"unsupported codex sandbox {sandbox!r}")
         cwd = runner.to_wsl_path(spec["cwd"]) if spec.get("placement") == "wsl" else str(spec["cwd"])
+        if sandbox == "workspace-write":
+            task_access.check_read_roots(spec["cwd"], spec.get("read_dirs") or [])
+        scratch = spec.get("scratch_dir") if sandbox == "workspace-write" else None
+        if scratch:
+            task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
+            scratch = runner.to_wsl_path(str(scratch)) if spec.get("placement") == "wsl" else to_windows_path(scratch)
         argv = [exe, "exec", "--json", "-s", sandbox, "-C", cwd, "-m", m, "-c", f"model_reasoning_effort={e}",
-                "-c", f"developer_instructions={json.dumps(spec['system_append'])}", "-"]
-        for path in spec.get("read_dirs") or []:
-            path = runner.to_wsl_path(path) if spec.get("placement") == "wsl" else to_windows_path(path)
-            argv[-1:-1] = ["--add-dir", str(path)]
+                "-c", f"developer_instructions={json.dumps(spec['system_append'])}",
+                "-c", 'approval_policy="never"',
+                "-c", f"sandbox_workspace_write.writable_roots={json.dumps([scratch] if scratch else [])}",
+                "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-"]
+        # Both sandbox modes allow reads outside cwd. --add-dir grants WRITE
+        # access, so read snapshots must never be passed that way. Override
+        # inherited writable roots and implicit temp roots as well: snapshots
+        # can live under the state dir in TEMP or /tmp. Chmod is only hygiene,
+        # not an access boundary (in particular on Windows).
+        if scratch:
+            value = json.dumps(scratch)
+            argv[-1:-1] = ["-c", f"shell_environment_policy.set={{TMPDIR={value},TMP={value},TEMP={value}}}"]
     else:
         raise ValueError(f"headless launcher cannot run backend {spec['backend']!r}")
     return argv, spec["user_prompt"]
@@ -431,11 +447,16 @@ class RunnerLauncher(Launcher):
         return [self.python, "-m", "drover.runner", *self.runner_args(spec, d, argv, cwd)], env
 
     def launch(self, spec):
-        argv, stdin_text = build_argv(spec)
         rid = spec["run_id"]
         spec.setdefault("nonce", uuid.uuid4().hex)           # the dispatcher normally picks and records it first
         d = runner.run_dir(self.runs_dir, rid)
         _fresh_run_dir(d)
+        if (spec["backend"] == "codex" and not spec.get("argv") and spec.get("write") is not False
+                and spec.get("role") != "review" and spec.get("sandbox", "workspace-write") == "workspace-write"):
+            # Keep worker temp files out of shared /tmp (which may contain read
+            # snapshots), and outside the run's control files and task diff.
+            spec = {**spec, "scratch_dir": tempfile.mkdtemp(prefix="scratch-", dir=d)}
+        argv, stdin_text = build_argv(spec)
         (d / IN_FILE).write_text(stdin_text, encoding="utf-8")
         cmd, env = self.command(spec, d, argv)
         info, err = None, None

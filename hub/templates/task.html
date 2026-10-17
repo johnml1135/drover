@@ -29,7 +29,7 @@
 {% for run in runs %}<section class="card"><a href="/runs/{{ run.id }}">Run {{ run.id }}</a> · {{ run.role }} · {{ run.backend }} · {{ run.model or '' }}<p>{{ run.outcome or 'running' }} · {{ run.started }}{% if run.ended %} → {{ run.ended }}{% endif %}</p>{% if run.note %}<p>{{ run.note }}</p>{% endif %}<details><summary>Run fields</summary><dl class="kv task-fields">{% for key, value in run.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details></section>{% else %}<p>No runs.</p>{% endfor %}
 <h2>Events</h2><ol class="thread">{% for event in events %}<li><time>{{ event.at }}</time> · {{ event.kind }} · {{ event.actor }}<pre>{{ event.data|tojson(indent=2) }}</pre></li>{% else %}<li>No events.</li>{% endfor %}</ol>
 <details class="card"><summary>All ledger fields</summary><dl class="kv task-fields">{% for key, value in task.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details>
-{% if task.status in ('proposed', 'draft', 'needs-owner') %}{{ decide('task', task.id) }}{% else %}{{ comment_btn('task', task.id) }}{% endif %}
+{% if task.status in ('proposed', 'draft', 'needs-owner') %}{{ decide('task', task.id, 'Accept findings' if task.can_accept_findings else 'Approve') }}{% else %}{{ comment_btn('task', task.id) }}{% endif %}
 <details class="card"><summary>Edit task</summary>
 <form method="post" action="/tasks/{{ task.id }}/edit" hx-post="/tasks/{{ task.id }}/edit" hx-target="#content">
   <label>Title<input type="text" name="title" value="{{ task.title }}" required></label>

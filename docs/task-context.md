@@ -47,22 +47,37 @@ name, which resolves to its configured default branch at launch.
 Read inputs are independent, shallow, detached checkouts under
 `<state>/read-checkouts`, cached by source, branch and commit. The owner checkout
 is never switched and its uncommitted files are never exposed in these snapshots.
-Files and directories are marked read-only. Codex receives the directories via
-`--add-dir`; tasks with `write: false` force `-s read-only` and do not create a
-task worktree. Before accepting any worker outcome, Drover checks read snapshot
+Files and directories are marked read-only as defense in depth; permissions on
+Windows alone do not prevent creating files. Codex's sandbox enforces the write
+boundary. Snapshots are listed in the brief and read through their absolute paths;
+they are never passed to `--add-dir`, which grants write access. Drover clears
+inherited extra writable roots, disables the shared `/tmp` and `$TMPDIR` write
+roots, and refuses snapshots overlapping the writable workspace. Write workers
+receive a private per-run scratch directory as their only extra writable root,
+with `TMPDIR`, `TEMP` and `TMP` set to that directory. Approval escalation is
+disabled. Tasks with `write: false` force `-s read-only` and do not create a
+task worktree or writable scratch directory. These settings use the documented
+[Codex sandbox configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
+Before accepting any worker outcome, Drover checks read snapshot
 HEAD and status, including staged, untracked and ignored changes. A changed or
 unverifiable snapshot blocks the run before any commit or gate. The launch
 manifest is retained in an owner-reserved event for restart verification.
 Read-only workers report the existing read checkout HEAD with their findings;
 that SHA identifies an input, not a new commit. Completion goes to needs-owner
-for review of the findings, without
-creating a commit, gate run or landing entry. Write tasks keep the existing
+for review of the findings. The owner sees **Accept findings** on the page and in
+the inbox. Acceptance moves successful read-only work to the existing terminal
+`landed` state, satisfying blocking dependencies, and records the owner's decision
+and run id. It creates no commit, gate run or landing entry. This shortcut requires
+the latest run to be a finished `read-only-done` worker run and is owner-only;
+failed or unfinished work retains the retry approval behavior. Write tasks keep the existing
 commit, gate and landing path.
 
 The Inbox and Plan reuse a task card with a link to `/tasks/{id}`. The task page
 supports Card and Page views, owner editing, both dependency directions, related
 tasks, full access declarations, runs and the event timeline. Mutations use the
-existing UI authentication and same-origin CSRF checks.
+existing UI authentication and same-origin CSRF checks. Automatic refresh compares
+edit controls with their loaded values: prefilled fields do not pause updates,
+actual edits pause them, and reverting the edits allows updates again.
 
 Branch/worktree state is derived from disk, cached for five seconds per repo.
 A background thread runs bounded git queries; a request immediately returns the

@@ -5,7 +5,7 @@ STATES = ("proposed", "draft", "ready", "claimed", "running", "gated", "reviewed
 TERMINAL = ("landed", "cancelled")
 ACTIVE = ("claimed", "running", "gated", "reviewed")  # unlanded changes: scope overlap is checked against these
 PENDING = ("proposed", "draft", "ready")  # not started: safe to hold
-OWNER_ONLY = (("proposed", "ready"), ("draft", "ready"))
+OWNER_ONLY = (("proposed", "ready"), ("draft", "ready"), ("needs-owner", "landed"))
 
 _ESC = ("blocked", "needs-owner", "failed", "cancelled")
 TRANSITIONS = {
@@ -19,7 +19,7 @@ TRANSITIONS = {
     "landed": set(),
     "blocked": {"proposed", "draft", "ready", "needs-owner", "failed", "cancelled"},
     "failed": {"ready", "needs-owner", "cancelled"},
-    "needs-owner": {"draft", "ready", "failed", "cancelled"},
+    "needs-owner": {"draft", "ready", "landed", "failed", "cancelled"},
     "cancelled": set(),
 }
 

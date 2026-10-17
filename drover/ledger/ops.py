@@ -339,6 +339,29 @@ class NotApproved(PermissionError):
     pass
 
 
+def read_only_result(conn, task):
+    """The latest run's findings, when they are eligible for owner acceptance."""
+    if task['write'] or task['status'] != 'needs-owner':
+        return None
+    run = conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (task['id'],)).fetchone()
+    if run and run['role'] == 'worker' and run['ended'] and run['outcome'] == 'read-only-done':
+        return dict(run)
+    return None
+
+
+def accept_read_only(conn, task_id, actor='owner'):
+    """Complete accepted findings without a commit, gate or landing queue entry."""
+    if actor != 'owner':
+        raise PermissionError('only the owner may accept read-only findings')
+    with tx(conn):
+        task = get_task(conn, task_id)
+        run = read_only_result(conn, task)
+        if run is None:
+            raise ValueError('task has no completed read-only findings to accept')
+        return set_status(conn, task_id, 'landed', actor, reason='Owner accepted read-only findings',
+                          data={'read_only': True, 'run': run['id']})
+
+
 def set_status(conn, task_id, new, actor="system", reason=None, blocker=None, data=None):
     """Move a task along a legal transition and write one event. Illegal moves raise IllegalTransition.
 
@@ -348,8 +371,10 @@ def set_status(conn, task_id, new, actor="system", reason=None, blocker=None, da
         t = get_task(conn, task_id)
         old = t["status"]
         states.check(old, new, actor)
+        if (old, new) == ('needs-owner', 'landed') and read_only_result(conn, t) is None:
+            raise IllegalTransition('only completed read-only findings may be accepted without landing')
         approved = None if new in ("draft", "proposed") else t["approved_at"]  # demotion needs re-approval
-        if (old, new) in states.OWNER_ONLY:
+        if (old, new) in (("proposed", "ready"), ("draft", "ready")):
             approved = approved or stamp()
         if new == "ready" and not approved:
             raise NotApproved(f"{task_id} was never approved by the owner; it cannot become ready")

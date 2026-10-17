@@ -119,3 +119,33 @@ contracts, access enforcement, restart manifests and task views.
 - This supersedes the earlier blocked handoff: status is ready_to_commit,
   with changes left uncommitted for Drover. No exact-SHA gate receipt or READY
   claim is made. No git add, commit, push, merge or landing was performed.
+
+## Gate HOLD corrections
+
+- Removed read snapshots from Codex `--add-dir`: that flag grants write access.
+  Launch now clears inherited writable roots, excludes shared temp roots, disables
+  approval escalation and rejects overlapping read/write paths, including Windows
+  casing and symlinks. Write workers get one private per-run scratch root and temp
+  environment; read-only workers get no writable scratch. Chmod remains defense
+  in depth, with the Codex sandbox providing the access boundary.
+- Added owner acceptance of successful read-only findings through the existing
+  guarded Approve action, labelled **Accept findings** in the inbox and task page.
+  The latest run must be a finished `read-only-done` worker run. Acceptance records
+  the owner and run, moves to terminal `landed`, and unblocks dependencies without
+  committing, gating or adding landing metadata. Write tasks, failed runs and open
+  runs cannot use this transition. This supersedes the earlier lifecycle ruling
+  that stopped at needs-owner.
+- Refresh now compares text, select and check controls to their loaded defaults.
+  Prefilled task fields allow timer/SSE refresh; edits pause it and reverting edits
+  resumes it. The shipped script is exercised with a small DOM fixture using an
+  available system JavaScript runtime (Duktape on this worker; no install).
+- Observed RED regressions for all three findings before fixes. Final WSL suite:
+  `python3 -m unittest discover -s tests -t .` — 819 tests in 47.530 seconds,
+  OK, 14 skips. The strengthened acceptance regression also passed afterward.
+  `python3 -m compileall -q drover hub tests` and `git diff --check` passed.
+- Added HTTP coverage for acceptance labels and owner/CSRF enforcement; hub tests
+  remain skipped without hub dependencies here. The uv hub, Windows and actual
+  sandbox/platform checks belong to Drover's gate; the phone browser check belongs
+  to the reviewer/owner. No exact-SHA gate receipt is claimed.
+- Changes remain uncommitted in drover/T-7 and within drover, hub, tests and docs.
+  Status: ready_to_commit. No git add, commit, push, merge or landing performed.

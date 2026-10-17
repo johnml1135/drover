@@ -109,6 +109,23 @@ class ContextApiTests(api_tests.HubCase):
 
 
 class ContextUiTests(ui_tests.UiTests):
+    def test_accept_findings_completes_read_work_with_existing_owner_guards(self):
+        tid = self.st.create_task('Findings', kind='research')['id']
+        self.st.approve(tid)
+        self.st.set_status(tid, 'claimed', 'dispatcher')
+        rid = self.st.start_run(tid, 'worker', 'codex')['id']
+        self.st.finish_run(rid, 'read-only-done', note='Findings ready')
+        self.st.set_status(tid, 'needs-owner', 'dispatcher', 'Review findings')
+        for path in ('/inbox', '/tasks/' + tid):
+            self.assertIn('Accept findings', self.c.get(path).text)
+        action = f'/items/task/{tid}/approve'
+        for headers in ({}, {'Sec-Fetch-Site': 'cross-site'}, dict(SAME, Host='untrusted.example')):
+            self.assertEqual(self.c.post(action, headers=headers).status_code, 403)
+            self.assertEqual(self.st.get_task(tid)['status'], 'needs-owner')
+        self.assertEqual(self.c.post(action, headers=SAME).status_code, 200)
+        self.assertEqual(self.st.get_task(tid)['status'], 'landed')
+        self.assertEqual(len(self.st.list_runs(tid)), 1)
+
     def test_task_page_approve_and_reject(self):
         for status in ('proposed', 'draft', 'needs-owner'):
             for decision, expected in (('approve', 'ready'), ('reject', 'cancelled')):

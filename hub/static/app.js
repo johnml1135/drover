@@ -2,14 +2,26 @@
   "use strict";
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var content = $("#content"), pill = $("#new-updates"), sheet = $("#sheet"), toasts = $("#toast");
-  var dragging = false, dirty = false, touched = false, sortables = [], lastMove = null, closed = {};
+  var dragging = false, dirty = false, sortables = [], lastMove = null, closed = {};
   var pending = [];
 
   function sheetOpen() { return !!(sheet && sheet.open); }
   function hasDraft() {
-    if (touched) return true;
-    var f = content.querySelectorAll("textarea,input[type=text]");
-    for (var i = 0; i < f.length; i++) if (f[i].value.trim()) return true;
+    var f = content.querySelectorAll("textarea,input,select");
+    for (var i = 0; i < f.length; i++) {
+      var control = f[i];
+      if (control.type === "checkbox" || control.type === "radio") {
+        if (control.checked !== control.defaultChecked) return true;
+      } else if (control.tagName === "SELECT") {
+        var defaults = -1, options = control.options;
+        for (var j = 0; j < options.length; j++) {
+          if (control.multiple && options[j].selected !== options[j].defaultSelected) return true;
+          if (options[j].defaultSelected) defaults = j;
+        }
+        // With no selected attribute, a single select defaults to its first option.
+        if (!control.multiple && control.selectedIndex !== (defaults < 0 && options.length ? 0 : defaults)) return true;
+      } else if (control.value !== control.defaultValue) return true;
+    }
     var s = $("#sheet-body textarea");
     return !!(s && s.value.trim());
   }
@@ -21,14 +33,10 @@
   }
   function maybeRefresh() { if (paused()) { dirty = true; pill.hidden = false; } else refresh(); }
 
-  $("#refresh").addEventListener("click", function () { touched = false; refresh(); });
-  pill.addEventListener("click", function () { touched = false; refresh(); });
+  $("#refresh").addEventListener("click", refresh);
+  pill.addEventListener("click", refresh);
   setInterval(maybeRefresh, 30000);
   document.addEventListener("htmx:sseMessage", maybeRefresh);
-
-  /* any changed form control in the page body counts as a draft */
-  content.addEventListener("input", function () { touched = true; });
-  content.addEventListener("change", function () { touched = true; });
 
   /* details open state and Sortable lifecycle across swaps */
   document.addEventListener("htmx:beforeSwap", function (e) {
@@ -41,7 +49,6 @@
   });
   document.addEventListener("htmx:afterSettle", function (e) {
     if (e.target !== content) return;
-    touched = false;
     content.querySelectorAll("details[data-id]").forEach(function (d) { if (closed[d.dataset.id]) d.open = false; });
     initSortable();
     if (lastMove) {

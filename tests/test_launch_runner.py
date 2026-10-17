@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,6 +94,21 @@ class Base(unittest.TestCase):
 
 
 class Commands(Base):
+    def test_codex_scratch_is_private_and_supplies_the_temp_environment(self):
+        self.start(backend='codex', model='gpt-6.1-sol', placement='wsl')
+        cmd, _ = self.fake.calls[0]
+        worker = cmd[cmd.index('--') + 1:]
+        settings = tomllib.loads('\n'.join(worker[i + 1] for i, arg in enumerate(worker[:-1])
+            if arg == '-c' and worker[i + 1].startswith(('sandbox_workspace_write.', 'shell_environment_policy.'))))
+        roots = settings['sandbox_workspace_write']['writable_roots']
+        self.assertEqual(len(roots), 1)
+        scratch = list(self.dir().glob('scratch-*'))
+        self.assertEqual(len(scratch), 1)
+        self.assertEqual(roots, [runner.to_wsl_path(str(scratch[0]))])
+        self.assertNotIn('--add-dir', worker)
+        self.assertEqual(settings['shell_environment_policy']['set'],
+                         dict(TMPDIR=roots[0], TMP=roots[0], TEMP=roots[0]))
+
     def test_home_path_is_expanded_on_windows_before_wsl_translation(self):
         for rid, placement, expected in ((71, 'windows', r'R:\Users\acme\repos\acme-lib.worktrees\drover-T1'),
                                           (72, 'wsl', '/mnt/r/Users/acme/repos/acme-lib.worktrees/drover-T1')):
