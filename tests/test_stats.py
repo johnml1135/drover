@@ -1,5 +1,6 @@
 """Durable run stats, aggregate retention and task lifecycle with temporary ledgers."""
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -156,6 +157,7 @@ class Stats(unittest.TestCase):
         stats.prune(self.conn, end + 40 * 86400)
         self.assertEqual(stats.query(self.conn)['daily'][0]['tokens_by_model']['acme-model']['tokens_total'], 78)
 
+    @unittest.skipUnless(importlib.util.find_spec('markupsafe'), 'UiView needs the hub environment (markupsafe)')
     def test_archive_hides_task_questions_from_inbox_and_restore_preserves_them(self):
         from hub.store import Store, UiView
         store = Store(self.path)
