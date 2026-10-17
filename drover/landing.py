@@ -304,7 +304,7 @@ def drop_lock(conn, holder):
 
 
 def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
-    """Advance the local ref only, with a receipt and an explicit ancestry check."""
+    """Advance local main and its checkout, with a receipt and an explicit ancestry check."""
     found = gate.problems(receipt, worktree, branch)
     sha = gate.head(worktree)
     if sha != tip or receipt.get('sha') != sha or not re.fullmatch(r'[0-9a-f]{40}', sha):
@@ -318,9 +318,12 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
         old = git(repo, 'rev-parse', ref).stdout.strip()
         if git(repo, 'merge-base', '--is-ancestor', old, sha, check=False).returncode:
             raise gate.GateError('local main moved; rebase and regate')
-        moved = git(repo, 'update-ref', ref, sha, old, check=False)
-        if moved.returncode:
-            raise gate.GateError('local main moved; rebase and regate')
+        try:
+            origin.fast_forward(repo, branch, sha, old, run=git)
+        except origin.MainMoved as e:
+            raise gate.GateError('local main moved; rebase and regate') from e
+        except origin.SyncError as e:
+            raise gate.GateError(str(e)) from e
     finally:
         drop_lock(conn, holder)
 

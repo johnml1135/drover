@@ -181,6 +181,62 @@ class FormationTests(LandingCase):
 
 
 class RunTests(LandingCase):
+    def test_landing_advances_checked_out_main_and_keeps_checkout_clean(self):
+        tid = self.task('feature', {'base.txt': 'landed content'})
+        res = self.land(push=False)
+        self.assertEqual(res['landed'], [tid])
+        self.assertEqual(self.r.git('rev-parse', 'HEAD'), res['tip'])
+        self.assertEqual(self.r.git('status', '--porcelain'), '')
+        self.assertEqual((self.r.repo / 'base.txt').read_text(), 'landed content')
+
+    def test_landing_advances_main_in_another_worktree(self):
+        tid = self.task('feature', {'base.txt': 'landed content'})
+        self.r.git('checkout', '-q', '--detach')
+        checkout = self.r.root / 'main checkout with spaces'
+        self.r.git('worktree', 'add', '-q', str(checkout), 'main')
+        res = self.land(push=False)
+        self.assertEqual(res['landed'], [tid])
+        self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=checkout), res['tip'])
+        self.assertEqual(self.r.git('status', '--porcelain', cwd=checkout), '')
+        self.assertEqual((checkout / 'base.txt').read_text(), 'landed content')
+        self.assertEqual((self.r.repo / 'base.txt').read_text(), 'base\n')
+
+    def test_unchecked_out_main_lands_with_update_ref(self):
+        tid = self.task('feature', {'base.txt': 'landed content'})
+        self.r.git('checkout', '-q', '--detach')
+        old = self.r.git('rev-parse', 'main')
+        with patch.object(landing, 'git', wraps=landing.git) as run:
+            res = self.land(push=False)
+        self.assertEqual(res['landed'], [tid])
+        self.assertTrue(any(c.args[1:] == ('update-ref', 'refs/heads/main', res['tip'], old)
+                            for c in run.call_args_list))
+        self.assertEqual(self.r.git('rev-parse', 'main'), res['tip'])
+        self.assertEqual(self.r.git('rev-parse', 'HEAD'), old)
+        self.assertEqual(self.r.git('status', '--porcelain'), '')
+        self.assertEqual((self.r.repo / 'base.txt').read_text(), 'base\n')
+
+    def test_moved_main_fails_landing_cas_and_releases_lock(self):
+        self.r.commit('local.txt')
+        self.task('feature', {'feature.txt': 'finished'})
+        tasks = landing.form_batch(self.conn, self.r.repo, 'main')
+        old = self.r.git('rev-parse', 'main')
+        tip, tasks, _ = landing.build_tip(self.r.repo, self.work, old, tasks)
+        receipt = self.gate(self.work, tip, tasks)
+        real = landing.git
+        moved = self.r.git('rev-parse', 'main^')
+
+        def run(repo, *args, **kw):
+            if args[:2] == ('worktree', 'list'):
+                self.r.git('reset', '--hard', moved)
+            return real(repo, *args, **kw)
+
+        with patch.object(landing, 'git', side_effect=run):
+            with self.assertRaisesRegex(gate.GateError, 'local main moved; rebase and regate'):
+                landing.local_fast_forward(self.conn, self.r.repo, self.work, 'main', tip, receipt)
+        self.assertEqual(self.r.git('rev-parse', 'main'), moved)
+        self.assertEqual(self.r.git('status', '--porcelain'), '')
+        self.assertIsNone(self.conn.execute('SELECT * FROM landing_lock').fetchone())
+
     def test_offline_pauses_repo_and_alerts_without_gating(self):
         tid = self.task('feature', {'feature.txt': 'finished'})
         self.r.git('remote', 'set-url', 'origin', str(self.r.root / 'offline.git'))
@@ -298,7 +354,7 @@ class RunTests(LandingCase):
         self.assertIn('push failed', res['alert'])
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
-    def test_dirty_main_landing_preserves_owner_files_and_index(self):
+    def test_dirty_main_holds_landing_and_preserves_owner_files_and_index(self):
         tid = self.task('feature', {'feature.txt': 'finished'})
         path = self.r.repo / 'base.txt'
         path.write_text('owner work\n')
@@ -306,14 +362,15 @@ class RunTests(LandingCase):
         remote_before = self.r.remote_head()
         index = (self.r.repo / '.git' / 'index').read_bytes()
         res = self.land(push=False)
-        self.assertEqual(res['outcome'], 'landed')
-        self.assertNotEqual(self.r.git('rev-parse', 'main'), before)
+        self.assertEqual(res['outcome'], 'refused')
+        self.assertIn('main checkout dirty', res['error'])
+        self.assertEqual(self.r.git('rev-parse', 'main'), before)
         self.assertEqual(self.r.remote_head(), remote_before)
         self.assertEqual(path.read_text(), 'owner work\n')
         self.assertEqual((self.r.repo / '.git' / 'index').read_bytes(), index)
-        self.assertEqual(self.status(tid), 'landed')
+        self.assertEqual(self.status(tid), 'reviewed')
 
-    def test_owner_edit_during_gate_is_preserved_during_ref_landing(self):
+    def test_owner_edit_during_gate_holds_landing(self):
         tid = self.task('feature', {'feature.txt': 'finished'})
         self.gate = landing.make_gate([sys.executable, self.script], 'main', self.r.root / 'receipts', available=False)
         real_gate = self.gate
@@ -326,9 +383,10 @@ class RunTests(LandingCase):
         self.gate = owner_edits_during_gate
         before = self.r.git('rev-parse', 'main')
         res = self.land(push=False)
-        self.assertEqual(res['outcome'], 'landed')
-        self.assertNotEqual(self.r.git('rev-parse', 'main'), before)
-        self.assertEqual(self.status(tid), 'landed')
+        self.assertEqual(res['outcome'], 'refused')
+        self.assertIn('main checkout dirty', res['error'])
+        self.assertEqual(self.r.git('rev-parse', 'main'), before)
+        self.assertEqual(self.status(tid), 'reviewed')
         self.assertEqual((self.r.repo / 'base.txt').read_text(), 'owner work\n')
 
     def test_green_batch_lands_ff_only_and_marks_tasks(self):

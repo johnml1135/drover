@@ -1,6 +1,7 @@
-"""Sync local main with its remote without writing to the owner's checkout."""
+"""Sync local main with its remote and keep its checkout consistent."""
 import json
 import subprocess
+from pathlib import Path
 
 FETCH_TIMEOUT_S = 120
 PAUSE_KEY = '_origin_pause_'
@@ -11,6 +12,10 @@ class SyncError(ValueError):
 
 
 class FetchFailed(SyncError):
+    pass
+
+
+class MainMoved(SyncError):
     pass
 
 
@@ -26,6 +31,32 @@ def git(repo, *args, check=True, timeout=None):
     return r
 
 
+def fast_forward(repo, main, new, old, *, run=git):
+    """Advance a branch through its clean checkout, or CAS its ref when unchecked out."""
+    ref = f'refs/heads/{main}'
+    listing = run(repo, 'worktree', 'list', '--porcelain', '-z').stdout
+    checkouts = []
+    for record in listing.split('\0\0'):
+        fields = record.split('\0')
+        if f'branch {ref}' in fields:
+            checkouts.append(Path(fields[0].removeprefix('worktree ')))
+    if not checkouts:
+        if run(repo, 'update-ref', ref, new, old, check=False).returncode:
+            raise MainMoved(f'{main} moved during fast-forward; retry')
+        return
+    if len(checkouts) != 1:
+        raise SyncError(f'{main} is checked out in multiple worktrees; owner intervention required')
+    checkout = checkouts[0]
+    if run(checkout, 'status', '--porcelain', '--untracked-files=normal').stdout.strip():
+        raise SyncError(f'{main} checkout dirty; owner intervention required')
+    head = run(checkout, 'rev-parse', 'HEAD').stdout.strip()
+    branch = run(checkout, 'symbolic-ref', '-q', 'HEAD', check=False).stdout.strip()
+    if head != old or branch != ref:
+        raise MainMoved(f'{main} moved during fast-forward; retry')
+    if run(checkout, 'merge', '--ff-only', '--no-autostash', new, check=False).returncode:
+        raise MainMoved(f'{main} moved during fast-forward; retry')
+
+
 def sync(repo, remote='origin', main='main', *, run=git, timeout=FETCH_TIMEOUT_S):
     """Fetch and advance main with compare-and-swap; preserve local unpushed landings."""
     fetched = run(repo, 'fetch', remote, main, f'--refmap=+refs/heads/{main}:refs/remotes/{remote}/{main}',
@@ -39,8 +70,10 @@ def sync(repo, remote='origin', main='main', *, run=git, timeout=FETCH_TIMEOUT_S
         return local
     if run(repo, 'merge-base', '--is-ancestor', local, upstream, check=False).returncode:
         raise SyncError(f'{main} diverged from {remote}')
-    if run(repo, 'update-ref', ref, upstream, local, check=False).returncode:
-        raise SyncError(f'{main} moved during origin sync; retry')
+    try:
+        fast_forward(repo, main, upstream, local, run=run)
+    except MainMoved as e:
+        raise SyncError(f'{main} moved during origin sync; retry') from e
     return upstream
 
 

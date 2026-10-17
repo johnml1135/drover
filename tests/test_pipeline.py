@@ -397,14 +397,15 @@ class Safety(Base):
             self.pipe.worktree(self.get(other))
         self.assertIn("main checkout", str(cm.exception))
 
-    def test_branch_syncs_remote_main_without_writing_owner_checkout(self):
+    def test_branch_syncs_remote_main_and_keeps_owner_checkout_consistent(self):
         sha = self.fix.branch("upstream", {"upstream.txt": "upstream"})
         self.fix.git("push", "-q", "origin", f"{sha}:main")
         tid = self.task()
         wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), sha)
         self.assertEqual(self.fix.git("rev-parse", "main"), sha)
-        self.assertFalse((self.fix.repo / "upstream.txt").exists())
+        self.assertEqual((self.fix.repo / "upstream.txt").read_text(), "upstream")
+        self.assertEqual(self.fix.git("status", "--porcelain"), "")
 
     def test_divergence_prevents_dispatch_with_needs_owner_reason(self):
         self.fix.commit("local.txt")
@@ -953,7 +954,8 @@ class Landing(Base):
         self.assertEqual(out["p"]["outcome"], "landed", out)
         self.assertEqual(self.status(tid), "landed")
         self.assertEqual(self.fix.remote_head(), remote_before)           # push = false
-        self.assertFalse((Path(self.fix.repo) / "feature.txt").exists())  # checkout is untouched
+        self.assertEqual((Path(self.fix.repo) / "feature.txt").read_text(), "feature\n")
+        self.assertEqual(self.fix.git("status", "--porcelain"), "")
         self.assertTrue(self.fix.git("merge-base", "--is-ancestor", "origin/main", "main") == "")
         self.assertEqual(ops.get_setting(self.conn, "landing_batch"), "")
         g = json.loads(ops.get_setting(self.conn, "gate"))
@@ -975,12 +977,13 @@ class Landing(Base):
             f'[gate]\nplatform = "windows"\n[gate.commands]\nfull = [{json.dumps(sys.executable)}, "-c", "pass"]\n')
         svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir, gate_kw={"available": False})
         out = svc.tick()
-        self.assertEqual(out["p"]["outcome"], "landed")
-        self.assertEqual(self.status(tid), "landed")
-        self.assertTrue((Path(self.fix.repo) / "owner-wip.txt").exists())
+        self.assertEqual(out["p"]["outcome"], "refused")
+        self.assertIn("main checkout dirty", out["p"]["error"])
+        self.assertEqual(self.status(tid), "reviewed")
+        self.assertEqual((Path(self.fix.repo) / "owner-wip.txt").read_text(), "mine\n")
         self.assertFalse((Path(self.fix.repo) / "feature.txt").exists())
         self.assertEqual(len(ops.open_questions(self.conn)), 0)
-        self.assertEqual(svc.tick(), {})
+        self.assertEqual(svc.tick()["p"]["outcome"], "refused")
 
 
 if __name__ == "__main__":
