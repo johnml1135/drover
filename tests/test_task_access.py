@@ -59,6 +59,15 @@ class AccessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'writable'):
             launch.build_argv(spec)
 
+    def test_wsl_native_scratch_cannot_overlap_a_read_snapshot(self):
+        scratch = '/tmp/drover-scratch/7-0123456789abcdef'
+        for read in (scratch, '/tmp/drover-scratch', scratch + '/read'):
+            with self.subTest(read=read):
+                spec = dict(backend='codex', model='codex', cwd='H:\\work', placement='wsl',
+                            system_append='', user_prompt='', scratch_dir=scratch, read_dirs=[read])
+                with self.assertRaisesRegex(ValueError, 'writable'):
+                    launch.build_argv(spec)
+
     def test_isolated_branch_read_and_change_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Repo()

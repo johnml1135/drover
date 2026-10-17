@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from drover import runner
@@ -79,6 +80,117 @@ class Base(unittest.TestCase):
 
     def out(self, rid):
         return (Path(self.runs) / rid / "out.log").read_text()
+
+
+@unittest.skipIf(runner.IS_WINDOWS, "WSL scratch lifecycle runs on Linux")
+class ScratchTests(Base):
+    def scratch(self):
+        path = Path('/tmp/drover-scratch') / f'acme-{uuid.uuid4().hex}'
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
+
+    def test_runner_creates_private_native_scratch_for_temp_wal_and_cleans_it(self):
+        scratch = self.scratch()
+        code = """import json, os, stat, tempfile
+from pathlib import Path
+from drover.ledger.db import connect
+scratch = Path(os.environ['TMPDIR'])
+with tempfile.TemporaryDirectory() as tmp:
+    conn = connect(Path(tmp) / 'ledger.db', migrate_db=False)
+    mode = conn.execute('PRAGMA journal_mode').fetchone()[0]
+    conn.close()
+    print(json.dumps(dict(env={k: os.environ.get(k) for k in ('TMPDIR', 'TMP', 'TEMP')},
+                          mode=stat.S_IMODE(scratch.stat().st_mode), tmp=tmp, journal=mode)))
+(scratch / 'leftover').write_text('remove with run')
+"""
+        r = subprocess.run(self.cmd('scratch', code, extra=('--scratch-dir', str(scratch))),
+                           env=ENV, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        data = json.loads(self.out('scratch'))
+        self.assertEqual(data['env'], dict(TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch)))
+        self.assertEqual(data['mode'], 0o700)
+        self.assertEqual(Path(data['tmp']).parent, scratch)
+        self.assertEqual(data['journal'], 'wal')
+        self.assertFalse(scratch.exists())
+
+    def test_scratch_is_cleaned_after_timeout_and_spawn_failure(self):
+        for rid, code, kw, state in (
+                ('scratch-timeout', 'import time; time.sleep(60)', dict(wall=0.2), 'timeout'),
+                ('scratch-spawn', 'pass', dict(extra=('--cwd', str(Path(self.runs) / 'missing'))), 'exited')):
+            with self.subTest(rid=rid):
+                scratch = self.scratch()
+                extra = (*kw.pop('extra', ()), '--scratch-dir', str(scratch))
+                r, st = self.run_runner(rid, code, extra=extra, **kw)
+                self.assertEqual(r.returncode, 1)
+                self.assertEqual(st['state'], state)
+                if rid == 'scratch-spawn':
+                    self.assertTrue(st['reason'].startswith('spawn-failed:'))
+                self.assertFalse(scratch.exists())
+
+    def test_outside_scratch_namespace_is_never_removed_or_used(self):
+        outside = Path(self.runs) / 'outside'
+        outside.mkdir()
+        marker = outside / 'keep'
+        marker.write_text('keep')
+        for value in (str(outside), '/tmp/drover-scratch',
+                      f'/tmp/drover-scratch/../../{str(outside).lstrip("/")}'):
+            with self.subTest(path=value):
+                r, st = self.run_runner('scratch-outside', 'raise SystemExit("worker must not start")',
+                                        extra=('--scratch-dir', value))
+                self.assertEqual(r.returncode, 1)
+                self.assertTrue(st['reason'].startswith('spawn-failed:'))
+                self.assertFalse((Path(self.runs) / 'scratch-outside' / runner.OUT_FILE).exists())
+                self.assertEqual(marker.read_text(), 'keep')
+
+    def test_preexisting_scratch_is_never_removed(self):
+        scratch = self.scratch()
+        scratch.parent.mkdir(exist_ok=True)
+        scratch.mkdir()
+        marker = scratch / 'keep'
+        marker.write_text('keep')
+        r, st = self.run_runner('scratch-existing', 'pass', extra=('--scratch-dir', str(scratch)))
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(st['reason'].startswith('spawn-failed:'))
+        self.assertEqual(marker.read_text(), 'keep')
+
+    def test_symlink_to_outside_is_never_followed_during_setup_or_cleanup(self):
+        outside = Path(self.runs) / 'outside'
+        outside.mkdir()
+        marker = outside / 'keep'
+        marker.write_text('keep')
+        for replace in (False, True):
+            with self.subTest(replace_during_run=replace):
+                scratch = self.scratch()
+                scratch.parent.mkdir(exist_ok=True)
+                self.addCleanup(scratch.unlink, missing_ok=True)
+                if replace:
+                    code = f"""from pathlib import Path
+scratch = Path({str(scratch)!r})
+scratch.rmdir()
+scratch.symlink_to({str(outside)!r}, target_is_directory=True)
+"""
+                else:
+                    scratch.symlink_to(outside, target_is_directory=True)
+                    code = 'pass'
+                r, st = self.run_runner('scratch-symlink', code, extra=('--scratch-dir', str(scratch)))
+                self.assertEqual(r.returncode, 0 if replace else 1, r.stderr + r.stdout)
+                if not replace:
+                    self.assertTrue(st['reason'].startswith('spawn-failed:'))
+                self.assertEqual(marker.read_text(), 'keep')
+
+    def test_cleanup_unlinks_nested_symlinks_without_removing_their_targets(self):
+        scratch = self.scratch()
+        outside = Path(self.runs) / 'outside'
+        outside.mkdir()
+        marker = outside / 'keep'
+        marker.write_text('keep')
+        code = f"""from pathlib import Path
+(Path({str(scratch)!r}) / 'outside').symlink_to({str(outside)!r}, target_is_directory=True)
+"""
+        r, _ = self.run_runner('scratch-nested-link', code, extra=('--scratch-dir', str(scratch)))
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(scratch.exists())
+        self.assertEqual(marker.read_text(), 'keep')
 
 
 class RunTests(Base):

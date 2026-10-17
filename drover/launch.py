@@ -426,9 +426,11 @@ class RunnerLauncher(Launcher):
         return [path, *argv[1:]] if path.startswith("/") and "\n" not in path else argv
 
     def runner_args(self, spec, d, argv, cwd):
+        scratch = ["--scratch-dir", spec["scratch_dir"]] if (
+            spec.get("placement") == "wsl" and spec.get("scratch_dir")) else []
         return ["--detach", "--run-id", str(spec["run_id"]), "--nonce", spec["nonce"], "--runs-dir", self.runs_dir,
                 "--wall-s", f"{spec.get('wall_s') or 0:g}", "--idle-s", f"{spec.get('idle_s') or 0:g}",
-                "--stdin-file", str(d / IN_FILE), "--cwd", str(cwd), "--", *argv]
+                "--stdin-file", str(d / IN_FILE), "--cwd", str(cwd), *scratch, "--", *argv]
 
     def command(self, spec, d, argv):
         """(command, env) that starts the detached runner for this spec's placement."""
@@ -455,7 +457,9 @@ class RunnerLauncher(Launcher):
                 and spec.get("role") != "review" and spec.get("sandbox", "workspace-write") == "workspace-write"):
             # Keep worker temp files out of shared /tmp (which may contain read
             # snapshots), and outside the run's control files and task diff.
-            spec = {**spec, "scratch_dir": tempfile.mkdtemp(prefix="scratch-", dir=d)}
+            scratch = f"/tmp/drover-scratch/{rid}-{spec['nonce']}" if spec.get("placement") == "wsl" else (
+                tempfile.mkdtemp(prefix="scratch-", dir=d))
+            spec = {**spec, "scratch_dir": scratch}
         argv, stdin_text = build_argv(spec)
         (d / IN_FILE).write_text(stdin_text, encoding="utf-8")
         cmd, env = self.command(spec, d, argv)

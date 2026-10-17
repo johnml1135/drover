@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -366,8 +367,23 @@ def request_stop(runs_dir, run_id, reason="requested", nonce=None):
     return True
 
 
+def _scratch_path(value):
+    root, path = Path("/tmp/drover-scratch"), Path(value)
+    if (IS_WINDOWS or path.parent != root or root.resolve() != root
+            or path.is_symlink() or path.resolve().parent != root):
+        raise ValueError("scratch must be a direct directory under /tmp/drover-scratch/")
+    return path
+
+
+def _cleanup_scratch(path):
+    try:
+        shutil.rmtree(_scratch_path(path))
+    except (OSError, ValueError):
+        pass
+
+
 def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=None, kill_after=KILL_AFTER_S,
-              poll_s=POLL_S, nonce=None):
+              poll_s=POLL_S, nonce=None, scratch_dir=None):
     """Run the worker to its end. Returns the final status dict."""
     d = run_dir(runs_dir, run_id)
     d.mkdir(parents=True, exist_ok=True)
@@ -386,16 +402,32 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
         if hasattr(signal, name):
             sig = getattr(signal, name)
             old_handlers[sig] = signal.signal(sig, lambda *_: sig_reason.append("signal"))
+    scratch = None
     try:
-        return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason)
+        if scratch_dir:
+            try:
+                path = _scratch_path(scratch_dir)
+                path.parent.mkdir(mode=0o700, exist_ok=True)
+                path.mkdir(mode=0o700)
+                scratch = path
+                path.chmod(0o700)
+            except (OSError, ValueError) as e:
+                st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
+                return st.d
+        return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason,
+                          scratch)
     finally:
+        if scratch is not None:
+            _cleanup_scratch(scratch)
         for sig, h in old_handlers.items():
             signal.signal(sig, h)
 
 
-def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason):
+def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason, scratch=None):
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
+    if scratch is not None:
+        env.update({name: str(scratch) for name in ("TMPDIR", "TMP", "TEMP")})
     stdin_f = subprocess.DEVNULL
     try:
         if stdin_file:
@@ -679,6 +711,7 @@ def main(argv=None):
     p.add_argument("--idle-s", type=_num, default=0)
     p.add_argument("--stdin-file")
     p.add_argument("--cwd")
+    p.add_argument("--scratch-dir", help="private worker temp directory under /tmp/drover-scratch/ (WSL only)")
     p.add_argument("--kill-after", type=_num, default=KILL_AFTER_S)
     p.add_argument("--detach", action="store_true")
     p.add_argument("--nonce", type=_nonce, help="the launch nonce (default: generated); stop-requests must carry it")
@@ -689,7 +722,8 @@ def main(argv=None):
         info = detach(a.run_id, a.runs_dir, [x for x in head if x != "--detach"] + ["--"] + worker, nonce=a.nonce)
         print(json.dumps(info))
         return 1 if "error" in info else 0
-    st = supervise(a.run_id, a.runs_dir, worker, a.wall_s, a.idle_s, a.stdin_file, a.cwd, a.kill_after, nonce=a.nonce)
+    st = supervise(a.run_id, a.runs_dir, worker, a.wall_s, a.idle_s, a.stdin_file, a.cwd, a.kill_after, nonce=a.nonce,
+                   scratch_dir=a.scratch_dir)
     print(json.dumps(st))
     return 0 if st["state"] == "exited" and st["exit_code"] == 0 else 1
 

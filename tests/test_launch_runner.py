@@ -95,19 +95,31 @@ class Base(unittest.TestCase):
 
 class Commands(Base):
     def test_codex_scratch_is_private_and_supplies_the_temp_environment(self):
-        self.start(backend='codex', model='gpt-6.1-sol', placement='wsl')
-        cmd, _ = self.fake.calls[0]
-        worker = cmd[cmd.index('--') + 1:]
-        settings = tomllib.loads('\n'.join(worker[i + 1] for i, arg in enumerate(worker[:-1])
-            if arg == '-c' and worker[i + 1].startswith(('sandbox_workspace_write.', 'shell_environment_policy.'))))
-        roots = settings['sandbox_workspace_write']['writable_roots']
-        self.assertEqual(len(roots), 1)
-        scratch = list(self.dir().glob('scratch-*'))
-        self.assertEqual(len(scratch), 1)
-        self.assertEqual(roots, [runner.to_wsl_path(str(scratch[0]))])
-        self.assertNotIn('--add-dir', worker)
-        self.assertEqual(settings['shell_environment_policy']['set'],
-                         dict(TMPDIR=roots[0], TMP=roots[0], TEMP=roots[0]))
+        for rid, placement in ((7, 'wsl'), (8, 'windows')):
+            with self.subTest(placement=placement):
+                self.start(run_id=rid, backend='codex', model='gpt-6.1-sol', placement=placement)
+                cmd, _ = self.fake.calls[-1]
+                head, worker = cmd[:cmd.index('--')], cmd[cmd.index('--') + 1:]
+                settings = tomllib.loads('\n'.join(worker[i + 1] for i, arg in enumerate(worker[:-1])
+                    if arg == '-c' and worker[i + 1].startswith(
+                        ('sandbox_workspace_write.', 'shell_environment_policy.'))))
+                sandbox = settings['sandbox_workspace_write']
+                roots = sandbox['writable_roots']
+                self.assertEqual(len(roots), 1)
+                if placement == 'wsl':
+                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}'])
+                    self.assertEqual(head[head.index('--scratch-dir') + 1], roots[0])
+                    self.assertEqual(list(self.dir(rid).glob('scratch-*')), [])
+                else:
+                    scratch = list(self.dir(rid).glob('scratch-*'))
+                    self.assertEqual(len(scratch), 1)
+                    self.assertEqual(roots, [launch.to_windows_path(scratch[0])])
+                    self.assertNotIn('--scratch-dir', head)
+                self.assertTrue(sandbox['exclude_slash_tmp'])
+                self.assertTrue(sandbox['exclude_tmpdir_env_var'])
+                self.assertNotIn('--add-dir', worker)
+                self.assertEqual(settings['shell_environment_policy']['set'],
+                                 dict(TMPDIR=roots[0], TMP=roots[0], TEMP=roots[0]))
 
     def test_home_path_is_expanded_on_windows_before_wsl_translation(self):
         for rid, placement, expected in ((71, 'windows', r'R:\Users\acme\repos\acme-lib.worktrees\drover-T1'),
