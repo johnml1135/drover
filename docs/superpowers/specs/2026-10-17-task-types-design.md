@@ -119,16 +119,16 @@ followups:
 lifecycle: standard-v1
 forms:
   create:
-    fields: [title, repo, goal, problem, target, compatibility, evidence]
+    fields: [title, repo, goal, scope_files, problem, target, compatibility, evidence]
     web: {layout: stacked}
-    cli: {mode: sequential, order: [title, repo, goal, problem, target, compatibility, evidence]}
+    cli: {mode: sequential, order: [title, repo, goal, scope_files, problem, target, compatibility, evidence]}
   answer:
     fields: []
     web: {layout: stacked}
     cli: {mode: sequential, order: []}
 ```
 
-Creating `{"type":"api-spec","title":"Design orders API","repo":"acme-app","goal":"Specify an additive orders API","scope_files":["docs/superpowers/"],"fields":{"problem":"Clients need a stable orders contract","target":"orders"}}` materializes compatibility=`additive`, evidence=`[]`, the read ref, acceptance defaults and spec-only delivery. It starts proposed, pins the resolved hash and displays target/compatibility on card and inherited problem plus target/compatibility/evidence on page. Both channel forms collect the inherited required problem; omitting it fails validation. Owner approval creates the approved execution revision. The agent writes only approved framework artifact paths; it can propose a grill. Until the grill is complete, proposing implementation returns a prerequisite error. Reloading an extension with a different model leaves this task unchanged; an owner can explicitly upgrade it while proposed/draft and review the diff.
+Selecting `api-spec` in either channel and submitting only the declared creation inputs produces `{"type":"api-spec","title":"Design orders API","repo":"acme-app","goal":"Specify an additive orders API","scope_files":["docs/superpowers/"],"fields":{"problem":"Clients need a stable orders contract","target":"orders"}}` and materializes compatibility=`additive`, evidence=`[]`, the read ref, acceptance defaults and spec-only delivery. It starts proposed, pins the resolved hash and displays target/compatibility on card and inherited problem plus target/compatibility/evidence on page. Both channel forms collect scope_files and the inherited required problem; omitting either or submitting empty scope_files fails validation. Verify creation from each form's inputs alone, including these rejection cases. Owner approval creates the approved execution revision. The agent writes only approved framework artifact paths; it can propose a grill. Until the grill is complete, proposing implementation returns a prerequisite error. Reloading an extension with a different model leaves this task unchanged; an owner can explicitly upgrade it while proposed/draft and review the diff.
 
 Templates use a small placeholder allowlist (`repo`, `default_branch`, task identity, core/custom values, framework outputs, registered model paths); unknown placeholders fail. No expressions, shell expansion, executable templates or arbitrary includes. Custom values render as escaped text. Resolve task-dependent paths after ID creation within the creation transaction; enforce normalized, repo-relative artifact/scope paths and reject traversal, symlink escape and absolute paths.
 
