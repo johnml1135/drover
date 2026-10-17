@@ -614,6 +614,38 @@ class Recovery(Base):
         d2.tick()
         self.assertEqual(self.status(t), "gated")
 
+    def test_recovery_restores_account_for_polling_and_worker_limits(self):
+        from drover import config, stats, usage
+        cfg = config.validate({'seats': [
+            {'name': 'acme-primary', 'backend': 'claude', 'director': True},
+            {'name': 'acme-secondary', 'backend': 'claude', 'max_workers': 1}]})
+        config.use(cfg)
+        self.addCleanup(config.reset)
+        primary, secondary = cfg['seats']
+        runs = []
+        for seat in (primary, secondary):
+            tid = self.task(size='S')
+            ops.set_status(self.conn, tid, 'claimed')
+            ops.set_status(self.conn, tid, 'running')
+            rid = ops.start_run(self.conn, tid, 'worker', 'claude')
+            stats.update_run(self.conn, rid, seat=seat['name'])
+            runs.append(rid)
+        self.found = dict.fromkeys(runs, 'windows')
+        d2 = self.restart()
+        self.assertEqual(d2.recover_orphans(), [])
+        expected = {'acme-primary': 1, 'acme-secondary': 1}
+        self.assertEqual(d2._seat_load(), expected)
+        self.assertEqual([d2.live[rid][2]['seat'] for rid in runs], list(expected))
+        d2.usage_poller = usage.Poller(self.conn)
+        with unittest.mock.patch.object(d2.usage_poller, 'poll') as poll:
+            d2._seat_tick()
+        poll.assert_called_once_with(cfg['seats'], expected)
+        now = time.time()
+        for seat in cfg['seats']:
+            usage.manual(self.conn, seat['name'], 'seven_day', 10, now + 3600, now=now)
+        order = usage.order(self.conn, cfg['seats'], now=now, seat_load=d2._seat_load())
+        self.assertEqual(next(r for r in order if r['seat'] == 'acme-secondary')['reason'], 'max_workers reached')
+
     def test_string_id_scan_keeps_live_wsl_run_alive(self):
         t, rid = self.start(goal="platform: linux")
         self.found = {str(rid): "wsl"}

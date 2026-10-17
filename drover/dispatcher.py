@@ -229,11 +229,21 @@ class Dispatcher:
         self.tickets = {}                    # task_id -> gate lease ticket
         self.launcher = launcher or RunnerLauncher()
         self.resources_fn = resources_fn or resources_mod.check
+        self.stats_resources_fn = (lambda: resources_fn(new_workers=0)) if resources_fn else (
+            lambda: resources_mod.check(new_workers=0, with_wsl_memory=True))
         self.admit_fn = admit_fn or (lambda plan, role, pct: allowance_mod.admit(plan, role, pct, state=state))
         self.decide_fn = decide_fn or _real_decide
         self.gate_fn = gate_fn               # (task, result) -> {ok, receipt, excerpt, diff_lines}; None fails closed
         self.route_fn = route_fn or _route_module()
-        self.headroom_fn = headroom_fn or (lambda plan: allowance_mod.headroom(plan, state=state))
+        self.usage_poller = None
+        if headroom_fn is None and hasattr(port, "conn"):
+            from .usage import Poller
+            self.usage_poller = Poller(port.conn, now=now_fn, launcher=self.launcher)
+        self.headroom_fn = headroom_fn or (self._seat_headroom if self.usage_poller else
+                                          lambda plan: allowance_mod.headroom(plan, state=state))
+        if admit_fn is None and self.usage_poller:
+            # Measured allowance is checked by the seat router when work can actually be assigned.
+            self.admit_fn = lambda plan, role, pct: {"allow": True}
         self.scan_fn = scan_fn or getattr(self.launcher, "scan", None)    # (want_wsl) -> {run_id: placement}
         self.wsl_up_fn = wsl_up_fn or getattr(self.launcher, "wsl_up", None) or (lambda: True)
         self.scan_every_s, self.last_scan, self.scan_unknown = scan_every_s, None, False
@@ -247,6 +257,7 @@ class Dispatcher:
         self.missed = {}                     # run_id -> consecutive clean scans that did not find its runner
         self.cursor = None                   # last event id seen by the stale-brief check
         self.last_verdict = None
+        self._stats_hour, self._stats_resources = None, {}
         self.last_resources = {}             # the newest resources.check result: its `wsl` part gates WSL work only
 
     # ---- helpers ------------------------------------------------------------------------------------
@@ -308,6 +319,11 @@ class Dispatcher:
 
     def _finish(self, run_id, task_id, spec, result):
         p, u, rec = self.port, result["usage"], result.get("record") or {}
+        if hasattr(p, "set_run_context"):
+            fields = {k: u[k] for k in ("sessions", "compactions", "tokens_by_model") if k in u}
+            fields.update(result.get("peaks") or {})
+            if fields:
+                p.set_run_context(run_id, **fields)
         usage = dict(tokens_in=u["tokens_in"], tokens_out=u["tokens_out"], tokens_cached=u["tokens_cached"],
                      allowance_used=self._allowance_used(spec))
         note = rec.get("note") or None
@@ -373,7 +389,7 @@ class Dispatcher:
         before = spec.get("allowance_before")
         if not before:
             return None
-        return contract.used_delta(before, contract.used_from_headroom(self._headroom(spec["backend"])))
+        return contract.used_delta(before, contract.used_from_headroom(self._reading_for_route(spec)))
 
     def _gate_result(self, task, result, run_id):
         """The gate's answer for this run, from a gate-done event when it already ran. The gate runs at most once per
@@ -590,6 +606,8 @@ class Dispatcher:
         if self._lease(task) is None:
             return False                                     # waiting for a gate slot
         gate_run = p.start_run(tid, "gate", "local", "gate")
+        if hasattr(p, "set_run_context"):
+            p.set_run_context(gate_run, placement=platform)
         argv, receipt = pl.gate_argv(plan, gate_run, task["priority"], prog, platform)
         nonce = uuid.uuid4().hex
         spec = {"run_id": gate_run, "role": "gate", "backend": "local", "model": "gate", "effort": None, "argv": argv,
@@ -760,7 +778,8 @@ class Dispatcher:
         data = {**policy["data"], "routes": {**policy["data"].get("routes", {}), "review": [candidate]}}
         base = route_mod.choose({**task, "role": "review"}, data,
                                 {b: self._headroom(b) for b in admitted}, seats=seats,
-                                seat_load=self._seat_load(), platforms=prog["run"]["platforms"])
+                                seat_load=self._seat_load(), platforms=prog["run"]["platforms"],
+                                **self._seat_route_kw())
         if base.get("backend") and base["backend"] not in admitted:
             return {**base, "backend": None, "reason": f"{base['backend']} not admitted for review"}
         return base
@@ -888,6 +907,9 @@ class Dispatcher:
         run_id = p.start_run(task["id"], role, route["backend"], route["model"], effort)
         nonce = uuid.uuid4().hex
         seat = seat_of(route)
+        if hasattr(p, "set_run_context"):
+            p.set_run_context(run_id, seat=seat["name"] if seat else None, placement=placement,
+                              policy_version=policy.get("version"))
         spec = {"run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
                 "seat": seat["name"] if seat else None, "binary": seat["binary"] if seat else route["backend"],
                 "env": config_mod.seat_env(seat),
@@ -896,7 +918,7 @@ class Dispatcher:
                 "sandbox": "read-only" if role == "review" or task.get("write") is False else (seat or {}).get("sandbox", "workspace-write"),
                 "cwd": cwd, "placement": placement, "nonce": nonce, "task": task, "wall_s": self._wall_s(task, policy),
                 "idle_s": self._idle_s(policy), "system_append": b["system_append"], "user_prompt": b["user_prompt"],
-                "allowance_before": contract.used_from_headroom(self._headroom(route["backend"])), **(extra or {})}
+                "allowance_before": contract.used_from_headroom(self._reading_for_route(route)), **(extra or {})}
         if role == "review":
             p.append_event("review-started", {"run": run_id, "sha": extra["sha"], "worker_run": extra["worker_run"]},
                            task["id"])
@@ -1047,6 +1069,10 @@ class Dispatcher:
                       if e["data"].get("run") == run["id"]), {})
         if "read_checkouts" in saved:
             spec.update(read_checkouts=saved["read_checkouts"], write=saved.get("write", True))
+        if hasattr(self.port, "conn"):
+            row = self.port.conn.execute('SELECT data FROM run_stats WHERE run_id=?', (run["id"],)).fetchone()
+            if row:
+                spec["seat"] = json.loads(row["data"]).get("seat")
         handle = self.launcher.adopt(spec, _epoch(run["started"]))
         self.live[run["id"]] = (handle, task["id"], spec)
         self.port.append_event("run-adopted", {"run": run["id"], "placement": placement}, task["id"])
@@ -1119,7 +1145,7 @@ class Dispatcher:
         return out
 
     def _seat_load(self):
-        """{seat name: live non-gate runs}; a run that carries no seat (adopted) counts on its backend's best seat."""
+        """{seat name: live non-gate runs}; legacy runs with no seat count on their backend's best seat."""
         load = {}
         for _, _, spec in self.live.values():
             if spec.get("role") == "gate":
@@ -1131,7 +1157,7 @@ class Dispatcher:
     def _repo(self, task):
         return self.pipeline.repo(task) if self.pipeline else None
 
-    def _route_kw(self, choose, task):
+    def _route_kw(self, choose, task, admitted=None):
         """Seat load and the repo's platforms, for a router that takes them (the real one; test fakes do not)."""
         try:
             params = inspect.signature(choose).parameters
@@ -1140,10 +1166,16 @@ class Dispatcher:
         if "seat_load" not in params and not any(q.kind == q.VAR_KEYWORD for q in params.values()):
             return {}
         prog = self._repo(task)
-        return {"seat_load": self._seat_load(),
-                "platforms": prog["run"]["platforms"] if prog else None}
+        kw = {"seat_load": self._seat_load(), "platforms": prog["run"]["platforms"] if prog else None}
+        if "seat_headroom" in params:
+            kw.update(self._seat_route_kw())
+            if admitted is not None and "seat_headroom" in kw:
+                kw["seat_headroom"] = {name: h for name, h in kw["seat_headroom"].items()
+                                       if config_mod.seat_by_name(name)["backend"] in admitted}
+        return kw
 
     def _route(self, task, policy, admitted):
+        t = {**task, "platform": "windows", "stack": "dotnet"} if is_dotnet(task) else task
         load = {}
         for _, _, spec in self.live.values():
             load[spec["backend"]] = load.get(spec["backend"], 0) + 1
@@ -1152,14 +1184,27 @@ class Dispatcher:
             base = rule_route(task, admitted, load)
         else:
             heads = {b: self._headroom(b) for b in admitted}      # not-admitted plans stay out of the draw
-            t = {**task, "platform": "windows", "stack": "dotnet"} if is_dotnet(task) else task
-            base = choose(t, policy["data"], heads, **self._route_kw(choose, task))
+            base = choose(t, policy["data"], heads, **self._route_kw(choose, task, admitted))
+        if base.get("borrow_seat"):
+            seat = base["borrow_seat"]
+            if self._director_borrow_approved(task["id"], seat):
+                base = route_mod.choose({**t, "director_seat": seat}, policy["data"],
+                                        **self._route_kw(route_mod.choose, task, admitted), director_borrow_approved=True)
+            else:
+                return base
         if not base.get("backend"):
+            return base
+        if task.get("role") in route_mod.DIRECTOR_ROLES:
             return base
         route = next_tier(self.port.list_runs(task["id"]), base)
         if route["model"] != base["model"]:
             route = {**route, "effort": None}   # the router's effort was picked for the cheaper model
         prog = self._repo(task)
+        if self.usage_poller:
+            role_key = route_mod.route_key(task.get("role", "worker"), task.get("size"))
+            data = {**policy["data"], "routes": {**policy["data"].get("routes", {}), role_key: [route]}}
+            return route_mod.choose(t, data, seats=config_mod.get()["seats"],
+                                    **self._route_kw(route_mod.choose, task, admitted))
         seats = [s for s in route_mod.eligible_seats(
             config_mod.get()["seats"], self._seat_load(), prog["run"]["platforms"] if prog else None,
             task.get("role", "worker") in route_mod.DIRECTOR_ROLES) if s["backend"] == route["backend"]]
@@ -1170,6 +1215,50 @@ class Dispatcher:
         seat = next((s for s in seats if s["name"] == base.get("seat")), None)
         seat = seat or route_mod.pick_seat(seats, route["backend"], self._seat_load())
         return {**route, "seat": seat["name"]}
+
+    def _director_borrow_approved(self, task_id, seat):
+        for ev in reversed(self.port.events("director-borrow")):
+            if ev["actor"] == "dispatcher" and ev["task_id"] == task_id and ev["data"].get("seat") == seat:
+                q = self.port.get_question(ev["data"]["question"])
+                return q["status"] == "answered" and q["answer_choice"] == "Approve borrowing"
+        qid = self.port.ask_question("task", task_id, f"Allow director to borrow {seat}?",
+                                     "This approval applies to director work on this task and account.",
+                                     options=[{"label": "Approve borrowing"}, {"label": "Keep default seat"}],
+                                     needs_owner=True)
+        self.port.append_event("director-borrow", {"seat": seat, "question": qid}, task_id)
+        return False
+
+    def _seat_tick(self):
+        if not self.usage_poller:
+            return
+        from . import stats
+        self.usage_poller.poll(config_mod.get()["seats"], self._seat_load())
+        current = stats.hour(self.now())
+        if current != self._stats_hour:
+            self._stats_resources = self.stats_resources_fn()
+            self._stats_hour = current
+        stats.sample(self.usage_poller.conn, self._stats_resources, self.now())
+        stats.prune(self.usage_poller.conn, self.now(), getattr(self.launcher, "runs_dir", None))
+
+    def _seat_headroom(self, backend):
+        heads = [self.usage_poller.refresh(s) for s in config_mod.seats_for(backend)]
+        return max((h for h in heads if h), key=lambda h: h["remaining_pct"], default=None)
+
+    def _seat_route_kw(self):
+        if not self.usage_poller:
+            return {}
+        from . import usage
+        seats = config_mod.get()["seats"]
+        heads = {s["name"]: self.usage_poller.refresh(s) for s in seats}
+        return {"seat_headroom": heads,
+                "seat_order": usage.order(self.usage_poller.conn, seats, now=self.now(), seat_load=self._seat_load())}
+
+    def _reading_for_route(self, route):
+        if self.usage_poller and route.get("seat"):
+            from . import usage
+            seat = config_mod.seat_by_name(route["seat"])
+            return usage.headroom(self.usage_poller.conn, seat["name"], self.now()) if seat else None
+        return self._headroom(route["backend"])
 
     def _wsl_blocked(self):
         """Why WSL work must wait (the wsl tracker: distro down or memory near the .wslconfig cap), else ''."""
@@ -1225,6 +1314,7 @@ class Dispatcher:
         return backoffs
 
     def tick(self):
+        self._seat_tick()
         p = self.port
         policy = p.get_policy()
         enabled = self.enabled_fn()

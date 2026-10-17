@@ -94,3 +94,5 @@ Run checks from the checkout root:
 python3 -m unittest discover -s tests -t .
 uv run --project hub python -m unittest discover -s tests -t .
 ```
+
+Account allowance, routing and the Stats tab: [usage and statistics](docs/USAGE-STATS.md).

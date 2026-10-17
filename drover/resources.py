@@ -298,7 +298,7 @@ def read_wsl(distro, windows, mem_wanted):
     return up, mem
 
 
-def gather(fake=None, trackers=None):
+def gather(fake=None, trackers=None, with_wsl_memory=False):
     """Facts from the machine, or from the fake when one is given."""
     if fake is None:
         raw = os.environ.get('DROVER_RESOURCES_FAKE')
@@ -324,7 +324,7 @@ def gather(fake=None, trackers=None):
     if wsl_t:
         distro = wsl_t['distro'] or config_mod.get()['paths']['wsl_distro']
         facts['wsl_up'], facts['wsl_mem'] = read_wsl(
-            distro, windows, bool(wsl_t['queue_mem_pct'] or wsl_t['hold_mem_pct']))
+            distro, windows, with_wsl_memory or bool(wsl_t['queue_mem_pct'] or wsl_t['hold_mem_pct']))
     return facts
 
 
@@ -357,12 +357,12 @@ def _wsl_state(tracker, facts):
     return {'verdict': 'go', 'reasons': []}
 
 
-def check(new_workers=1, fake=None, config=None):
+def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     trackers = trackers_of(config)
     by_kind = {}
     for t in trackers:
         by_kind.setdefault(t['kind'], []).append(t)
-    facts = gather(fake, trackers)
+    facts = gather(fake, trackers, with_wsl_memory=with_wsl_memory)
     hold, queue = [], []
     disk_hold = False
     load5, cores = facts['load5'], max(facts['cores'] or 1, 1)

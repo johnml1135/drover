@@ -81,3 +81,5 @@ a.btn{display:inline-flex;align-items:center;text-decoration:none;color:var(--fg
 .markdown pre,.task-page pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
 .task-page label{display:block;margin:8px 0}.task-page select{display:block;max-width:100%;min-height:44px;font:inherit;background:var(--card);color:var(--fg)}
 @media(max-width:400px){.task-fields{grid-template-columns:minmax(0,1fr)}.task-fields dt{margin-top:6px}}
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 1rem; }
+.chart { min-height: 300px; width: 100%; }

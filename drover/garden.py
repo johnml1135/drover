@@ -453,7 +453,7 @@ def make_tasks_for_valuable(conn, repo, valuable):
     from .ledger import ops
     made = []
     for it in valuable:
-        if any(t['branch'] == it['branch'] for t in ops.list_tasks(conn)):
+        if any(t['branch'] == it['branch'] for t in ops.list_tasks(conn, include_archived=True)):
             continue
         t = ops.create_task(conn, 'Land branch %s' % it['branch'], 'drover', repo_path=str(repo),
                             goal='This unmerged branch was judged valuable: %s' % it['reason'],

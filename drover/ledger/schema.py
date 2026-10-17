@@ -82,4 +82,26 @@ CREATE TABLE task_links (
 CREATE INDEX task_links_related ON task_links(related_id);
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4)]
+V5 = """
+ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE allowance_readings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, seat TEXT NOT NULL, ts REAL NOT NULL, window TEXT NOT NULL,
+  used_pct REAL, resets_at REAL, raw_text TEXT NOT NULL, ok INTEGER NOT NULL);
+CREATE INDEX allowance_seat_time ON allowance_readings(seat, ts, id);
+CREATE INDEX allowance_seat_window ON allowance_readings(seat, window, ts, id);
+CREATE TABLE run_stats (
+  run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, data TEXT NOT NULL DEFAULT '{}');
+INSERT INTO run_stats(run_id,data)
+SELECT id, json_object('runs',1, 'sessions',CASE WHEN backend='local' THEN 0 ELSE 1 END,
+  'handoffs',CASE WHEN outcome='rotated' THEN 1 ELSE 0 END, 'compactions',0,
+  'retries',0, 'escalations',0, 'rework',0, 'seat',NULL, 'placement',NULL,
+  'started',started, 'ended',ended, 'duration_s',wall_s, 'gate_result',gate_receipt, 'policy_version',policy_version,
+  'peak_cpu_pct',NULL, 'peak_ram_mb',NULL, 'peak_disk_bytes',NULL,
+  'tokens_by_model', json(CASE WHEN ended IS NULL THEN '{}' ELSE json_object(COALESCE(model,'unknown'), json_object(
+    'tokens_in',COALESCE(tokens_in,0), 'tokens_out',COALESCE(tokens_out,0), 'tokens_cached',COALESCE(tokens_cached,0))) END))
+FROM runs;
+CREATE TABLE stats_hourly (ts TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE stats_daily (ts TEXT PRIMARY KEY, data TEXT NOT NULL);
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5)]

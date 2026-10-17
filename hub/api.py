@@ -125,6 +125,7 @@ class RunFinish(BaseModel):
     gate_receipt: str | None = None
     review_verdict: str | None = None
     note: str | None = None
+    stats: dict[str, Any] | None = None
 
 
 class EventIn(BaseModel):
@@ -251,8 +252,8 @@ def create_task(body: TaskIn, request: Request, who: str = Depends(auth.require_
 
 @router.get("/tasks")
 def list_tasks(request: Request, status: str | None = None, epic_id: str | None = None,
-               repo: str | None = None, q: str | None = None, limit: int = 500):
-    return _store(request).list_tasks(status, epic_id, repo, q, limit)
+               repo: str | None = None, q: str | None = None, limit: int = 500, include_archived: bool = False):
+    return _store(request).list_tasks(status, epic_id, repo, q, limit, include_archived)
 
 
 @router.post("/tasks/claim")
@@ -310,7 +311,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)
@@ -426,3 +427,45 @@ def import_tasks(body: ImportIn, request: Request, who: str = Depends(auth.requi
     owner_only(who)
     return guard(_store(request).import_tasks, body.tasks, dry_run=body.dry_run,
                  actor=actor(who))
+
+
+class UsageIn(BaseModel):
+    seat: str
+    window: str
+    pct: float
+    resets: str
+
+
+class ArchiveIn(BaseModel):
+    archived: bool = True
+
+
+class DeleteIn(BaseModel):
+    confirm: bool = False
+
+
+@router.get("/stats")
+def get_stats(request: Request, since: str | None = None, task: str | None = None):
+    return guard(_store(request).stats, since, task)
+
+
+@router.get("/usage/order")
+def get_seats(request: Request):
+    return _store(request).seat_order()
+
+
+@router.post("/usage")
+def manual_usage(body: UsageIn, request: Request):
+    return guard(_store(request).set_usage, body.seat, body.window, body.pct, body.resets)
+
+
+@router.post("/tasks/{tid}/archive")
+def archive_task(tid: str, body: ArchiveIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).archive_task, tid, body.archived, actor(who))
+
+
+@router.delete("/tasks/{tid}")
+def delete_task(tid: str, body: DeleteIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).delete_task, tid, body.confirm, actor(who))

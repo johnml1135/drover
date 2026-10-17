@@ -624,7 +624,8 @@ def q_seats(a, d, distro_hint):
         workers = a.ask(f"seat_{t}_max_workers", f"{n}: max workers (0 = no per-seat limit)", seat["max_workers"],
                         to_int(0, 64))
         reserve = a.ask(f"seat_{t}_reserve_pct", f"{n}: allowance reserve %", seat["reserve_pct"], to_float(0, 100))
-        env_dir = seat["config_dir"] or dirs.get("CLAUDE_CONFIG_DIR" if t == "claude" else "CODEX_HOME", "")
+        dir_key = "codex_home" if t == "codex" and seat.get("codex_home") else "config_dir"
+        env_dir = seat.get(dir_key) or dirs.get("CLAUDE_CONFIG_DIR" if t == "claude" else "CODEX_HOME", "")
         cdir = a.ask(f"seat_{t}_config_dir", f"{n}: config dir (CLAUDE_CONFIG_DIR / CODEX_HOME; empty = default)", env_dir)
         placement = seat["placement"]
         if t == "claude" and "seats" not in a.existing:
@@ -632,7 +633,7 @@ def q_seats(a, d, distro_hint):
             if placement == "wsl":
                 a.say("   claude is only in WSL; its seat will run there.")
         seats.append({**seat, "name": n, "priority": priority, "max_workers": workers, "reserve_pct": reserve,
-                      "placement": placement, "config_dir": cdir})
+                      "placement": placement, dir_key: cdir})
     claude = [s["name"] for s in seats if s["backend"] == "claude"]
     if not claude:
         raise WizardError("the director must be a Claude seat; add a claude seat")
@@ -934,6 +935,8 @@ def build_config(s, existing=None):
         out["director_reserve_pct"] = seat["director_reserve_pct"]
         if seat["config_dir"]:
             out["config_dir"] = seat["config_dir"]
+        if seat.get("codex_home"):
+            out["codex_home"] = seat["codex_home"]
         seats.append(out)
     raw = {"paths": {"state_dir": s["state_dir"], "repos_root": s["repos_root"], "worktrees": s["worktrees"],
                      "wsl_distro": s["wsl_distro"], "wsl_user": s["wsl_user"]},

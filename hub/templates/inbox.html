@@ -2,7 +2,8 @@
 {% from "_macros.html" import comment_btn, badge, decide %}
 {% block content %}
 <h2>Needs me</h2>
-{% if not (questions or owner_items or imports or tuner or garden or failed) and not low %}<p class="muted empty">Nothing needs you.</p>{% endif %}
+{% for alert in usage_alerts %}<section class="card" role="alert"><h3>{{ alert.seat }} allowance</h3><p>{{ alert.message }}</p><a class="btn" href="/stats">Enter reading</a></section>{% endfor %}
+{% if not (questions or owner_items or imports or tuner or garden or failed or usage_alerts) and not low %}<p class="muted empty">Nothing needs you.</p>{% endif %}
 
 {% for q in questions %}
 <section class="card question" id="q-{{ q.id }}">

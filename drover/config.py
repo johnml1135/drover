@@ -42,7 +42,7 @@ DEFAULT_SEATS = [
      "director_reserve_pct": 0.0, "director": False, "placement": "wsl", "binary": "codex", "config_dir": ""},
 ]
 SEAT_DEFAULTS = {"priority": 1, "max_workers": 0, "reserve_pct": 10.0, "director_reserve_pct": 0.0,
-                 "director": False, "config_dir": "", "sandbox": "workspace-write"}
+                 "director": False, "config_dir": "", "codex_home": "", "sandbox": "workspace-write"}
 DEFAULT_TRACKERS = [
     {"kind": "load", "name": "load", "enabled": True, "queue_per_core": 2.5, "hold_per_core": 3.5},
     {"kind": "ram", "name": "ram", "enabled": True, "queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0},
@@ -57,6 +57,8 @@ DEFAULTS = {
     "config_sync": {"remote": "", "auto_push": True},
     "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": ""},
     "seats": DEFAULT_SEATS,
+    "seats_policy": {"waste_threshold_pct": 15.0},
+    "director": {"seat": "", "model": "", "effort": "high"},
     "models": {
         "ids": {"haiku-5.5": "claude-haiku-5-5", "sonnet-5.5": "claude-sonnet-5-5", "opus-5.5": "claude-opus-5-5"},
         "efforts": {"cheap": "xhigh", "mid": "high", "top": "high", "small_claude": "max", "small_codex": "xhigh"},
@@ -249,6 +251,7 @@ def _seat(raw, index):
     if not seat["binary"]:
         raise ConfigError(f"{_where(path + ['binary'])} must not be empty")
     seat["config_dir"] = _scalar(seat["config_dir"], str, path + ["config_dir"])
+    seat["codex_home"] = _scalar(seat["codex_home"], str, path + ["codex_home"])
     seat["sandbox"] = _choice(seat["sandbox"], ("read-only", "workspace-write"), path + ["sandbox"])
     if "director_reserve_pct" not in raw:
         seat["director_reserve_pct"] = 25.0 if seat["backend"] == "claude" and seat["director"] else 0.0
@@ -356,6 +359,13 @@ def validate(raw):
     cfg["config_sync"] = _check_table(raw.get("config_sync", {}), DEFAULTS["config_sync"], ["config_sync"])
     cfg["paths"] = _check_table(raw.get("paths", {}), DEFAULTS["paths"], ["paths"])
     cfg["seats"] = _seats(raw.get("seats", DEFAULT_SEATS))
+    cfg["seats_policy"] = _check_table(raw.get("seats_policy", {}), DEFAULTS["seats_policy"], ["seats_policy"],
+                                         {"waste_threshold_pct": (0, 100)})
+    cfg["director"] = _check_table(raw.get("director", {}), DEFAULTS["director"], ["director"])
+    if cfg["director"]["seat"] and cfg["director"]["seat"] != next(s["name"] for s in cfg["seats"] if s["director"]):
+        raise ConfigError("director.seat must name the director seat")
+    if not cfg["director"]["effort"]:
+        raise ConfigError("director.effort must not be empty")
     cfg["models"] = _check_table(raw.get("models", {}), DEFAULTS["models"], ["models"])
     cfg["capacity"] = _check_table(raw.get("capacity", {}), DEFAULTS["capacity"], ["capacity"],
                                    {"parallel_cap": (1, 64)})
@@ -381,6 +391,8 @@ def validate(raw):
         raise ConfigError(f"models.director {m['director']!r} must be on the claude ladder")
     if any(not d or d < 1 for d in cfg["policy"]["tuner_cadence_days"]) or not cfg["policy"]["tuner_cadence_days"]:
         raise ConfigError("policy.tuner_cadence_days must be a non-empty list of positive whole numbers")
+    if cfg["director"]["model"] and cfg["director"]["model"] not in m["ladders"]["claude"]:
+        raise ConfigError("director.model must be on the claude ladder")
     return cfg
 
 
@@ -530,10 +542,15 @@ def seats_for(backend, cfg=None):
 
 
 def seat_env(seat):
-    """{CLAUDE_CONFIG_DIR|CODEX_HOME: dir} for a seat with a config_dir, else {}."""
-    if not seat or not seat.get("config_dir"):
+    """Account selection for a worker or usage probe."""
+    if not seat:
         return {}
-    return {"CLAUDE_CONFIG_DIR" if seat["backend"] == "claude" else "CODEX_HOME": seat["config_dir"]}
+    path = (seat.get("codex_home") or seat.get("config_dir")) if seat["backend"] == "codex" else seat.get("config_dir")
+    path = path or ("~/.claude" if seat["backend"] == "claude" else "~/.codex")
+    # Pin a Windows account before a task can move its worker to WSL. WSL seats expand ~ there.
+    if seat.get("placement") == "windows":
+        path = os.path.expanduser(path)
+    return {"CLAUDE_CONFIG_DIR" if seat["backend"] == "claude" else "CODEX_HOME": path}
 
 
 def tracker(kind, cfg=None, name=None):

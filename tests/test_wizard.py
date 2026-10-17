@@ -271,6 +271,21 @@ class Answers(Base):
 
 
 class Writing(Base):
+    def test_existing_codex_home_survives_init_defaults_and_serialization(self):
+        account = '/home/acme/.codex-acme-lib'
+        old = config.validate({'seats': [config.DEFAULT_SEATS[0],
+                                       {**config.DEFAULT_SEATS[1], 'codex_home': account}]})
+        self.state.mkdir()
+        (self.state / 'config.toml').write_text(config.dumps(old), encoding='utf-8')
+        detected = fake(config_dirs=lambda: {'CODEX_HOME': '/home/acme/.codex-acme-app'})
+        for _ in range(2):
+            self.assertEqual(self.run_wizard(detect=detected, defaults=True)[0], 0)
+            raw = self.config()
+            self.assertEqual(raw['seats'][1]['codex_home'], account)
+            seat = config.validate(raw)['seats'][1]
+            self.assertEqual(config.seat_env(seat), {'CODEX_HOME': account})
+            self.assertEqual(seat['config_dir'], '')
+
     def test_an_existing_config_is_backed_up_not_lost(self):
         self.state.mkdir()
         (self.state / "config.toml").write_text("# old\n[hub]\nui_port = 1234\n")

@@ -9,7 +9,7 @@ import json
 import threading
 import time
 
-from drover import config, contract, decisions, importer, landing, origin, repos
+from drover import config, contract, decisions, importer, landing, origin, repos, stats, usage
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
@@ -104,8 +104,8 @@ class Store:
         t["related"] = ops.related_of(self.conn, tid)
         return t
 
-    def list_tasks(self, status=None, epic_id=None, repo=None, q=None, limit=500):
-        tasks = ops.list_tasks(self.conn, epic_id=epic_id, repo=repo)
+    def list_tasks(self, status=None, epic_id=None, repo=None, q=None, limit=500, include_archived=False):
+        tasks = ops.list_tasks(self.conn, epic_id=epic_id, repo=repo, include_archived=include_archived)
         if status:
             want = set(status.split(","))
             tasks = [t for t in tasks if t["status"] in want]
@@ -153,6 +153,42 @@ class Store:
         r = ops.reorder(self.conn, kind, item_id, before_id, after_id, actor=actor)
         self._changed("reordered", kind=kind, id=item_id)
         return r
+
+    @_translate
+    def archive_task(self, tid, archived=True, actor="owner"):
+        result = ops.archive_task(self.conn, tid, archived, actor)
+        self._changed("task.archived", id=tid, archived=archived)
+        return result
+
+    @_translate
+    def delete_task(self, tid, confirm=False, actor="owner"):
+        result = ops.delete_task(self.conn, tid, confirm, actor)
+        self._changed("task.deleted", id=tid)
+        return result
+
+    @_translate
+    def stats(self, since=None, task=None):
+        return stats.query(self.conn, since, task)
+
+    def seat_order(self):
+        return usage.order(self.conn, seat_load=usage.active_load(self.conn))
+
+    @_translate
+    def set_usage(self, seat, window, pct, resets):
+        if not config.seat_by_name(seat):
+            raise BadRequest("unknown seat")
+        result = usage.manual(self.conn, seat, window, pct, resets)
+        self._changed("usage.updated", seat=seat)
+        return result
+
+    def usage_alerts(self):
+        alerts = []
+        for seat in config.get()["seats"]:
+            row = self.conn.execute("SELECT ok FROM allowance_readings WHERE seat=? ORDER BY ts DESC,id DESC LIMIT 1",
+                                    (seat["name"],)).fetchone()
+            if row and not row["ok"]:
+                alerts.append({"seat": seat["name"], "message": "Allowance reading failed; enter a manual reading."})
+        return alerts
 
     # -- runs ------------------------------------------------------------
     @_translate
@@ -315,7 +351,8 @@ class Store:
         try:
             with tx(conn):
                 epics = {(e["repo"], e["title"].lower()): e["id"] for e in ops.list_epics(conn)}
-                seen = {(t["repo"], t["epic_id"], t["title"].lower()) for t in ops.list_tasks(conn)}
+                seen = {(t["repo"], t["epic_id"], t["title"].lower())
+                        for t in ops.list_tasks(conn, include_archived=True)}
                 for i, it in enumerate(items):
                     row = self._import_one(conn, i, it, epics, seen, dry_run, actor)
                     table.append(row)
@@ -409,8 +446,11 @@ class UiView:
     def inbox_questions(self):
         out = []
         tuner = {p["id"] for p in self.tuner_proposals() if p.get("question")}
+        archived = {r[0] for r in self.c.execute("SELECT id FROM tasks WHERE archived=1")}
         for q in self.s.list_questions(open_only=True):
             if str(q["id"]) in tuner:
+                continue
+            if q["target_kind"] == "task" and q["target_id"] in archived:
                 continue
             opts = [{"id": o["label"], "label": o["label"], "recommended": o.get("recommended")}
                     for o in q["options"]]
@@ -491,6 +531,30 @@ class UiView:
             out.append({**self._task_view(t, configured), "reason": reason})
         return out
 
+    def stats(self, since=None, task=None):
+        return self.s.stats(since, task)
+
+    def seat_order(self):
+        return self.s.seat_order()
+
+    def usage_alerts(self):
+        return self.s.usage_alerts()
+
+    def set_usage(self, seat, window, pct, resets):
+        return self.s.set_usage(seat, window, pct, resets)
+
+    def archived_tasks(self):
+        return [t for t in self.s.list_tasks(limit=100000, include_archived=True) if t["archived"]]
+
+    def archive_task(self, tid, archived=True):
+        return self.s.archive_task(tid, archived)
+
+    def delete_task(self, tid, confirm=False):
+        return self.s.delete_task(tid, confirm)
+
+    def task(self, tid):
+        return self.s.get_task(tid)
+
     def plan_epics(self):
         tasks = self.s.list_tasks(limit=100000)
         low = self._low_confidence_ids()
@@ -508,7 +572,7 @@ class UiView:
     def runs(self):
         rows = self.c.execute(
             "select r.*, t.title as task_title from runs r join tasks t on t.id=r.task_id "
-            "order by r.id desc limit 50").fetchall()
+            "where t.archived=0 order by r.id desc limit 50").fetchall()
         out = []
         for r in rows:
             toks = (r["tokens_in"] or 0) + (r["tokens_out"] or 0)

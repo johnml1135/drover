@@ -38,6 +38,11 @@ def render(conn, now=None):
     landed = []
     for e in ops.events(conn, kind="status"):
         if e["data"].get("to") == "landed" and e["at"].startswith(today):
-            landed.append(ops.get_task(conn, e["task_id"]))
+            try:
+                task = ops.get_task(conn, e["task_id"])
+            except ops.NotFound:
+                continue  # the owner may delete a task while retaining its audit events
+            if not task["archived"]:
+                landed.append(task)
     out += ["", "## Landed today", ""] + ([_line(t) for t in landed] or ["- none"]) + [""]
     return "\n".join(out)

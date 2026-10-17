@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from drover import config, contract, dispatcher, pipeline, repos, route
+from drover import config, contract, dispatcher, pipeline, repos, route, stats
 from hub.dispatch import LandingService
 from drover.ledger import ops
 from tests import test_dispatcher, test_pipeline
@@ -259,6 +259,20 @@ class GateBoth(Base):
         self.assertEqual(len(ops.events(self.conn, kind="gate-platform-passed")), 1)
         self.assertEqual(len(ops.events(self.conn, kind="gate-done")), 1)
         self.assertEqual(self.fl.of("gate")[1]["argv"][0], "python3")                 # the WSL gate runs under python3
+
+    def test_gate_stats_record_each_placement_before_launch_and_after_finish(self):
+        placements = []
+        def launch(spec):
+            if spec['role'] == 'gate':
+                row = next(r for r in stats.query(self.conn)['runs'] if r['id'] == spec['run_id'])
+                placements.append(row['stats']['placement'])
+            return self.launch(spec)
+        self.fl.launch = launch
+        tid, _ = self.drive()
+        self.assertEqual(placements, ['windows', 'wsl'])
+        gates = [r for r in stats.query(self.conn, task=tid)['runs'] if r['role'] == 'gate']
+        self.assertEqual([r['stats']['placement'] for r in gates], ['windows', 'wsl'])
+        self.assertTrue(all(r['ended'] for r in gates))
 
     def test_a_red_second_platform_fails_the_gate_and_names_the_platform(self):
         self.verdicts["wsl"] = False

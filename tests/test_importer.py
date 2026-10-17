@@ -189,6 +189,28 @@ class TestImport(Base):
         self.assertEqual(ops.get_question(self.conn, qid)["status"], "answered")
         self.assertNotIn(gid, [b["id"] for b in self.batches()])
 
+    def test_reimport_skips_owner_deleted_tasks_and_continues_other_imports(self):
+        self.run_it()
+        tid = next(t['id'] for t in ops.list_tasks(self.conn) if t['title'] == 'task 2')
+        ops.delete_task(self.conn, tid, confirm=True)
+        for reworded in (False, True, True):
+            with self.subTest(reworded=reworded):
+                data = copy.deepcopy(self.data)
+                if reworded:
+                    data['tasks'][1]['title'] = 'task 2a'
+                    data['tasks'][1]['source_refs'] = ['f.md:200']
+                data['tasks'][0]['goal'] = 'Updated acme-lib goal'
+                data['tasks'].append(task(5))
+                result = self.run_it(data=data)
+                self.assertEqual(result['counts']['task']['skipped'], 1)
+                tasks = ops.list_tasks(self.conn)
+                self.assertEqual(len(tasks), 4)
+                self.assertNotIn(tid, [t['id'] for t in tasks])
+                self.assertFalse(any(t['title'].startswith('task 2') for t in tasks))
+                self.assertEqual(next(t['goal'] for t in tasks if t['title'] == 'task 1'), 'Updated acme-lib goal')
+                self.assertTrue(ops.events(self.conn, kind='import-task', task_id=tid))
+                self.assertTrue(all(r['task'] != tid for b in self.batches() for r in b['entries']))
+
     def test_never_ready_assertion(self):
         self.run_it()
         self.assertEqual({t["status"] for t in ops.list_tasks(self.conn)}, {"proposed"})

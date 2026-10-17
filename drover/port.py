@@ -63,6 +63,10 @@ class DirectPort:
     def start_run(self, task_id, role, backend, model=None, effort=None):
         return ops.start_run(self.conn, task_id, role, backend, model, effort, actor=self.actor)
 
+    def set_run_context(self, run_id, **fields):
+        from . import stats
+        return stats.update_run(self.conn, run_id, **fields)
+
     def finish_run(self, run_id, outcome, **fields):
         return ops.finish_run(self.conn, run_id, outcome, actor=self.actor, **fields)
 

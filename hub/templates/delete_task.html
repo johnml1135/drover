@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Delete {{ task.id }}: {{ task.title }}?</h2>
+<p>This permanently removes the task and its runs. Aggregate statistics and the audit history remain.</p>
+<form method="post" action="/tasks/{{ task.id }}/delete">
+<label><input type="checkbox" name="confirm" value="1" required> Permanently delete this task and its runs</label>
+<button class="btn danger">Delete task</button> <a class="btn" href="/plan">Cancel</a>
+</form>
+{% endblock %}

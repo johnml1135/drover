@@ -86,6 +86,9 @@ def _jrow(row, *cols):
 
 
 def event(conn, kind, actor, data=None, task_id=None, epic_id=None, at=None):
+    if kind == "status" and (data or {}).get("to") == "landed" and (data or {}).get("from") != "landed":
+        from .. import stats
+        stats.landing(conn, _parse(at).timestamp() if at else None)
     conn.execute("INSERT INTO task_events(task_id,epic_id,kind,actor,data,at) VALUES(?,?,?,?,?,?)",
                  (task_id, epic_id, kind, actor, _j(data or {}), at or stamp()))
 
@@ -175,8 +178,8 @@ def get_task(conn, task_id):
     return _task(r)
 
 
-def list_tasks(conn, status=None, epic_id=None, repo=None):
-    q, a = "SELECT * FROM tasks WHERE 1=1", []
+def list_tasks(conn, status=None, epic_id=None, repo=None, include_archived=False):
+    q, a = "SELECT * FROM tasks WHERE " + ("1=1" if include_archived else "archived=0"), []
     for col, v in (("status", status), ("epic_id", epic_id), ("repo", repo)):
         if v is not None:
             q += f" AND {col}=?"
@@ -488,7 +491,7 @@ def _candidates(conn, repo=None, repo_path=None):
     q = ("SELECT t.*, COALESCE(e.rank, 1e18) AS epic_rank, "
          "(SELECT COUNT(*) FROM task_deps d JOIN tasks x ON x.id=d.task_id WHERE d.depends_on=t.id "
          " AND x.status NOT IN ('landed','cancelled')) AS dependents "
-         "FROM tasks t LEFT JOIN epics e ON e.id=t.epic_id WHERE t.status='ready' "
+         "FROM tasks t LEFT JOIN epics e ON e.id=t.epic_id WHERE t.status='ready' AND t.archived=0 "
          "AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks p ON p.id=d.depends_on "
          "WHERE d.task_id=t.id AND d.kind='blocks' AND p.status<>'landed')")
     a = []
@@ -581,11 +584,13 @@ def start_run(conn, task_id, role, backend, model=None, effort=None, policy_vers
         event(conn, "run-started", actor, {"run": cur.lastrowid, "role": role, "backend": backend}, task_id=task_id)
         if t["status"] == "claimed":
             set_status(conn, task_id, "running", actor, reason="run started")
+        from .. import stats
+        stats.initial_run(conn, cur.lastrowid)
         return cur.lastrowid
 
 
 def finish_run(conn, run_id, outcome, actor="system", tokens_in=None, tokens_out=None, tokens_cached=None,
-               allowance_used=None, gate_receipt=None, review_verdict=None, note=None):
+               allowance_used=None, gate_receipt=None, review_verdict=None, note=None, stats=None):
     if note is not None and len(note) > NOTE_MAX:
         raise ValueError(f"note is {len(note)} chars; the limit is {NOTE_MAX}")
     with tx(conn):
@@ -601,6 +606,10 @@ def finish_run(conn, run_id, outcome, actor="system", tokens_in=None, tokens_out
             "allowance_used=?, gate_receipt=?, review_verdict=?, note=? WHERE id=?",
             (now, wall, outcome, tokens_in, tokens_out, tokens_cached,
              _j(allowance_used) if allowance_used is not None else None, gate_receipt, review_verdict, note, run_id))
+        from .. import stats as stats_mod
+        if stats:
+            stats_mod.update_run(conn, run_id, **stats)
+        stats_mod.finish_run(conn, run_id)
         event(conn, "run-finished", actor, {"run": run_id, "outcome": outcome}, task_id=r["task_id"])
         return _jrow(conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone(), "allowance_used")
 
@@ -618,6 +627,8 @@ def amend_run(conn, run_id, outcome=None, gate_receipt=None, note=None):
             raise ValueError(f"run {run_id} is still open; finish it first")
         conn.execute("UPDATE runs SET outcome=COALESCE(?,outcome), gate_receipt=COALESCE(?,gate_receipt), "
                      "note=COALESCE(?,note) WHERE id=?", (outcome, gate_receipt, note, run_id))
+        from .. import stats
+        stats.update_run(conn, run_id, gate_result=gate_receipt or r["gate_receipt"])
         event(conn, "run-amended", "system", {"run": run_id, "outcome": outcome}, task_id=r["task_id"])
         return _jrow(conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone(), "allowance_used")
 
@@ -686,7 +697,7 @@ def _overlapping_in_epic(conn, t):
     if t["epic_id"] is None:
         return []
     mine = t["scope_files"]
-    return [o["id"] for o in list_tasks(conn, epic_id=t["epic_id"])
+    return [o["id"] for o in list_tasks(conn, epic_id=t["epic_id"], include_archived=True)
             if o["id"] != t["id"] and o["status"] in (*states.PENDING, "blocked")
             and scopes.any_overlap(mine, o["scope_files"])]
 
@@ -746,7 +757,7 @@ def add_comment(conn, target_kind, target_id, author, body, urgent=False, replan
             if target_kind == "task":
                 victims = dependents_of(conn, target_id, transitive=True)
             else:
-                victims = [t["id"] for t in list_tasks(conn, epic_id=target_id)]
+                victims = [t["id"] for t in list_tasks(conn, epic_id=target_id, include_archived=True)]
             held = [v for v in victims if _hold(conn, v, target_id, "urgent", author)]
             event(conn, "hold", author, {"reason": "urgent", "held": held}, **ids)
             routed.append("held")
@@ -841,3 +852,60 @@ def get_decision(conn, decision_id):
     if r is None:
         raise NotFound(f"decision {decision_id}")
     return _jrow(r, "answer", "probabilities", "rule_answer", "outcome")
+
+
+# ---- task lifecycle ------------------------------------------------------------------------------------
+
+def archive_task(conn, task_id, archived=True, actor="owner"):
+    if actor != "owner":
+        raise PermissionError("only the owner may archive tasks")
+    with tx(conn):
+        t = get_task(conn, task_id)
+        if t["status"] in ("claimed", "running", "gated", "reviewed") or conn.execute(
+                "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
+            raise ValueError("finish or cancel active work before archiving")
+        conn.execute("UPDATE tasks SET archived=?,updated=? WHERE id=?", (int(archived), stamp(), task_id))
+        event(conn, "task.archived", actor, {"archived": bool(archived)}, task_id=task_id)
+        return get_task(conn, task_id)
+
+
+def _rehome_gate_questions(conn, task_id):
+    """Keep repo gate answers on a surviving task, or clear their settings when none remains."""
+    rows = conn.execute(
+        "SELECT q.id,s.key FROM questions q JOIN settings s ON s.value=CAST(q.id AS TEXT) "
+        "WHERE q.target_kind='task' AND q.target_id=? AND s.key GLOB '_gate_question_*'",
+        (task_id,)).fetchall()
+    for qid, key in rows:
+        repo = key.removeprefix("_gate_question_")
+        replacement = conn.execute(
+            "SELECT id FROM tasks WHERE lower(repo)=? AND id<>? ORDER BY archived,rank,id LIMIT 1",
+            (repo, task_id)).fetchone()
+        if replacement:
+            conn.execute("UPDATE questions SET target_id=? WHERE id=?", (replacement[0], qid))
+        else:
+            conn.execute("DELETE FROM settings WHERE key IN (?,?)", (key, "gate_cmd_" + repo))
+
+
+def delete_task(conn, task_id, confirm=False, actor="owner"):
+    if actor != "owner":
+        raise PermissionError("only the owner may delete tasks")
+    if confirm is not True:
+        raise ValueError("confirm deletion explicitly")
+    with tx(conn):
+        t = get_task(conn, task_id)
+        if t["status"] in ("claimed", "running", "gated", "reviewed") or conn.execute(
+                "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
+            raise ValueError("finish or cancel active work before deleting")
+        _rehome_gate_questions(conn, task_id)
+        replan_release(conn, task_id, actor, reason=None)
+        # Landing metadata may reference a task; retain the audit batch but detach its membership.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_landed'").fetchone():
+            conn.execute("DELETE FROM task_landed WHERE task_id=?", (task_id,))
+        conn.execute("DELETE FROM task_deps WHERE task_id=? OR depends_on=?", (task_id, task_id))
+        conn.execute("DELETE FROM runs WHERE task_id=?", (task_id,))
+        for table in ("comments", "questions"):
+            conn.execute(f"DELETE FROM {table} WHERE target_kind='task' AND target_id=?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        # Append-only events and anonymous hourly/daily aggregates are retained.
+        event(conn, "task.deleted", actor, {"id": task_id})
+        return {"deleted": task_id}

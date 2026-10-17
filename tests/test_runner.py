@@ -1,4 +1,6 @@
 """Runner tests: real subprocesses running small python child scripts on the current OS."""
+import ctypes
+import importlib.util
 import json
 import os
 import shutil
@@ -45,6 +47,40 @@ def wait_for(cond, timeout=20):
             return v
         time.sleep(0.1)
     return None
+
+
+class WindowsMetricsTests(unittest.TestCase):
+    def test_job_io_uses_accounting_and_memory_uses_extended_limits(self):
+        kernel = Mock()
+
+        def query(job, kind, pointer, size, returned):
+            self.assertEqual(job, 42)
+            info = pointer._obj
+            self.assertEqual(size, ctypes.sizeof(info))
+            self.assertIsNone(returned)
+            if kind in (1, 8):
+                basic = info.BasicInfo if kind == 8 else info
+                basic.user, basic.kernel = 20_000_000, 5_000_000
+                if kind == 8:
+                    info.IoInfo.rb, info.IoInfo.wb = 4096, 8192
+            elif kind == 9:
+                info.PeakJobMemoryUsed = 2 * 1024 ** 2
+                info.IoInfo.rb, info.IoInfo.wb = 900_000, 900_000  # reserved, never read
+            else:
+                self.fail(f"unexpected job information class {kind}")
+            return 1
+
+        kernel.QueryInformationJobObject.side_effect = query
+        spec = importlib.util.spec_from_file_location("drover._runner_windows_test", runner.__file__)
+        windows_runner = importlib.util.module_from_spec(spec)
+        # Load the Windows implementation on either OS, without touching real jobs.
+        with patch.object(sys, "platform", "win32"), \
+             patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+            spec.loader.exec_module(windows_runner)
+        tree = windows_runner.WindowsTree.__new__(windows_runner.WindowsTree)
+        tree.job = 42
+        self.assertEqual(tree.metrics(), (2.5, 2 * 1024 ** 2, 12288))
+        self.assertEqual([call.args[1] for call in kernel.QueryInformationJobObject.call_args_list], [8, 9])
 
 
 class Base(unittest.TestCase):

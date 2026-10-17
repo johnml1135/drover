@@ -243,7 +243,12 @@ def import_tasks(conn, data, epic_ids, tally):
         old = matched.get(i)
         if old:
             tid = old["task_id"]
-            cur = ops.get_task(conn, tid)
+            try:
+                cur = ops.get_task(conn, tid)
+            except ops.NotFound:
+                # Retained import events are tombstones for owner-deleted tasks, including fuzzy matches.
+                tally.add("task", "skipped")
+                continue
             diff = {k: v for k, v in fields.items() if cur[k] != v}
             if diff and (cur["status"] != "proposed" or owner_touched(conn, task_id=tid)):
                 why = "task is " + cur["status"] if cur["status"] != "proposed" else "owner touched this task"

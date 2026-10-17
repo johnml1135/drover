@@ -1,0 +1,34 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% block content %}
+<h2>Stats</h2>
+<p class="muted">Hourly history for 35 days, daily history for one year. Run and task statistics stay in the ledger.</p>
+<p id="stats-error" role="alert" hidden></p>
+<div class="stats-grid">
+  <section class="card"><h3>Allowance used (%)</h3><div id="chart-allowance" class="chart" aria-label="Allowance per seat and reset markers"></div></section>
+  <section class="card"><h3>Tokens by model</h3><div id="chart-tokens" class="chart" aria-label="Tokens over time"></div></section>
+  <section class="card"><h3>CPU, RAM and disk</h3><div id="chart-resources" class="chart" aria-label="Resource history"></div></section>
+  <section class="card"><h3>Landings per day</h3><div id="chart-throughput" class="chart" aria-label="Throughput"></div></section>
+</div>
+<h2>Seats</h2>
+{% for s in seats %}
+<section class="card">
+  <h3>{{ loop.index }}. {{ s.seat }} <span class="pill {{ 'ok' if s.eligible else 'warn' }}">{{ 'available' if s.eligible else 'waiting' }}</span></h3>
+  <p>{{ s.reason }}{% if s.burn_per_hour is not none %} · weekly burn {{ '%.2f'|format(s.burn_per_hour) }}%/hour{% endif %}</p>
+  <ul>{% for r in s.readings %}<li>{{ r.window }}: {{ r.used_pct }}% used · reset <time data-epoch="{{ r.resets_at or '' }}">{{ r.resets_at or 'no active window' }}</time></li>{% else %}<li>No current readings.</li>{% endfor %}</ul>
+  <form method="post" action="/usage">
+    <input type="hidden" name="seat" value="{{ s.seat }}">
+    <label>Window <select name="window"><option value="five_hour">Session</option><option value="seven_day">Week</option></select></label>
+    <label>Used % <input name="pct" type="number" min="0" max="100" step="any" required></label>
+    <label>Reset (ISO time with timezone) <input name="resets" placeholder="2026-10-20T04:00:00-04:00" required></label>
+    <button class="btn">Save manual reading</button>
+  </form>
+</section>
+{% endfor %}
+{% if archived %}<h2>Archived tasks</h2>{% for t in archived %}
+<section class="card"><h3>{{ t.title }}</h3><div class="actions">
+<form method="post" action="/tasks/{{ t.id }}/archive"><input type="hidden" name="archived" value="0"><button class="btn">Restore</button></form>
+<a class="btn danger" href="/tasks/{{ t.id }}/delete">Delete…</a>
+</div></section>{% endfor %}{% endif %}
+<script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
+<script src="/static/stats.js"></script>
+{% endblock %}

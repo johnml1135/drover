@@ -3,6 +3,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from drover import config
 
@@ -164,7 +165,16 @@ class Layers(unittest.TestCase):
         c = load("[[seats]]\nname='a'\nbackend='claude'\ndirector=true\n[[seats]]\nname='b'\nbackend='codex'\n"
                  "config_dir='/home/me/.codex-b'\n")
         self.assertEqual(config.seat_env(c["seats"][1]), {"CODEX_HOME": "/home/me/.codex-b"})
-        self.assertEqual(config.seat_env(c["seats"][0]), {})
+        with patch('os.path.expanduser', return_value='/home/acme/.claude'):
+            self.assertEqual(config.seat_env(c["seats"][0]), {'CLAUDE_CONFIG_DIR': '/home/acme/.claude'})
+
+    def test_wsl_default_accounts_expand_on_the_seats_os(self):
+        seats = load()['seats']
+        with patch('os.path.expanduser', side_effect=AssertionError('must expand inside WSL')):
+            self.assertEqual(config.seat_env({**seats[0], 'placement': 'wsl'}),
+                             {'CLAUDE_CONFIG_DIR': '~/.claude'})
+            self.assertEqual(config.seat_env(seats[1]), {'CODEX_HOME': '~/.codex'})
+            self.assertEqual(config.seat_env(None), {})
 
     def test_reserved_oidc_keys_are_accepted_and_ignored(self):
         c = load("[hub.auth]\nmode='tailscale'\nissuer='https://accounts.google.com'\nclient_id='x'\n"
@@ -246,9 +256,15 @@ class Writer(unittest.TestCase):
     def test_backslash_paths_are_literal_strings(self):
         self.assertIn("'C:\\Users\\me'", config.dumps({"p": "C:\\Users\\me"}))
 
-    def test_example_file_loads_and_equals_the_defaults(self):
+    def test_example_file_loads_with_account_seats(self):
         raw = tomllib.loads((REPO / "drover.example.toml").read_text(encoding="utf-8"))
-        self.assertEqual(config.validate(raw), load())
+        cfg = config.validate(raw)
+        self.assertEqual([(s["name"], s["priority"]) for s in cfg["seats"]],
+                         [("codex", 1), ("claude", 2), ("claude-personal", 3)])
+        self.assertEqual(cfg["director"], {"seat": "claude", "model": "opus-5.5", "effort": "high"})
+        self.assertEqual(config.seat_env(cfg["seats"][0]), {"CODEX_HOME": "~/.codex"})
+        for key in set(cfg) - {"seats", "director"}:
+            self.assertEqual(cfg[key], load()[key])
 
     def test_example_documents_every_key(self):
         text = (REPO / "drover.example.toml").read_text(encoding="utf-8")

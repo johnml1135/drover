@@ -236,11 +236,13 @@ if IS_WINDOWS:
     _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _k32.CreateJobObjectW.restype = wintypes.HANDLE
     _k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    _k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
     _k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     _k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     _k32.CloseHandle.argtypes = [wintypes.HANDLE]
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    JOB_BASIC_AND_IO_ACCOUNTING_CLASS = 8
     JOB_EXTENDED_LIMIT_CLASS = 9
     CREATE_SUSPENDED = 0x4
     CREATE_NEW_PROCESS_GROUP = 0x200
@@ -280,6 +282,20 @@ if IS_WINDOWS:
                 _k32.CloseHandle(job)
                 raise ctypes.WinError(err)
             return job
+
+        def metrics(self):
+            class Accounting(ctypes.Structure):
+                _fields_ = [(n, ctypes.c_int64) for n in ("user", "kernel", "period_user", "period_kernel")] + [
+                    (n, wintypes.DWORD) for n in ("faults", "total", "active", "terminated")]
+            class AccountingAndIO(ctypes.Structure):
+                _fields_ = [("BasicInfo", Accounting), ("IoInfo", _IOC)]
+            accounting, ext = AccountingAndIO(), _EXT()
+            for kind, obj in ((JOB_BASIC_AND_IO_ACCOUNTING_CLASS, accounting), (JOB_EXTENDED_LIMIT_CLASS, ext)):
+                if not _k32.QueryInformationJobObject(self.job, kind, ctypes.byref(obj), ctypes.sizeof(obj), None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            basic = accounting.BasicInfo
+            return ((basic.user + basic.kernel) / 10_000_000, ext.PeakJobMemoryUsed,
+                    accounting.IoInfo.rb + accounting.IoInfo.wb)
 
         def close_and_kill(self):
             if self.job:
@@ -428,6 +444,9 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     env["DROVER_RUN_ID"] = st.d["run_id"]
     if scratch is not None:
         env.update({name: str(scratch) for name in ("TMPDIR", "TMP", "TEMP")})
+    for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
+        if env.get(key):
+            env[key] = os.path.expanduser(env[key])
     stdin_f = subprocess.DEVNULL
     try:
         if stdin_file:
@@ -440,6 +459,8 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     finally:
         if stdin_file and stdin_f is not subprocess.DEVNULL:
             stdin_f.close()
+    from .metrics import Peaks, proc_group
+    peaks = Peaks(tree.metrics if IS_WINDOWS else lambda: proc_group(proc.pid))
     watch = None
     try:
         st.set(state="running", pid=proc.pid)
@@ -448,6 +469,8 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
         size, outcome = 0, None
         while proc.poll() is None:
             now = time.monotonic()
+            if peaks.last is None or now - peaks.last[0] >= 1:
+                st.d["peaks"] = dict(peaks.sample())
             watch.seek(0, 2)
             if watch.tell() != size:
                 size, last_change = watch.tell(), now
@@ -469,7 +492,7 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
         rec = scan_record(out)
         if rec:
             write_json_atomic(d / RECORD_FILE, rec)
-        st.set(state=state, reason=reason, exit_code=rc, ended=now_iso())
+        st.set(state=state, reason=reason, exit_code=rc, ended=now_iso(), peaks=dict(peaks.sample()))
     except BaseException:
         try:
             tree.kill(min(kill_after, 3))       # never leave the worker running unsupervised

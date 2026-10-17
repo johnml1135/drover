@@ -1,7 +1,7 @@
-# drover.example.toml: every configuration key, with its default.
+# drover.example.toml: configuration keys and recommended account seats.
 #
 # Copy to %USERPROFILE%\.drover\config.toml (or run `python -m drover init`, which writes one for your machine).
-# Anything you leave out takes the value shown here, and the defaults reproduce Drover's built-in behaviour.
+# Omitted keys use built-in defaults; the seats below demonstrate the recommended account setup.
 # Layers, lowest first: this file's defaults, <home>/config.toml, <drover checkout>/.drover/config.toml (an optional
 # overlay; DROVER_OVERLAY names another file), then DROVER_* environment variables. DROVER_HOME names the folder
 # holding config.toml (default ~/.drover). Every scalar key can be set from the environment as DROVER_<SECTION>_<KEY>, for example
@@ -47,25 +47,9 @@ wsl_distro = "Ubuntu"
 # The user inside that distro. Empty = your Windows user name.
 wsl_user = ""
 
-# Seats: one entry per Claude or Codex account the dispatcher may send workers to. [[seats]] replaces the default
-# pair below as a whole; give every seat you want. Exactly one seat must be the director, and it must be a Claude seat.
-# The router tries seats by priority (the lowest number first); seats of equal priority share work in proportion to
-# their allowance headroom. A seat's reserve is allowance kept back from workers; the director seat additionally holds
-# director_reserve_pct back from every other worker on its backend, so the director is never starved.
-# Allowance is read once per backend for now (one Claude reading, one Codex reading); a reading per config_dir is
-# deferred, so two seats of one backend share one allowance reading.
-[[seats]]
-name = "claude"             # letters, digits, . _ - ; unique
-backend = "claude"          # claude | codex
-priority = 1                # lower is tried first
-max_workers = 0             # workers at once on this seat; 0 = no per-seat limit (parallel_cap still applies)
-reserve_pct = 10.0          # allowance % never spent
-director = true             # exactly one seat; Claude only
-director_reserve_pct = 25.0 # director seat only: extra % that other Claude workers must leave
-placement = "windows"       # windows | wsl: where this seat's workers run (a linux-tagged task may still go to WSL on a windows Claude seat)
-binary = "claude"           # the executable; a bare name is looked up on PATH (in WSL: the path the hub discovered)
-config_dir = ""             # sets CLAUDE_CONFIG_DIR (claude) or CODEX_HOME (codex) for this seat's workers; empty = the CLI's default
-
+# Seats identify accounts by their config directory. The example uses the owner-settled order;
+# omitted [[seats]] retains the legacy two-seat defaults. Lists replace the defaults as a whole.
+# A zero max_workers leaves only the global parallel_cap. Codex runs in WSL (ADR 0002).
 [[seats]]
 name = "codex"
 backend = "codex"
@@ -74,10 +58,43 @@ max_workers = 0
 reserve_pct = 10.0
 director = false
 director_reserve_pct = 0.0
-placement = "wsl"           # a codex seat must be wsl: Codex shelling out on Windows corrupts the Windows login registry (ADR 0002)
+placement = "wsl"
 binary = "codex"
-sandbox = "workspace-write" # read-only is also supported; bypassing the sandbox is never allowed
+sandbox = "workspace-write"
+codex_home = "~/.codex"      # CODEX_HOME; config_dir remains a compatible alias
 config_dir = ""
+
+[[seats]]
+name = "claude"
+backend = "claude"
+priority = 2
+max_workers = 0
+reserve_pct = 25.0           # workers leave 25%; director work may use it
+director = true
+director_reserve_pct = 0.0   # legacy extra backend reserve; measured routing uses reserve_pct
+placement = "windows"
+binary = "claude"
+config_dir = "~/.claude"    # CLAUDE_CONFIG_DIR
+
+[[seats]]
+name = "claude-personal"
+backend = "claude"
+priority = 3
+max_workers = 0
+reserve_pct = 10.0
+director = false
+director_reserve_pct = 0.0
+placement = "windows"
+binary = "claude"
+config_dir = "~/.claude-personal"
+
+[seats_policy]
+waste_threshold_pct = 15.0 # projected unused weekly percentage points at reset; urgent seats move first
+
+[director]
+seat = "claude"            # empty selects the seat flagged director
+model = "opus-5.5"         # empty uses models.director
+effort = "high"
 
 [models]
 review = "sonnet-5.5"       # the reviewer model

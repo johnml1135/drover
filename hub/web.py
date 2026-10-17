@@ -19,7 +19,7 @@ templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["markdown"] = markdown
 router = APIRouter()
 
-TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("runs", "Runs"), ("landing", "Landing"), ("health", "Health")]
+TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("runs", "Runs"), ("landing", "Landing"), ("health", "Health"), ("stats", "Stats")]
 GROUPS = ("epic", "state", "repo", "model")
 FILTERS = ("state", "repo", "model", "low")
 KINDS = {"owner", "import", "tuner", "garden", "task", "epic", "question", "run"}
@@ -53,6 +53,7 @@ def _render(request, name, store, **ctx):
     ctx.setdefault("unread", inbox_count(store))
     ctx.setdefault("tabs", TABS)
     ctx.setdefault("dispatch", _call(store, "dispatch_state", default={"enabled": False, "label": "PAUSED"}))
+    ctx.setdefault("usage_alerts", _call(store, "usage_alerts", default=[]))
     ctx.setdefault("partial", False)
     return templates.TemplateResponse(request, name, ctx)
 
@@ -79,7 +80,7 @@ def inbox_count(store) -> int:
         d = inbox_data(store)
     except Exception:
         return 0
-    return sum(len(v) for v in d.values())
+    return sum(len(v) for v in d.values()) + len(_call(store, "usage_alerts", default=[]))
 
 
 @router.get("/", include_in_schema=False)
@@ -338,3 +339,38 @@ async def reorder(request: Request, store=Depends(get_store)):
         raise HTTPException(422, "before or after required")
     store.reorder(kind, iid, before=before or None, after=after or None)
     return _tab(request, "plan", store, **plan_view(store))
+
+
+@router.get("/stats", response_class=HTMLResponse)
+def stats_tab(request: Request, store=Depends(get_store)):
+    return _tab(request, "stats", store, seats=_call(store, "seat_order", default=[]),
+                archived=_call(store, "archived_tasks", default=[]))
+
+
+@router.post("/usage")
+async def manual_usage(request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    try:
+        store.set_usage(_one(form, "seat"), _one(form, "window"), float(_one(form, "pct")), _one(form, "resets"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return RedirectResponse("/stats", status_code=303)
+
+
+@router.post("/tasks/{tid}/archive")
+async def archive_task(tid: str, request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    store.archive_task(tid, _one(form, "archived", "1") == "1")
+    return RedirectResponse("/plan", status_code=303)
+
+
+@router.get("/tasks/{tid}/delete", response_class=HTMLResponse)
+def delete_confirmation(tid: str, request: Request, store=Depends(get_store)):
+    return _render(request, "delete_task.html", store, tab="plan", task=store.task(tid))
+
+
+@router.post("/tasks/{tid}/delete")
+async def delete_task(tid: str, request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    store.delete_task(tid, confirm=_one(form, "confirm") == "1")
+    return RedirectResponse("/plan", status_code=303)

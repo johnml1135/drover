@@ -115,10 +115,24 @@ class Usage:
     def __init__(self):
         self.tin = self.tout = self.cached = self.context = 0
         self.text, self._claude_final = "", False
+        self.sessions, self.compactions, self.models = set(), 0, {}
+        self._messages = set()
 
     def feed(self, ev):
         t = ev.get("type")
+        if ev.get("session_id"):
+            self.sessions.add(ev["session_id"])
+        if t == "thread.started" and ev.get("thread_id"):
+            self.sessions.add(ev["thread_id"])
+        if t == "system" and ev.get("subtype") == "compact_boundary":
+            self.compactions += 1
         if t == "assistant":
+            message = ev.get("message") or {}
+            key = message.get("id")
+            if key and key in self._messages:
+                return
+            if key:
+                self._messages.add(key)
             u = (ev.get("message") or {}).get("usage") or {}
             ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
                 + (u.get("cache_creation_input_tokens") or 0)
@@ -127,11 +141,25 @@ class Usage:
                 self.tin += u.get("input_tokens") or 0
                 self.tout += u.get("output_tokens") or 0
                 self.cached += u.get("cache_read_input_tokens") or 0
+            model = (ev.get("message") or {}).get("model")
+            if model:
+                dest = self.models.setdefault(model, {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0,
+                                                      "tokens_cache_write": 0})
+                for field, source in (("tokens_in", "input_tokens"), ("tokens_out", "output_tokens"),
+                                      ("tokens_cached", "cache_read_input_tokens"),
+                                      ("tokens_cache_write", "cache_creation_input_tokens")):
+                    dest[field] += u.get(source) or 0
             for b in (ev.get("message") or {}).get("content") or []:
                 if b.get("type") == "text":
                     self.text = b.get("text", "")
         elif t == "result":
             self.text = ev.get("result") or self.text
+            if isinstance(ev.get("modelUsage"), dict):
+                self.models = {model: {"tokens_in": values.get("inputTokens", 0),
+                                       "tokens_out": values.get("outputTokens", 0),
+                                       "tokens_cached": values.get("cacheReadInputTokens", 0),
+                                       "tokens_cache_write": values.get("cacheCreationInputTokens", 0)}
+                               for model, values in ev["modelUsage"].items()}
             u = ev.get("usage")
             if u:
                 self._claude_final = True
@@ -148,7 +176,9 @@ class Usage:
 
     def as_dict(self):
         return {"tokens_in": self.tin, "tokens_out": self.tout, "tokens_cached": self.cached,
-                "context": self.context}
+                "context": self.context, "sessions": len(self.sessions) or int(bool(
+                    self.tin or self.tout or self.cached or self.text or self.models)), "compactions": self.compactions,
+                "tokens_by_model": self.models}
 
 
 def _one_line(text, limit=160):
@@ -352,7 +382,7 @@ class RunnerHandle:
         return {"status": status, "record": record, "usage": usage.as_dict(), "text": text,
                 "handoff": rotation_handoff(self.spec["task"], usage, self.ceiling) if rotate else None,
                 "returncode": rc, "timeout": reason if state == "timeout" else None, "tail_error": self.tail.error,
-                "adopted": bool(self.spec.get("adopted"))}
+                "adopted": bool(self.spec.get("adopted")), "peaks": st.get("peaks", {})}
 
     def poll(self):
         return self.result if self._done.is_set() else None

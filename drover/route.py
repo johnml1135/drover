@@ -226,12 +226,65 @@ def _backends_by_priority(allowed, seats):
     return sorted(b for b, pr in best.items() if pr == low)
 
 
-def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=None, seat_load=None, platforms=None):
+def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering, rng, borrow_approved):
+    """Choose an account using measured allowance only; model policy stays inside that account."""
+    cfg = config_mod.get()
+    role, key = task.get("role", "worker"), route_key(task.get("role", "worker"), task.get("size"))
+    privileged = role in DIRECTOR_ROLES
+    requested = task.get("director_seat") if privileged else None
+    default = cfg["director"]["seat"] or config_mod.director_seat(cfg)["name"]
+    if requested and requested != default and not borrow_approved:
+        return {"backend": None, "seat": None, "reason": "director borrowing requires owner approval",
+                "needs_owner": True, "borrow_seat": requested}
+    candidates = [dict(c) for c in (policy or {}).get("routes", {}).get(key, [])] or default_candidates(key)
+    if privileged:
+        candidates = [{"backend": "claude", "model": cfg["director"]["model"] or cfg["models"]["director"],
+                       "effort": cfg["director"]["effort"]}]
+    allowed = eligible_seats(seats, seat_load, platforms)
+    if privileged:
+        allowed = [s for s in allowed if s["name"] == (requested or default)]
+    if key.startswith("worker:") and _is_dotnet_windows(task):
+        allowed = [s for s in allowed if s["backend"] == "claude" and "windows" in seat_placements(s)]
+    if not allowed and not (privileged and not requested):
+        return no_seat_route(seats, platforms, privileged and not requested)
+    ranks = {r["seat"]: r for r in ordering or []}
+    allowed.sort(key=lambda s: (not ranks.get(s["name"], {}).get("urgent", False), s["priority"],
+                                (seat_load or {}).get(s["name"], 0), s["name"]))
+    for seat in allowed:
+        h = heads.get(seat["name"])
+        # The default director may use its reserve. A borrowed account keeps its own floor.
+        protected = not (privileged and seat["name"] == default)
+        if not h or h["remaining_pct"] <= 0 or (protected and h["remaining_pct"] <= seat["reserve_pct"]):
+            continue
+        pool = [c for c in candidates if c["backend"] == seat["backend"]]
+        if not pool:
+            continue
+        c = pick_candidate(pool, rng, (policy or {}).get("min_first_pass", MIN_FIRST_PASS))
+        return {"seat": seat["name"], "backend": seat["backend"], "model": c["model"],
+                "effort": c.get("effort") or (top_effort(cfg)[seat["backend"]] if key == "worker:S"
+                                               else cfg["models"]["efforts"]["mid"]),
+                "harness": c.get("harness", "default"),
+                "reason": ranks.get(seat["name"], {}).get("reason", f"priority {seat['priority']}")}
+    if privileged and not requested:
+        other = [s for s in eligible_seats(seats, seat_load, platforms) if s["name"] != default
+                 and s["backend"] == "claude" and (heads.get(s["name"]) or {}).get("remaining_pct", 0) > s["reserve_pct"]]
+        if other:
+            seat = min(other, key=lambda s: (s["priority"], s["name"]))
+            return {"backend": None, "seat": None, "needs_owner": True, "borrow_seat": seat["name"],
+                    "reason": "director borrowing requires owner approval"}
+    return {"backend": None, "seat": None, "reason": "no allowance above reserve"}
+
+
+def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=None, seat_load=None, platforms=None,
+           seat_headroom=None, seat_order=None, director_borrow_approved=False):
     """Return {seat, backend, model, effort, harness}; backend is None (with a reason) when no seat can take the run.
     seats default to the config's; seat_load is {seat name: live workers}; platforms is the repo's run platforms."""
     rng = rng or random.Random(seed)
     cfg = config_mod.get()
     all_seats = seats if seats is not None else cfg["seats"]
+    if seat_headroom is not None:
+        return _observed_choice(task, policy, all_seats, seat_load, platforms, seat_headroom, seat_order, rng,
+                                director_borrow_approved)
     role = task.get("role", "worker")
     key = route_key(role, task.get("size"))
     dotnet_worker = key.startswith("worker:") and _is_dotnet_windows(task)

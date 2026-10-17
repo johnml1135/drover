@@ -9,6 +9,8 @@
     <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"task","id":t.id|string,"move":"down"}|tojson|forceescape }}' data-move="task:{{ t.id }}:down" hx-target="#content" aria-label="Move {{ t.title }} down">Move down</button>
     {% endif %}
     {{ comment_btn('task', t.id) }}
+    <form method="post" action="/tasks/{{ t.id }}/archive"><input type="hidden" name="archived" value="1"><button class="btn">Archive</button></form>
+    <a class="btn danger" href="/tasks/{{ t.id }}/delete">Delete…</a>
   </div>
   {% if draggable %}<span class="grip" role="img" aria-label="Drag handle">&#8942;&#8942;</span>{% endif %}
 </li>
