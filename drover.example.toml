@@ -149,7 +149,7 @@ hold_mem_pct = 0.0
 tau = 0.8                   # the decider's starting confidence threshold; the tuner moves it
 landing_batch_size = 3      # 1..5, the starting landing batch size; the tuner moves it
 tuner_cadence_days = [1, 1, 2, 3, 5, 7]   # days between tuning passes by step, then the last value forever
-push = false                # default for repos that do not set [land] push: land on local main only
+push = false                # legacy setting; repos default to [landing] push = false
 
 [decider]
 commercial_use = false      # choose model licences that permit your intended use

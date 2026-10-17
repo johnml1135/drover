@@ -60,6 +60,17 @@ with its `repo`, goal, acceptance criteria and file scope. API clients use the c
 In the hub's Inbox, inspect the proposed task and choose Approve. Enable dispatch when ready.
 The Plan and Runs views show progress; owner questions appear in the Inbox.
 
+Repo configs support `[landing]` with `mode = "local"`, `push = false`, `remote = "origin"`, and
+`main = "main"` by default. `mode = "pr"` is reserved and rejected. `[land].policy` still selects batch or single.
+Before new task branches and before landing, Drover fetches remote main and fast-forwards the local main ref.
+It preserves local unpushed landings; histories with commits unique to both sides stop in `needs-owner`.
+A failed fetch pauses only that repo and opens an owner alert; answer it to retry.
+When origin moves during gating, the batch is replayed on the new main and gated again; conflicts need the owner.
+Main's checkout files and index are never updated, so its displayed status may change when the ref advances.
+The owner can push ahead commits using **Push main** on the Landing tab. `push = true` pushes after a local landing;
+a failed push alerts the owner and retains the landed task. No push uses force.
+Legacy `remote`, `default_branch`, and `[land].push` remain supported; `[landing]` values take precedence.
+
 Every coding task has one home repo. Cross-repo work uses paired tasks, with the provider landing first and the
 consumer testing again against the landed provider. Research tasks produce reports. See [ADR 0003](docs/adr/0003-task-writes-one-repo.md).
 

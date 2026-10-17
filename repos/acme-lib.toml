@@ -11,4 +11,8 @@ unknown = false
 full = ["python", "-m", "unittest", "discover"]
 [land]
 policy = "batch"
+[landing]
+mode = "local"
 push = false
+remote = "origin"
+main = "main"

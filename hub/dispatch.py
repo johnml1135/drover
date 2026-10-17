@@ -67,7 +67,7 @@ class LandingService:
 
     It writes the settings `landing_batch` ({status, tasks:[{id,title}]}, empty when none runs) and `gate`
     ({status, median, red_rate}) that the Landing page reads. A repo lands on its local default branch unless its
-    config says land.push = true. The thread has its own ledger connection (the store's per-thread one)."""
+    config says landing.push = true. The thread has its own ledger connection (the store's per-thread one)."""
 
     def __init__(self, store, settings, interval_s=LANDING_INTERVAL_S, repos_dir=None, gate_kw=None, run=subprocess.run):
         self.store, self.settings, self.interval_s = store, settings, interval_s
@@ -162,12 +162,12 @@ class LandingService:
     def _land_repo(self, conn, name, prog):
         repo = repos.native(prog["repo"])
         push = prog["land"]["push"]
-        base_ref = f"{prog['remote']}/{prog['default_branch']}" if push else prog["default_branch"]
+        base_ref = prog["default_branch"]
         out_dir = Path(self.settings.runs_dir) / "landing"
         out_dir.mkdir(parents=True, exist_ok=True)
         work = Path(repos.native(prog["worktrees"])) / f"drover-landing-{name.lower()}"
         size = 1 if prog["land"]["policy"] == "single" else None
-        hold = landing.dirty_checkout_hold(conn, repo, prog["default_branch"], name)
+        hold = landing.sync_main(conn, repo, prog['remote'], prog['default_branch'], name)
         if hold:
             return hold
         batch = landing.form_batch(conn, repo, base_ref, size, name) if not landing.held(

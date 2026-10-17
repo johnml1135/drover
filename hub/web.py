@@ -200,7 +200,14 @@ def run_tail(rid: str, request: Request, store=Depends(get_store)):
 def landing(request: Request, store=Depends(get_store)):
     data = _call(store, "landing", default={}) or {}
     return _tab(request, "landing", store, queue=data.get("queue", []), batch=data.get("batch"),
-                gate=data.get("gate") or {})
+                gate=data.get("gate") or {}, repos=data.get("repos") or [])
+
+
+@router.post("/repos/{name}/push-main")
+def push_main(name: str, store=Depends(get_store)):
+    """Owner-only through the UI auth and CSRF middleware; never exposed on the API."""
+    store.push_main(name)
+    return RedirectResponse("/landing", status_code=303)
 
 
 @router.get("/health", response_class=HTMLResponse)

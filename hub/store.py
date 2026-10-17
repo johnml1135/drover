@@ -9,7 +9,7 @@ import json
 import threading
 import time
 
-from drover import config, contract, decisions, importer, repos
+from drover import config, contract, decisions, importer, landing, origin, repos
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
@@ -537,7 +537,24 @@ class UiView:
         return {"queue": [{"id": t["id"], "title": t["title"], "state": t["status"]}
                           for t in self.s.list_tasks(status="gated,reviewed")],
                 "batch": self.s._json_setting("landing_batch"),
-                "gate": self.s._json_setting("gate", {})}
+                "gate": self.s._json_setting("gate", {}),
+                "repos": [{"name": prog["name"], "ahead": count}
+                          for prog in repos.load_all().values()
+                          if (count := origin.ahead(repos.native(prog["repo"]), prog["remote"], prog["default_branch"]))]}
+
+    def push_main(self, name):
+        """Owner action; repo paths and remote names come only from validated configuration."""
+        prog = repos.load_all().get(name.lower())
+        if prog is None:
+            raise NotFound("unknown repo")
+        try:
+            origin.push_main(repos.native(prog["repo"]), prog["remote"], prog["default_branch"])
+        except origin.SyncError as e:
+            ops.ask_question(self.c, 'epic', landing._epic(self.c, 'Landing'), 'Push main failed', str(e),
+                             options=[{'label': 'Acknowledged'}], actor='owner')
+            self.s._changed("repo.push-failed", repo=name)
+            raise BadRequest(str(e)) from e
+        self.s._changed("repo.pushed", repo=name)
 
     def health(self):
         hb = self.s.get_heartbeat() or {}

@@ -1,6 +1,14 @@
 {% extends "_partial.html" if partial else "base.html" %}
 {% from "_macros.html" import comment_btn, badge %}
 {% block content %}
+{% if repos %}
+<h2>Local main</h2>
+{% for repo in repos %}
+<section class="card"><strong>{{ repo.name }}</strong> · {{ repo.ahead }} unpushed commit(s)
+<form method="post" action="/repos/{{ repo.name | urlencode }}/push-main"><button type="submit">Push main</button></form>
+</section>
+{% endfor %}
+{% endif %}
 <h2>Landing queue</h2>
 <ol class="queue">
 {% for q in queue %}<li class="card"><strong>{{ q.title }}</strong> {{ badge(q.state) }} {{ comment_btn('task', q.id) }}</li>

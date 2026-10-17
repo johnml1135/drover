@@ -12,7 +12,7 @@ import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, garden, gate, launch, repos, runner, worktrees
+from . import config, garden, gate, launch, origin, repos, runner, worktrees
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -142,6 +142,9 @@ class Pipeline:
         if prog is None:
             self.port.set_status(tid, "needs-owner", reason=f"no repo config for {task.get('repo')!r}")
             return False
+        if origin.paused(self.port, prog["name"]):
+            self.port.set_status(tid, "ready", reason="origin sync paused; answer the repo alert to retry")
+            return False
         if not prog["gate"]["unknown"]:
             return True
         name = prog["name"]
@@ -188,7 +191,7 @@ class Pipeline:
     def worktree(self, task):
         """The task's worktree path (config form), created on first use. Idempotent: a persisted worktree is reused.
         An existing worktree is used only when it is clean or the task owns it (garden tag owner drover:<id>);
-        otherwise WorktreeRefused. Fetches the remote first, branches from <remote>/<default>, tags for garden."""
+        otherwise WorktreeRefused. Syncs local main first, branches from it, tags for garden."""
         tid = task["id"]
         if not TASK_ID_RE.match(str(tid)):
             raise WorktreeRefused(f"task id {tid!r} is not safe in a path")
@@ -271,14 +274,16 @@ class Pipeline:
 
     def _create(self, t, prog, repo, branch):
         tid, remote, default = t["id"], prog["remote"], prog["default_branch"]
-        fetched = git(repo, "fetch", remote, timeout=FETCH_TIMEOUT_S)
+        if origin.paused(self.port, prog["name"]):
+            raise WorktreeRefused("origin sync paused; answer the repo alert to retry")
+        try:
+            origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
+        except origin.FetchFailed as e:
+            origin.pause(self.port, prog["name"], "task", tid, str(e))
+            raise WorktreeRefused(str(e)) from e
+        except origin.SyncError as e:
+            raise WorktreeRefused(str(e)) from e
         base = self.base_ref(prog)
-        ref = f"refs/heads/{base}" if not prog["land"]["push"] else f"refs/remotes/{base}"
-        if git(repo, "rev-parse", "--verify", "--quiet", ref).returncode:
-            raise WorktreeRefused(f"{base} not found" + (f" (fetch failed: {fetched.stderr.strip()[-200:]})"
-                                                          if fetched.returncode else ""))
-        if fetched.returncode:
-            self.port.append_event("fetch-failed", {"error": fetched.stderr.strip()[-200:]}, tid)
         name = f"drover-{tid}"
         dest = str(Path(repos.native(join_cfg(prog["worktrees"], name))).resolve())
         dest_cfg = self._cfg_form(dest, prog)
@@ -306,7 +311,7 @@ class Pipeline:
 
     def _add(self, repo, dest, branch, base, remote="origin"):
         """git worktree add on the branch: an existing local branch is checked out, a remote branch is tracked, a new
-        one starts at `base` (the land base: local default when landing is local). --relative-paths lets WSL git open
+        one starts at `base` (the synced local default branch). --relative-paths lets WSL git open
         a worktree Windows git made; where git lacks it a worktree both OSes can reach is refused, not made absolute."""
         def have(ref):
             return git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0
@@ -320,9 +325,8 @@ class Pipeline:
 
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):
-        """What a task's diff, review and branch start are measured from: the ref landing builds on. Landing local
-        (the default) builds on the local default branch, which runs ahead of the remote after every landing."""
-        return f"{prog['remote']}/{prog['default_branch']}" if prog["land"]["push"] else prog["default_branch"]
+        """Task diffs, reviews and new branches use local main, including its unpushed landings."""
+        return prog["default_branch"]
 
     def head(self, task):
         return gate.head(repos.native(task["worktree"]))

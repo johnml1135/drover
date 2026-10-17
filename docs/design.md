@@ -160,9 +160,14 @@ Batch size ranges from one to five and starts at three.
 A clearly attributable failure drops the responsible task.
 Ambiguous attribution gets one local choice; low confidence falls back to bisection.
 Batching turns off when the median gate duration is ten minutes or less.
-Local main must be synchronized safely before branching and landing.
-Divergence stops the operation.
-Landing is local by default and remote push is separately configured.
+`[landing]` defaults to mode local, push false, remote origin, main main; pr mode is reserved and rejected.
+Local main is fetched and synchronized before branching and again immediately before landing.
+Main advances through compare-and-swap update-ref; the owner checkout files and index stay untouched.
+Local ahead-only history is retained for subsequent unpushed landings; two-sided divergence needs the owner.
+Fetch failure pauses that repo and opens a retry alert, without using cached refs.
+Remote movement during the gate replays the batch and gates it again; replay conflicts need the owner.
+Landing is local; optional push follows it and push failure alerts without undoing the landing.
+The owner-only Landing page offers a POST Push main action for repos ahead of the fetched remote.
 
 ## Local decisions and tuning
 

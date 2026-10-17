@@ -26,3 +26,30 @@ class Discovery(unittest.TestCase):
                 self.assertFalse((state / 'repos').exists())
                 (state / 'repos').mkdir()
                 self.assertEqual(repos.load_all(), {})
+
+
+class LandingConfig(unittest.TestCase):
+    def test_landing_defaults_and_explicit_options(self):
+        raw = {'name': 'acme-lib', 'repo': '~/repos/acme-lib'}
+        self.assertEqual(repos.normalize(raw)['landing'],
+                         {'mode': 'local', 'push': False, 'remote': 'origin', 'main': 'main'})
+        value = {'mode': 'local', 'push': True, 'remote': 'upstream', 'main': 'trunk'}
+        prog = repos.normalize({**raw, 'landing': value})
+        self.assertEqual(prog['landing'], value)
+        self.assertEqual((prog['remote'], prog['default_branch'], prog['land']['push']), ('upstream', 'trunk', True))
+
+    def test_pr_mode_and_invalid_push_are_rejected(self):
+        for value, error in (({'mode': 'pr'}, 'not implemented'), ({'mode': 'other'}, 'landing.mode'),
+                             ({'push': 'false'}, 'landing.push')):
+            with self.assertRaisesRegex(repos.RepoError, error):
+                repos.normalize({'name': 'acme-lib', 'repo': '~/repos/acme-lib', 'landing': value})
+
+    def test_setup_preserves_landing_names_and_updates_canonical_push(self):
+        import tomllib
+        from drover import wizard
+        value = {'mode': 'local', 'push': False, 'remote': 'upstream', 'main': 'trunk'}
+        base = {'name': 'acme-lib', 'repo': '~/repos/acme-lib', 'landing': value}
+        answers = {'name': 'acme-lib', 'repo': '~/repos/acme-lib', 'platforms': ['wsl'],
+                   'gate_platform': 'wsl', 'gate_command': '', 'push': True, 'base': base, 'existing': True}
+        saved = tomllib.loads(wizard.repo_toml(answers, ''))
+        self.assertEqual(saved['landing'], {**value, 'push': True})

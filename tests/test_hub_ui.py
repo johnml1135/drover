@@ -2,6 +2,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from drover import repos
+from tests.gitfix import Repo
 
 try:
     from fastapi.testclient import TestClient
@@ -23,6 +27,39 @@ class UiTests(unittest.TestCase):
         self.addCleanup(self.app.state.store.close)
         self.st = self.app.state.store
         self.c = TestClient(self.app, follow_redirects=False)
+
+    def test_push_main_is_shown_only_when_ahead_and_is_owner_post(self):
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        prog = repos.normalize({'name': 'acme-lib', 'repo': str(fix.repo)})
+        with patch('hub.store.repos.load_all', return_value={'acme-lib': prog}):
+            self.assertNotIn('Push main', self.c.get('/landing').text)
+            sha = fix.commit('local.txt')
+            self.assertIn('Push main', self.c.get('/landing').text)
+            path = '/repos/acme-lib/push-main'
+            # A bearer token on the API listener cannot authorize an owner action.
+            api = TestClient(self.app, base_url='http://testserver:8766')
+            self.assertEqual(api.post(path, headers={**SAME, 'Authorization': 'Bearer tok'}).status_code, 403)
+            self.assertEqual(self.c.post(path, headers={'Sec-Fetch-Site': 'cross-site'}).status_code, 403)
+            self.assertEqual(fix.remote_head(), fix.git('rev-parse', 'origin/main'))
+            self.assertEqual(self.c.get(path).status_code, 405)
+            response = self.c.post(path, headers=SAME)
+            self.assertEqual(response.status_code, 303, response.text)
+            self.assertEqual(fix.remote_head(), sha)
+            self.assertNotIn('Push main', self.c.get('/landing').text)
+
+    def test_push_main_failure_alerts_owner_and_unknown_repo_is_rejected(self):
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        prog = repos.normalize({'name': 'acme-lib', 'repo': str(fix.repo)})
+        with patch('hub.store.repos.load_all', return_value={'acme-lib': prog}):
+            sha = fix.commit('local.txt')
+            fix.git('config', 'remote.origin.pushurl', str(fix.root / 'offline.git'))
+            r = self.c.post('/repos/acme-lib/push-main', headers=SAME)
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(fix.git('rev-parse', 'main'), sha)
+            self.assertEqual(len(self.st.list_questions(open_only=True)), 1)
+            self.assertEqual(self.c.post('/repos/missing/push-main', headers=SAME).status_code, 404)
 
     def epic(self, title):
         return self.st.create_epic("p", title)["id"]

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
-from drover import gate, landing
+from drover import gate, landing, origin
 from drover.ledger import db as ledger_db
 from drover.ledger import ops
 from tests.gitfix import Repo
@@ -67,6 +67,7 @@ class LandingCase(unittest.TestCase):
         return ops.get_task(self.conn, tid)['status']
 
     def land(self, **kw):
+        kw.setdefault('push', True)
         kw.setdefault('decider', fake_decider())
         return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kw)
 
@@ -180,23 +181,139 @@ class FormationTests(LandingCase):
 
 
 class RunTests(LandingCase):
-    def test_dirty_main_holds_landing_without_gating_or_changing_checkout_or_remote(self):
+    def test_offline_pauses_repo_and_alerts_without_gating(self):
+        tid = self.task('feature', {'feature.txt': 'finished'})
+        self.r.git('remote', 'set-url', 'origin', str(self.r.root / 'offline.git'))
+        res = self.land(push=False)
+        self.assertEqual((res['outcome'], res['gates']), ('paused', 0))
+        self.assertEqual(self.status(tid), 'reviewed')
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+        self.assertEqual(self.land(push=False)['outcome'], 'paused')
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_diverged_main_sends_reviewed_tasks_to_owner(self):
+        tid = self.task('feature', {'feature.txt': 'finished'})
+        self.r.commit('local.txt')
+        sha = self.r.branch('upstream', {'upstream.txt': 'upstream'})
+        self.r.git('push', '-q', 'origin', f'{sha}:main')
+        res = self.land(push=False)
+        self.assertEqual((res['outcome'], res['gates']), ('needs-owner', 0))
+        self.assertEqual(self.status(tid), 'needs-owner')
+        events = ops.events(self.conn, task_id=tid, kind='status')
+        self.assertEqual(events[-1]['data']['reason'], 'main diverged from origin')
+
+    def test_divergence_does_not_change_reviewed_tasks_in_another_repo(self):
+        tid = self.task('feature', {'feature.txt': 'finished'})
+        other = Repo()
+        self.addCleanup(other.cleanup)
+        other.branch('feature', {'feature.txt': 'other repo'})
+        task = ops.create_task(self.conn, 'other repo', 'acme-app', repo_path=str(other.repo))
+        ops.update_task(self.conn, task['id'], branch='feature')
+        ops.approve(self.conn, task['id'])
+        for status in ('claimed', 'running', 'gated', 'reviewed'):
+            ops.set_status(self.conn, task['id'], status, actor='system')
+        self.r.commit('local.txt')
+        sha = self.r.branch('upstream', {'upstream.txt': 'upstream'})
+        self.r.git('push', '-q', 'origin', f'{sha}:main')
+        self.assertEqual(self.land(push=False)['outcome'], 'needs-owner')
+        self.assertEqual(self.status(tid), 'needs-owner')
+        self.assertEqual(self.status(task['id']), 'reviewed')
+
+    def test_owner_main_commit_during_gate_is_preserved_and_batch_regated(self):
+        tid = self.task('feature', {'feature.txt': 'finished'})
+        real_gate = self.gate
+        moved = []
+
+        def moving_gate(*args):
+            receipt = real_gate(*args)
+            if not moved:
+                moved.append(self.r.commit('owner.txt', 'owner commit'))
+            return receipt
+
+        self.gate = moving_gate
+        res = self.land(push=False)
+        self.assertEqual((res['outcome'], res['gates']), ('landed', 2))
+        self.assertEqual(self.status(tid), 'landed')
+        self.assertEqual(self.r.git('merge-base', moved[0], res['tip']), moved[0])
+        self.assertEqual((self.r.repo / 'owner.txt').read_text(), 'owner commit')
+
+    def test_remote_move_with_conflict_needs_owner(self):
+        tid = self.task('feature', {'base.txt': 'task change'})
+        real_gate = self.gate
+        moved = []
+
+        def moving_gate(*args):
+            receipt = real_gate(*args)
+            if not moved:
+                sha = self.r.branch('upstream', {'base.txt': 'upstream change'})
+                self.r.git('push', '-q', 'origin', f'{sha}:main')
+                moved.append(sha)
+            return receipt
+
+        self.gate = moving_gate
+        res = self.land(push=False)
+        self.assertEqual((res['outcome'], res['gates']), ('conflict', 1))
+        self.assertEqual(self.status(tid), 'needs-owner')
+        self.assertEqual(res['dropped'][tid], 'rebase conflict')
+        self.assertEqual(self.r.git('rev-parse', 'main'), moved[0])
+
+    def test_fetch_failure_immediately_before_landing_pauses_without_landing(self):
+        tid = self.task('feature', {'feature.txt': 'finished'})
+        before = self.r.git('rev-parse', 'main')
+        real_gate = self.gate
+
+        def offline_gate(*args):
+            receipt = real_gate(*args)
+            self.r.git('remote', 'set-url', 'origin', str(self.r.root / 'offline.git'))
+            return receipt
+
+        self.gate = offline_gate
+        res = self.land(push=False)
+        self.assertEqual((res['outcome'], res['gates']), ('paused', 1))
+        self.assertEqual(self.status(tid), 'reviewed')
+        self.assertEqual(self.r.git('rev-parse', 'main'), before)
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_default_push_off_supports_consecutive_local_landings(self):
+        a = self.task('first', {'first.txt': 'first'})
+        before = self.r.remote_head()
+        real_git = origin.git
+        with patch.object(origin, 'git', wraps=real_git) as calls:
+            first = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work)
+            b = self.task('second', {'second.txt': 'second'})
+            second = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work)
+        self.assertEqual(first['landed'], [a])
+        self.assertEqual(second['landed'], [b])
+        self.assertEqual(self.r.git('merge-base', first['tip'], second['tip']), first['tip'])
+        self.assertEqual(self.r.remote_head(), before)
+        self.assertFalse(any(call.args[1] == 'push' for call in calls.call_args_list))
+
+    def test_push_failure_alerts_but_task_stays_landed(self):
+        tid = self.task('feature', {'feature.txt': 'finished'})
+        self.r.git('config', 'remote.origin.pushurl', str(self.r.root / 'offline.git'))
+        res = self.land(push=True)
+        self.assertEqual(res['outcome'], 'landed')
+        self.assertEqual(self.status(tid), 'landed')
+        self.assertEqual(self.r.git('rev-parse', 'main'), res['tip'])
+        self.assertIn('push failed', res['alert'])
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_dirty_main_landing_preserves_owner_files_and_index(self):
         tid = self.task('feature', {'feature.txt': 'finished'})
         path = self.r.repo / 'base.txt'
         path.write_text('owner work\n')
         before = self.r.git('rev-parse', 'main')
         remote_before = self.r.remote_head()
-        for push in (False, True):
-            res = self.land(push=push)
-            self.assertEqual((res['outcome'], res['reason'], res['gates']), ('waiting-clean', 'main checkout dirty', 0))
-            self.assertEqual(self.r.git('rev-parse', 'main'), before)
-            self.assertEqual(self.r.remote_head(), remote_before)
-            self.assertEqual(path.read_text(), 'owner work\n')
-            self.assertEqual(self.status(tid), 'reviewed')
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-        self.assertIn('main checkout dirty', ops.open_questions(self.conn)[0]['body'])
+        index = (self.r.repo / '.git' / 'index').read_bytes()
+        res = self.land(push=False)
+        self.assertEqual(res['outcome'], 'landed')
+        self.assertNotEqual(self.r.git('rev-parse', 'main'), before)
+        self.assertEqual(self.r.remote_head(), remote_before)
+        self.assertEqual(path.read_text(), 'owner work\n')
+        self.assertEqual((self.r.repo / '.git' / 'index').read_bytes(), index)
+        self.assertEqual(self.status(tid), 'landed')
 
-    def test_owner_edit_during_gate_holds_landing_before_fast_forward(self):
+    def test_owner_edit_during_gate_is_preserved_during_ref_landing(self):
         tid = self.task('feature', {'feature.txt': 'finished'})
         self.gate = landing.make_gate([sys.executable, self.script], 'main', self.r.root / 'receipts', available=False)
         real_gate = self.gate
@@ -209,9 +326,9 @@ class RunTests(LandingCase):
         self.gate = owner_edits_during_gate
         before = self.r.git('rev-parse', 'main')
         res = self.land(push=False)
-        self.assertEqual((res['outcome'], res['reason']), ('waiting-clean', 'main checkout dirty'))
-        self.assertEqual(self.r.git('rev-parse', 'main'), before)
-        self.assertEqual(self.status(tid), 'reviewed')
+        self.assertEqual(res['outcome'], 'landed')
+        self.assertNotEqual(self.r.git('rev-parse', 'main'), before)
+        self.assertEqual(self.status(tid), 'landed')
         self.assertEqual((self.r.repo / 'base.txt').read_text(), 'owner work\n')
 
     def test_green_batch_lands_ff_only_and_marks_tasks(self):
@@ -272,12 +389,14 @@ class RunTests(LandingCase):
         self.assertEqual(self.status(a), 'ready')
         self.assertEqual(self.r.remote_head(), self.r.git('rev-parse', 'origin/main'))
 
-    def test_base_moved_during_gate_refuses_and_leaves_tasks_reviewed(self):
+    def test_base_moved_during_gate_replays_and_regates(self):
         a = self.task('a', {'a.txt': 'a'})
         moved = {}
 
         def moving_gate(work, tip, tasks):
             receipt = self.gate(work, tip, tasks)
+            if moved:
+                return receipt
             other = self.r.root / 'other'
             self.r.git('clone', '-q', str(self.r.remote), str(other), cwd=self.r.root)
             self.r.git('config', 'user.name', 't', cwd=other)
@@ -287,9 +406,10 @@ class RunTests(LandingCase):
             moved['sha'] = self.r.git('rev-parse', 'HEAD', cwd=other)
             return receipt
         res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider())
-        self.assertEqual(res['outcome'], 'stale-base')
+        self.assertEqual((res['outcome'], res['gates']), ('landed', 2))
         self.assertEqual(self.r.remote_head(), moved['sha'])
-        self.assertEqual(self.status(a), 'reviewed')
+        self.assertEqual(self.status(a), 'landed')
+        self.assertEqual(self.r.git('merge-base', moved['sha'], res['tip']), moved['sha'])
 
     def test_verdict_for_another_sha_or_moved_branch_is_not_landable(self):
         a = self.task('a', {'a.txt': 'a'})
@@ -366,13 +486,13 @@ class RunTests(LandingCase):
         import re
         a = self.task('a', {'a.txt': 'a'})
         calls = []
-        orig = landing.git
+        orig = origin.git
 
         def spy(repo, *args, **kw):
             calls.append(args)
             return orig(repo, *args, **kw)
-        landing.git = spy
-        self.addCleanup(setattr, landing, 'git', orig)
+        origin.git = spy
+        self.addCleanup(setattr, origin, 'git', orig)
         self.land()
         push = [c for c in calls if c[0] == 'push'][0]
         self.assertRegex(push[2].split(':')[0], r'^[0-9a-f]{40}$')

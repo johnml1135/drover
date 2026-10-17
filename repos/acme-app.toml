@@ -18,4 +18,8 @@ full = ["python3", "-m", "unittest", "discover"]
 # seat = "codex"  # optional: pin a seat instead of choosing by priority and available capacity
 [land]
 policy = "batch"
+[landing]
+mode = "local"
 push = false
+remote = "origin"
+main = "main"

@@ -776,6 +776,8 @@ def repo_toml(p, worktrees_root):
         base = p["base"]
         updates = {k: raw[k] for k in ("name", "repo", "run", "gate")}
         updates["land"] = {"push": p["push"]}
+        if "landing" in base:
+            updates["landing"] = {"push": p["push"]}
         if p.get("existing"):
             default = base.get("run", {}).get("default")
             if default in plats:
@@ -849,7 +851,7 @@ def q_repos(a, d, found_repos, worktrees, state):
                               (base or {}).get("gate", {}).get("platform") or ("windows" if "windows" in plats else plats[0]),
                               one_of(*repos.GATE_PLATFORMS))
             push = a.ask(f"repo_{k}_push", f"{name}: push landed work to the remote?",
-                         bool((base or {}).get("land", {}).get("push", False)), to_bool)
+                         bool((base or {}).get("landing", {}).get("push", (base or {}).get("land", {}).get("push", False))), to_bool)
             p = {"name": name, "repo": repo, "platforms": plats, "gate_command": _gate(cmd) if cmd is not None else None,
                  "gate_platform": gate_plat, "push": push, "base": base, "existing": existing is not None}
             try:
@@ -895,7 +897,7 @@ def _repo_answer(x, state):
             "platforms": plats, "gate_command": cmd,
             "gate_platform": x.get("gate_platform") or (base or {}).get("gate", {}).get("platform")
             or ("windows" if "windows" in plats else plats[0]),
-            "push": bool(x.get("push", (base or {}).get("land", {}).get("push", False))),
+            "push": bool(x.get("push", (base or {}).get("landing", {}).get("push", (base or {}).get("land", {}).get("push", False)))),
             "base": base, "existing": existing is not None}
 
 

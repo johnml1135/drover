@@ -16,7 +16,8 @@ import tempfile
 import time
 from pathlib import Path, PureWindowsPath
 
-from . import config, gate, worktrees
+from . import config, gate, origin, worktrees
+from .port import DirectPort
 from .ledger import ops
 from .ledger.db import connect, default_path, tx
 
@@ -130,10 +131,25 @@ def task_files(repo, base_ref, branch):
     return [p for p in r.stdout.splitlines() if p] if r.returncode == 0 else []
 
 
+def reviewed_tasks(conn, repo, repo_name=None):
+    """Limit unnamed CLI calls to tasks whose recorded checkout belongs to this git repo."""
+    tasks = ops.list_tasks(conn, status='reviewed', repo=repo_name)
+    if repo_name is not None:
+        return tasks
+
+    def common(path):
+        r = git(config.native(path), 'rev-parse', '--path-format=absolute', '--git-common-dir', check=False)
+        return Path(config.native(r.stdout.strip())).resolve() if r.returncode == 0 else None
+
+    wanted = common(repo)
+    return [t for t in tasks if wanted is not None and any(
+        common(path) == wanted for path in (t.get('repo_path'), t.get('worktree')) if path)]
+
+
 def candidates(conn, repo, repo_name=None):
     """Reviewed tasks whose branch tip carries a LAND@sha verdict, best first (priority, then rank): [(task, head)]."""
     found = []
-    for t in ops.list_tasks(conn, status='reviewed', repo=repo_name):
+    for t in reviewed_tasks(conn, repo, repo_name):
         head = branch_head(repo, t['branch']) if t['branch'] else None
         if head and review_landed(conn, t['id'], head):
             found.append((t, head))
@@ -287,38 +303,8 @@ def drop_lock(conn, holder):
     conn.execute("DELETE FROM landing_lock WHERE id=1 AND holder=?", (holder,))
 
 
-def checkout_of(repo, branch, skip=None):
-    """The working tree that has `branch` checked out, else None. `skip` is a scratch worktree to ignore."""
-    path, found = None, None
-    for line in git(repo, 'worktree', 'list', '--porcelain').stdout.splitlines():
-        if line.startswith('worktree '):
-            path = line[9:]
-        elif line == f'branch refs/heads/{branch}' and path and (skip is None or Path(path).resolve() != Path(skip).resolve()):
-            found = path
-    return found
-
-
-def dirty_checkout_hold(conn, repo, branch, name=None, skip=None):
-    """Hold landing and alert once while the checkout of the target branch has owner changes."""
-    where = checkout_of(repo, branch, skip=skip)
-    if not where or not gate.dirty(where):
-        return None
-    reason = f'{branch} checkout dirty'
-    detail = f'{reason}: {where} has uncommitted changes; clean it so landing can continue'
-    key = f'_land_dirty_q_{str(name or Path(repo).resolve()).lower()}'
-    qid = ops.get_setting(conn, key)
-    if not qid or ops.get_question(conn, int(qid))['status'] != 'open':
-        qid = ops.ask_question(conn, 'epic', _epic(conn, 'Landing'), f'Landing held: {reason}', detail,
-                               options=[{'label': 'Retry landing', 'recommended': True}], actor='landing')
-        ops.set_setting(conn, key, qid)
-    return {'outcome': 'waiting-clean', 'reason': reason, 'error': detail}
-
-
 def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
-    """Land `tip` on the local branch only, fast-forward. Same checks as fast_forward, no fetch and no push.
-
-    The branch is advanced through the checkout that holds it, and only when that checkout is clean; a branch checked
-    out nowhere moves with a compare-and-swap update-ref. Never writes under a dirty checkout."""
+    """Advance the local ref only, with a receipt and an explicit ancestry check."""
     found = gate.problems(receipt, worktree, branch)
     sha = gate.head(worktree)
     if sha != tip or receipt.get('sha') != sha or not re.fullmatch(r'[0-9a-f]{40}', sha):
@@ -328,49 +314,22 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
     holder = f'landing {sha[:12]}'
     take_lock(conn, holder)
     try:
-        where = checkout_of(repo, branch, skip=worktree)
-        if where:
-            if gate.dirty(where):
-                raise gate.GateError(f'refused: {branch} is checked out at {where} with uncommitted changes; '
-                                     'clean it so the landing can fast-forward it')
-            moved = git(where, 'merge', '--ff-only', sha, check=False)
-        else:
-            old = git(repo, 'rev-parse', f'refs/heads/{branch}').stdout.strip()
-            moved = git(repo, 'update-ref', f'refs/heads/{branch}', sha, old, check=False)
+        ref = f'refs/heads/{branch}'
+        old = git(repo, 'rev-parse', ref).stdout.strip()
+        if git(repo, 'merge-base', '--is-ancestor', old, sha, check=False).returncode:
+            raise gate.GateError('local main moved; rebase and regate')
+        moved = git(repo, 'update-ref', ref, sha, old, check=False)
         if moved.returncode:
-            raise gate.GateError('local fast-forward refused: ' + (moved.stderr or moved.stdout).strip())
-        if git(repo, 'rev-parse', f'refs/heads/{branch}').stdout.strip() != sha:
-            raise gate.GateError(f'{branch} is not at {sha} after the fast-forward')
+            raise gate.GateError('local main moved; rebase and regate')
     finally:
         drop_lock(conn, holder)
 
 
 def fast_forward(conn, worktree, remote, branch, tip, receipt):
-    """Land `tip` fast-forward only. Raises GateError unless: fresh base, receipt for this exact SHA, tip is HEAD.
-
-    The pushed object is the validated 40-hex SHA read from the worktree, never a ref name.
-    """
-    base_ref = f'{remote}/{branch}'
-    fetched = git(worktree, 'fetch', remote, branch, check=False, timeout=FETCH_TIMEOUT_S)
-    if fetched.returncode:
-        raise gate.GateError('fetch failed: ' + fetched.stderr.strip())
-    found = gate.problems(receipt, worktree, base_ref)
-    sha = gate.head(worktree)
-    if sha != tip or receipt.get('sha') != sha or not re.fullmatch(r'[0-9a-f]{40}', sha):
-        found.append(f'tip {tip[:12]} is not the gated HEAD {sha[:12]}')
-    if found:
-        raise gate.GateError('refused: ' + '; '.join(found))
-    holder = f'landing {sha[:12]}'
-    take_lock(conn, holder)
-    try:
-        pushed = git(worktree, 'push', remote, f'{sha}:refs/heads/{branch}', check=False)   # never forced
-        if pushed.returncode:
-            raise gate.GateError('push refused (no force is ever used): ' + pushed.stderr.strip())
-        remote_head = git(worktree, 'ls-remote', remote, f'refs/heads/{branch}').stdout.split()
-        if not remote_head or remote_head[0] != sha:
-            raise gate.GateError(f'ls-remote shows {remote_head[:1]}, expected {sha}')
-    finally:
-        drop_lock(conn, holder)
+    """Compatibility entry point: sync, land locally, then push without force."""
+    origin.sync(worktree, remote, branch)
+    local_fast_forward(conn, worktree, worktree, branch, tip, receipt)
+    origin.push_main(worktree, remote, branch)
 
 
 # ---- base red ------------------------------------------------------------------------------------------------
@@ -427,22 +386,40 @@ def base_red(conn, result, base_sha, tasks):
     ops.event(conn, 'base-red', 'landing', {'sha': base_sha, 'question': qid, 'tasks': [t['id'] for t in tasks]})
 
 
+def sync_main(conn, repo, remote, branch, repo_name=None):
+    """Sync or return the repo hold, recording an owner alert on fetch failure."""
+    name = repo_name or str(Path(repo).resolve())
+    port = DirectPort(conn, actor='landing')
+    if origin.paused(port, name):
+        return {'outcome': 'paused', 'reason': 'origin sync paused'}
+    try:
+        origin.sync(repo, remote, branch, run=git, timeout=FETCH_TIMEOUT_S)
+    except origin.FetchFailed as e:
+        origin.pause(port, name, 'epic', _epic(conn, 'Landing'), str(e))
+        return {'outcome': 'paused', 'reason': str(e)}
+    except origin.SyncError as e:
+        reason = str(e)
+        for task in reviewed_tasks(conn, repo, repo_name):
+            ops.set_status(conn, task['id'], 'needs-owner', actor='landing', reason=reason)
+        return {'outcome': 'needs-owner', 'reason': reason}
+    return None
+
+
 def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None, repo_name=None, workdir=None,
-              decider=None, actor='landing', push=True):
+              decider=None, actor='landing', push=False):
     """Form, gate, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
 
     push=False lands on the local branch only: the base is the local branch (so one batch builds on the last) and
-    nothing is pushed; the fetch of the remote is then only a freshness courtesy."""
+    nothing is pushed. Fetch failure pauses the repo; divergent main needs owner intervention."""
     ensure(conn)
     repo = Path(repo)
     result = {'outcome': 'empty', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
               'decisions': 0, 'gate_s': [], 'batch': []}
-    hold = dirty_checkout_hold(conn, repo, branch, repo_name)
-    if hold:
-        result.update(hold)
+    base_ref = branch
+    sync_result = sync_main(conn, repo, remote, branch, repo_name)
+    if sync_result:
+        result.update(sync_result)
         return result
-    base_ref = f'{remote}/{branch}' if push else branch
-    git(repo, 'fetch', remote, branch, check=push, timeout=FETCH_TIMEOUT_S)
     if held(conn, git(repo, 'rev-parse', base_ref).stdout.strip()):
         return {'outcome': 'held', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
                 'decisions': 0, 'gate_s': [], 'batch': []}
@@ -453,7 +430,7 @@ def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None,
     own_tmp = workdir is None
     work = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix='drover-landing-')) / 'wt'
     try:
-        _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push)
+        _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
     except BaseException as e:
         result['outcome'], result['error'] = 'error', repr(e)
         _record(conn, result)
@@ -488,19 +465,25 @@ def _failures(receipt, tasks):
     return gate.parse_failures(text, [p for t in tasks for p in t['files']])
 
 
-def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=True):
+def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None):
+    stale_retries = 0
     while tasks:
         base_sha = git(repo, 'rev-parse', base_ref).stdout.strip()
         tip, tasks, conflicts = build_tip(repo, work, base_sha, tasks)
         for tid in conflicts:
             result['dropped'][tid] = 'rebase conflict'
-            requeue(conn, tid, [], 'rebase conflict')
+            ops.set_status(conn, tid, 'needs-owner', actor='landing', reason='rebase conflict')
         if not tasks:
             result['outcome'] = 'conflict'
             return
         receipt, red = _gate(gate_fn, work, tip, tasks, result)
         if not red:
-            return _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push)
+            _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name)
+            if result['outcome'] == 'stale-base' and stale_retries < 2:
+                stale_retries += 1
+                result.pop('error', None)
+                continue
+            return
         if base_status(conn, repo, work, gate_fn, base_sha, result) == 'red':
             return base_red(conn, result, base_sha, tasks)
         failures = _failures(receipt, tasks)
@@ -518,7 +501,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
     result['outcome'] = 'red'
 
 
-def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=True):
+def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=False, repo_name=None):
     result['tip'] = tip
     for t in tasks:
         now_head = branch_head(work, t['branch'])
@@ -526,17 +509,14 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Tr
             result['outcome'] = 'refused'
             result['error'] = f'{t["id"]} has no review LAND for the gated commit {t["head"][:12]}'
             return
-    hold = dirty_checkout_hold(conn, repo, branch, tasks[0].get('repo'), skip=work)
-    if hold:
-        result.update(hold)
+    sync_result = sync_main(conn, repo, remote, branch, repo_name)
+    if sync_result:
+        result.update(sync_result)
         return
     try:
-        if push:
-            fast_forward(conn, work, remote, branch, tip, receipt)
-        else:
-            local_fast_forward(conn, repo, work, branch, tip, receipt)
+        local_fast_forward(conn, repo, work, branch, tip, receipt)
     except gate.GateError as e:
-        result['outcome'] = 'stale-base' if 'rebase and regate' in str(e) or 'push refused' in str(e) else 'refused'
+        result['outcome'] = 'stale-base' if 'rebase and regate' in str(e) else 'refused'
         result['error'] = str(e)
         return
     for t in tasks:
@@ -546,6 +526,13 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Tr
                      (t['id'], t['last_sha'], tip, receipt.get('log'), ops.stamp()))
         result['landed'].append(t['id'])
     result['outcome'] = 'landed'
+    if push:
+        try:
+            origin.push_main(repo, remote, branch)
+        except origin.SyncError as e:
+            result['alert'] = str(e)
+            ops.ask_question(conn, 'epic', _epic(conn, 'Landing'), 'Push main failed', str(e),
+                             options=[{'label': 'Acknowledged'}], actor='landing')
 
 
 def _record(conn, r):
@@ -595,17 +582,17 @@ def main(argv=None):
             print(json.dumps(out) if a.json else '\n'.join(f'{k}: {v}' for k, v in out.items()))
             return 0
         if a.action == 'form':
-            git(a.repo, 'fetch', a.remote, a.branch)
-            batch = form_batch(conn, a.repo, f'{a.remote}/{a.branch}', a.size, a.repo_name)
+            origin.sync(a.repo, a.remote, a.branch)
+            batch = form_batch(conn, a.repo, a.branch, a.size, a.repo_name)
             print(json.dumps(batch) if a.json else '\n'.join(f"{t['id']}  {t['branch']}  {len(t['files'])} file(s)" for t in batch))
             return 0
         command = a.command[1:] if a.command[:1] == ['--'] else a.command
-        fn = make_gate(command, f'{a.remote}/{a.branch}', a.out, priority=a.priority,
+        fn = make_gate(command, a.branch, a.out, priority=a.priority,
                        db_path=(a.db or default_path()) if a.lease else None)
         r = run_batch(conn, a.repo, fn, remote=a.remote, branch=a.branch, size=a.size, repo_name=a.repo_name)
         print(json.dumps(r) if a.json else f"{r['outcome']}: landed {r['landed']} dropped {r['dropped']} gates {r['gates']}")
         return 0 if r['outcome'] in ('landed', 'empty') else 1
-    except gate.GateError as e:
+    except (gate.GateError, origin.SyncError) as e:
         print(f'drover.landing: {e}', file=sys.stderr)
         return 2
 

@@ -9,7 +9,8 @@ remote; [run] platforms (a list of windows|wsl, default both),
 default (the platform used when nothing else decides); [gate] platform (windows|wsl|both: both must pass on each),
 unknown, scope_map,
 timeout_s, idle_s and [gate.commands] full/scoped (argv lists, `{project}` filled per selected test project);
-[review] backend, seat, model, effort, high_risk_model; [land] policy (batch|single), push (default policy.push, false: land on local main only).
+[review] backend, seat, model, effort, high_risk_model; [land] policy (batch|single); [landing] mode (local; pr reserved), push (false), remote (origin), main (main).
+Legacy [land].push, remote and default_branch remain readable; [landing] takes precedence.
 `gate.unknown = true` means nobody knows the gate command: the repo's tasks go to the owner with a question.
 """
 import json
@@ -70,6 +71,20 @@ def normalize(raw, name=None):
     policy = str(land.get("policy") or "batch")
     if policy not in ("batch", "single"):
         raise RepoError(f"{name}: land.policy must be batch or single")
+    landing = dict(raw.get("landing") or {})
+    mode = landing.get("mode", "local")
+    if mode == "pr":
+        raise RepoError(f"{name}: landing.mode = pr is reserved, not implemented")
+    if mode != "local":
+        raise RepoError(f"{name}: landing.mode must be local (pr is not implemented)")
+    push = landing.get("push", land.get("push", False))
+    if not isinstance(push, bool):
+        raise RepoError(f"{name}: landing.push must be a boolean")
+    remote = landing.get("remote", raw.get("remote", DEFAULTS["remote"]))
+    main = landing.get("main", raw.get("default_branch", DEFAULTS["default_branch"]))
+    for key, value in (("remote", remote), ("main", main)):
+        if not isinstance(value, str) or not value.strip() or value.startswith("-") or any(c.isspace() for c in value):
+            raise RepoError(f"{name}: landing.{key} must be a non-empty git name")
     rev = dict(raw.get("review") or {})
     models = config.get()["models"]
     seat = config.seat_by_name(rev["seat"]) if rev.get("seat") else None
@@ -90,8 +105,8 @@ def normalize(raw, name=None):
     if rev.get("effort") is not None and (not isinstance(rev["effort"], str) or not rev["effort"].strip()):
         raise RepoError(f"{name}: review.effort must be a non-empty string")
     return {"name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
-            "default_branch": str(raw.get("default_branch") or DEFAULTS["default_branch"]),
-            "remote": str(raw.get("remote") or DEFAULTS["remote"]),
+            "default_branch": main,
+            "remote": remote,
             "run": {"platforms": plats, "default": default},
             "consumes": list(raw.get("consumes") or []),
             "gate": {"platform": platform, "unknown": unknown, "scope_map": g.get("scope_map"),
@@ -100,7 +115,8 @@ def normalize(raw, name=None):
                      "commands": cmds, "hint": g.get("hint") or ""},
             "review": {"backend": backend, "seat": rev.get("seat"), "model": model,
                        "effort": rev.get("effort"), "high_risk_model": high_model},
-            "land": {"policy": policy, "push": bool(land.get("push", config.get()["policy"]["push"]))}}
+            "landing": {"mode": mode, "push": push, "remote": remote, "main": main},
+            "land": {"policy": policy, "push": push}}
 
 
 def worktrees_for(name, repo):

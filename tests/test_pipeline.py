@@ -397,6 +397,59 @@ class Safety(Base):
             self.pipe.worktree(self.get(other))
         self.assertIn("main checkout", str(cm.exception))
 
+    def test_branch_syncs_remote_main_without_writing_owner_checkout(self):
+        sha = self.fix.branch("upstream", {"upstream.txt": "upstream"})
+        self.fix.git("push", "-q", "origin", f"{sha}:main")
+        tid = self.task()
+        wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), sha)
+        self.assertEqual(self.fix.git("rev-parse", "main"), sha)
+        self.assertFalse((self.fix.repo / "upstream.txt").exists())
+
+    def test_divergence_prevents_dispatch_with_needs_owner_reason(self):
+        self.fix.commit("local.txt")
+        sha = self.fix.branch("upstream", {"upstream.txt": "upstream"})
+        self.fix.git("push", "-q", "origin", f"{sha}:main")
+        tid = self.task()
+        self.assertEqual(self.d.tick()["launched"], [])
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertEqual(self.states(tid)[-1][1], "main diverged from origin")
+        self.assertIsNone(self.get(tid)["worktree"])
+
+    def test_offline_pauses_only_affected_repo_and_alerts_once(self):
+        self.fix.git("remote", "set-url", "origin", str(self.fix.root / "offline.git"))
+        tid = self.task()
+        self.d.tick()
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+        other = self.task()
+        self.d.tick()
+        self.assertEqual(self.status(other), "ready")
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+        self.assertIsNone(self.get(other)["worktree"])
+        self.assertEqual(self.fl.specs, [])
+        self.fix.git("remote", "set-url", "origin", str(self.fix.remote))
+        question = ops.open_questions(self.conn)[0]
+        ops.answer_question(self.conn, question['id'], choice='Retry origin sync')
+        self.d.tick()
+        self.assertTrue(self.fl.specs)
+        self.assertNotEqual(self.status(other), 'needs-owner')
+        self.assertFalse(ops.open_questions(self.conn))
+
+    def test_offline_repo_does_not_pause_another_repo(self):
+        other_repo = Repo()
+        self.addCleanup(other_repo.cleanup)
+        self.pipe.all_repos()['acme-app'] = prog_dict(
+            other_repo.repo, Path(self.tmp.name) / 'other-wts', name='acme-app')
+        self.fix.git('remote', 'set-url', 'origin', str(self.fix.root / 'offline.git'))
+        offline = self.task()
+        healthy = self.task(repo='acme-app')
+        out = self.d.tick()
+        self.assertEqual(out['launched'], [healthy])
+        self.assertEqual(self.status(offline), 'needs-owner')
+        self.assertEqual(self.status(healthy), 'running')
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
     def test_work_is_branched_from_the_land_base_local_main_when_landing_is_local(self):
         self.fix.commit("landed.txt", "landed locally\n")                        # local main runs ahead of origin/main
         tid = self.task()
@@ -407,10 +460,10 @@ class Safety(Base):
         plan = self.pipe.gate_plan({**self.get(tid), "worktree": wt}, self.prog, sha)
         self.assertEqual((plan["base"], plan["files"]), ("main", ["mine.txt"]))     # landed.txt is not in the diff
 
-    def test_pushing_repos_branch_from_the_remote_default(self):
+    def test_pushing_repos_also_branch_from_local_main(self):
         prog = prog_dict(self.fix.repo, Path(self.tmp.name) / "wts2", push=True)
         pipe = pipeline.Pipeline(self.port, repos_map={"p": prog}, runs_dir=self.runs)
-        self.assertEqual(pipe.base_ref(prog), "origin/main")
+        self.assertEqual(pipe.base_ref(prog), "main")
 
     def test_a_git_without_relative_paths_is_refused_for_cross_os_worktrees_not_made_absolute(self):
         real = pipeline.git
@@ -900,7 +953,7 @@ class Landing(Base):
         self.assertEqual(out["p"]["outcome"], "landed", out)
         self.assertEqual(self.status(tid), "landed")
         self.assertEqual(self.fix.remote_head(), remote_before)           # push = false
-        self.assertEqual((Path(self.fix.repo) / "feature.txt").read_text(), "feature\n")     # local main moved
+        self.assertFalse((Path(self.fix.repo) / "feature.txt").exists())  # checkout is untouched
         self.assertTrue(self.fix.git("merge-base", "--is-ancestor", "origin/main", "main") == "")
         self.assertEqual(ops.get_setting(self.conn, "landing_batch"), "")
         g = json.loads(ops.get_setting(self.conn, "gate"))
@@ -922,14 +975,12 @@ class Landing(Base):
             f'[gate]\nplatform = "windows"\n[gate.commands]\nfull = [{json.dumps(sys.executable)}, "-c", "pass"]\n')
         svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir, gate_kw={"available": False})
         out = svc.tick()
-        self.assertEqual(out["p"]["outcome"], "waiting-clean")
-        self.assertEqual(list((self.runs / "landing").glob("*")), [])      # no batch gate was spent on it
-        self.assertEqual(self.status(tid), "reviewed")
+        self.assertEqual(out["p"]["outcome"], "landed")
+        self.assertEqual(self.status(tid), "landed")
         self.assertTrue((Path(self.fix.repo) / "owner-wip.txt").exists())
         self.assertFalse((Path(self.fix.repo) / "feature.txt").exists())
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-        svc.tick()
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)           # asked once while open
+        self.assertEqual(len(ops.open_questions(self.conn)), 0)
+        self.assertEqual(svc.tick(), {})
 
 
 if __name__ == "__main__":
