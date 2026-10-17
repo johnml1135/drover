@@ -2,8 +2,7 @@
 {% from "_macros.html" import comment_btn, badge %}
 {% macro task_li(t, draggable) %}
 <li class="task" data-id="{{ t.id }}">
-  <div class="main"><strong>{{ t.title }}</strong>
-    {{ badge(t.state) }}{% if t.repo %} {{ badge(t.repo) }}{% endif %}{% if t.model %} {{ badge(t.model) }}{% endif %}</div>
+  {% include "_task_card.html" %}
   <div class="actions">
     {% if draggable %}
     <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"task","id":t.id|string,"move":"up"}|tojson|forceescape }}' data-move="task:{{ t.id }}:up" hx-target="#content" aria-label="Move {{ t.title }} up">Move up</button>

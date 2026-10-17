@@ -745,13 +745,13 @@ class MigrationTests(Base):
 
     def test_forward_only_extra_migration_applied_once_and_data_kept(self):
         t = self.task("keep")
-        extra = MIGRATIONS + [(4, "ALTER TABLE tasks ADD COLUMN extra TEXT;")]
-        self.assertEqual(migrate(self.conn, extra), 4)
-        self.assertEqual(migrate(self.conn, extra), 4)
+        extra = MIGRATIONS + [(MIGRATIONS[-1][0] + 1, "ALTER TABLE tasks ADD COLUMN extra TEXT;")]
+        self.assertEqual(migrate(self.conn, extra), MIGRATIONS[-1][0] + 1)
+        self.assertEqual(migrate(self.conn, extra), MIGRATIONS[-1][0] + 1)
         self.assertEqual(self.conn.execute("SELECT title, extra FROM tasks WHERE id=?", (t["id"],)).fetchone()[0], "keep")
 
     def test_failed_migration_rolls_back(self):
-        bad = MIGRATIONS + [(4, "CREATE TABLE half(x); SELECT * FROM no_such_table;")]
+        bad = MIGRATIONS + [(MIGRATIONS[-1][0] + 1, "CREATE TABLE half(x); SELECT * FROM no_such_table;")]
         with self.assertRaises(Exception):
             migrate(self.conn, bad)
         self.assertFalse(self.conn.in_transaction)

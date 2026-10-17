@@ -1,10 +1,12 @@
 """JSON API under /api/v1 (bearer token, or an authorised UI request)."""
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator
+
+from drover import task_context
 
 from hub import auth
 from hub.store import BadRequest, Forbidden, NotFound
@@ -23,24 +25,49 @@ class Loose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
-class TaskIn(BaseModel):
+TaskKind = Literal["research", "investigation", "implementation", "fix", "review", "docs", "mechanical"]
+
+
+class Dependency(BaseModel):
+    depends_on: str
+    kind: Literal["blocks", "waits-for"] = "blocks"
+
+
+class AccessInput(BaseModel):
+    @field_validator("read_access", check_fields=False)
+    @classmethod
+    def valid_reads(cls, value):
+        return task_context.read_access(value, "") if value is not None else value
+
+
+class TaskIn(AccessInput):
     title: str
     repo: str = "default"
     status: str = "proposed"  # proposed | draft; ready needs owner approval
     epic_id: str | None = None
     repo_path: str | None = None
-    goal: str = ""
+    description: str = Field(default="", validation_alias=AliasChoices("description", "goal"))
+    kind: TaskKind = "implementation"
+    write: StrictBool | None = None
+    read_access: list[str] | None = None
+    branch: str | None = None
     acceptance: list[str] = []
     scope_files: list[str] = []
     priority: str = "P2"
     size: str = "M"
     risk: str = "low"
-    deps: list[str] = []
+    deps: list[str | Dependency] = []
+    related: list[str] = []
 
 
-class TaskPatch(BaseModel):
+class TaskPatch(AccessInput):
     title: str | None = None
-    goal: str | None = None
+    description: str | None = Field(default=None, validation_alias=AliasChoices("description", "goal"))
+    kind: TaskKind | None = None
+    write: StrictBool | None = None
+    read_access: list[str] | None = None
+    deps: list[str | Dependency] | None = None
+    related: list[str] | None = None
     acceptance: list[str] | None = None
     scope_files: list[str] | None = None
     priority: str | None = None

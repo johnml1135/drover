@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from . import board, ops
+from ..task_context import KINDS
 from .db import HubRequired, connect, default_path, main_error
 
 
@@ -26,7 +27,8 @@ def cmd_add(conn, a):
         return _emit(a, e, f"{e['id']} {e['title']}")
     deps = [d.split(":", 1) if ":" in d else d for d in a.dep]
     t = ops.create_task(conn, a.title, a.repo, a.epic, a.repo_path, a.goal or "", a.accept, a.scope, a.priority,
-                        a.size, a.risk, "draft" if a.draft else "proposed", a.actor, deps)
+                        a.size, a.risk, "draft" if a.draft else "proposed", a.actor, deps, kind=a.task_kind, write=a.write, read_access=a.read_access,
+                        branch=a.branch, related=a.related)
     _emit(a, t, _task_text(t))
 
 
@@ -86,7 +88,12 @@ def parser():
     a.add_argument("--repo", default="drover")
     a.add_argument("--epic")
     a.add_argument("--repo_path")
-    a.add_argument("--goal")
+    a.add_argument("--goal", "--description", dest="goal")
+    a.add_argument("--kind", dest="task_kind", choices=KINDS, default="implementation")
+    a.add_argument("--write", action=argparse.BooleanOptionalAction, default=None)
+    a.add_argument("--read-access", action="append")
+    a.add_argument("--branch")
+    a.add_argument("--related", action="append", default=[])
     a.add_argument("--plan")
     a.add_argument("--accept", action="append", default=[])
     a.add_argument("--scope", action="append", default=[])

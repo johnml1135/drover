@@ -70,4 +70,16 @@ ALTER TABLE tasks RENAME COLUMN program TO repo;
 ALTER TABLE epics RENAME COLUMN program TO repo;
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3)]
+V4 = """
+ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'implementation'
+  CHECK (kind IN ('research','investigation','implementation','fix','review','docs','mechanical'));
+ALTER TABLE tasks ADD COLUMN "write" INTEGER NOT NULL DEFAULT 1 CHECK ("write" IN (0,1));
+ALTER TABLE tasks ADD COLUMN read_access TEXT NOT NULL DEFAULT '[]';
+UPDATE tasks SET read_access = json_array(repo);
+CREATE TABLE task_links (
+  task_id TEXT NOT NULL REFERENCES tasks(id), related_id TEXT NOT NULL REFERENCES tasks(id),
+  PRIMARY KEY (task_id, related_id), CHECK (task_id < related_id));
+CREATE INDEX task_links_related ON task_links(related_id);
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4)]

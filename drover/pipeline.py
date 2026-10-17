@@ -67,6 +67,8 @@ class Pipeline:
 
     def commit_ready(self, task, run_id, message):
         """Commit scoped work left by a sandboxed worker; refuse before touching the index on a scope violation."""
+        if task.get("write") is False:
+            raise CommitRefused("read-only task cannot commit")
         if not task.get("worktree"):
             raise CommitRefused("ready_to_commit has no task worktree")
         repo = repos.native(task["worktree"])

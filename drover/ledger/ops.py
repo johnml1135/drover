@@ -11,6 +11,7 @@ task returns to its previous state only when the list is empty.
 import json
 from datetime import datetime, timezone
 
+from .. import task_context
 from . import scope as scopes
 from . import states
 from .db import tx
@@ -19,9 +20,9 @@ from .states import IllegalTransition  # noqa: F401  (re-exported)
 SIZE_ORDER = {"S": 0, "M": 1, "L": 2}
 HANDOFF_MAX = 1500
 NOTE_MAX = 300
-TASK_JSON = ("acceptance", "scope_files", "blocker")
+TASK_JSON = ("acceptance", "scope_files", "blocker", "read_access")
 TASK_EDITABLE = ("title", "goal", "acceptance", "scope_files", "priority", "size", "risk", "repo_path", "repo",
-                 "epic_id", "handoff", "branch", "worktree")
+                 "epic_id", "handoff", "branch", "worktree", "kind", "write", "read_access")
 EPIC_EDITABLE = ("repo", "title", "plan_md", "status")
 HOLD_REASONS = ("replan", "urgent")
 
@@ -69,6 +70,8 @@ def _task(row):
     d = dict(row)
     for k in TASK_JSON:
         d[k] = json.loads(d[k]) if d.get(k) else (None if k == "blocker" else [])
+    d["write"] = bool(d["write"])
+    d["description"] = d["goal"]
     return d
 
 
@@ -187,9 +190,18 @@ def _check_handoff(text):
 
 
 def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", acceptance=(), scope_files=(),
-                priority="P2", size="M", risk="low", status="proposed", actor="owner", deps=(), rank=None):
+                priority="P2", size="M", risk="low", status="proposed", actor="owner", deps=(), rank=None,
+                kind="implementation", write=None, read_access=None, branch=None, related=(), description=None):
     if status not in ("proposed", "draft"):
         raise ValueError("a new task starts as proposed or draft")
+    task_context.check_kind(kind)
+    if write is None:
+        write = kind not in task_context.READ_ONLY_KINDS
+    if not isinstance(write, bool):
+        raise ValueError('write must be a boolean')
+    read_access = task_context.read_access(read_access, repo)
+    if description is not None:
+        goal = description
     with tx(conn):
         if epic_id is not None:
             get_epic(conn, epic_id)
@@ -198,19 +210,18 @@ def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", accept
             rank = _next_rank(conn, "tasks", "epic_id IS ?", (epic_id,))
         conn.execute(
             "INSERT INTO tasks(id,epic_id,repo,repo_path,title,goal,acceptance,scope_files,priority,size,risk,rank,"
-            "status,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "status,created,updated,kind,\"write\",read_access,branch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, epic_id, repo, repo_path, title, goal, _j(list(acceptance)), _j(list(scope_files)), priority, size,
-             risk, rank, status, now, now))
+             risk, rank, status, now, now, kind, write, _j(read_access), branch))
         event(conn, "task-created", actor, {"title": title, "status": status}, task_id=tid, epic_id=epic_id)
-        for d in deps:
-            kind = "blocks"
-            if isinstance(d, (tuple, list)):
-                d, kind = d
-            add_dep(conn, tid, d, kind, actor)
+        _replace_connections(conn, tid, deps, related, actor)
         return get_task(conn, tid)
 
 
 def update_task(conn, task_id, actor="owner", **fields):
+    if "description" in fields:
+        fields["goal"] = fields.pop("description")
+    deps, related = fields.pop("deps", None), fields.pop("related", None)
     bad = set(fields) - set(TASK_EDITABLE)
     if bad:
         raise ValueError(f"cannot update task fields {sorted(bad)} (use set_status/reorder/add_dep)")
@@ -218,15 +229,60 @@ def update_task(conn, task_id, actor="owner", **fields):
         _check_handoff(fields["handoff"])
     with tx(conn):
         old = get_task(conn, task_id)
+        if "kind" in fields:
+            task_context.check_kind(fields["kind"])
+        if "write" in fields and not isinstance(fields["write"], bool):
+            raise ValueError('write must be a boolean')
+        if "read_access" in fields:
+            fields["read_access"] = task_context.read_access(fields["read_access"], fields.get("repo", old["repo"]))
+        _replace_connections(conn, task_id, deps, related, actor)
         if "epic_id" in fields and fields["epic_id"] is not None:
             get_epic(conn, fields["epic_id"])
-        vals = {k: (_j(list(v)) if k in ("acceptance", "scope_files") else v) for k, v in fields.items()}
+        vals = {k: (_j(list(v)) if k in ("acceptance", "scope_files", "read_access") else v) for k, v in fields.items()}
         if vals:
-            sets = ", ".join(f"{k}=?" for k in vals)
+            sets = ", ".join(f'"{k}"=?' for k in vals)
             conn.execute(f"UPDATE tasks SET {sets}, updated=? WHERE id=?", (*vals.values(), stamp(), task_id))
             event(conn, "task-updated", actor,
                   {k: ([old[k], v] if k != "handoff" else "changed") for k, v in fields.items()}, task_id=task_id)
         return get_task(conn, task_id)
+
+
+def _replace_connections(conn, tid, deps, related, actor):
+    # Caller owns the transaction: a bad link rolls back scalar fields and all previous links.
+    if deps is not None:
+        if not isinstance(deps, (list, tuple)):
+            raise ValueError("deps must be a list")
+        conn.execute("DELETE FROM task_deps WHERE task_id=?", (tid,))
+        for d in deps:
+            if isinstance(d, str):
+                target, kind = d, "blocks"
+            elif isinstance(d, dict):
+                target, kind = d.get("depends_on"), d.get("kind", "blocks")
+            elif isinstance(d, (tuple, list)) and len(d) == 2:
+                target, kind = d
+            else:
+                raise ValueError('deps entries must be ids or {depends_on, kind}')
+            add_dep(conn, tid, target, kind, actor)
+        event(conn, "deps-set", actor, {"deps": deps_of(conn, tid)}, task_id=tid)
+    if related is not None:
+        if not isinstance(related, (list, tuple)):
+            raise ValueError('related must be a list of task ids')
+        conn.execute("DELETE FROM task_links WHERE task_id=? OR related_id=?", (tid, tid))
+        for other in related:
+            if not isinstance(other, str):
+                raise ValueError('related must be a list of task ids')
+            get_task(conn, other)
+            if tid == other:
+                raise ValueError('a task cannot relate to itself')
+            a, b = sorted((tid, other))
+            conn.execute("INSERT OR IGNORE INTO task_links(task_id,related_id) VALUES(?,?)", (a, b))
+        event(conn, "related-set", actor, {"related": list(related)}, task_id=tid)
+
+
+def related_of(conn, task_id):
+    return [r[0] for r in conn.execute(
+        "SELECT related_id FROM task_links WHERE task_id=? UNION SELECT task_id FROM task_links "
+        "WHERE related_id=? ORDER BY 1", (task_id, task_id))]
 
 
 def _reaches(conn, start, target):

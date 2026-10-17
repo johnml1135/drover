@@ -177,10 +177,18 @@ def _task_event(t):
 
 
 def _task_fields(t, epic_id):
-    return {"title": _s(t.get("title")), "goal": _s(t.get("goal")), "acceptance": _list(t.get("acceptance")),
+    from . import task_context
+    if "kind" in t:
+        task_context.check_kind(t["kind"])
+    if "write" in t and not isinstance(t["write"], bool):
+        raise ValueError("write must be a boolean")
+    if "read_access" in t:
+        t = {**t, "read_access": task_context.read_access(t["read_access"], t.get("repo"))}
+    return {"title": _s(t.get("title")), "goal": _s(t.get("description", t.get("goal"))), "acceptance": _list(t.get("acceptance")),
             "scope_files": _list(t.get("scope_files")), "priority": _prio(t),
             "size": _s(t.get("size")) if _s(t.get("size")) in SIZES else "M",
-            "repo": _s(t.get("repo")) or None, "branch": _s(t.get("branch")) or None, "epic_id": epic_id}
+            "repo": _s(t.get("repo")) or None, "branch": _s(t.get("branch")) or None, "epic_id": epic_id,
+            **{k: t[k] for k in ("kind", "write", "read_access") if k in t}}
 
 
 def assert_proposed(task):
@@ -252,7 +260,8 @@ def import_tasks(conn, data, epic_ids, tally):
             made = ops.create_task(conn, fields["title"], _s(t.get("repo"), "unknown") or "unknown", epic_id=eid,
                                    repo_path=fields["repo"], goal=fields["goal"], acceptance=fields["acceptance"],
                                    scope_files=fields["scope_files"], priority=fields["priority"],
-                                   size=fields["size"], status="proposed", actor=ACTOR)
+                                   size=fields["size"], status="proposed", actor=ACTOR,
+                                   **{k: fields[k] for k in ("kind", "write", "read_access") if k in fields})
             tid = made["id"]
             if fields["branch"]:
                 ops.update_task(conn, tid, ACTOR, branch=fields["branch"])

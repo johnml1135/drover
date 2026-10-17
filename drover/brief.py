@@ -18,6 +18,16 @@ ACTION_RECORD = (
     "Use blocked only when the plan or environment, not your code, stops you.")
 
 
+READ_ONLY_RECORD = (
+    "## Finish\n"
+    "Report your findings, then end your final message with exactly one JSON object and nothing after it:\n"
+    '{"status": "done" | "blocked", "sha": "<read checkout HEAD for done, otherwise empty>", '
+    '"commit_message": "", "blocker": {"kind": "<short kind>", "detail": "<what is wrong>"} or null, '
+    '"note": "<=300 chars"}\n'
+    "This task is read-only. Do not edit files or create a commit. For done, report the existing read checkout HEAD "
+    "from git rev-parse HEAD. Drover checks for changes and sends the findings to the owner.")
+
+
 REVIEW_BUDGET_TOKENS = {"S": 12000, "M": 30000, "L": 30000}   # a reviewer reads a diff, so it gets more than a worker
 REVIEW_RECORD = (
     "## Finish\n"
@@ -52,9 +62,13 @@ def pinned_version(path=None):
 def _task_block(t):
     acc = "\n".join(f"- {a}" for a in t.get("acceptance") or []) or "- (none given)"
     return (f"## Task {t['id']}: {t['title']}\n"
+            f"Type: {t.get('kind', 'implementation')}\n"
+            f"Access: {'write (own worktree; finish ready_to_commit)' if t.get('write', True) else 'read-only (no edits or commits; finish done)'}\n"
+            f"Read access: {', '.join(t.get('read_access') or [t.get('repo') or 'unknown'])}\n"
+            f"Read directories: {', '.join(t.get('read_dirs') or []) or '(resolved at launch)'}\n"
             f"size {t.get('size', 'M')}, risk {t.get('risk', 'low')}, priority {t.get('priority', 'P2')}, "
             f"repo {t.get('repo') or '-'}, branch {t.get('branch') or '-'}\n\n"
-            f"Goal: {t.get('goal') or t['title']}\n\nAcceptance:\n{acc}")
+            f"Description: {t.get('description') or t.get('goal') or t['title']}\n\nAcceptance:\n{acc}")
 
 
 def _scope_block(scope):
@@ -82,7 +96,7 @@ def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pin
         parts = [_task_block(task), _scope_block(scope),
                  _section("Last gate failure (fix this)", f"```\n{excerpt}\n```" if excerpt else ""),
                  _section("Handoff from the previous worker", handoff or ""),
-                 _section("Owner notes", notes_text), ACTION_RECORD]
+                 _section("Owner notes", notes_text), READ_ONLY_RECORD if task.get("write") is False else ACTION_RECORD]
         return "\n\n".join(p for p in parts if p)
 
     user = build(excerpt, notes_text)

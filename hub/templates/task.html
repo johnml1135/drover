@@ -1,0 +1,48 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% from "_macros.html" import badge, decide, comment_btn %}
+{% block content %}
+<nav class="chips" aria-label="Task view">
+  <a class="chip" href="/plan">All task cards</a>
+  <a class="chip{% if view == 'card' %} on{% endif %}" href="/tasks/{{ task.id }}?view=card" hx-get="/tasks/{{ task.id }}?view=card" hx-target="#content" hx-push-url="true">Card</a>
+  <a class="chip{% if view == 'page' %} on{% endif %}" href="/tasks/{{ task.id }}" hx-get="/tasks/{{ task.id }}" hx-target="#content" hx-push-url="true">Page</a>
+</nav>
+{% if view == 'card' %}
+<section class="card">{% with t=task %}{% include "_task_card.html" %}{% endwith %}</section>
+{% else %}
+<article class="task-page">
+<h2>{{ task.id }} · {{ task.title }}</h2>
+<p><span class="pill status status-{{ task.status }}">{{ task.status }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
+{% if task.reason %}<p class="task-reason">{{ task.reason }}</p>{% endif %}
+{% if task.blocker %}<p class="task-reason">Blocker: {{ task.blocker }}</p>{% endif %}
+<dl class="kv task-fields">
+  <dt>Repo</dt><dd>{{ task.repo }} · {{ task.repo_config_path or 'unknown repo' }}{% if task.unknown_repo %} {{ badge('unknown repo', 'warn') }}{% endif %}</dd>
+  <dt>Branch</dt><dd>{{ task.branch_name }} {{ badge(task.branch_state) }}{% if task.branch_state == 'exists' and task.worktree_state == 'planned' %} (existing branch){% endif %}{% if task.state_pending %} (checking disk…){% endif %}</dd>
+  <dt>Worktree</dt><dd>{{ task.worktree_name }} {{ badge(task.worktree_state) }}{% if not task.write %} · no task worktree for read-only work{% endif %}</dd>
+  <dt>Read access</dt><dd><ul>{% for entry in task.read_access %}<li>{{ entry }}</li>{% else %}<li>none</li>{% endfor %}</ul></dd>
+</dl>
+<h2>Description</h2><div class="markdown">{{ task.description|markdown }}</div>
+<h2>Acceptance</h2><ul>{% for item in task.acceptance %}<li>{{ item }}</li>{% else %}<li>None given</li>{% endfor %}</ul>
+<h2>Scope</h2><ul>{% for item in task.scope_files %}<li><code>{{ item }}</code></li>{% else %}<li>None given</li>{% endfor %}</ul>
+<h2>Connections</h2>
+{% if connections %}<ul>{% for other in connections %}<li>{{ other.relation }}: <a href="/tasks/{{ other.id }}">{{ other.id }} · {{ other.title }}</a> <span class="pill status status-{{ other.status }}">{{ other.status }}</span> {{ badge(other.link_kind) }}</li>{% endfor %}</ul>{% else %}<p>Connected tasks: none</p>{% endif %}
+<h2>Runs</h2>
+{% for run in runs %}<section class="card"><a href="/runs/{{ run.id }}">Run {{ run.id }}</a> · {{ run.role }} · {{ run.backend }} · {{ run.model or '' }}<p>{{ run.outcome or 'running' }} · {{ run.started }}{% if run.ended %} → {{ run.ended }}{% endif %}</p>{% if run.note %}<p>{{ run.note }}</p>{% endif %}<details><summary>Run fields</summary><dl class="kv task-fields">{% for key, value in run.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details></section>{% else %}<p>No runs.</p>{% endfor %}
+<h2>Events</h2><ol class="thread">{% for event in events %}<li><time>{{ event.at }}</time> · {{ event.kind }} · {{ event.actor }}<pre>{{ event.data|tojson(indent=2) }}</pre></li>{% else %}<li>No events.</li>{% endfor %}</ol>
+<details class="card"><summary>All ledger fields</summary><dl class="kv task-fields">{% for key, value in task.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details>
+{% if task.status in ('proposed', 'draft', 'needs-owner') %}{{ decide('task', task.id) }}{% else %}{{ comment_btn('task', task.id) }}{% endif %}
+<details class="card"><summary>Edit task</summary>
+<form method="post" action="/tasks/{{ task.id }}/edit" hx-post="/tasks/{{ task.id }}/edit" hx-target="#content">
+  <label>Title<input type="text" name="title" value="{{ task.title }}" required></label>
+  <label>Description (Markdown)<textarea name="description" rows="8">{{ task.description }}</textarea></label>
+  <label>Kind<select name="kind">{% for kind in ('research','investigation','implementation','fix','review','docs','mechanical') %}<option{% if task.kind == kind %} selected{% endif %}>{{ kind }}</option>{% endfor %}</select></label>
+  <label>Access<select name="write"><option value="true"{% if task.write %} selected{% endif %}>write</option><option value="false"{% if not task.write %} selected{% endif %}>read-only</option></select></label>
+  <label>Repo<input type="text" name="repo" value="{{ task.repo }}"></label>
+  <label>Branch<input type="text" name="branch" value="{{ task.branch or '' }}"></label>
+  {% for key, values in [('priority', ['P0','P1','P2','P3','P4']), ('size', ['S','M','L']), ('risk', ['low','high'])] %}<label>{{ key }}<select name="{{ key }}">{% for value in values %}<option{% if task[key] == value %} selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>{% endfor %}
+  {% for key, label in [('acceptance','Acceptance (one per line)'),('scope_files','Scope (one per line)'),('read_access','Read access (repo or repo@branch, one per line)'),('related','Related task ids (one per line)')] %}<label>{{ label }}<textarea name="{{ key }}" rows="3">{{ task[key]|join('\n') }}</textarea></label>{% endfor %}
+  <label>Dependencies (id:blocks or id:waits-for, one per line)<textarea name="deps" rows="3">{% for dep in task.deps %}{{ dep.depends_on }}:{{ dep.kind }}{{ '\n' }}{% endfor %}</textarea></label>
+  <button class="btn ok">Save task</button>
+</form></details>
+</article>
+{% endif %}
+{% endblock %}

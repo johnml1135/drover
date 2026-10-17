@@ -79,12 +79,15 @@ def build_argv(spec):
                 "--append-system-prompt", spec["system_append"], "--model", m, "--effort", e]
     elif spec["backend"] == "codex":
         # codex exec has no system-prompt flag; developer_instructions is the config key for that layer
-        sandbox = "read-only" if spec.get("role") == "review" else spec.get("sandbox", "workspace-write")
+        sandbox = "read-only" if (spec.get("role") == "review" or spec.get("write") is False) else spec.get("sandbox", "workspace-write")
         if sandbox not in ("read-only", "workspace-write"):
             raise ValueError(f"unsupported codex sandbox {sandbox!r}")
         cwd = runner.to_wsl_path(spec["cwd"]) if spec.get("placement") == "wsl" else str(spec["cwd"])
         argv = [exe, "exec", "--json", "-s", sandbox, "-C", cwd, "-m", m, "-c", f"model_reasoning_effort={e}",
                 "-c", f"developer_instructions={json.dumps(spec['system_append'])}", "-"]
+        for path in spec.get("read_dirs") or []:
+            path = runner.to_wsl_path(path) if spec.get("placement") == "wsl" else to_windows_path(path)
+            argv[-1:-1] = ["--add-dir", str(path)]
     else:
         raise ValueError(f"headless launcher cannot run backend {spec['backend']!r}")
     return argv, spec["user_prompt"]

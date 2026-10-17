@@ -67,3 +67,17 @@ progress{width:100%;height:14px}
 a.btn{display:inline-flex;align-items:center;text-decoration:none;color:var(--fg)}a.btn.ok{color:#fff}
 .tail{white-space:pre-wrap;overflow-wrap:anywhere;max-height:60vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;font:.82rem/1.35 ui-monospace,monospace}
 .epicgroup h3{margin-top:14px}
+
+.task-card,.task-page{min-width:0;overflow-wrap:anywhere}
+.task-card p{margin:6px 0}.chips.compact{gap:5px;margin:5px 0}
+.task-card a{color:var(--accent)}.description-preview{white-space:pre-line}
+.status{font-weight:700}.status-blocked,.status-failed{background:var(--badbg);color:var(--bad)}
+.status-needs-owner,.status-proposed,.status-draft{background:var(--warnbg);color:var(--warn)}
+.status-ready,.status-gated,.status-reviewed,.status-landed{background:var(--okbg);color:var(--ok)}
+.status-running,.status-claimed{background:var(--accent);color:var(--card)}
+.task-reason{border-left:3px solid var(--warn);padding-left:8px}
+.task-fields{grid-template-columns:minmax(0,9rem) minmax(0,1fr)}
+.task-fields dd,.task-fields dt{min-width:0;overflow-wrap:anywhere}.task-fields ul{padding-left:18px;margin:0}
+.markdown pre,.task-page pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
+.task-page label{display:block;margin:8px 0}.task-page select{display:block;max-width:100%;min-height:44px;font:inherit;background:var(--card);color:var(--fg)}
+@media(max-width:400px){.task-fields{grid-template-columns:minmax(0,1fr)}.task-fields dt{margin-top:6px}}

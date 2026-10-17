@@ -25,7 +25,7 @@
 
 {% if owner_items %}<h2>Needs owner</h2>{% endif %}
 {% for it in owner_items %}
-<section class="card"><h3>{{ it.title }}</h3><p>{{ it.reason }}</p>{{ decide('owner', it.id) }}</section>
+<section class="card">{% with t=it %}{% include "_task_card.html" %}{% endwith %}{{ decide('owner', it.id) }}</section>
 {% endfor %}
 
 {% if imports or low or low_count %}
@@ -44,6 +44,7 @@
   {% for it in g['items'] %}
   <div class="card row">
     <label class="check big"><input type="checkbox" name="id" value="{{ it.id }}" aria-label="Select {{ it.title }}"> <span>{{ it.title }}</span></label>
+    {% with t=it %}{% include "_task_card.html" %}{% endwith %}
     {% if it.repo %}{{ badge(it.repo) }}{% endif %}{% if it.low_confidence %} {{ badge('low confidence', 'warn') }}{% endif %}
     <div class="actions">
       <button class="btn ok" formaction="/items/import/{{ it.id }}/approve" hx-post="/items/import/{{ it.id }}/approve" hx-target="#content" type="submit">Approve</button>
@@ -92,7 +93,7 @@
 
 {% if failed %}<h2>Failed and blocked</h2>{% endif %}
 {% for f in failed %}
-<section class="card"><h3>{{ f.title }} {{ badge(f.state, 'bad') }}</h3><p>{{ f.reason }}</p>
+<section class="card">{% with t=f %}{% include "_task_card.html" %}{% endwith %}
   <div class="actions">{{ comment_btn('task', f.id) }}</div></section>
 {% endfor %}
 {% endblock %}

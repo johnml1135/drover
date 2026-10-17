@@ -1,0 +1,16 @@
+<article class="task-card" data-task-id="{{ t.id }}">
+  <h3><a href="/tasks/{{ t.id }}" hx-get="/tasks/{{ t.id }}" hx-target="#content" hx-push-url="true">{{ t.id }} · {{ t.title }}</a></h3>
+  <div class="chips compact">
+    <span class="pill status status-{{ t.status or t.state }}">{{ t.status or t.state }}</span>
+    <span class="pill">{{ t.kind or 'implementation' }}</span>
+    <span class="pill">{{ 'read-only' if t.write is defined and not t.write else 'write' }}</span>
+    <span class="pill">{{ t.priority or 'P2' }} / {{ t.size or 'M' }} / {{ t.risk or 'low' }}</span>
+  </div>
+  <p class="repo">Repo: {{ t.repo or 'unknown repo' }}{% if t.repo_config_path %} · {{ t.repo_config_path }}{% elif t.unknown_repo %} <span class="pill warn">unknown repo</span>{% endif %}</p>
+  <p class="muted">Branch: {{ t.branch_name or ('drover/' ~ t.id) }} · {{ t.branch_state or 'planned' }}{% if t.branch_state == 'exists' and t.worktree_state == 'planned' %} (existing branch){% endif %}{% if t.state_pending %} (checking disk…){% endif %}<br>
+    Worktree: {{ t.worktree_state or 'planned' }}{% if t.write is defined and not t.write %} · no task worktree for read-only work{% endif %}</p>
+  <p>Connected tasks: {{ t.connected_count if t.connected_count else 'none' }}</p>
+  {% if t.reason %}<p class="task-reason">{{ t.reason }}</p>{% endif %}
+  {% if t.blocker %}<p class="task-reason">{{ t.blocker.reason or t.blocker }}</p>{% endif %}
+  {% if t.first_paragraph %}<p class="description-preview">{{ t.first_paragraph }}</p>{% endif %}
+</article>

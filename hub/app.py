@@ -47,6 +47,7 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
         services.stop()
         dispatch.stop()
         dog.stop()
+        ui_view.repo_states.close()
         store.close()
 
     app.state.start_background = start_background

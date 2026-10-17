@@ -9,10 +9,14 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from .task_views import markdown
+from .api import TaskPatch
+from pydantic import ValidationError
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+templates.env.filters["markdown"] = markdown
 router = APIRouter()
 
 TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("runs", "Runs"), ("landing", "Landing"), ("health", "Health")]
@@ -144,6 +148,33 @@ def plan(request: Request, group: str = "epic", store=Depends(get_store)):
     group = group if group in GROUPS else "epic"
     filters = {f: request.query_params.get(f, "") for f in FILTERS}
     return _tab(request, "plan", store, **plan_view(store, group, filters))
+
+
+@router.get("/tasks/{tid}", response_class=HTMLResponse)
+def task_page(tid: str, request: Request, view: str = "page", store=Depends(get_store)):
+    return _tab(request, "task", store, view=view if view in ("page", "card") else "page",
+                **store.task_detail(tid))
+
+
+@router.post("/tasks/{tid}/edit", response_class=HTMLResponse)
+async def edit_task(tid: str, request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    fields = {k: _one(form, k) for k in ("title", "description", "kind", "repo", "branch", "priority", "size", "risk")
+              if k in form}
+    if "write" in form:
+        fields["write"] = _one(form, "write") == "true"
+    for k in ("acceptance", "scope_files", "read_access", "related"):
+        if k in form:
+            fields[k] = [line.strip() for line in _one(form, k).splitlines() if line.strip()]
+    if "deps" in form:
+        fields["deps"] = [dict(depends_on=line.strip().partition(":")[0], kind=line.strip().partition(":")[2] or "blocks")
+                          for line in _one(form, "deps").splitlines() if line.strip()]
+    try:
+        fields = TaskPatch.model_validate(fields).model_dump(exclude_unset=True)
+        store.edit_task(tid, **fields)
+    except (ValidationError, ValueError) as e:
+        raise HTTPException(422, str(e))
+    return task_page(tid, request, store=store)
 
 
 @router.get("/runs", response_class=HTMLResponse)

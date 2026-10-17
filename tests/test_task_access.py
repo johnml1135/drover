@@ -1,0 +1,108 @@
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from drover import brief, launch
+from drover import task_access
+from tests.gitfix import Repo
+
+
+class AccessTests(unittest.TestCase):
+    def test_codex_read_only_and_extra_dirs(self):
+        spec = dict(backend='codex', model='codex', cwd='H:\\work', placement='wsl',
+                    system_append='', user_prompt='', write=False, read_dirs=['H:\\read'])
+        argv, _ = launch.build_argv(spec)
+        self.assertEqual(argv[argv.index('-s') + 1], 'read-only')
+        self.assertEqual(argv[argv.index('--add-dir') + 1], '/mnt/h/read')
+
+    def test_isolated_branch_read_and_change_detection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repo()
+            self.addCleanup(repo.cleanup)
+            repo.branch('topic', {'topic.txt': 'topic'})
+            cfg = {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}
+            reads = task_access.prepare(['p@topic'], cfg, Path(tmp) / 'reads')
+            self.addCleanup(task_access.make_writable, Path(tmp) / 'reads')
+            dest = Path(reads[0]['path'])
+            self.assertNotEqual(dest, repo.repo)
+            self.assertEqual((dest / 'topic.txt').read_text(), 'topic')
+            self.assertEqual(repo.git('branch', '--show-current'), 'main')
+            task_access.verify(reads)
+            if os.name != 'nt':
+                self.assertFalse((dest / 'topic.txt').stat().st_mode & 0o222)
+            task_access.make_writable(dest)
+            (dest / 'extra').write_text('bad')
+            with self.assertRaises(ValueError):
+                task_access.verify(reads)
+
+    def test_brief_states_access_and_kind(self):
+        b = brief.assemble(dict(id='T-a', title='Read', kind='research', write=False,
+                               read_access=['p@main'], read_dirs=['/reads/p']))['user_prompt']
+        self.assertIn('Type: research', b)
+        self.assertIn('read-only', b)
+        self.assertIn('p@main', b)
+        self.assertIn('/reads/p', b)
+        self.assertNotIn('leave changes in the worktree', b)
+        self.assertIn('read checkout HEAD', b)
+
+
+from tests.test_pipeline import Base, result, done
+from unittest.mock import patch
+
+
+class WorkerAccessTests(Base):
+    def test_read_task_has_no_task_worktree_and_does_not_commit_or_gate(self):
+        tid = self.task(kind='research')
+        with patch.object(self.pipe, 'worktree', side_effect=AssertionError('must not create worktree')):
+            self.d.worktree_fn = self.pipe.worktree
+            self.assertIn(tid, self.d.tick()['launched'])
+        spec = self.fl.of('worker')[-1]
+        self.assertFalse(spec['write'])
+        self.assertEqual(spec['sandbox'], 'read-only')
+        self.assertIsNone(self.get(tid)['worktree'])
+        self.assertIn('Read directories:', spec['user_prompt'])
+        self.assertTrue(spec['read_dirs'])
+        self.fl.handles[spec['run_id']].result = result('done', done('a' * 40))
+        with patch.object(self.pipe, 'commit_ready', side_effect=AssertionError('no commit')):
+            self.d.reap()
+        self.assertEqual(self.get(tid)['status'], 'needs-owner')
+        self.assertEqual(self.port.list_runs(tid)[-1]['outcome'], 'read-only-done')
+        self.assertEqual(self.fl.of('gate'), [])
+
+    def test_read_diff_blocks_write_task_before_commit(self):
+        tid = self.task()
+        self.d.tick()
+        spec = self.fl.of('worker')[-1]
+        path = Path(spec['read_dirs'][0])
+        task_access.make_writable(path)
+        (path / 'extra').write_text('changed read input')
+        self.fl.handles[spec['run_id']].result = result('done', done('a' * 40))
+        with patch.object(self.pipe, 'commit_ready', side_effect=AssertionError('no commit')):
+            self.d.reap()
+        self.assertEqual(self.get(tid)['status'], 'needs-owner')
+        self.assertEqual(self.port.list_runs(tid)[-1]['outcome'], 'blocked')
+        self.assertIn('read-only checkout changed', self.port.list_runs(tid)[-1]['note'])
+
+    def test_committer_refuses_read_only_task(self):
+        from drover.pipeline import CommitRefused
+        with self.assertRaisesRegex(CommitRefused, 'read-only'):
+            self.pipe.commit_ready(dict(write=False), 1, 'bad')
+
+    def test_restart_restores_read_manifest_and_still_refuses_changes(self):
+        tid = self.task()
+        self.d.tick()
+        spec = self.fl.of('worker')[-1]
+        rid = spec['run_id']
+        restarted = self.make()
+        with patch.object(self.fl, 'adopt', create=True, return_value=self.fl.handles[rid]):
+            restarted._adopt(self.get(tid), self.port.list_runs(tid)[-1], 'windows', self.port.get_policy())
+        adopted = restarted.live[rid][2]
+        self.assertEqual(adopted['read_checkouts'], spec['read_checkouts'])
+        path = Path(spec['read_dirs'][0])
+        task_access.make_writable(path)
+        (path / 'base.txt').write_text('bad after restart')
+        self.fl.handles[rid].result = result('done', done('a' * 40))
+        restarted.reap()
+        self.assertEqual(self.port.list_runs(tid)[-1]['outcome'], 'blocked')
+        self.assertEqual(self.get(tid)['status'], 'needs-owner')

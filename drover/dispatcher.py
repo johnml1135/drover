@@ -21,6 +21,7 @@ from pathlib import Path
 
 import inspect
 
+from . import task_access
 from . import allowance as allowance_mod
 from . import brief as brief_mod
 from . import config as config_mod
@@ -318,6 +319,18 @@ class Dispatcher:
             return self._finish_gate(run_id, task_id, spec, result)
         if role == "review":
             return self._finish_review(run_id, task_id, spec, result)
+        try:
+            task_access.verify(spec.get("read_checkouts") or [])
+            if (spec.get("adopted") and self.pipeline and p.get_task(task_id).get("read_access")
+                    and "read_checkouts" not in spec):
+                raise ValueError("read access verification unavailable after dispatcher restart")
+        except (ValueError, OSError) as e:
+            p.finish_run(run_id, "blocked", note=str(e)[:300], **usage)
+            return p.set_status(task_id, "needs-owner", reason=str(e)[:300])
+        if spec.get("write", p.get_task(task_id).get("write", True)) is False and st in ("done", "ready_to_commit"):
+            p.finish_run(run_id, "read-only-done", note=note, **usage)
+            p.append_event("read-only-done", {"run": run_id, "note": note}, task_id)
+            return p.set_status(task_id, "needs-owner", reason="Read-only work completed; review the run output")
         if st == "timeout":
             p.finish_run(run_id, "timeout", note=f"timeout: {result.get('timeout')}"[:300], **usage)
             self._failed(task_id, run_id, f"worker timed out ({result.get('timeout')})")
@@ -878,13 +891,17 @@ class Dispatcher:
         spec = {"run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
                 "seat": seat["name"] if seat else None, "binary": seat["binary"] if seat else route["backend"],
                 "env": config_mod.seat_env(seat),
-                "sandbox": "read-only" if role == "review" else (seat or {}).get("sandbox", "workspace-write"),
+                "write": task.get("write", True), "read_dirs": task.get("read_dirs", []),
+                "read_checkouts": task.get("read_checkouts", []),
+                "sandbox": "read-only" if role == "review" or task.get("write") is False else (seat or {}).get("sandbox", "workspace-write"),
                 "cwd": cwd, "placement": placement, "nonce": nonce, "task": task, "wall_s": self._wall_s(task, policy),
                 "idle_s": self._idle_s(policy), "system_append": b["system_append"], "user_prompt": b["user_prompt"],
                 "allowance_before": contract.used_from_headroom(self._headroom(route["backend"])), **(extra or {})}
         if role == "review":
             p.append_event("review-started", {"run": run_id, "sha": extra["sha"], "worker_run": extra["worker_run"]},
                            task["id"])
+        p.append_event("dispatch.access", {"run": run_id, "read_checkouts": spec["read_checkouts"],
+                                           "write": spec["write"]}, task["id"])
         p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce}, task["id"])  # before any start
         try:
             handle = self.launcher.launch(spec)
@@ -1026,6 +1043,10 @@ class Dispatcher:
         spec = {"run_id": run["id"], "role": run["role"], "backend": run["backend"], "model": run["model"], "task": task,
                 "adopted": True, "placement": placement, "wall_s": self._wall_s(task, policy),
                 "idle_s": self._idle_s(policy)}
+        saved = next((e["data"] for e in self.port.events("dispatch.access")
+                      if e["data"].get("run") == run["id"]), {})
+        if "read_checkouts" in saved:
+            spec.update(read_checkouts=saved["read_checkouts"], write=saved.get("write", True))
         handle = self.launcher.adopt(spec, _epoch(run["started"]))
         self.live[run["id"]] = (handle, task["id"], spec)
         self.port.append_event("run-adopted", {"run": run["id"], "placement": placement}, task["id"])
@@ -1175,6 +1196,15 @@ class Dispatcher:
     def _worktree(self, task):
         """The task's worktree path, or False when it could not have one (it is then needs-owner with the reason)."""
         try:
+            if task.get("read_access") and self.pipeline:
+                task["read_checkouts"] = task_access.prepare(
+                    task["read_access"], self.pipeline.all_repos(),
+                    Path(self.pipeline.runs_dir).parent / "read-checkouts")
+                task["read_dirs"] = [r["path"] for r in task["read_checkouts"]]
+            if task.get("write") is False:
+                if not task.get("read_dirs"):
+                    raise WorktreeRefused("read-only task needs at least one read repository")
+                return task["read_dirs"][0]
             return self.worktree_fn(task)
         except WorktreeRefused as e:
             self.port.set_status(task["id"], "needs-owner", reason=str(e)[:300])
@@ -1247,7 +1277,7 @@ class Dispatcher:
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            if self.pipeline and not self.pipeline.gate_known(task):
+            if self.pipeline and task.get("write", True) and not self.pipeline.gate_known(task):
                 continue                             # no known gate for the repo: the owner was asked
             route = self._route(task, policy, admitted)
             if route.get("needs_owner"):

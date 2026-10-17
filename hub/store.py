@@ -9,7 +9,7 @@ import json
 import threading
 import time
 
-from drover import config, contract, decisions, importer
+from drover import config, contract, decisions, importer, repos
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
@@ -94,12 +94,14 @@ class Store:
             raise BadRequest("title required")
         t = ops.create_task(self.conn, title.strip(), repo, actor=actor, **f)
         self._changed("task.created", id=t["id"])
-        return t
+        return self.get_task(t["id"])
 
     @_translate
     def get_task(self, tid):
         t = ops.get_task(self.conn, tid)
         t["deps"] = ops.deps_of(self.conn, tid)
+        t["dependents"] = ops.dependents_of(self.conn, tid)
+        t["related"] = ops.related_of(self.conn, tid)
         return t
 
     def list_tasks(self, status=None, epic_id=None, repo=None, q=None, limit=500):
@@ -117,7 +119,7 @@ class Store:
         fields = {k: v for k, v in fields.items() if v is not None}
         t = ops.update_task(self.conn, tid, actor=actor, **fields)
         self._changed("task.updated", id=tid)
-        return t
+        return self.get_task(tid)
 
     @_translate
     def set_status(self, tid, status, actor, reason=None):
@@ -330,24 +332,28 @@ class Store:
                "action": "create", "reason": "", "priority": it.get("priority", "P2")}
         if not title:
             return {**row, "action": "invalid", "reason": "title required"}
-        for d in it.get("deps") or []:
-            try:
-                ops.get_task(conn, d if isinstance(d, str) else d[0])
-            except LedgerNotFound:
-                return {**row, "action": "invalid", "reason": f"unknown dep {d}"}
         epic_id = epics.get((repo, epic_name.lower())) if epic_name else None
         if (repo, epic_id, title.lower()) in seen:
             return {**row, "action": "duplicate", "reason": "already in ledger or batch"}
+        previous_epics = dict(epics)
+        conn.execute("SAVEPOINT import_row")
         try:
             if epic_name and epic_id is None:
                 epic_id = ops.create_epic(conn, repo, epic_name, actor=actor)["id"]
                 epics[(repo, epic_name.lower())] = epic_id
             fields = {k: it[k] for k in ("repo_path", "goal", "acceptance", "scope_files", "priority",
-                                         "size", "risk", "deps") if k in it}
+                                         "size", "risk", "deps", "related", "kind", "write", "read_access", "branch", "description") if k in it}
             t = ops.create_task(conn, title, repo, epic_id=epic_id, status="proposed",
                                 actor=actor, **fields)
-        except (ValueError, LedgerNotFound) as e:
-            return {**row, "action": "invalid", "reason": str(e)}
+        except BaseException as e:
+            conn.execute("ROLLBACK TO import_row")
+            epics.clear()
+            epics.update(previous_epics)
+            if isinstance(e, (ValueError, LedgerNotFound)):
+                return {**row, "action": "invalid", "reason": str(e)}
+            raise
+        finally:
+            conn.execute("RELEASE import_row")
         seen.add((repo, epic_id, title.lower()))
         row["id"] = t["id"]
         return row
@@ -372,6 +378,8 @@ class UiView:
 
     def __init__(self, store: Store, services=None, watchdog=None, dispatcher=None, runs_dir=None):
         self.s = store
+        from .task_views import RepoStates
+        self.repo_states = RepoStates()
         self.services = services      # hub.services.Services: garden queue, tools, probes
         self.watchdog = watchdog
         self.dispatcher = dispatcher  # hub.dispatch.DispatcherService
@@ -402,9 +410,39 @@ class UiView:
             out.append({"id": str(q["id"]), "title": q["title"], "body": q["body"], "options": opts})
         return out
 
+    def _task_view(self, task, configured=None):
+        from .task_views import derive
+        configured = repos.load_all() if configured is None else configured
+        prog = configured.get(str(task.get("repo") or "").lower())
+        tid = task["id"]
+        deps = ops.deps_of(self.c, tid)
+        incoming = [dict(task_id=r[0], kind=r[1]) for r in self.c.execute(
+            "SELECT task_id, kind FROM task_deps WHERE depends_on=? ORDER BY task_id", (tid,))]
+        related = ops.related_of(self.c, tid)
+        task = {**task, "state": task["status"], "reason": self._reason(task),
+                "deps": deps, "dependents": incoming, "related": related,
+                "connected_count": len({d["depends_on"] for d in deps} |
+                                       {d["task_id"] for d in incoming} | set(related))}
+        task.update(derive(task, prog, self.repo_states.get(prog) if prog else None))
+        return task
+
+    def task_detail(self, tid):
+        task = self._task_view(self.s.get_task(tid))
+        connections = []
+        for label, entries in (("Depends on", [(d["depends_on"], d["kind"]) for d in task["deps"]]),
+                               ("Depends on this", [(d["task_id"], d["kind"]) for d in task["dependents"]]),
+                               ("Related", [(other, "related") for other in task["related"]])):
+            for other, kind in entries:
+                connections.append(dict(self.s.get_task(other), relation=label, link_kind=kind))
+        return dict(task=task, connections=connections, runs=self.s.list_runs(tid),
+                    events=self.s.list_events(task_id=tid, limit=100000))
+
+    def edit_task(self, tid, **fields):
+        return self.s.update_task(tid, actor="owner", **fields)
+
     def needs_owner_items(self):
-        return [{"id": t["id"], "title": t["title"], "reason": self._reason(t)}
-                for t in self.s.list_tasks(status="needs-owner")]
+        configured = repos.load_all()
+        return [self._task_view(t, configured) for t in self.s.list_tasks(status="needs-owner")]
 
     def _low_confidence_ids(self):
         """Task ids whose import-task event carries the importer's low-confidence tag."""
@@ -417,7 +455,8 @@ class UiView:
     def import_proposals(self):
         epics = {e["id"]: e["title"] for e in self.s.list_epics()}
         low = self._low_confidence_ids()
-        return [{"id": t["id"], "title": t["title"], "repo": t["repo"] or "",
+        configured = repos.load_all()
+        return [{**self._task_view(t, configured), "repo": t["repo"] or "",
                  "reason": epics.get(t["epic_id"], ""), "epic_id": t["epic_id"] or "",
                  "epic": epics.get(t["epic_id"], ""), "low_confidence": t["id"] in low}
                 for t in self.s.list_tasks(status="proposed")]
@@ -438,19 +477,20 @@ class UiView:
 
     def failed_blocked_items(self):
         out = []
+        configured = repos.load_all()
         for t in self.s.list_tasks(status="failed,blocked"):
             reason = (t["blocker"] or {}).get("reason") or self._reason(t)
-            out.append({"id": t["id"], "title": t["title"], "state": t["status"], "reason": reason})
+            out.append({**self._task_view(t, configured), "reason": reason})
         return out
 
     def plan_epics(self):
         tasks = self.s.list_tasks(limit=100000)
         low = self._low_confidence_ids()
         by_epic: dict = {}
+        configured = repos.load_all()
         for t in tasks:
             by_epic.setdefault(t["epic_id"], []).append(
-                {"id": t["id"], "title": t["title"], "state": t["status"], "repo": t["repo"],
-                 "model": t["model"], "low": "1" if t["id"] in low else None})
+                {**self._task_view(t, configured), "low": "1" if t["id"] in low else None})
         out = [{"id": e["id"], "title": e["title"], "tasks": by_epic.pop(e["id"], [])}
                for e in self.s.list_epics()]
         if by_epic.get(None):
