@@ -8,6 +8,72 @@ from unittest.mock import patch
 from drover import config, repos
 
 
+class GateCommands(unittest.TestCase):
+    def repo(self, commands, platform='both', **gate):
+        return repos.normalize({'name': 'acme-app', 'repo': '~/repos/acme-app',
+                                'gate': {'platform': platform, 'commands': commands, **gate}})
+
+    def test_shared_commands_and_per_key_platform_overrides(self):
+        shared = {'full': ['shared'], 'scoped': ['shared-scoped']}
+        prog = self.repo(shared)
+        for platform in repos.PLATFORMS:
+            self.assertEqual(repos.gate_commands(prog, platform), shared)
+        commands = {**shared, 'windows': {'full': ['python', 'check.py']},
+                    'wsl': {'scoped': ['python3', 'scoped.py']}}
+        prog = self.repo(commands)
+        self.assertEqual(prog['gate']['commands'], commands)
+        self.assertEqual(repos.gate_commands(prog, 'windows'),
+                         {'full': ['python', 'check.py'], 'scoped': shared['scoped']})
+        self.assertEqual(repos.gate_commands(prog, 'wsl'),
+                         {'full': shared['full'], 'scoped': ['python3', 'scoped.py']})
+
+    def test_platform_commands_can_supply_full_without_a_shared_command(self):
+        commands = {'windows': {'full': ['python']}, 'wsl': {'full': ['python3']}}
+        for platform in ('windows', 'wsl', 'both'):
+            with self.subTest(platform=platform):
+                prog = self.repo(commands, platform)
+                self.assertFalse(prog['gate']['unknown'])
+                for target in repos.gate_platforms(prog):
+                    self.assertEqual(repos.gate_commands(prog, target), commands[target])
+
+    def test_known_gate_requires_full_on_every_selected_platform(self):
+        for missing in repos.PLATFORMS:
+            commands = {p: {'full': ['check']} for p in repos.PLATFORMS if p != missing}
+            with self.subTest(missing=missing):
+                with self.assertRaises(repos.RepoError) as cm:
+                    self.repo(commands)
+                self.assertIn('acme-app', str(cm.exception))
+                self.assertIn(f'gate.commands.{missing}.full', str(cm.exception))
+        with self.assertRaisesRegex(repos.RepoError, 'acme-app.*gate.commands.wsl.full'):
+            self.repo({}, 'wsl', unknown=False)
+        self.assertTrue(self.repo({}, unknown=True)['gate']['unknown'])
+        self.assertTrue(self.repo({'wsl': {'scoped': ['check']}}, unknown=True)['gate']['unknown'])
+
+    def test_unknown_keys_and_malformed_commands_name_the_config_path(self):
+        cases = [({'ful': ['x']}, 'gate.commands.ful'),
+                 ({'linux': {'full': ['x']}}, 'gate.commands.linux'),
+                 ({'windows': {'ful': ['x']}}, 'gate.commands.windows.ful'),
+                 ({'wsl': {'windows': {'full': ['x']}}}, 'gate.commands.wsl.windows'),
+                 ({'windows': ['x']}, 'gate.commands.windows'),
+                 ({'wsl': {'full': []}}, 'gate.commands.wsl.full'),
+                 ({'wsl': {'full': 'python3'}}, 'gate.commands.wsl.full'),
+                 ({'wsl': {'scoped': ['x', 3]}}, 'gate.commands.wsl.scoped'),
+                 ({'full': []}, 'gate.commands.full'),
+                 (['x'], 'gate.commands')]
+        for commands, path in cases:
+            with self.subTest(commands=commands):
+                with self.assertRaises(repos.RepoError) as cm:
+                    self.repo(commands, unknown=True)
+                self.assertIn(f'acme-app: {path}', str(cm.exception))
+
+    def test_owner_override_replaces_platform_commands_with_shared_full(self):
+        prog = self.repo({'windows': {'full': ['old']}}, unknown=True)
+        overridden = repos.with_override(prog, 'python check.py')
+        for platform in repos.PLATFORMS:
+            self.assertEqual(repos.gate_commands(overridden, platform), {'full': ['python', 'check.py']})
+        self.assertTrue(prog['gate']['unknown'])
+
+
 class Discovery(unittest.TestCase):
     def test_private_configs_take_precedence_and_examples_require_opt_in(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {'DROVER_EXAMPLES': '0'}):

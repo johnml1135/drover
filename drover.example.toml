@@ -17,6 +17,23 @@
 # is read with a warning only when repos/ is missing. DROVER_REPO_CONFIGS_DIR overrides this key.
 repos_dir = ""
 
+# Per-repository gate configuration belongs in repos/<name>.toml, not this machine config.
+# Shared [gate.commands] full/scoped argv still work on every gate platform. Optional windows/wsl
+# tables override each key independently; omitted keys fall back to the shared command. A known gate
+# needs full on each selected platform (from an override or the shared table). Only full/scoped and
+# the windows/wsl override tables are accepted. The wizard continues to write shared commands.
+# For example, in a repo file with [run] platforms = ["windows", "wsl"]:
+# [gate]
+# platform = "both"          # windows, then wsl; both must pass for task and batch gates
+# unknown = false
+# [gate.commands]
+# full = ["python3", "-m", "unittest", "discover"]
+# [gate.commands.windows]
+# full = ["python", "-m", "unittest", "discover"]
+# [gate.commands.wsl]
+# full = ["python3", "-m", "unittest", "discover"]
+# scoped = ["python3", "-m", "unittest", "{project}"]  # optional; scope_map selects projects
+
 [paths]
 # The state dir holds ledger.db, runs\, rescue\, hub-token, dispatcher.lock, config.toml and repos\, under an
 # owner-only ACL. Empty = the folder holding config.toml: %USERPROFILE%\.drover.

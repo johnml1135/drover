@@ -57,6 +57,11 @@ The fictional examples are acme-lib and its consumer acme-app.
 Repo files declare the path, default branch, remote and worktree location.
 `[run].platforms` constrains Windows/WSL placement; `default` breaks ties.
 `[gate].platform` selects Windows, WSL or both, with both required to pass.
+`[gate.commands]` supplies shared `full` and optional `scoped` argv lists.
+`[gate.commands.windows]` and `[gate.commands.wsl]` can override either key independently;
+an omitted key falls back to its shared value. A known gate must resolve `full` on every
+selected gate platform. Other command keys are rejected. Task gates select a plan for each
+platform; batch gates use each platform's resolved `full` command. The wizard writes the shared form.
 Placement outside the allowed platforms sends the task to the owner.
 Unknown gates generate an owner question rather than an invented test command.
 `[land].policy` selects single-task or batched landing; pushing defaults off.

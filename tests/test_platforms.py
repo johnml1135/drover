@@ -3,6 +3,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from drover import config, contract, dispatcher, pipeline, repos, route
 from hub.dispatch import LandingService
@@ -55,7 +57,12 @@ class Normalize(unittest.TestCase):
             repos.normalize({"name": "a"})
 
     def test_the_shipped_examples_all_load(self):
-        self.assertEqual(set(repos.load_all(repos.REPOS_DIR)), {"acme-lib", "acme-app"})
+        examples = repos.load_all(repos.REPOS_DIR)
+        self.assertEqual(set(examples), {"acme-lib", "acme-app"})
+        self.assertEqual(repos.gate_platforms(examples['acme-app']), ['windows', 'wsl'])
+        for platform, python in [('windows', 'python'), ('wsl', 'python3')]:
+            self.assertEqual(repos.gate_commands(examples['acme-app'], platform)['full'],
+                             [python, '-m', 'unittest', 'discover'])
 
     def test_state_dir_repos_win_once_the_folder_exists(self):
         from drover import config
@@ -289,6 +296,73 @@ class GateBoth(Base):
         self.assertEqual(self.status(tid), "gated")
 
 
+class PlatformCommands(unittest.TestCase):
+    def setUp(self):
+        self.prog = repos.normalize({'name': 'p', 'repo': 'repo', 'gate': {
+            'platform': 'both', 'commands': {'windows': {'full': ['python', 'check.py']},
+                                           'wsl': {'full': ['python3', 'check.py']}}}})
+        self.pipe = pipeline.Pipeline(None, repos_map={'p': self.prog})
+        self.task = {'id': 'T-1', 'repo': 'p', 'worktree': 'worktree', 'priority': 'P1'}
+        self.sha = 'a' * 40
+        for target, name, value in ((pipeline.gate, 'changed_paths', ['src/a.py']),
+                                    (self.pipe, 'diff_lines', 2), (self.pipe, 'head', self.sha)):
+            patched = patch.object(target, name, return_value=value)
+            patched.start()
+            self.addCleanup(patched.stop)
+
+    def test_shared_full_commands_work_on_both_platforms_and_default_to_the_repos_platform(self):
+        self.prog['gate']['commands'] = {'full': ['shared']}
+        for platform in repos.PLATFORMS:
+            plan = self.pipe.gate_plan(self.task, self.prog, self.sha, platform)
+            self.assertEqual((plan['kind'], plan['commands'], plan['platform']), ('full', [['shared']], platform))
+        self.prog['gate']['platform'] = 'wsl'
+        plan = self.pipe.gate_plan(self.task, self.prog, self.sha)
+        self.assertEqual((plan['commands'], plan['platform']), ([['shared']], 'wsl'))
+
+    def test_dispatcher_writes_a_plan_with_each_platforms_full_command(self):
+        d = dispatcher.Dispatcher.__new__(dispatcher.Dispatcher)
+        d.port, d.pipeline, d.launcher, d.live = Mock(), self.pipe, Mock(), {}
+        d._event_for = Mock(return_value={'sha': self.sha})
+        d._last_nongate = Mock(return_value={'id': 1})
+        d._next_gate_platform = Mock(side_effect=['windows', 'wsl'])
+        d.wsl_up_fn, d._wsl_blocked, d._lease = lambda: True, lambda: False, lambda task: True
+        d.port.start_run.side_effect = [2, 3]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.pipe.runs_dir = tmp
+            for platform, run_id, python in [('windows', 2, 'python'), ('wsl', 3, 'python3')]:
+                self.assertTrue(d._begin_gate(self.task, []))
+                plan = json.loads((Path(tmp) / str(run_id) / 'plan.json').read_text())
+                self.assertEqual(plan['commands'], [[python, 'check.py']])
+                self.assertEqual(d.launcher.launch.call_args.args[0]['placement'], platform)
+
+    def test_scoped_overrides_expand_projects_and_fall_back_to_platform_full(self):
+        self.prog['gate']['scope_map'] = 'scope.json'
+        self.prog['gate']['commands']['scoped'] = ['shared', '{project}']
+        self.prog['gate']['commands']['wsl']['scoped'] = ['python3', '{project}']
+        scope = {'projects': ['Core.Tests', 'App.Tests'], 'fallback_used': False}
+        with patch.object(pipeline.gate, 'load_map', return_value={}), \
+                patch.object(pipeline.gate, 'compute_scope', return_value=scope):
+            for platform, cmd in [('windows', 'shared'), ('wsl', 'python3')]:
+                plan = self.pipe.gate_plan(self.task, self.prog, self.sha, platform)
+                self.assertEqual((plan['kind'], plan['platform']), ('scoped', platform))
+                self.assertEqual(plan['commands'], [[cmd, 'Core.Tests'], [cmd, 'App.Tests']])
+            scope['fallback_used'] = True
+            for platform, cmd in [('windows', 'python'), ('wsl', 'python3')]:
+                plan = self.pipe.gate_plan(self.task, self.prog, self.sha, platform)
+                self.assertEqual((plan['kind'], plan['commands']), ('full', [[cmd, 'check.py']]))
+
+    def test_unmapped_scoped_command_is_resolved_for_the_selected_platform(self):
+        self.prog['gate']['commands']['windows']['scoped'] = ['windows-scoped']
+        windows = self.pipe.gate_plan(self.task, self.prog, self.sha, 'windows')
+        wsl = self.pipe.gate_plan(self.task, self.prog, self.sha, 'wsl')
+        self.assertEqual((windows['kind'], windows['commands']), ('scoped', [['windows-scoped']]))
+        self.assertEqual((wsl['kind'], wsl['commands']), ('full', [['python3', 'check.py']]))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.pipe.runs_dir = tmp
+            argv, _ = self.pipe.gate_argv(wsl, 1, 'P1', self.prog)
+            self.assertEqual(argv[0], 'python3')
+
+
 class WslTracker(test_dispatcher.Base):
     def test_wsl_pressure_blocks_only_work_that_needs_wsl(self):
         self.allow["codex"] = False
@@ -334,6 +408,32 @@ class DotnetSeats(unittest.TestCase):
 
 
 class LandingGateBoth(unittest.TestCase):
+    def test_batch_gate_uses_the_effective_full_command_on_each_platform(self):
+        svc = LandingService.__new__(LandingService)
+        svc.store, svc.gate_kw = SimpleNamespace(path='ledger.db'), {}
+        cases = [({'full': ['shared']}, [['shared'], ['shared']]),
+                 ({'windows': {'full': ['python']}, 'wsl': {'full': ['python3']}},
+                  [['python'], ['python3']]),
+                 ({'full': ['shared'], 'wsl': {'full': ['python3']}}, [['shared'], ['python3']])]
+        for commands, expected in cases:
+            with self.subTest(commands=commands):
+                prog = repos.normalize({'name': 'p', 'repo': 'repo',
+                                        'gate': {'platform': 'both', 'commands': commands}})
+                calls = []
+
+                def make(command, *args, **kw):
+                    return lambda wt, tip, tasks: calls.append(command) or {'status': 'passed'}
+
+                with patch('hub.dispatch.os', SimpleNamespace(name='nt')), \
+                        patch('hub.dispatch.landing.make_gate', side_effect=make) as windows, \
+                        patch.object(svc, '_wsl_gate', side_effect=make) as wsl:
+                    check = svc.gate_fn(prog, 'main', 'out', None)
+                    receipt = check('worktree', 'a' * 40, [])
+                self.assertEqual(calls, expected)
+                self.assertEqual(windows.call_args.args[0], expected[0])
+                self.assertEqual(wsl.call_args.args[0], expected[1])
+                self.assertEqual((receipt['status'], receipt['platform']), ('passed', 'windows+wsl'))
+
     def gate(self, statuses):
         calls = []
 

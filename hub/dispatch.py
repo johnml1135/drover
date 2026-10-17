@@ -99,11 +99,10 @@ class LandingService:
             self._thread.join(timeout)
 
     def gate_fn(self, prog, base_ref, out_dir, conn):
-        """The batch gate: the repo's full command on its gate platform. A WSL gate started from the Windows hub
+        """The batch gate: each gate platform's effective full command. A WSL gate started from the Windows hub
         runs `python3 -m drover.gate run` through wsl.exe with every path mapped to /mnt/<d>/."""
-        command = prog["gate"]["commands"]["full"]
         platforms = repos.gate_platforms(prog)
-        runs = [self._gate_on(x, command, base_ref, out_dir, conn, prog) for x in platforms]
+        runs = [self._gate_on(x, repos.gate_commands(prog, x)["full"], base_ref, out_dir, conn, prog) for x in platforms]
         return runs[0] if len(runs) == 1 else self._both(runs, platforms)
 
     def _gate_on(self, platform, command, base_ref, out_dir, conn, prog):

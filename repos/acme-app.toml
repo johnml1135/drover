@@ -6,9 +6,13 @@ consumes = ["acme-lib"]
 platforms = ["windows", "wsl"]
 default = "wsl"
 [gate]
-platform = "wsl"
+platform = "both"
 unknown = false
-[gate.commands]
+# Optional full/scoped keys here override the same keys in shared [gate.commands].
+# With both platforms selected, full must resolve for each. No shared command is needed below.
+[gate.commands.windows]
+full = ["python", "-m", "unittest", "discover"]
+[gate.commands.wsl]
 full = ["python3", "-m", "unittest", "discover"]
 # Optional reviewer routing (otherwise uses the configured default reviewer):
 # [review]

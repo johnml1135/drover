@@ -8,7 +8,8 @@ Keys: repo, worktrees (Windows paths; default <paths.worktrees>\\<name>.worktree
 remote; [run] platforms (a list of windows|wsl, default both),
 default (the platform used when nothing else decides); [gate] platform (windows|wsl|both: both must pass on each),
 unknown, scope_map,
-timeout_s, idle_s and [gate.commands] full/scoped (argv lists, `{project}` filled per selected test project);
+timeout_s, idle_s and [gate.commands] full/scoped (argv lists, `{project}` filled per selected test project),
+optionally overridden per key by [gate.commands.windows] and [gate.commands.wsl];
 [review] backend, seat, model, effort, high_risk_model; [land] policy (batch|single); [landing] mode (local; pr reserved), push (false), remote (origin), main (main).
 Legacy [land].push, remote and default_branch remain readable; [landing] takes precedence.
 `gate.unknown = true` means nobody knows the gate command: the repo's tasks go to the owner with a question.
@@ -39,6 +40,21 @@ def _argv(v, what):
     return list(v)
 
 
+def _commands(raw, what, platforms=True):
+    if not isinstance(raw, dict):
+        raise RepoError(f"{what} must be a table")
+    out = {}
+    for key, value in raw.items():
+        path = f"{what}.{key}"
+        if key in ("full", "scoped"):
+            out[key] = _argv(value, path)
+        elif platforms and key in PLATFORMS:
+            out[key] = _commands(value, path, platforms=False)
+        else:
+            raise RepoError(f"{path} is not a supported gate command key")
+    return out
+
+
 def normalize(raw, name=None):
     """A validated repo dict with every default filled in."""
     name = str(raw.get("name") or name or "")
@@ -63,10 +79,12 @@ def normalize(raw, name=None):
     gate_plats = list(PLATFORMS) if platform == "both" else [platform]
     if any(p not in plats for p in gate_plats):
         raise RepoError(f"{name}: gate.platform {platform!r} needs run.platforms to include {gate_plats}")
-    cmds = {k: _argv(v, f"{name}: gate.commands.{k}") for k, v in (g.get("commands") or {}).items()}
+    cmds = _commands(g.get("commands", {}), f"{name}: gate.commands")
     unknown = bool(g.get("unknown", not cmds))
-    if not unknown and "full" not in cmds:
-        raise RepoError(f"{name}: a known gate needs gate.commands.full")
+    if not unknown:
+        for p in gate_plats:
+            if "full" not in cmds.get(p, {}) and "full" not in cmds:
+                raise RepoError(f"{name}: a known gate needs gate.commands.{p}.full or shared gate.commands.full")
     land = dict(raw.get("land") or {})
     policy = str(land.get("policy") or "batch")
     if policy not in ("batch", "single"):
@@ -145,6 +163,12 @@ def gate_platforms(prog):
     """The platforms a repo's gate runs on, in order: [windows, wsl] for `both`."""
     plat = prog["gate"]["platform"]
     return list(PLATFORMS) if plat == "both" else [plat]
+
+
+def gate_commands(prog, platform):
+    """Effective full/scoped argv for one gate platform; overrides replace shared keys individually."""
+    commands = prog["gate"]["commands"]
+    return {**{k: v for k, v in commands.items() if k in ("full", "scoped")}, **commands.get(platform, {})}
 
 
 def load_all(directory=None):

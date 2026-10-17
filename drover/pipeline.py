@@ -343,12 +343,13 @@ class Pipeline:
     def diff_text(self, repo, base, sha):
         return git(repo, "diff", "--no-renames", f"{base}...{sha}").stdout
 
-    def gate_plan(self, task, prog, sha):
-        """{kind: none|scoped|full, commands, scope, base, repo, diff_lines, ...} for the diff `base...sha`."""
+    def gate_plan(self, task, prog, sha, platform=None):
+        """{kind: none|scoped|full, commands, scope, base, repo, diff_lines, ...} for `base...sha` on one platform."""
+        platform = platform or repos.gate_platforms(prog)[0]
         repo = repos.native(task["worktree"])
         base = self.base_ref(prog)
         paths = gate.changed_paths(repo, base, sha)
-        cmds, mp = prog["gate"]["commands"], repos.scope_map_path(prog)
+        cmds, mp = repos.gate_commands(prog, platform), repos.scope_map_path(prog)
         scope, kind, commands = None, "full", [cmds["full"]]
         if mp is not None:
             scope = gate.compute_scope(paths, gate.load_map(mp))
@@ -362,15 +363,15 @@ class Pipeline:
             kind, commands = "scoped", [cmds["scoped"]]
         return {"kind": kind, "commands": commands, "scope": scope, "base": base, "repo": repo, "sha": sha,
                 "project_pattern": prog["gate"].get("project_pattern", ""),
-                "diff_lines": self.diff_lines(repo, base, sha), "files": paths, "platform": prog["gate"]["platform"]}
+                "diff_lines": self.diff_lines(repo, base, sha), "files": paths, "platform": platform}
 
     def gate_argv(self, plan, gate_run, priority, prog, platform=None):
-        """(argv, receipt path) that runs the plan through gatejob on one gate platform (the repo's; for `both`
-        the caller names which). The plan file is written into the gate run's directory; for WSL every path in it and
+        """(argv, receipt path) that runs the plan through gatejob on its selected gate platform.
+        The plan file is written into the gate run's directory; for WSL every path in it and
         in argv is mapped to /mnt/<d>/."""
         d = runner.run_dir(self.runs_dir, gate_run)
         d.mkdir(parents=True, exist_ok=True)
-        wsl = (platform or repos.gate_platforms(prog)[0]) == "wsl"
+        wsl = (platform or plan.get("platform") or repos.gate_platforms(prog)[0]) == "wsl"
         def m(p):
             return runner.to_wsl_path(str(p)) if wsl else str(p)
         out = d / "receipt.json"

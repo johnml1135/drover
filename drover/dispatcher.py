@@ -575,13 +575,13 @@ class Dispatcher:
             self._gate_failed(task, worker, f"worker reported commit {sha[:12]} but its worktree is at {head[:12]}; "
                                             "commit the work and report that commit", 0, None)
             return False
-        plan = pl.gate_plan(task, prog, sha)
+        platform = self._next_gate_platform(task, prog, worker["id"], sha)
+        plan = pl.gate_plan(task, prog, sha, platform)
         if plan["kind"] == "none":
             p.append_event("gate-started", {"run": worker["id"], "sha": sha, "kind": "none"}, tid)
             self._gate_passed(task, worker, sha, 0.0, plan["diff_lines"], {"sha": sha, "scope": plan["scope"],
                                                                          "status": "passed", "kind": "none"}, None)
             return True
-        platform = self._next_gate_platform(task, prog, worker["id"], sha)
         if platform == "wsl" and not self.wsl_up_fn():
             p.note_wsl_needed(tid)
             return False
