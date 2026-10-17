@@ -367,6 +367,7 @@ class TestWslDiscovery(Base):
         self.svc.discover_tools()
         self.assertEqual(self.store.get_settings()["wsl_bin_claude"], "/usr/bin/claude")
 
+    @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
     def test_nvm_codex_resolves_to_the_newest_vendored_native_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -395,6 +396,7 @@ class TestWslDiscovery(Base):
             self.assertNotIn(str(home / ".nvm" / "versions" / "node" / "v22.4.1" / "bin" / "codex"),
                              run.stdout)
 
+    @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
     def test_invalid_windows_wrapper_does_not_hide_nvm_codex(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -436,6 +438,7 @@ class TestWslDiscovery(Base):
             self.assertEqual(parse_discovery(run.stdout), {"codex": str(native)})
             self.assertNotIn("DROVER_TOOL|codex|/mnt/c/", run.stdout)
 
+    @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
     def test_shim_only_reports_a_clear_event_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
