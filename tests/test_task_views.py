@@ -109,6 +109,38 @@ class ContextApiTests(api_tests.HubCase):
 
 
 class ContextUiTests(ui_tests.UiTests):
+    def test_task_page_approve_and_reject(self):
+        for status in ('proposed', 'draft', 'needs-owner'):
+            for decision, expected in (('approve', 'ready'), ('reject', 'cancelled')):
+                with self.subTest(status=status, decision=decision):
+                    tid = self.st.create_task('Awaiting decision')['id']
+                    if status == 'needs-owner':
+                        self.st.approve(tid)
+                    if status != 'proposed':
+                        self.st.set_status(tid, status, 'owner')
+                    page = self.c.get('/tasks/' + tid)
+                    self.assertEqual(page.status_code, 200, page.text)
+                    action = f'/items/task/{tid}/{decision}'
+                    self.assertIn(f'action="{action}"', page.text)
+                    self.assertIn(f'hx-post="{action}"', page.text)
+                    response = self.c.post(action, headers=SAME)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    task = self.st.get_task(tid)
+                    self.assertEqual(task['status'], expected)
+                    if decision == 'approve' and status in ('proposed', 'draft'):
+                        self.assertIsNotNone(task['approved_at'])
+
+    def test_task_page_decisions_require_owner_and_same_origin(self):
+        for decision in ('approve', 'reject'):
+            for headers in ({}, {'Sec-Fetch-Site': 'cross-site'},
+                            dict(SAME, Host='untrusted.example')):
+                with self.subTest(decision=decision, headers=headers):
+                    tid = self.st.create_task('Awaiting decision')['id']
+                    response = self.c.post(f'/items/task/{tid}/{decision}', headers=headers)
+                    self.assertEqual(response.status_code, 403, response.text)
+                    self.assertEqual(self.st.get_task(tid)['status'], 'proposed')
+                    self.assertIsNone(self.st.get_task(tid)['approved_at'])
+
     def test_full_page_card_partial_connections_and_owner_edit(self):
         a = self.st.create_task('Task context', description='# Context\n\nFirst paragraph.\n\n<script>bad</script>',
                                 kind='review', acceptance=['Read it'], scope_files=['docs'])['id']

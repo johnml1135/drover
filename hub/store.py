@@ -611,7 +611,7 @@ class UiView:
     def decide_item(self, kind, iid, decision):
         if decision not in ("approve", "reject"):
             raise BadRequest(decision)
-        if kind in ("owner", "import"):
+        if kind in ("task", "owner", "import"):
             t = self.s.get_task(iid)
             if decision == "reject":
                 self.s.set_status(iid, "cancelled", "owner", "owner rejected")
