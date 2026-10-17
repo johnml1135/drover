@@ -614,6 +614,38 @@ class Recovery(Base):
         d2.tick()
         self.assertEqual(self.status(t), "gated")
 
+    def test_string_id_scan_keeps_live_wsl_run_alive(self):
+        t, rid = self.start(goal="platform: linux")
+        self.found = {str(rid): "wsl"}
+        for _ in range(dispatcher.ORPHAN_SCANS + 2):
+            self.assertEqual(self.d.watch_runs(), [])
+        self.assertIn(rid, self.d.live)
+        self.assertEqual(self.status(t), "running")
+        self.assertIsNone(self.first(t))
+        self.assertNotIn(rid, self.d.missed)
+
+    def test_recover_orphans_adopts_string_id_scan_with_found_placement(self):
+        t, rid = self.start()
+        self.found = {str(rid): "wsl"}
+        d2 = self.restart()
+        self.assertEqual(d2.recover_orphans(), [])
+        self.assertIn(rid, d2.live)
+        self.assertEqual(self.fl.adopted[-1][0]["placement"], "wsl")
+        self.assertNotIn(rid, d2.missed)
+        self.assertEqual(self.status(t), "running")
+
+    def test_task_with_found_wsl_run_is_never_reclaimed(self):
+        t, rid = self.start(goal="platform: linux")
+        self.found = {str(rid): "wsl"}
+        for _ in range(dispatcher.ORPHAN_SCANS + 2):
+            self.assertEqual(self.d.tick()["launched"], [])
+        self.assertEqual(len(self.fl.specs), 1)
+        self.assertEqual(len(self.port.list_runs(t)), 1)
+        claims = [e for e in self.port.events("status")
+                  if e["task_id"] == t and e["data"]["to"] == "claimed"]
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(self.status(t), "running")
+
     def test_terminal_status_file_finishes_the_run_even_with_no_runner(self):
         t, rid = self.start()
         h = AdoptHandle(status={"state": "exited"}, result=res("done", DONE))

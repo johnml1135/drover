@@ -490,9 +490,9 @@ class RunnerLauncher(Launcher):
     def scan(self, want_wsl=False):
         """{run_id: placement} of live runners. Raises ScanError when any wanted list cannot be read: unknown is
         never the same as none. WSL is only asked when want_wsl, since asking boots it."""
-        found = {r["run_id"]: "windows" for r in runner.find_runners()}
+        found = normalize_run_ids({r["run_id"]: "windows" for r in runner.find_runners()})
         if want_wsl:
-            for rid in self._wsl_runners():
+            for rid in normalize_run_ids(dict.fromkeys(self._wsl_runners(), "wsl")):
                 found.setdefault(rid, "wsl")
         return found
 
@@ -505,7 +505,20 @@ class RunnerLauncher(Launcher):
             raise ScanError(f"cannot list WSL runners: {e!r}") from e
         if r.returncode != 0 or not isinstance(rows, list):
             raise ScanError(f"WSL runner find exited {r.returncode}")
-        return [row["run_id"] for row in rows if isinstance(row, dict) and isinstance(row.get("run_id"), str)]
+        return [row["run_id"] for row in rows if isinstance(row, dict) and type(row.get("run_id")) in (int, str)]
+
+
+def normalize_run_ids(found):
+    """Integer ledger run ids only; ignore unrelated or malformed process markers."""
+    out = {}
+    for rid, placement in found.items():
+        if type(rid) not in (int, str):
+            continue
+        try:
+            out[int(rid)] = placement
+        except ValueError:
+            continue
+    return out
 
 
 def wsl_running(distro, run=subprocess.run):

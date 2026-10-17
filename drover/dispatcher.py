@@ -957,7 +957,7 @@ class Dispatcher:
         if self.scan_fn is None:
             return None
         try:
-            found = self.scan_fn(want_wsl)
+            found = launch_mod.normalize_run_ids(self.scan_fn(want_wsl))
         except ScanError as e:
             if not self.scan_unknown:
                 self.port.append_event("scan-unknown", {"error": str(e)[:300]})

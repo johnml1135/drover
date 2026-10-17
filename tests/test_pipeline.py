@@ -290,6 +290,30 @@ class UnknownGate(Base):
 
 
 class Worktrees(Base):
+    def test_worktree_add_disables_autocrlf_including_the_legacy_fallback(self):
+        real = pipeline.git
+        self.fix.git("config", "core.autocrlf", "true")
+        committed = subprocess.run(["git", "-C", str(self.fix.repo), "show", "main:base.txt"],
+                                   capture_output=True, check=True).stdout
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                calls = []
+
+                def fake(repo, *args, **kw):
+                    if "worktree" in args and "add" in args:
+                        calls.append(args)
+                        if legacy and "--relative-paths" in args:
+                            return subprocess.CompletedProcess(args, 129, "", "error: unknown option `relative-paths'")
+                    return real(repo, *args, **kw)
+
+                tid = self.task()
+                with patch.object(pipeline, "git", fake), patch.object(pipeline.Pipeline, "_cross_os", return_value=False):
+                    wt = self.pipe.worktree(self.get(tid))
+                self.assertEqual(len(calls), 2 if legacy else 1)
+                for args in calls:
+                    self.assertEqual(args[:4], ("-c", "core.autocrlf=false", "worktree", "add"))
+                self.assertEqual((Path(wt) / "base.txt").read_bytes(), committed)
+
     def test_example_home_paths_are_persisted_and_launched_as_absolute_paths(self):
         root = Path(self.tmp.name)
         repo = root / 'repos' / 'acme-lib'

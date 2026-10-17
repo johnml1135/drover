@@ -314,12 +314,12 @@ class Pipeline:
             tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
         else:
             tail = ["-b", branch, str(dest), base]
-        r = git(repo, "worktree", "add", "--relative-paths", *tail)
+        r = git(repo, "-c", "core.autocrlf=false", "worktree", "add", "--relative-paths", *tail)
         if r.returncode and "relative-paths" in r.stderr:
             if self._cross_os(dest):
                 raise WorktreeRefused("this git has no `worktree add --relative-paths`, and a worktree under "
                                       f"{dest} is opened from both Windows and WSL: update git (2.48 or newer)")
-            r = git(repo, "worktree", "add", *tail)
+            r = git(repo, "-c", "core.autocrlf=false", "worktree", "add", *tail)
         if r.returncode:
             raise WorktreeRefused(f"git worktree add failed: {r.stderr.strip()[-300:]}")
 

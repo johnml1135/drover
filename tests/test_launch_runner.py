@@ -377,17 +377,24 @@ class Handle(Base):
 
 
 class Scanning(Base):
+    def test_scan_rejects_non_numeric_ids_and_accepts_mixed_numeric_ids(self):
+        rows = [{"run_id": rid} for rid in ("5", 7, "acme-app", "", None, True, 8.5)]
+        self.rl.run = lambda *a, **k: SimpleNamespace(
+            stdout=json.dumps(rows + [{"run_id": "6"}, {"run_id": 9}]), stderr="", returncode=0)
+        with patch.object(runner, "find_runners", return_value=rows):
+            self.assertEqual(self.rl.scan(True), {5: "windows", 7: "windows", 6: "wsl", 9: "wsl"})
+
     def test_windows_only_unless_wsl_is_wanted(self):
         calls = []
         orig = runner.find_runners
         runner.find_runners = lambda: [{"pid": 1, "run_id": "5"}]
         self.addCleanup(setattr, runner, "find_runners", orig)
         self.rl.run = lambda *a, **k: calls.append(a) or SimpleNamespace(stdout="[]", stderr="", returncode=0)
-        self.assertEqual(self.rl.scan(False), {"5": "windows"})
+        self.assertEqual(self.rl.scan(False), {5: "windows"})
         self.assertEqual(calls, [])
         self.rl.run = lambda cmd, **k: calls.append(cmd) or SimpleNamespace(
             stdout=json.dumps([{"pid": 2, "run_id": "6"}]), stderr="", returncode=0)
-        self.assertEqual(self.rl.scan(True), {"5": "windows", "6": "wsl"})
+        self.assertEqual(self.rl.scan(True), {5: "windows", 6: "wsl"})
         self.assertEqual(calls[0][:5], ["wsl.exe", "-d", "Dist", "--cd", "/mnt/r/repos/drover"])
         self.assertEqual(calls[0][-4:], ["-m", "drover.runner", "find", "--json"])
 
