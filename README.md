@@ -67,7 +67,14 @@ consumer testing again against the landed provider. Research tasks produce repor
 
 - [Current design](docs/design.md), [vocabulary](GLOSSARY.md), [dispatcher details](docs/dispatcher.md)
 - [Configuration reference](drover.example.toml), [architecture decisions](docs/adr/)
-- [Licence note](LICENSE-NOTE.md)
+
+## Licence
+
+Drover's own code is licensed under the [MIT License](LICENSE).
+
+Some local decision models are licensed for non-commercial use. Model weights and worker tools have their own
+licences, separate from Drover's code. The setup wizard asks about commercial use; choose models whose terms
+permit your intended use and check their licences before deployment.
 
 `drover/` uses the Python standard library. The hub uses FastAPI, Jinja2 and Uvicorn.
 Run checks from the checkout root:
