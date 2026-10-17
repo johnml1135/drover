@@ -23,22 +23,22 @@
 - Drover neither vendors nor installs skills.
 - Framework task lists import as proposed only.
 - Each worker edits only its scope in its isolated task branch/worktree; never push/merge/deploy or install/start services. Check disk/admission before heavy verification and never add parallel builds. Codex returns ready_to_commit without git add/commit.
-- Reconcile landed T-7 before implementation rollout. Use the exact next migration number then; retain kind/write/read_access and links while removing their closed type enum. Main/T-7 behavior references are the spec evidence table E1–E16.
+- Reconcile landed T-7 before implementation rollout. Use the exact next migration number then; retain kind/write/read_access and links while removing their closed type enum. Main/T-7 behavior references are the spec evidence table E1–E17.
 - Keep `task_types.enabled=false` until compatibility/runtime checks pass and the owner activates. Recommendations D1–D11 are rollout decisions, not implicit approval from this research run.
 
 ## Review Focus
 
 - A same-name extension, parent deletion or malformed reload must not change an old run; #2/#7 test inheritance and immutable replay.
-- Renamed states or waiting-owner work must retain reservations and delivery evidence; artifact records must survive trusted recovery while repository changes retain SHA requirements; #8/#15/#19/#20 test claim/restart/parsing/landing.
-- Worker bearer, forged UI headers or mirrored-WSL locality must never grant CLI owner authority; #21/#24 test pairing and actions with negative auth inputs.
-- Two channels or crash retries must not duplicate a grill round, answer or launch; #9/#17/#18/#26 test CAS, idempotency and draft recovery.
-- Framework ambiguity, anonymous task rewording or checked boxes must not auto-approve or prematurely archive; #11/#12/#28 test conservative mapping/finalization.
+- Renamed states or waiting-owner work must retain reservations and delivery evidence; artifact records must survive trusted recovery while repository changes retain SHA requirements; #8/#15/#20/#21 test claim/restart/parsing/landing.
+- Shared bearer, supplied run IDs, forged UI headers or mirrored-WSL locality must not confer run/owner identity; #16/#17/#20/#22/#24/#25/#29 test issuance/delivery/revocation, cross-run rejection, upload races and owner pairing.
+- Two channels or crash retries must not duplicate a grill round, answer or launch; #9/#18/#19/#27 test CAS, idempotency and draft recovery.
+- Framework ambiguity, anonymous task rewording or checked boxes must not auto-approve or prematurely archive; #11/#12/#29 test conservative mapping/finalization.
 
 ## Delivery boundaries and execution order
 
 The companion [task list](2026-10-17-task-types.tasks.json) is a JSON array in hub task format. Index labels below are zero-based and match `#n` dependency strings. Import remains proposed; the owner can review and activate each slice. Each JSON goal includes its own scope/access/worktree header, normative spec, interfaces and exact verification command.
 
-Contracts (#0–#5), persistence/kernel (#6–#10), repo/execution consumers (#11–#20), owner channels (#21–#26), and tuning/rollout (#27–#28) are staged deliverables. Pure contracts/fixtures are useful independently; live configurable dispatch remains disabled until integration. No two task scopes overlap, including test files. Dependencies reflect interface consumption, not file conflicts. For example #4/#5 can run independently after their prerequisites; #11/#13 can run alongside ledger integration when admitted. D1 is an external owner decision: hold #1 and its dependents until approved; do not install to unblock it.
+Contracts (#0–#5), persistence/kernel (#6–#10), repo/execution consumers (#11–#21), owner channels (#22–#27), and tuning/rollout (#28–#29) are staged deliverables. Pure contracts/fixtures are useful independently; live configurable dispatch remains disabled until integration. No two task scopes overlap, including test files. Dependencies reflect interface consumption, not file conflicts. For example #4/#5 can run independently after their prerequisites; #11/#13 can run alongside ledger integration when admitted. D1 is an external owner decision: hold #1 and its dependents until approved; do not install to unblock it.
 
 ## File and interface map
 
@@ -50,9 +50,9 @@ Contracts (#0–#5), persistence/kernel (#6–#10), repo/execution consumers (#1
 | Ledger persistence | schema/db, new task_records/workflow/actions modules, facade ops/states/board/CLI | #6/#7/#8/#10 |
 | Owner work | `drover/owner_tasks.py`, `drover/owner_actions.py`, shared action handlers | #9 |
 | Framework/task sources | framework adapters/finalization, importer and framework_tasks | #11/#12 |
-| Execution | type routing, pipeline/access, runner record parser/recovery, brief/skills/launch, grill, outbox driver, dispatcher/port, landing | #13–#20 |
-| Presentation/transport | owner auth, JSON form descriptors, Store/RegistryService, API, web, stdlib CLI | #21–#26 |
-| Policy and rollout | tuner, end-to-end tests, operator documentation | #27/#28 |
+| Execution | type routing, pipeline/access, runner record parser/recovery, run credentials/artifact client, brief/skills/launch, grill, outbox driver, dispatcher/port, landing | #13–#21 |
+| Presentation/transport | owner auth, JSON form descriptors, Store/RegistryService, API, web, stdlib CLI | #22–#27 |
+| Policy and rollout | tuner, end-to-end tests, operator documentation | #28/#29 |
 
 All signatures use JSON dictionaries defined in #0 unless a connection, port or service object is explicit. Principal = authenticated role/identity/client/source, never an untrusted actor string. ActionReceipt contains task revision, event ID, resulting state/phase, action status/evidence and replay key. Source/path records use repo-relative normalized paths. TypeSnapshot contains resolved data/hash/provenance; TaskRecord includes pinned type hash and framework binding. Services receive the ledger connection and registry explicitly, avoiding import-time YAML or hub dependencies in worker/client modules.
 
@@ -160,11 +160,11 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 
 **Files (exclusive scope):** `drover/ledger/schema.py`, `drover/ledger/db.py`, `tests/test_type_migration.py`.
 
-**Interfaces:** Append the next unused migration after reconciled T-7. Produce type_versions, task type_version/fields_json/assignee/execution_phase/revision/parent_id/result_json/framework binding, run type_version/execution_json, scope_reservations, action_outbox, question_task_map, grill_sessions and grill_rounds as specified. SQL column contracts are documented beside the migration.
+**Interfaces:** Append the next unused migration after reconciled T-7. Produce type_versions, task type_version/fields_json/assignee/execution_phase/revision/parent_id/result_json/framework binding, run type_version/execution_json, scope_reservations, action_outbox, question_task_map, grill_sessions and grill_rounds as specified. SQL column contracts are documented beside the migration. Also produce run_credentials(id PK, token_hash UNIQUE, task_id FK, run_id FK, launch_nonce, scope, issued_at, expires_at, revoked_at, revoke_reason) and artifact_receipts(id PK, task_id FK, run_id FK, launch_nonce, credential_id FK, sha256, storage_key, request_key, created_at); enforce unique (run_id, launch_nonce, request_key).
 
-**Implementation:** Reconcile landed T-7 first, then append migrations without changing applied entries. Rebuild tasks transactionally to remove fixed kind CHECK while preserving the compatibility column; preserve every ID/FK/index/trigger/link/question/event/sequence. Make type_versions immutable, outbox keys unique by transition event/action index, question mappings unique by question ID and round keys unique by grill/round number. Add constraints for assignee/phase/revision and JSON content; no dynamic snapshots generated in SQL. Provide migration support for legacy metadata to be populated by #7 before dispatch activation.
+**Implementation:** Reconcile landed T-7 first, then append migrations without changing applied entries. Rebuild tasks transactionally to remove fixed kind CHECK while preserving the compatibility column; preserve every ID/FK/index/trigger/link/question/event/sequence. Make type_versions immutable, outbox keys unique by transition event/action index, question mappings unique by question ID and round keys unique by grill/round number. Add constraints for assignee/phase/revision and JSON content; no dynamic snapshots generated in SQL. Provide migration support for legacy metadata to be populated by #7 before dispatch activation. Retain revoked credential metadata referenced by immutable append-only artifact receipts; store no plaintext secret. Existing legacy runs receive no inferred credentials or receipts.
 
-- [ ] Add failing tests: `test_v3_upgrade`: a populated main-v3 fixture upgrades with identical IDs, policy/status/receipt data and append-only event triggers; FK/integrity checks pass; `test_t7_upgrade`: a populated T-7 fixture retains kind/write/read_access/task_links and permits new type names after rebuild; `test_migration_rollback`: injected failure rolls back fully; rerun succeeds; counters/child references/outbox uniqueness remain correct.
+- [ ] Add failing tests: `test_v3_upgrade`: a populated main-v3 fixture upgrades with identical IDs, policy/status/receipt data and append-only event triggers; FK/integrity checks pass; `test_t7_upgrade`: a populated T-7 fixture retains kind/write/read_access/task_links and permits new type names after rebuild; `test_migration_rollback`: injected failure rolls back fully; rerun succeeds; counters/child references/outbox uniqueness remain correct; `test_run_auth_storage`: token hashes are unique; credential/receipt task/run FKs and request-key uniqueness hold; revocation retains receipt references; legacy fixtures gain empty auth tables without fabricated identities.
 - [ ] Run `python3 -m unittest tests.test_type_migration -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `python3 -m unittest tests.test_type_migration -v`; require exit 0 and all assertions passing.
@@ -310,29 +310,45 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 
 - [ ] Add failing tests: `test_artifact_record_roundtrip`: done with empty SHA and valid artifact survives parse, final Claude/Codex frame scanning, atomic record.json persistence and launch.RunnerHandle._record/_finish revalidation with URI/hash unchanged; `test_artifact_recovery`: restart/adopt an exited fake runner with matching run identity and saved record; poll returns the same done/artifact without a second launch; launch.parse_action_record is runner.parse_action_record; `test_record_authority_and_legacy`: raw/tool artifact success is never trusted; missing SHA/artifact remains blocked/no-sha; malformed URI/hash or SHA+artifact is blocked/invalid-artifact; legacy done+SHA and ready_to_commit requirements remain intact.
 - [ ] Run `python3 -m unittest tests.test_artifact_records tests.test_runner tests.test_launch_runner -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
-- [ ] Implement the interfaces and behavior above; leave launch.py to #16 and delivery authorization to #19.
+- [ ] Implement the interfaces and behavior above; leave launch.py to #17 and delivery authorization to #20.
 - [ ] Rerun `python3 -m unittest tests.test_artifact_records tests.test_runner tests.test_launch_runner -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #16: Assemble typed briefs, installed skills and bounded handoffs
+### #16: Authenticate artifact uploads with revocable assigned-run credentials
 
-**Size/risk:** M/low. **Dependencies:** #3, #7, #11, #13, #14, #15. **Grounding:** spec E5, E12, E13.
+**Size/risk:** M/high. **Dependencies:** #0, #6, #7. **Grounding:** spec E9, E17.
+
+**Files (exclusive scope):** `drover/run_auth.py`, `drover/artifact_client.py`, `tests/test_run_auth.py`, `tests/test_artifact_client.py`.
+
+**Interfaces:** Produce issue_run_credential(conn, run_id: int, launch_nonce: str, wall_deadline: str | None, now: str) -> dict, verify_run_credential(conn, token: str, task_id: str, run_id: int, now: str) -> dict, revalidate_run_principal(conn, principal: dict, now: str) -> None and revoke_run_credentials(conn, run_id: int, reason: str, now: str) -> None in drover/run_auth.py. RunAuthError.code is unauthorized (401) or forbidden (403). Issuance returns credential_id/token/expires_at/task_id/run_id/launch_nonce; verification returns the authenticated assigned-run Principal, never a caller-supplied actor. Produce upload_result(credential_file: str, result_file: str, request_key: str) -> dict and python -m drover.artifact_client upload <result-file> --request-key <key> in drover/artifact_client.py; CLI reads DROVER_RUN_CREDENTIAL_FILE and prints only artifact URI/hash/receipt. Control-file JSON keys are credential_id, token, expires_at, task_id, run_id, launch_nonce, artifact_endpoint; result_file=- reads UTF-8 stdin for read-only workers.
+
+**Implementation:** Implement the design Assigned-run artifact authentication contract using stdlib secrets/hashlib/hmac and the #6 tables. Only the trusted in-process dispatcher calls issuance after claim/pin for no-repo-change; expose no HTTP mint/refresh endpoint. Generate drun_ plus 32 random bytes URL-safe; store only token hash and binding/scope/timestamps. Expire at issued+24h, shortened to the approved wall deadline when configured (None means no shorter deadline); use server time. Verification checks active assignment/lease, run nonce, scope, pinned delivery and expiry/revocation; IDs and nonces alone grant nothing. Revalidation repeats mutable checks inside the artifact persistence transaction. Retain revoked metadata for durable receipt validation; never store plaintext in SQLite/events. The client reads the protected launch control file, enforces fixed endpoint, 1 MiB UTF-8 limit, HTTPS across hosts or explicitly configured local Windows/WSL path, disallows redirects, sends bearer only in Authorization and redacts all errors. No owner/shared bearer fallback, YAML or hub imports. Launch file protection/delivery is #17; issuance/revocation call sites are #20; auth dependency is #22; persistence/API wiring is #24/#25.
+
+- [ ] Add failing tests: `test_run_binding`: issued credential verifies only its active task/run/nonce and artifact:write scope; other task, another run of the same task, stale nonce and repo-changing policy fail forbidden; IDs without a token never authenticate; `test_expiry_and_revocation`: expiry is issued+24h without a configured wall deadline and min(wall deadline, issued+24h) otherwise; expired/unknown/revoked tokens fail unauthorized; lease loss fails forbidden; issuance refuses unclaimed or code-delivery runs; hashes/events contain no plaintext; `test_revalidation_race`: authenticated principal becomes unusable inside persistence transaction after cancellation/revocation/nonce change; retained revoked metadata can still identify a previously committed receipt without authorizing a new upload; `test_artifact_client_transport`: helper uploads bounded UTF-8 bytes from a file or stdin with private-file bearer and stable request key; redirects, cross-host plaintext, oversize content and missing credential file fail without logging token; CLI stdout contains only URI/hash/receipt; imports remain stdlib-only.
+- [ ] Run `python3 -m unittest tests.test_run_auth tests.test_artifact_client -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
+- [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
+- [ ] Rerun `python3 -m unittest tests.test_run_auth tests.test_artifact_client -v`; require exit 0 and all assertions passing.
+- [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
+
+### #17: Assemble typed briefs, installed skills and bounded handoffs
+
+**Size/risk:** M/high. **Dependencies:** #3, #7, #11, #13, #14, #15, #16. **Grounding:** spec E5, E12, E13.
 
 **Files (exclusive scope):** `drover/brief.py`, `drover/launch.py`, `drover/pinned.md`, `drover/skills.py`, `tests/test_task_briefs.py`.
 
-**Interfaces:** Produce resolve_skills(names: list[dict], seat_catalog: dict) -> dict in skills.py, returning content hashes/missing required/optional omissions. Extend brief.assemble/assemble_review with optional execution snapshot/context manifest; extend launch specs with budget/handoff ceilings and saved session metadata.
+**Interfaces:** Produce resolve_skills(names: list[dict], seat_catalog: dict) -> dict in skills.py, returning content hashes/missing required/optional omissions. Extend brief.assemble/assemble_review with optional execution snapshot/context manifest; extend launch specs with budget/handoff ceilings and saved session metadata. Consume #16 issuance bundle as an ephemeral launch-only argument (never execution_json); extend launch spec/control path with credential_id and protected credential-file pointer, not token contents. Brief invokes python -m drover.artifact_client upload - --request-key <key> with stdin for read-only workers; result-file upload remains available.
 
-**Implementation:** Render core/type field blocks, framework layout/instructions, allowed read directories, explicit skill invocation and correct repo/artifact action record from #15: repo writes require ready_to_commit/commit_message or done/SHA; no-repo-change uses done with empty SHA and artifact.uri/sha256 after authenticated upload. Resolve only allowlisted template variables; never execute expressions. Selected-seat installed catalog must contain required skills; optional omissions are visible. Bound includes/globs/bytes, keep pinned/task/acceptance/owner decisions/handoff mandatory, trim optional excerpts deterministically with omission manifest and fail if mandatory content exceeds budget. Use S/M worker 6000/15000 and reviewer 12000/30000 unless type override. Rotate at min(type threshold default 60000, reported harness ceiling), keep handoff<=1500 plus structured artifact refs, reject compaction. Keep legacy signatures callable and no YAML imports in WSL launch.
+**Implementation:** Render core/type field blocks, framework layout/instructions, allowed read directories, explicit skill invocation and correct repo/artifact action record from #15: repo writes require ready_to_commit/commit_message or done/SHA; no-repo-change uses done with empty SHA and artifact.uri/sha256 after authenticated upload. Resolve only allowlisted template variables; never execute expressions. Selected-seat installed catalog must contain required skills; optional omissions are visible. Bound includes/globs/bytes, keep pinned/task/acceptance/owner decisions/handoff mandatory, trim optional excerpts deterministically with omission manifest and fail if mandatory content exceeds budget. Use S/M worker 6000/15000 and reviewer 12000/30000 unless type override. Rotate at min(type threshold default 60000, reported harness ceiling), keep handoff<=1500 plus structured artifact refs, reject compaction. Keep legacy signatures callable and no YAML imports in WSL launch. After _fresh_run_dir and before spawning, write the one-time credential bundle to a private control file outside repo/artifacts; check POSIX 0600 or Windows owner ACL plus per-run sandbox read grant. Same-account ACLs alone do not isolate workers; refuse launch if another sandbox can read it or effective protection cannot be verified (including WSL mounts). Pass only DROVER_RUN_CREDENTIAL_FILE in Windows/WSL child env, grant that exact file for read-only artifact workers, and keep secrets out of argv/in.txt/briefs/records/logs. Cleanup file on definite launch failure and support #20 cleanup/recovery hooks. No new credential from adoption by ID; only same live run/nonce with matching unexpired protected file may resume.
 
-- [ ] Add failing tests: `test_mandatory_context`: oversize mandatory content fails; optional excerpts trim with manifest; owner answers are not dropped; `test_skills_and_paths`: missing required selected-seat skill blocks; optional omission records; include cannot read unapproved repo or traverse; `test_rotation_snapshot`: threshold rotation preserves type/policy/session provenance and bounded handoff; compaction setting is rejected; briefs emit the exact delivery-specific completion shape and never instruct a repo-changing worker to finish with artifact only.
+- [ ] Add failing tests: `test_mandatory_context`: oversize mandatory content fails; optional excerpts trim with manifest; owner answers are not dropped; `test_skills_and_paths`: missing required selected-seat skill blocks; optional omission records; include cannot read unapproved repo or traverse; `test_rotation_snapshot`: threshold rotation preserves type/policy/session provenance and bounded handoff; compaction setting is rejected; briefs emit the exact delivery-specific completion shape and never instruct a repo-changing worker to finish with artifact only; `test_private_run_delivery`: fake Windows and WSL launches receive only credential-file pointer; token is absent from argv/brief/serialized execution/record/log output and other worker grants; unprotected file or broad sandbox read fails before spawn, definite failure removes file, lost-file adoption refuses, protected same-nonce adoption preserves identity.
 - [ ] Run `python3 -m unittest tests.test_task_briefs -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `python3 -m unittest tests.test_task_briefs -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #17: Persist grill frontiers, owner rounds and landed decision edits
+### #18: Persist grill frontiers, owner rounds and landed decision edits
 
-**Size/risk:** M/low. **Dependencies:** #7, #8, #9, #11, #16. **Grounding:** spec E4, E5, E12.
+**Size/risk:** M/low. **Dependencies:** #7, #8, #9, #11, #17. **Grounding:** spec E4, E5, E12.
 
 **Files (exclusive scope):** `drover/grill.py`, `tests/test_grill.py`.
 
@@ -346,9 +362,9 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `python3 -m unittest tests.test_grill -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #18: Execute workflow outbox actions with crash recovery
+### #19: Execute workflow outbox actions with crash recovery
 
-**Size/risk:** M/high. **Dependencies:** #8, #9, #14, #17. **Grounding:** spec E3, E4, E7.
+**Size/risk:** M/high. **Dependencies:** #8, #9, #14, #18. **Grounding:** spec E3, E4, E7.
 
 **Files (exclusive scope):** `drover/workflow_runner.py`, `tests/test_workflow_runner.py`.
 
@@ -362,25 +378,25 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `python3 -m unittest tests.test_workflow_runner -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #19: Dispatch saved lifecycles and artifact work through the kernel
+### #20: Dispatch saved lifecycles and artifact work through the kernel
 
-**Size/risk:** M/high. **Dependencies:** #10, #13, #14, #15, #16, #17, #18. **Grounding:** spec E3, E5, E6, E7, E12.
+**Size/risk:** M/high. **Dependencies:** #10, #13, #14, #15, #16, #17, #18, #19. **Grounding:** spec E3, E5, E6, E7, E12.
 
 **Files (exclusive scope):** `drover/dispatcher.py`, `drover/port.py`, `tests/test_dispatcher.py`, `tests/test_typed_dispatcher.py`.
 
-**Interfaces:** Consume saved task/execution snapshots, route defaults and outbox handlers. Extend DirectPort/HttpPort contracts for type snapshots, phases, artifact submission and action intents with compatible defaults. Dispatcher tick selects by phase, pins execution, checks installed skills, and launches only eligible agent work.
+**Interfaces:** Consume saved task/execution snapshots, route defaults and outbox handlers. Extend DirectPort/HttpPort contracts for type snapshots, phases, artifact submission and action intents with compatible defaults. Dispatcher tick selects by phase, pins execution, checks installed skills, and launches only eligible agent work. DirectPort exposes trusted issue_run_credential/revoke_run_credentials adapters from #16; HttpPort never gains HTTP credential issuance. Dispatcher passes the returned secret only to ephemeral launch delivery in #17.
 
-**Implementation:** Wire claim/run/gate/review transitions through validated workflow actions. Gate lookup/worktree creation applies only when delivery requires it; artifact work consumes the preserved artifact completion record and can finish without repo gate or commit only after matching its URI/hash to this task's durable authenticated run receipt and required acceptance/review evidence. Reject artifact-only completion for commit+land/spec-only and retain SHA gate/review/landing requirements. Release process lease while owner task waits, retain write reservation, resume from exact snapshot/handoff. Preserve orphan recovery, backoffs, escalation and resource/allowance checks; inspect run evidence before recovery actions. Keep legacy runs on legacy path until drained and refuse enabled configurable dispatch before activation_ready. Audit all status literals in dispatcher; no custom state can accidentally bypass gate/review/landing.
+**Implementation:** Wire claim/run/gate/review transitions through validated workflow actions. Gate lookup/worktree creation applies only when delivery requires it; artifact work consumes the preserved artifact completion record and can finish without repo gate or commit only after matching its URI/hash to this task's durable authenticated run receipt and required acceptance/review evidence. Reject artifact-only completion for commit+land/spec-only and retain SHA gate/review/landing requirements. Release process lease while owner task waits, retain write reservation, resume from exact snapshot/handoff. Preserve orphan recovery, backoffs, escalation and resource/allowance checks; inspect run evidence before recovery actions. Keep legacy runs on legacy path until drained and refuse enabled configurable dispatch before activation_ready. Audit all status literals in dispatcher; no custom state can accidentally bypass gate/review/landing. Issue only after atomic claim/pin and saved launch nonce, with the approved wall deadline; revoke on definite failed launch, cancellation, lease loss, rotation/owner wait and every terminal run, then remove control file. Restart probes live PID/nonce/lease and protected file/hash/expiry before adoption; missing/expired/uncertain identity revokes and enters normal stop/fresh-run recovery. Never mint from worker-supplied IDs. A receipt authenticated and committed before terminal revocation remains valid completion evidence bound to saved task/run/nonce/credential/hash; no new uploads are accepted after revocation.
 
-- [ ] Add failing tests: `test_artifact_without_gate`: read-only research completes with durable artifact hash despite unknown repo code gate; dependent becomes eligible; forged/missing/mismatched artifact receipt or hash fails; artifact-only completion for commit+land/spec-only fails without bypassing SHA evidence; `test_custom_lifecycle_dispatch`: renamed eligible/running/gated labels execute with correct phases and evidence; owner task consumes no slot; `test_restart_waiting`: restart during owner wait/review/outbox effect keeps one run/result and blocks overlapping scope; legacy active lease prevents activation.
+- [ ] Add failing tests: `test_artifact_without_gate`: read-only research completes with durable artifact hash despite unknown repo code gate; dependent becomes eligible; forged/missing/mismatched artifact receipt or hash fails; artifact-only completion for commit+land/spec-only fails without bypassing SHA evidence; `test_custom_lifecycle_dispatch`: renamed eligible/running/gated labels execute with correct phases and evidence; owner task consumes no slot; `test_restart_waiting`: restart during owner wait/review/outbox effect keeps one run/result and blocks overlapping scope; legacy active lease prevents activation; `test_run_credential_lifetime`: claim/pin precedes issuance and delivery; failed launch, cancel, lease loss, rotation, owner wait and terminal outcomes each revoke/remove file; retry uses fresh credentials; restart with missing file or stale nonce cannot adopt; committed pre-revocation receipt still completes recovery once.
 - [ ] Run `python3 -m unittest tests.test_typed_dispatcher -v tests.test_dispatcher`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `python3 -m unittest tests.test_typed_dispatcher -v tests.test_dispatcher`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #20: Land only eligible repository changes with versioned evidence
+### #21: Land only eligible repository changes with versioned evidence
 
-**Size/risk:** M/high. **Dependencies:** #8, #11, #14, #19. **Grounding:** spec E8, E15.
+**Size/risk:** M/high. **Dependencies:** #8, #11, #14, #20. **Grounding:** spec E8, E15.
 
 **Files (exclusive scope):** `drover/landing.py`, `hub/dispatch.py`, `tests/test_landing.py`, `tests/test_hub_dispatch.py`, `tests/test_type_landing.py`.
 
@@ -394,23 +410,23 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_type_landing -v tests.test_landing tests.test_hub_dispatch`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #21: Authenticate paired owner CLI clients independently of workers
+### #22: Authenticate paired owner CLI clients independently of workers
 
-**Size/risk:** M/high. **Dependencies:** #9. **Grounding:** spec E9.
+**Size/risk:** M/high. **Dependencies:** #9, #16. **Grounding:** spec E9.
 
 **Files (exclusive scope):** `hub/auth.py`, `hub/owner_auth.py`, `tests/test_owner_auth.py`.
 
-**Interfaces:** Produce begin_pairing(store, client: dict) -> dict, approve_pairing(store, principal: dict, challenge_id: str, code: str) -> dict, redeem_pairing(store, challenge_id: str, secret: str) -> dict, verify_owner_credential(store, token: str) -> dict | None and revoke_credential(store, principal: dict, credential_id: str) -> dict in hub/owner_auth.py. Extend require_api with structured principal support while preserving a token principal compatibility adapter.
+**Interfaces:** Produce begin_pairing(store, client: dict) -> dict, approve_pairing(store, principal: dict, challenge_id: str, code: str) -> dict, redeem_pairing(store, challenge_id: str, secret: str) -> dict, verify_owner_credential(store, token: str) -> dict | None and revoke_credential(store, principal: dict, credential_id: str) -> dict in hub/owner_auth.py. Extend require_api with structured principal support while preserving a token principal compatibility adapter. Add require_run_artifact(request) -> Principal using #16 verify_run_credential with endpoint task/run bindings. This dedicated dependency accepts only drun_ credentials; require_api/require_ui reject run credentials on general and owner routes.
 
-**Implementation:** Implement five-minute rate-limited device challenges bound to client/code and random one-time secret; only existing authenticated UI owner with CSRF can approve pairing. Redeem separately approved challenge to an eight-hour hashed revocable owner credential; no refresh initially. Worker bearer cannot approve/mint/redeem as owner or override principal. Revocation and expiry work on both channels; audit IDs not tokens. Use owner-only state for hashes; client credential storage is #26. Preserve existing trusted Host/port/Tailscale checks, CSRF and known mirrored-WSL limitation; do not treat forged headers or local API bearer as owner.
+**Implementation:** Implement five-minute rate-limited device challenges bound to client/code and random one-time secret; only existing authenticated UI owner with CSRF can approve pairing. Redeem separately approved challenge to an eight-hour hashed revocable owner credential; no refresh initially. Worker bearer cannot approve/mint/redeem as owner or override principal. Revocation and expiry work on both channels; audit IDs not tokens. Use owner-only state for hashes; client credential storage is #27. Preserve existing trusted Host/port/Tailscale checks, CSRF and known mirrored-WSL limitation; do not treat forged headers or local API bearer as owner. Keep run and owner credential namespaces distinct. Missing/unknown/expired/revoked run token returns 401; credential bound to another task/run/nonce or wrong delivery/lease returns 403. A shared bearer, paired owner token, forged actor or supplied run ID cannot satisfy require_run_artifact. Never fall back from a rejected drun_ token to UI/locality/shared authority or echo a token in errors.
 
-- [ ] Add failing tests: `test_worker_cannot_pair_as_owner`: worker bearer, forged ui prefix/Origin/Tailscale header and unapproved challenge cannot acquire owner authority; `test_pairing_lifetime`: correct UI approval+secret redeems once; expiry at five minutes/eight hours and revocation reject use; `test_csrf_and_client_binding`: cross-origin pairing approval and wrong code/client secret fail; rate limiting does not leak credential contents.
+- [ ] Add failing tests: `test_worker_cannot_pair_as_owner`: worker bearer, forged ui prefix/Origin/Tailscale header and unapproved challenge cannot acquire owner authority; `test_pairing_lifetime`: correct UI approval+secret redeems once; expiry at five minutes/eight hours and revocation reject use; `test_csrf_and_client_binding`: cross-origin pairing approval and wrong code/client secret fail; rate limiting does not leak credential contents; `test_run_auth_separation`: valid assigned-run token authenticates artifact endpoint only; wrong task, second run of same task, stale nonce and code delivery fail 403; expired/revoked fail 401; shared bearer and paired owner token fail artifact auth; drun_ token cannot read/mutate general or owner routes; no UI/loopback fallback.
 - [ ] Run `uv run --project hub --no-sync python -m unittest tests.test_owner_auth -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_owner_auth -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #22: Define shared field forms and card/page action descriptors
+### #23: Define shared field forms and card/page action descriptors
 
 **Size/risk:** S/low. **Dependencies:** #0, #7, #9. **Grounding:** spec E10, E13.
 
@@ -426,41 +442,41 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `python3 -m unittest tests.test_task_forms -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #23: Adapt hub storage and inbox to saved types and shared actions
+### #24: Adapt hub storage and inbox to saved types and shared actions
 
-**Size/risk:** M/high. **Dependencies:** #2, #7, #9, #10, #17, #21, #22. **Grounding:** spec E2, E4, E9, E10, E13.
+**Size/risk:** M/high. **Dependencies:** #2, #7, #9, #10, #16, #18, #22, #23. **Grounding:** spec E2, E4, E9, E10, E13.
 
 **Files (exclusive scope):** `hub/store.py`, `hub/type_service.py`, `tests/test_type_store.py`.
 
-**Interfaces:** Produce hub/type_service.py RegistryService(store, cfg) with validate_sources(sources)->dict, preview_reload(sources)->dict, activate(principal,sources,expected_hash)->dict, registry(repo)->dict and snapshot(hash)->dict. Extend Store/UiView with typed task descriptors, action_descriptors and perform_action adapters; publish after commit.
+**Interfaces:** Produce hub/type_service.py RegistryService(store, cfg) with validate_sources(sources)->dict, preview_reload(sources)->dict, activate(principal,sources,expected_hash)->dict, registry(repo)->dict and snapshot(hash)->dict. Extend Store/UiView with typed task descriptors, action_descriptors and perform_action adapters; publish after commit. Produce Store.persist_run_artifact(principal: dict, content: bytes, expected_hash: str, request_key: str) -> dict, returning server-derived URI/hash/receipt ID. Consume #16 revalidate_run_principal inside the same ledger transaction that commits the receipt.
 
-**Implementation:** Maintain one active immutable registry and owner-only activation; register snapshots before use, leave old active on invalid reload. Connect ledger facade/owner actions to existing UI/store controls without duplicating business rules. Inbox includes owner tasks/grill rounds with task-specific forms and deduplicated legacy questions/tuner/garden items. Store artifacts and manifests under hub-managed task records with content hashes; successful completion verifies persisted content. Sync question facade once and notify via durable outbox/inbox plus existing event bus. Preserve source/owner-edit behavior and monotonic revision errors.
+**Implementation:** Maintain one active immutable registry and owner-only activation; register snapshots before use, leave old active on invalid reload. Connect ledger facade/owner actions to existing UI/store controls without duplicating business rules. Inbox includes owner tasks/grill rounds with task-specific forms and deduplicated legacy questions/tuner/garden items. Store artifacts and manifests under hub-managed task records with content hashes; successful completion verifies persisted content. Sync question facade once and notify via durable outbox/inbox plus existing event bus. Preserve source/owner-edit behavior and monotonic revision errors. Bound content to 1 MiB UTF-8; compute/compare hash and derive storage key without accepting client paths. Stage immutable content under hub control before committing receipt; no receipt references unpersisted bytes. Revalidate authenticated credential ID, assignment/lease/nonce and policy inside transaction, then persist task/run/nonce/credential/hash binding and unique request key. Same key+bytes replays, changed bytes conflicts; cancellation/revocation winning transaction prevents receipt/event. Retain committed receipt after token revocation for dispatcher recovery; safely ignore/clean unreferenced staged bytes after rollback.
 
-- [ ] Add failing tests: `test_store_reload_and_history`: invalid activation leaves previous registry; old task snapshots/artifacts remain readable after source deletion; `test_unified_inbox`: one migrated question appears once; one grill round contains all numbered questions and final submit invokes one shared action; `test_post_commit_notifications`: transaction rollback emits no inbox/SSE success; retry yields one durable artifact/event/notification.
+- [ ] Add failing tests: `test_store_reload_and_history`: invalid activation leaves previous registry; old task snapshots/artifacts remain readable after source deletion; `test_unified_inbox`: one migrated question appears once; one grill round contains all numbered questions and final submit invokes one shared action; `test_post_commit_notifications`: transaction rollback emits no inbox/SSE success; retry yields one durable artifact/event/notification; `test_artifact_receipt_atomicity`: same run/key/bytes returns one durable receipt; changed bytes conflicts; wrong hash or >1 MiB/non-UTF-8 fails; revoke/cancel before receipt transaction yields no receipt/success event; persisted pre-revocation receipt remains readable and references existing immutable bytes.
 - [ ] Run `uv run --project hub --no-sync python -m unittest tests.test_type_store -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_type_store -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #24: Expose typed tasks, owner actions, pairing and registry APIs
+### #25: Expose typed tasks, owner actions, pairing and registry APIs
 
-**Size/risk:** M/high. **Dependencies:** #5, #12, #19, #20, #21, #22, #23. **Grounding:** spec E2, E9, E10, E13.
+**Size/risk:** M/high. **Dependencies:** #5, #12, #16, #20, #21, #22, #23, #24. **Grounding:** spec E2, E9, E10, E13.
 
 **Files (exclusive scope):** `hub/api.py`, `hub/app.py`, `hub/type_api.py`, `hub/owner_api.py`, `tests/test_type_api.py`.
 
 **Interfaces:** Produce /api/v1/task-types (catalog/validate/preview/activate), /tasks create/patch/show with type/version/fields/revision, /tasks/{id}/actions/{action}, /inbox, /grills, /tasks/{id}/runs/{run_id}/artifact submission and /owner-clients pairing/revoke routes. Existing approve/questions/dispatch/import endpoints delegate to the same authenticated services; pair-request/redeem router has explicit rate limits, not inherited worker-owner authority.
 
-**Implementation:** Wire RegistryService and handlers at app creation; register routers with correct dependencies. TaskIn/TaskPatch accept custom types and fields with kind compatibility, expected_revision and request_key; no fixed Literal enum. Use 422 field errors, 409 stale/version/prerequisite conflicts and 403 authority failures consistently. Return shared card/page/form/action descriptors for web and CLI. Facade answers and approvals call perform_action; protect registry/activation/settings that enable types and all owner-reserved events against worker tokens. Activation checks legacy drain and runtime readiness. Retain existing authenticated API behavior for worker reads/proposals and expose no owner secrets. Artifact submission binds authenticated assigned-run identity to task/run and no-repo-change policy, persists content and computed hash via the artifact action service, returns URI/hash/run receipt idempotently, and rejects cross-task or hash-mismatched claims; client URI never chooses a filesystem path.
+**Implementation:** Wire RegistryService and handlers at app creation; register routers with correct dependencies. TaskIn/TaskPatch accept custom types and fields with kind compatibility, expected_revision and request_key; no fixed Literal enum. Use 422 field errors, 409 stale/version/prerequisite conflicts and 403 authority failures consistently. Return shared card/page/form/action descriptors for web and CLI. Facade answers and approvals call perform_action; protect registry/activation/settings that enable types and all owner-reserved events against worker tokens. Activation checks legacy drain and runtime readiness. Retain existing authenticated API behavior for worker reads/proposals and expose no owner secrets. Artifact submission binds authenticated assigned-run identity to task/run and no-repo-change policy, persists content and computed hash via the artifact action service, returns URI/hash/run receipt idempotently, and rejects cross-task or hash-mismatched claims; client URI never chooses a filesystem path. Wire #22 require_run_artifact on /tasks/{id}/runs/{run_id}/artifact, not require_api. Pass only trusted principal plus bounded bytes/hash/request key to #24 Store.persist_run_artifact; store revalidates within receipt transaction. No credential mint/renew endpoint. Return 401 for missing/unknown/expired/revoked credential and 403 for cross-binding/policy failures; no shared-bearer or owner-token fallback.
 
-- [ ] Add failing tests: `test_create_patch_and_facade`: custom type creates/patches through same validator as import; kind compatibility and legacy questions work; response has pinned form/version; `test_owner_api_authority`: worker cannot approve/answer/reload/activate/forge reserved events/pair as owner; paired owner can perform allowed actions; artifact submission by a different task/run or with a mismatched hash fails, while assigned-run retry returns one durable receipt; `test_conflicts_and_activation`: web/API race returns 409; invalid field 422; incomplete legacy drain blocks activation and old registry stays live.
+- [ ] Add failing tests: `test_create_patch_and_facade`: custom type creates/patches through same validator as import; kind compatibility and legacy questions work; response has pinned form/version; `test_owner_api_authority`: worker cannot approve/answer/reload/activate/forge reserved events/pair as owner; paired owner can perform allowed actions; artifact submission by a different task/run or with a mismatched hash fails, while assigned-run retry returns one durable receipt; `test_conflicts_and_activation`: web/API race returns 409; invalid field 422; incomplete legacy drain blocks activation and old registry stays live; `test_assigned_run_upload_authority`: run A token uploads/retries for A only; run B or another run of the same task, forged nonce/IDs, shared bearer and owner token fail; expired/revoked fail 401; drun_ on owner/general API fails; cancellation/upload race leaves no unauthorized receipt; post-exit receipt recovery succeeds without reopening upload authority.
 - [ ] Run `uv run --project hub --no-sync python -m unittest tests.test_type_api -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_type_api -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #25: Render typed creation, cards, pages and owner inbox on the website
+### #26: Render typed creation, cards, pages and owner inbox on the website
 
-**Size/risk:** M/low. **Dependencies:** #22, #23, #24. **Grounding:** spec E9, E10, E13.
+**Size/risk:** M/low. **Dependencies:** #23, #24, #25. **Grounding:** spec E9, E10, E13.
 
 **Files (exclusive scope):** `hub/web.py`, `hub/task_views.py`, `hub/templates/task.html`, `hub/templates/_task_card.html`, `hub/templates/inbox.html`, `hub/templates/plan.html`, `hub/templates/task_create.html`, `hub/templates/_type_fields.html`, `hub/templates/_owner_form.html`, `hub/templates/owner_pairing.html`, `tests/test_type_web.py`.
 
@@ -474,9 +490,9 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_type_web -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #26: Add the authenticated interactive owner CLI with web parity
+### #27: Add the authenticated interactive owner CLI with web parity
 
-**Size/risk:** M/high. **Dependencies:** #21, #22, #24, #25. **Grounding:** spec E9, E10, E11.
+**Size/risk:** M/high. **Dependencies:** #22, #23, #25, #26. **Grounding:** spec E9, E10, E11.
 
 **Files (exclusive scope):** `drover/owner_client.py`, `drover/owner_cli.py`, `drover/__main__.py`, `tests/test_owner_cli.py`.
 
@@ -490,9 +506,9 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_owner_cli -v`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #27: Tune type routing with replayable policy overlays
+### #28: Tune type routing with replayable policy overlays
 
-**Size/risk:** M/low. **Dependencies:** #7, #13, #19. **Grounding:** spec E11.
+**Size/risk:** M/low. **Dependencies:** #7, #13, #20. **Grounding:** spec E11.
 
 **Files (exclusive scope):** `drover/tuner.py`, `tests/test_tuner.py`, `tests/test_type_tuner.py`.
 
@@ -506,17 +522,17 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 - [ ] Rerun `python3 -m unittest tests.test_type_tuner -v tests.test_tuner`; require exit 0 and all assertions passing.
 - [ ] Inspect scope/diff and return ready_to_commit with evidence and a one-sentence subject; no git add/commit on Codex.
 
-### #28: Verify compatibility rollout and document owner operations
+### #29: Verify compatibility rollout and document owner operations
 
-**Size/risk:** M/high. **Dependencies:** #12, #15, #19, #20, #24, #25, #26, #27. **Grounding:** spec E1.
+**Size/risk:** M/high. **Dependencies:** #12, #15, #16, #17, #20, #21, #22, #24, #25, #26, #27, #28. **Grounding:** spec E1.
 
 **Files (exclusive scope):** `tests/test_task_types_e2e.py`, `docs/task-types.md`, `README.md`, `hub/scripts/README-INSTALL.md`.
 
 **Interfaces:** Consume shipped registry, migration/bootstrap, hub action routes and owner CLI. Produce end-to-end fixtures for main-v3 and reconciled T-7 plus owner operating documentation; no production file refactors.
 
-**Implementation:** Exercise opt-in activation, typed create/import, web/CLI answers, grill prerequisite, snapshot reload, scoped spec landing and framework finalization with fake runners/git fixtures. Document decision D1 prerequisite, hub-only parser installation by owner, parser-free WSL client, registry precedence/extends/errors, type upgrade/rollback, credential pairing/revocation, questions compatibility and framework source imports. Provide reproducible Windows hub and WSL verification commands using already-authorized environments, no automatic install/start/build. Keep enabled=false until exact deployment gates and legacy drain pass; explain backup/rollback and T-b extension seams. Run repository regression suite once on the complete feature in an admitted worker, no extra parallel builds.
+**Implementation:** Exercise opt-in activation, typed create/import, web/CLI answers, grill prerequisite, snapshot reload, scoped spec landing and framework finalization with fake runners/git fixtures. Document decision D1 prerequisite, hub-only parser installation by owner, parser-free WSL client, registry precedence/extends/errors, type upgrade/rollback, credential pairing/revocation, questions compatibility and framework source imports. Provide reproducible Windows hub and WSL verification commands using already-authorized environments, no automatic install/start/build. Keep enabled=false until exact deployment gates and legacy drain pass; explain backup/rollback and T-b extension seams. Run repository regression suite once on the complete feature in an admitted worker, no extra parallel builds. Document run-credential scope, private launch file protection, 24h/wall expiry, revocation events and lost-file recovery separately from owner pairing. Fake Windows/WSL end-to-end flow must cover trusted issuance -> protected file -> stdlib helper -> dedicated auth -> atomic immutable receipt -> parser/launch recovery -> dispatcher completion after terminal revocation, with cross-run rejection and no token disclosure.
 
-- [ ] Add failing tests: `test_spec_grill_owner_flow`: worked extension including inherited problem creates through both forms; before grill completion implementation proposal fails but grill/docs proposals succeed; custom spec -> grill -> owner round via CLI/web -> docs follow-up landed -> implementation proposed, with no reciprocal deps or auto-approval; `test_replay_restart_and_frameworks`: registry reload/restart preserves old snapshots and one question/action; OpenSpec archive is a separate reviewed commit and Spec Kit import stays proposed; authenticated artifact upload -> trusted runner frame -> record.json -> launch restart -> dispatcher completion retains URI/hash and unblocks once, while repo-changing artifact-only output fails; `test_main_t7_compatibility`: main/T-7 fixtures preserve data and existing APIs; worker bearer still cannot act as owner; activation refuses legacy live runs.
+- [ ] Add failing tests: `test_spec_grill_owner_flow`: worked extension including inherited problem creates through both forms; before grill completion implementation proposal fails but grill/docs proposals succeed; custom spec -> grill -> owner round via CLI/web -> docs follow-up landed -> implementation proposed, with no reciprocal deps or auto-approval; `test_replay_restart_and_frameworks`: registry reload/restart preserves old snapshots and one question/action; OpenSpec archive is a separate reviewed commit and Spec Kit import stays proposed; authenticated artifact upload -> trusted runner frame -> record.json -> launch restart -> dispatcher completion retains URI/hash and unblocks once, while repo-changing artifact-only output fails; `test_main_t7_compatibility`: main/T-7 fixtures preserve data and existing APIs; worker bearer still cannot act as owner; activation refuses legacy live runs; `test_run_identity_e2e`: assigned credential succeeds from protected Windows/WSL launch fixture; replacing endpoint task/run (including same-task retry), stale nonce, shared/owner bearer, expiry or revocation rejects without receipt; normal terminal revocation preserves prior receipt for exact-run recovery; lost credential file forces fresh run, not ID-only adoption.
 - [ ] Run `uv run --project hub --no-sync python -m unittest tests.test_task_types_e2e -v`; confirm the new assertion fails for the absent behavior, not an environment/import setup error.
 - [ ] Implement the interfaces and behavior above, keeping later consumers behind the activation flag.
 - [ ] Rerun `uv run --project hub --no-sync python -m unittest tests.test_task_types_e2e -v`; require exit 0 and all assertions passing.
@@ -524,11 +540,11 @@ All signatures use JSON dictionaries defined in #0 unless a connection, port or 
 
 ## Final rollout gate
 
-- [ ] In #28 run the full existing suite in an admitted environment: `uv run --project hub --no-sync python -m unittest discover -s tests -v`; record platform and output. No new service or package install is implicit.
+- [ ] In #29 run the full existing suite in an admitted environment: `uv run --project hub --no-sync python -m unittest discover -s tests -v`; record platform and output. No new service or package install is implicit.
 - [ ] Owner validates the authorized locked hub environment on Windows and the parser-free CLI/worker environment on WSL using the same focused suite/stdlib import checks. Missing platform access is an explicit deployment prerequisite, not a claimed pass.
-- [ ] Verify D1–D11 choices, backups, legacy drain, active registry diff, paired-client revocation and disabled feature state before owner activation. Enable only through owner action; rollback selects previous registry/policy for new tasks and preserves existing snapshots.
+- [ ] Verify D1–D11 choices, backups, legacy drain, active registry diff, paired-client and run-credential revocation, private launch delivery, cross-run rejection and disabled feature state before owner activation. Enable only through owner action; rollback selects previous registry/policy for new tasks and preserves existing snapshots.
 - [ ] Pass actual gate/review evidence for the exact implementation SHA into the landing queue; this research task provides no gate receipt for future code.
 
 ## Plan self-review
 
-Coverage: registry/format/example/defaults #0–#5; state/assignee/storage/migration/audit #6–#10; framework layouts/imports #11–#12; routing/access/context/skills/gates/landing #13–#20; owner authentication/forms/web/CLI/action parity #21–#26; tuning and cross-platform compatibility #27–#28. Artifact completion parsing/recovery is owned by #15 with dispatch authorization in #19; inherited required fields and destination-specific follow-up prerequisites are exercised by #0/#3/#17/#18/#28. Every Review Focus item is assigned concrete assertions above. Task scopes are disjoint; each dependency points backward and signatures match their producer. The owner review gate precedes execution; this task delivers the proposed design/plan/tasks only.
+Coverage: registry/format/example/defaults #0–#5; state/assignee/storage/migration/audit #6–#10; framework layouts/imports #11–#12; routing/access/context/skills/gates/landing #13–#21; owner authentication/forms/web/CLI/action parity #22–#27; tuning and cross-platform compatibility #28–#29. Artifact completion parsing/recovery is owned by #15; run credentials/client by #16, launch delivery by #17, lifetime/dispatch authorization by #20, auth separation by #22 and atomic persistence/API by #24/#25; inherited required fields and destination-specific follow-up prerequisites are exercised by #0/#3/#18/#19/#29. Every Review Focus item is assigned concrete assertions above. Task scopes are disjoint; each dependency points backward and signatures match their producer. The owner review gate precedes execution; this task delivers the proposed design/plan/tasks only.
