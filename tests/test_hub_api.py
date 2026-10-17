@@ -184,7 +184,7 @@ class OwnerGateTests(HubCase):
 
     def test_token_cannot_create_ready_or_import_approved(self):
         r = self.post("/tasks", {"title": "x", "status": "ready"})
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 422)
         r = self.post("/import", {"tasks": [{"title": "i", "status": "ready"}], "dry_run": False})
         self.assertEqual(r.status_code, 403)  # importing is owner-only
         t = self.get("/tasks").json()
@@ -217,6 +217,82 @@ class OwnerGateTests(HubCase):
 
 
 class TaskTests(HubCase):
+    def test_invalid_risk_is_rejected_on_create_and_patch(self):
+        self.c = TestClient(self.app, raise_server_exceptions=False)
+        expected = ("low", "high")
+        r = self.post("/tasks", {"title": "x", "risk": "medium"})
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in expected:
+            self.assertIn(value, r.text)
+        task_id = self.task()
+        r = self.c.patch(f"/api/v1/tasks/{task_id}", json={"risk": "medium"}, headers=AUTH)
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in expected:
+            self.assertIn(value, r.text)
+
+    def test_invalid_priority_is_rejected_on_create_and_patch(self):
+        self.c = TestClient(self.app, raise_server_exceptions=False)
+        expected = ("P0", "P1", "P2", "P3", "P4")
+        r = self.post("/tasks", {"title": "x", "priority": "P9"})
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in expected:
+            self.assertIn(value, r.text)
+        task_id = self.task()
+        r = self.c.patch(f"/api/v1/tasks/{task_id}", json={"priority": "P9"}, headers=AUTH)
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in expected:
+            self.assertIn(value, r.text)
+
+    def test_invalid_size_is_rejected_on_create_and_patch(self):
+        self.c = TestClient(self.app, raise_server_exceptions=False)
+        expected = ("S", "M", "L")
+        r = self.post("/tasks", {"title": "x", "size": "XL"})
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in expected:
+            self.assertIn(value, r.text)
+        task_id = self.task()
+        r = self.c.patch(f"/api/v1/tasks/{task_id}", json={"size": "XL"}, headers=AUTH)
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in expected:
+            self.assertIn(value, r.text)
+
+    def test_invalid_status_is_rejected_with_allowed_values(self):
+        self.c = TestClient(self.app, raise_server_exceptions=False)
+        initial_states = ("proposed", "draft")
+        r = self.post("/tasks", {"title": "x", "status": "ready"})
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in initial_states:
+            self.assertIn(value, r.text)
+        task_id = self.task()
+        r = self.post(f"/tasks/{task_id}/status", {"status": "unknown"})
+        self.assertEqual(r.status_code, 422, r.text)
+        for value in ("proposed", "draft", "ready", "claimed", "running", "gated",
+                      "reviewed", "landed", "blocked", "failed", "needs-owner", "cancelled"):
+            self.assertIn(value, r.text)
+
+    def test_task_api_enum_literals_match_ledger_constraints(self):
+        import re
+        from typing import Literal, get_args, get_origin
+
+        from hub import api
+        from drover.ledger.schema import V1
+        from drover.ledger.states import CREATION_STATES, STATES
+
+        def literal_values(field):
+            annotation = field.annotation
+            candidates = (annotation, *get_args(annotation))
+            return next(get_args(item) for item in candidates if get_origin(item) is Literal)
+
+        for name in ("priority", "size", "risk"):
+            match = re.search(rf"{name} TEXT NOT NULL DEFAULT '[^']+' CHECK \({name} IN \(([^)]+)\)\)", V1)
+            self.assertIsNotNone(match, f"missing {name} ledger CHECK")
+            ledger_values = tuple(re.findall(r"'([^']+)'", match.group(1)))
+            self.assertEqual(literal_values(api.TaskIn.model_fields[name]), ledger_values)
+            self.assertEqual(literal_values(api.TaskPatch.model_fields[name]), ledger_values)
+
+        self.assertEqual(literal_values(api.TaskIn.model_fields["status"]), CREATION_STATES)
+        self.assertEqual(literal_values(api.StatusIn.model_fields["status"]), STATES)
+
     def test_crud_filter_status_board(self):
         e = self.post("/epics", {"repo": "p", "title": "E1"}).json()["id"]
         a = self.ready_task("A", epic_id=e)

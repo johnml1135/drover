@@ -192,7 +192,7 @@ def _check_handoff(text):
 def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", acceptance=(), scope_files=(),
                 priority="P2", size="M", risk="low", status="proposed", actor="owner", deps=(), rank=None,
                 kind="implementation", write=None, read_access=None, branch=None, related=(), description=None):
-    if status not in ("proposed", "draft"):
+    if status not in states.CREATION_STATES:
         raise ValueError("a new task starts as proposed or draft")
     task_context.check_kind(kind)
     if write is None:

@@ -13,6 +13,13 @@ from hub.store import BadRequest, Forbidden, NotFound
 
 VERSION = "0.1.0"
 
+TaskPriority = Literal["P0", "P1", "P2", "P3", "P4"]
+TaskSize = Literal["S", "M", "L"]
+TaskRisk = Literal["low", "high"]
+NewTaskStatus = Literal["proposed", "draft"]
+TaskStatus = Literal["proposed", "draft", "ready", "claimed", "running", "gated", "reviewed",
+                     "landed", "blocked", "failed", "needs-owner", "cancelled"]
+
 public = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth.require_api)])
 
@@ -43,7 +50,7 @@ class AccessInput(BaseModel):
 class TaskIn(AccessInput):
     title: str
     repo: str = "default"
-    status: str = "proposed"  # proposed | draft; ready needs owner approval
+    status: NewTaskStatus = "proposed"  # ready needs owner approval
     epic_id: str | None = None
     repo_path: str | None = None
     description: str = Field(default="", validation_alias=AliasChoices("description", "goal"))
@@ -53,9 +60,9 @@ class TaskIn(AccessInput):
     branch: str | None = None
     acceptance: list[str] = []
     scope_files: list[str] = []
-    priority: str = "P2"
-    size: str = "M"
-    risk: str = "low"
+    priority: TaskPriority = "P2"
+    size: TaskSize = "M"
+    risk: TaskRisk = "low"
     deps: list[str | Dependency] = []
     related: list[str] = []
 
@@ -70,9 +77,9 @@ class TaskPatch(AccessInput):
     related: list[str] | None = None
     acceptance: list[str] | None = None
     scope_files: list[str] | None = None
-    priority: str | None = None
-    size: str | None = None
-    risk: str | None = None
+    priority: TaskPriority | None = None
+    size: TaskSize | None = None
+    risk: TaskRisk | None = None
     repo: str | None = None
     epic_id: str | None = None
     handoff: str | None = None
@@ -81,7 +88,7 @@ class TaskPatch(AccessInput):
 
 
 class StatusIn(BaseModel):
-    status: str
+    status: TaskStatus
     reason: str | None = None
 
 

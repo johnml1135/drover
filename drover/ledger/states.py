@@ -2,6 +2,7 @@
 
 STATES = ("proposed", "draft", "ready", "claimed", "running", "gated", "reviewed", "landed",
           "blocked", "failed", "needs-owner", "cancelled")
+CREATION_STATES = ("proposed", "draft")
 TERMINAL = ("landed", "cancelled")
 ACTIVE = ("claimed", "running", "gated", "reviewed")  # unlanded changes: scope overlap is checked against these
 PENDING = ("proposed", "draft", "ready")  # not started: safe to hold
