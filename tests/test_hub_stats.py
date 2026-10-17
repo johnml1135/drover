@@ -109,3 +109,46 @@ class StatsApi(unittest.TestCase):
         self.assertEqual(self.c.post(url, headers=self.owner, json={'archived': False}).status_code, 200)
         self.assertIn(q['title'], self.c.get('/inbox').text)
         self.assertEqual(inbox_count(view), 1)
+
+    def test_archive_preserves_shared_gate_in_inbox_count_and_owner_answer(self):
+        from drover.pipeline import Pipeline
+        from drover.port import DirectPort
+        from hub.store import UiView
+        from hub.web import inbox_count
+        target = self.store.create_task('More work for acme-app', 'acme-app')['id']
+        for tid in (self.tid, target):
+            self.store.approve(tid)
+        private = self.store.ask_question('task', self.tid, 'Task-specific choice?')
+        pipe = Pipeline(DirectPort(self.store.conn), repos_map={
+            'acme-app': {'name': 'acme-app', 'gate': {'unknown': True}}}, runs_dir=self.tmp.name)
+        for tid in (self.tid, target):
+            self.assertFalse(pipe.gate_known(self.store.get_task(tid)))
+        qid = int(ops.get_setting(self.store.conn, '_gate_question_acme-app'))
+        question = ops.get_question(self.store.conn, qid)
+        view = UiView(self.store)
+        self.assertEqual(inbox_count(view), 4)  # Two questions and two tasks needing the owner.
+        response = self.c.post('/api/v1/tasks/' + self.tid + '/archive', headers=self.owner, json={})
+        self.assertEqual(response.status_code, 200, response.text)
+        page = self.c.get('/inbox')
+        self.assertIn(question['title'], page.text)
+        self.assertNotIn(private['title'], page.text)
+        self.assertEqual(inbox_count(view), 2)  # Shared question and the remaining task needing the owner.
+        response = self.c.post(f'/questions/{qid}/answer', headers=self.owner,
+                               data={'text': 'python3 -m unittest'})
+        self.assertEqual(response.status_code, 200, response.text)
+        pipe.sync_gates()
+        self.assertEqual(self.store.get_task(target)['status'], 'ready')
+        self.assertEqual(pipe._owner_gate_cmd('acme-app'), 'python3 -m unittest')
+        self.assertEqual(inbox_count(view), 0)
+
+    def test_owner_delete_removes_related_links_in_both_directions(self):
+        source = self.store.create_task('Related source', 'acme-app')['id']
+        after = self.store.create_task('Related target', 'acme-app')['id']
+        self.store.update_task(source, related=[self.tid, after])
+        self.store.update_task(self.tid, related=[source, after])
+        response = self.c.request('DELETE', '/api/v1/tasks/' + source, headers=self.owner,
+                                  json={'confirm': True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.c.get('/api/v1/tasks/' + source, headers=self.token).status_code, 404)
+        self.assertEqual(ops.related_of(self.store.conn, self.tid), [after])
+        self.assertEqual(ops.related_of(self.store.conn, after), [self.tid])

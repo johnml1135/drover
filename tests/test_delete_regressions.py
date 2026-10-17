@@ -1,12 +1,14 @@
-"""Task deletion cleans up shared gate questions and holds atomically."""
+"""Task lifecycle preserves shared gate questions and cleans up links and holds atomically."""
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from drover import pipeline
 from drover.ledger import connect, ops
 from drover.port import DirectPort
+from hub.store import Store, UiView
 
 
 class DeleteRegressions(unittest.TestCase):
@@ -26,6 +28,53 @@ class DeleteRegressions(unittest.TestCase):
     def gate_question(self, task_id):
         self.assertFalse(self.pipe.gate_known(ops.get_task(self.conn, task_id)))
         return int(ops.get_setting(self.conn, '_gate_question_acme-lib'))
+
+    def inbox_questions(self):
+        store = Store(Path(self.tmp.name) / 'ledger.db')
+        self.addCleanup(store.close)
+        # Exercise the inbox without loading optional task-rendering dependencies.
+        view = SimpleNamespace(s=store, c=store.conn, tuner_proposals=lambda: [])
+        return UiView.inbox_questions(view)
+
+    def test_archive_keeps_shared_gate_question_actionable_for_remaining_task(self):
+        source, target = self.task('Source'), self.task('Target')
+        private = ops.ask_question(self.conn, 'task', source, 'Task-specific question')
+        qid = self.gate_question(source)
+        self.gate_question(target)
+        ops.archive_task(self.conn, source)
+        self.assertEqual([q['id'] for q in self.inbox_questions()], [str(qid)])
+        self.assertEqual(ops.get_question(self.conn, private)['status'], 'open')
+        self.assertEqual(ops.get_setting(self.conn, '_gate_question_acme-lib'), str(qid))
+        ops.answer_question(self.conn, qid, text='python3 -m unittest')
+        self.pipe.sync_gates()
+        self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
+        self.assertEqual(self.pipe._owner_gate_cmd('acme-lib'), 'python3 -m unittest')
+        self.assertEqual(self.inbox_questions(), [])
+
+    def test_shared_gate_visibility_tracks_remaining_tasks_in_same_repo(self):
+        source = self.task('Source')
+        qid = self.gate_question(source)
+        ops.archive_task(self.conn, source)
+        ops.create_task(self.conn, 'Other repo', 'acme-app')
+        self.assertEqual(self.inbox_questions(), [])
+        target = self.task('New work')
+        self.assertEqual(self.gate_question(target), qid)
+        self.assertEqual([q['id'] for q in self.inbox_questions()], [str(qid)])
+        ops.archive_task(self.conn, target)
+        self.assertEqual(self.inbox_questions(), [])
+        ops.archive_task(self.conn, target, False)
+        self.assertEqual([q['id'] for q in self.inbox_questions()], [str(qid)])
+
+    def test_delete_removes_related_links_in_both_directions(self):
+        before, source, after = sorted(self.task(title) for title in ('Before', 'Source', 'After'))
+        ops.update_task(self.conn, source, related=[before, after])
+        ops.update_task(self.conn, before, related=[source, after])
+        ops.delete_task(self.conn, source, confirm=True)
+        self.assertEqual(ops.related_of(self.conn, before), [after])
+        self.assertEqual(ops.related_of(self.conn, after), [before])
+        self.assertEqual(self.conn.execute('PRAGMA foreign_key_check').fetchall(), [])
+        with self.assertRaises(ops.NotFound):
+            ops.get_task(self.conn, source)
 
     def test_open_gate_question_moves_to_surviving_task(self):
         source, target = self.task('Source'), self.task('Target')
@@ -103,6 +152,7 @@ class DeleteRegressions(unittest.TestCase):
     def test_cleanup_rolls_back_if_deletion_fails(self):
         source, dependent, _, _ = self.held_tasks()
         target = self.task('Gate target')
+        ops.update_task(self.conn, source, related=[target])
         qid = self.gate_question(source)
         before = ops.get_task(self.conn, dependent)
         events = ops.events(self.conn)
@@ -114,6 +164,7 @@ class DeleteRegressions(unittest.TestCase):
         self.assertEqual(ops.get_question(self.conn, qid)['target_id'], source)
         self.assertEqual(ops.get_task(self.conn, dependent), before)
         self.assertEqual(ops.deps_of(self.conn, dependent)[0]['depends_on'], source)
+        self.assertEqual(ops.related_of(self.conn, source), [target])
         self.assertEqual(ops.events(self.conn), events)
         self.assertEqual([tuple(r) for r in self.conn.execute('SELECT * FROM settings ORDER BY key')], settings)
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')

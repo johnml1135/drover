@@ -902,6 +902,7 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_landed'").fetchone():
             conn.execute("DELETE FROM task_landed WHERE task_id=?", (task_id,))
         conn.execute("DELETE FROM task_deps WHERE task_id=? OR depends_on=?", (task_id, task_id))
+        conn.execute("DELETE FROM task_links WHERE task_id=? OR related_id=?", (task_id, task_id))
         conn.execute("DELETE FROM runs WHERE task_id=?", (task_id,))
         for table in ("comments", "questions"):
             conn.execute(f"DELETE FROM {table} WHERE target_kind='task' AND target_id=?", (task_id,))

@@ -447,10 +447,14 @@ class UiView:
         out = []
         tuner = {p["id"] for p in self.tuner_proposals() if p.get("question")}
         archived = {r[0] for r in self.c.execute("SELECT id FROM tasks WHERE archived=1")}
+        # Cached repo gate questions still serve unarchived tasks, even if their original target is hidden.
+        shared_gates = {r[0] for r in self.c.execute(
+            "SELECT DISTINCT s.value FROM settings s JOIN tasks t "
+            "ON s.key='_gate_question_' || lower(t.repo) WHERE t.archived=0")}
         for q in self.s.list_questions(open_only=True):
             if str(q["id"]) in tuner:
                 continue
-            if q["target_kind"] == "task" and q["target_id"] in archived:
+            if q["target_kind"] == "task" and q["target_id"] in archived and str(q["id"]) not in shared_gates:
                 continue
             opts = [{"id": o["label"], "label": o["label"], "recommended": o.get("recommended")}
                     for o in q["options"]]
