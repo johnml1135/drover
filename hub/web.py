@@ -169,6 +169,9 @@ async def edit_task(tid: str, request: Request, store=Depends(get_store)):
     if "deps" in form:
         fields["deps"] = [dict(depends_on=line.strip().partition(":")[0], kind=line.strip().partition(":")[2] or "blocks")
                           for line in _one(form, "deps").splitlines() if line.strip()]
+    if "read_access" in fields and fields["read_access"] == store.task_detail(tid)["task"]["read_access"]:
+        # Full forms resubmit implicit defaults, which can name an unconfigured repo.
+        del fields["read_access"]
     try:
         fields = TaskPatch.model_validate(fields).model_dump(exclude_unset=True)
         store.edit_task(tid, **fields)

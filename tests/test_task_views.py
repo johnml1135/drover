@@ -109,6 +109,30 @@ class ContextApiTests(api_tests.HubCase):
 
 
 class ContextUiTests(ui_tests.UiTests):
+    def test_full_form_title_edit_preserves_unknown_repo_read_access(self):
+        with patch('drover.repos.load_all', return_value={}):
+            task = self.st.create_task('Original title', repo='unconfigured', description='Keep this description')
+            tid = task['id']
+            page = self.c.get('/tasks/' + tid)
+            self.assertEqual(page.status_code, 200, page.text)
+            self.assertIn('unknown repo', page.text)
+            self.assertEqual(task['read_access'], ['unconfigured@main'])
+            fields = {key: task[key] for key in ('title', 'kind', 'repo', 'priority', 'size', 'risk')}
+            fields.update(title='Edited title', description=task['goal'], branch='', write='true',
+                          acceptance='', scope_files='', read_access='\n'.join(task['read_access']),
+                          related='', deps='')
+            response = self.c.post(f'/tasks/{tid}/edit', data=fields, headers=SAME)
+            self.assertEqual(response.status_code, 200, response.text)
+            updated = self.st.get_task(tid)
+            self.assertEqual(updated['title'], 'Edited title')
+            self.assertEqual(updated['goal'], task['goal'])
+            self.assertEqual(updated['read_access'], task['read_access'])
+
+            fields['read_access'] = 'another-unknown@main'
+            response = self.c.post(f'/tasks/{tid}/edit', data=fields, headers=SAME)
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(self.st.get_task(tid)['read_access'], task['read_access'])
+
     def test_accept_findings_completes_read_work_with_existing_owner_guards(self):
         tid = self.st.create_task('Findings', kind='research')['id']
         self.st.approve(tid)
