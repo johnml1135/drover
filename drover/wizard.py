@@ -790,6 +790,9 @@ def repo_toml(p, worktrees_root):
             raw["gate"].update(timeout_s=1800, idle_s=600)
         raw["gate"]["commands"] = {**raw["gate"].get("commands", {}),
                                    "full": repos.gate_argv(p["gate_command"])}
+        # An explicit shared command must take effect on every platform.
+        for platform in repos.PLATFORMS:
+            raw["gate"]["commands"].get(platform, {}).pop("full", None)
         if p.get("base"):
             raw["gate"]["unknown"] = False
     elif p["gate_command"] is not None:

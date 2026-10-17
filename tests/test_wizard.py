@@ -598,6 +598,30 @@ class RepoReruns(Base):
         self.addCleanup(patch.stop)
         self.detect = fake(repos=lambda root: [{"name": "acme-app", "path": "R:\\repos\\acme-app"}])
 
+    def test_explicit_gate_command_replaces_platform_full_overrides(self):
+        commands = {"full": ["make", "test"], "scoped": ["make", "{project}"],
+                    "windows": {"full": ["python", "old.py"], "scoped": ["python", "{project}"]},
+                    "wsl": {"full": ["python3", "old.py"]}}
+        saved = {**self.saved, "gate": {**self.saved["gate"], "platform": "both", "commands": commands}}
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit):
+                self.path.write_text(config.dumps(saved), encoding="utf-8")
+                answer = {"name": "acme-app"}
+                if explicit:
+                    answer["gate_command"] = "make check"
+                code = wizard.run(self.detect, out=self.out, state_dir=str(self.state), now=self.now,
+                                  defaults=True, answers={"repos": [answer]})
+                self.assertEqual(code, 0)
+                raw = tomllib.loads(self.path.read_text(encoding="utf-8"))
+                prog = repos.normalize(raw)
+                for platform in repos.PLATFORMS:
+                    expected = ["make", "check"] if explicit else commands[platform]["full"]
+                    self.assertEqual(repos.gate_commands(prog, platform)["full"], expected)
+                    self.assertEqual(repos.gate_commands(prog, platform)["scoped"],
+                                     commands[platform].get("scoped", commands["scoped"]))
+                if not explicit:
+                    self.assertEqual(raw, saved)
+
     def test_interactive_rerun_merges_saved_repo_before_example(self):
         def answer(prompt):
             if prompt.startswith("Repos to set up"):
