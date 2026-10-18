@@ -215,7 +215,7 @@ class DispatcherSeats(unittest.TestCase):
                 else:
                     self.assertEqual(ntpath.normpath(env['CLAUDE_CONFIG_DIR']), account)
 
-    def test_dotnet_reselection_keeps_windows_seat(self):
+    def test_dotnet_takes_the_best_seat_on_either_side(self):
         from drover.ledger import ops
         conn, d, launcher, _, _ = self.make_dispatcher([
             {'name': 'acme-linux', 'backend': 'claude', 'placement': 'wsl', 'priority': 1},
@@ -224,8 +224,8 @@ class DispatcherSeats(unittest.TestCase):
         tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', scope_files=['src/acme.csproj'])['id']
         ops.approve(conn, tid)
         self.assertEqual(d.tick()['launched'], [tid])
-        self.assertEqual(launcher.specs[0]['seat'], 'acme-windows')
-        self.assertEqual(launcher.specs[0]['placement'], 'windows')
+        self.assertEqual(launcher.specs[0]['seat'], 'acme-linux')       # owner rule: wsl + claude is allowed
+        self.assertEqual(launcher.specs[0]['placement'], 'wsl')
 
     def test_idle_or_unassignable_queue_does_not_probe(self):
         from drover.ledger import ops

@@ -112,8 +112,9 @@ class Admission(Base):
         self.assertEqual(self.status(t), "ready")
 
     def test_unadmitted_backend_unclaims(self):
-        t = self.task(scope_files=["a/x.cs"])      # dotnet -> claude
+        t = self.task(scope_files=["a/x.cs"])      # dotnet: claude or codex, neither admitted
         self.allow["claude"] = False
+        self.allow["codex"] = False
         self.d.tick()
         self.assertEqual(self.status(t), "ready")
 
@@ -186,12 +187,12 @@ class Routing(Base):
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(t), "ready")
 
-    def test_dotnet_reaches_router_as_windows(self):
+    def test_dotnet_reaches_router_as_a_stack_not_a_platform(self):
         seen = []
         self.d = self.make(route_fn=lambda t, p, h: seen.append(t) or {"backend": "claude", "model": "sonnet-5.5"})
         self.task(scope_files=["a/b.csproj"])
         self.d.tick()
-        self.assertEqual((seen[0]["platform"], seen[0]["stack"]), ("windows", "dotnet"))
+        self.assertEqual((seen[0].get("platform"), seen[0]["stack"]), (None, "dotnet"))
 
     def test_rule_fallback_only_when_route_missing(self):
         with unittest.mock.patch.object(dispatcher, "_route_module", lambda: None):
@@ -526,8 +527,20 @@ class Placement(Base):
         self.assertEqual(pf({"title": "fix msbuild target", "goal": ""}, claude), "windows")
         self.assertEqual(pf(plain, {"backend": "claude", "platform": "linux"}), "wsl")   # the router may override
         self.assertEqual(pf({**plain, "platform": "linux"}, {"backend": "claude", "platform": "windows"}), "windows")
+        self.assertEqual(pf({**plain, "scope_files": ["a/x.csproj"]}, claude, None, ["wsl"]), "wsl")   # wsl-only repo
+        self.assertEqual(pf({**plain, "scope_files": ["a/x.cs"]}, codex, None, ["windows", "wsl"]), "wsl")
         self.assertEqual(pf(plain, claude, "/home/u/wt"), "wsl")                    # only WSL can reach it
         self.assertEqual(pf(plain, claude, "/mnt/r/repos/wt"), "windows")
+
+    def test_rule_route_dotnet_follows_the_owner_rule(self):
+        rr = dispatcher.rule_route
+        cs = {"title": "t", "goal": "g", "scope_files": ["a/x.cs"], "size": "M"}
+        self.assertEqual(rr(cs, ["claude", "codex"], {"claude": 3}, ["windows"])["backend"], "claude")
+        self.assertEqual(rr(cs, ["codex"], None, ["windows"])["backend"], "claude")       # never Codex on Windows
+        self.assertEqual(rr(cs, ["codex"], None, ["wsl"])["backend"], "codex")
+        self.assertEqual(rr({**cs, "scope_files": [], "title": "fix msbuild"}, ["codex"], None, ["wsl"])["backend"],
+                         "codex")
+        self.assertEqual(rr(cs, ["claude", "codex"], {"claude": 3}, ["windows", "wsl"])["backend"], "codex")
 
     def test_dispatch_records_placement_on_spec_and_event(self):
         self.allow["codex"] = False

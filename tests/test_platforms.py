@@ -174,22 +174,68 @@ class FakeRepoPipeline(Base):
         self.assertIn("windows", self.reason(tid))
         self.assertEqual(self.fl.of("worker"), [])
 
-    def test_dotnet_on_a_wsl_only_repo_goes_to_the_owner_with_a_reason(self):
+    def test_wsl_only_repo_with_only_codex_allowance_runs_dotnet_on_codex_wsl(self):
+        self.repo(["wsl"], "wsl")
+        texts = [{"title": "t", "scope_files": ["src/App.cs"]}, {"title": "upgrade dotnet sdk"},
+                 {"title": "fix the msbuild target"}]
+        ids = [self.task(**kw) for kw in texts]
+        self.d = self.make(wsl_up_fn=lambda: True, worktree_fn=lambda t: "R:\\repos\\wt",
+                           admit_fn=lambda plan, role, pct: {"allow": plan == "codex"})
+        self.assertEqual(sorted(self.d.tick()["launched"]), sorted(ids))
+        for spec in self.fl.of("worker"):
+            self.assertEqual((spec["backend"], spec["placement"]), ("codex", "wsl"))
+
+    def test_rule_fallback_puts_dotnet_on_codex_wsl_for_a_wsl_only_repo(self):
+        self.repo(["wsl"], "wsl")
+        tid = self.task(title="t", scope_files=["src/App.cs"])
+        with patch.object(dispatcher, "_route_module", lambda: None):
+            self.d = self.make(wsl_up_fn=lambda: True, worktree_fn=lambda t: "R:\\repos\\wt",
+                               admit_fn=lambda plan, role, pct: {"allow": plan == "codex"})
+        self.assertEqual(self.d.tick()["launched"], [tid])
+        spec = self.fl.of("worker")[0]
+        self.assertEqual((spec["backend"], spec["placement"]), ("codex", "wsl"))
+
+    def test_windows_repo_runs_dotnet_on_claude_windows_never_codex(self):
+        self.repo(["windows"], "windows")
+        tid = self.task(title="t", scope_files=["src/App.cs"])
+        self.d = self.make(worktree_fn=lambda t: "R:\\repos\\wt")
+        self.assertEqual(self.d.tick()["launched"], [tid])
+        spec = self.fl.of("worker")[0]
+        self.assertEqual((spec["backend"], spec["placement"]), ("claude", "windows"))
+
+    def test_windows_repo_with_only_codex_seats_goes_to_the_owner_with_the_dotnet_reason(self):
+        self.repo(["windows"], "windows")
+        config.use(config.validate({"seats": [{**config.DEFAULT_SEATS[0], "placement": "wsl"},
+                                              config.DEFAULT_SEATS[1]]}))
+        self.addCleanup(config.reset)
+        tid = self.task(title="t", scope_files=["src/App.cs"])
+        self.assertEqual(self.tick_with_wsl()["launched"], [])
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertIn(".NET", self.reason(tid))
+        self.assertNotIn("max_workers", self.reason(tid))
+
+    def test_dotnet_on_a_wsl_only_repo_runs_on_wsl(self):
         self.repo(["wsl"], "wsl")
         tid = self.task(title="fix the msbuild target")
         self.tick_with_wsl()
-        self.assertEqual(self.status(tid), "needs-owner")
-        self.assertIn("needs windows", self.reason(tid))
+        self.assertEqual(self.status(tid), "running")
+        self.assertEqual(self.fl.of("worker")[0]["placement"], "wsl")
 
-    def test_dotnet_on_a_wsl_claude_seat_goes_to_the_owner_not_to_wsl(self):
+    def test_explicit_windows_dotnet_on_a_wsl_only_repo_goes_to_the_owner_with_a_reason(self):
+        self.repo(["wsl"], "wsl")
+        tid = self.task(title="fix the msbuild target", goal="platform: windows")
+        self.tick_with_wsl()
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertIn(".NET", self.reason(tid))
+
+    def test_dotnet_on_a_wsl_claude_seat_runs_on_wsl(self):
         seat = {**config.DEFAULT_SEATS[0], "placement": "wsl"}
         config.use(config.validate({"seats": [seat]}))
         self.addCleanup(config.reset)
         tid = self.task(title="fix the msbuild target")
         self.tick_with_wsl()
-        self.assertEqual(self.status(tid), "needs-owner")
-        self.assertIn("needs windows but seat claude runs only in wsl", self.reason(tid))
-        self.assertEqual(self.fl.of("worker"), [])
+        self.assertEqual(self.status(tid), "running")
+        self.assertEqual(self.fl.of("worker")[0]["placement"], "wsl")
 
     def test_a_platform_windows_tag_on_a_wsl_claude_seat_also_goes_to_the_owner(self):
         claude = {"backend": "claude", "seat": "claude"}
@@ -418,7 +464,9 @@ class DotnetSeats(unittest.TestCase):
         task = {"role": "worker", "size": "M", "platform": "windows", "stack": "dotnet"}
         r = route.choose(task, {}, {"claude": {"remaining_pct": 90.0, "hours_to_reset": 10.0}, "codex": None}, seed=1,
                          seats=[wsl])
-        self.assertEqual((r["backend"], r["seat"]), ("claude", "claude"))
+        self.assertIsNone(r["backend"])          # an explicit Windows task has no Windows seat
+        self.assertTrue(r["needs_owner"])
+        self.assertIn(".NET", r["reason"])
 
 
 class LandingGateBoth(unittest.TestCase):

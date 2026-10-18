@@ -78,15 +78,48 @@ def prior_rate(backend, model):
     return _PRIOR_RATIO[backend][fam] / _PRIOR_RATIO[backend][_PRIOR_BASE[backend]]
 
 
-def _is_dotnet_windows(task):
-    if task.get("platform") != "windows":
-        return False
+DOTNET_EXT = (".cs", ".csproj", ".sln", ".vbproj", ".fsproj", ".props", ".targets")
+DOTNET_RULE = ("dotnet runs on Windows with a Claude seat or on WSL with a Claude or Codex seat "
+               "(Codex on Windows leaves login artifacts)")
+
+
+def is_dotnet_task(task):
+    """True for a .NET/MSBuild task: a dotnet/msbuild stack or tag, or a .NET source file in scope."""
     stack = str(task.get("stack", "")).lower()
     tags = [str(t).lower() for t in task.get("tags", ())]
     if "dotnet" in stack or "msbuild" in stack or "dotnet" in tags or "msbuild" in tags:
         return True
-    return any(str(f).lower().endswith((".cs", ".csproj", ".sln", ".vbproj", ".fsproj", ".props", ".targets"))
-               for f in task.get("scope_files", ()))
+    return any(str(f).lower().endswith(DOTNET_EXT) for f in task.get("scope_files", ()))
+
+
+def dotnet_placements(task, platforms=None):
+    """Where this task's .NET work may run: the repo's platforms, narrowed by an explicit task platform."""
+    plats = [x for x in (platforms or config_mod.PLACEMENTS) if x in config_mod.PLACEMENTS]
+    plat = str(task.get("platform") or "").lower()
+    if plat in ("windows", "linux"):
+        plats = [x for x in plats if x == ("wsl" if plat == "linux" else "windows")]
+    return plats
+
+
+def dotnet_backends(platforms):
+    """Backends allowed .NET work on the given placements: Claude anywhere, Codex only on WSL."""
+    out = []
+    if platforms:
+        out.append("claude")
+    if "wsl" in platforms:
+        out.append("codex")
+    return out
+
+
+def dotnet_seat_ok(seat, placements):
+    """Owner rule: (windows + claude) or (wsl + (claude or codex)). Codex never takes .NET work on Windows."""
+    return any(p in seat_placements(seat) and (p == "wsl" or seat["backend"] == "claude") for p in placements)
+
+
+def _is_dotnet_windows(task, platforms=None):
+    """Compatibility name: a .NET worker task (platform linux opts out); the placement rule is dotnet_seat_ok."""
+    return str(task.get("platform") or "").lower() != "linux" and is_dotnet_task(task) \
+        and bool(dotnet_placements(task, platforms))
 
 
 def reserves(seats):
@@ -200,11 +233,18 @@ def eligible_seats(seats, seat_load=None, platforms=None, privileged=False):
     return out
 
 
-def no_seat_route(seats, platforms=None, privileged=False):
-    """Distinguish a permanent platform mismatch from temporarily full seats."""
+def no_seat_route(seats, platforms=None, privileged=False, dotnet_task=None, seat_load=None):
+    """Distinguish a permanent platform mismatch from temporarily full seats; for .NET work name the dotnet rule."""
     compatible = eligible_seats(seats, platforms=platforms, privileged=privileged)
-    reason = ("no seat can take this run (all at max_workers)" if compatible else
-              "no platform-compatible seat for " + ", ".join(platforms or config_mod.PLACEMENTS))
+    if dotnet_task is not None:
+        places = dotnet_placements(dotnet_task, platforms)
+        compatible = [s for s in compatible if dotnet_seat_ok(s, places)]
+        plats = ", ".join(platforms or config_mod.PLACEMENTS)
+        reason = ("no seat can take this .NET run (all dotnet-compatible seats at max_workers)" if compatible else
+                  f"no seat for .NET work in this repo (platforms: {plats}); {DOTNET_RULE}")
+    else:
+        reason = ("no seat can take this run (all at max_workers)" if compatible else
+                  "no platform-compatible seat for " + ", ".join(platforms or config_mod.PLACEMENTS))
     return {"backend": None, "model": None, "effort": None, "harness": None, "seat": None,
             "reason": reason, "needs_owner": not compatible}
 
@@ -243,10 +283,11 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
     allowed = eligible_seats(seats, seat_load, platforms)
     if privileged:
         allowed = [s for s in allowed if s["name"] == (requested or default)]
-    if key.startswith("worker:") and _is_dotnet_windows(task):
-        allowed = [s for s in allowed if s["backend"] == "claude" and "windows" in seat_placements(s)]
+    dotnet = key.startswith("worker:") and is_dotnet_task(task)
+    if dotnet:
+        allowed = [s for s in allowed if dotnet_seat_ok(s, dotnet_placements(task, platforms))]
     if not allowed and not (privileged and not requested):
-        return no_seat_route(seats, platforms, privileged and not requested)
+        return no_seat_route(seats, platforms, privileged and not requested, task if dotnet else None, seat_load)
     ranks = {r["seat"]: r for r in ordering or []}
     allowed.sort(key=lambda s: (not ranks.get(s["name"], {}).get("urgent", False), s["priority"],
                                 (seat_load or {}).get(s["name"], 0), s["name"]))
@@ -287,21 +328,18 @@ def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=Non
                                 director_borrow_approved)
     role = task.get("role", "worker")
     key = route_key(role, task.get("size"))
-    dotnet_worker = key.startswith("worker:") and _is_dotnet_windows(task)
+    dotnet_worker = key.startswith("worker:") and is_dotnet_task(task)
     privileged = role in DIRECTOR_ROLES
     seats = eligible_seats(all_seats, seat_load, platforms, privileged)
+    if dotnet_worker:        # owner rule: windows + claude, or wsl + (claude or codex), within the repo's platforms
+        seats = [s for s in seats if dotnet_seat_ok(s, dotnet_placements(task, platforms))]
     if not seats:
-        return no_seat_route(all_seats, platforms, privileged)
-    if dotnet_worker:        # dotnet and MSBuild workers run on Windows: prefer the seats that can
-        windows = [s for s in seats if "windows" in seat_placements(s)]
-        seats = windows or seats      # none can: the dispatcher sends the task to the owner with the reason
+        return no_seat_route(all_seats, platforms, privileged, task if dotnet_worker else None, seat_load)
     routes = (policy or {}).get("routes", {})
     cands = [dict(c) for c in routes.get(key, [])] or default_candidates(key)
     if key == "director":
         family = cfg["models"]["director"].split("-")[0]
         cands = [c for c in cands if c["model"].startswith(family)] or default_candidates("director")
-    if dotnet_worker:
-        cands = [c for c in cands if c["backend"] == "claude"]
     have = {s["backend"] for s in seats}
     cands = [c for c in cands if c["backend"] in have]
     heads = {b: _norm_headroom((allowance_headroom or {}).get(b), b, all_seats) for b in ("claude", "codex")}

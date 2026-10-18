@@ -284,3 +284,70 @@ class Dispatching(test_dispatcher.Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DotnetOwnerRule(unittest.TestCase):
+    """dotnet: (windows + claude) or (wsl + (claude or codex)), within the repo's platforms."""
+    SPENT = {"remaining_pct": 5.0, "hours_to_reset": 10.0}
+    CS = {"role": "worker", "size": "M", "scope_files": ["src/App.cs"]}
+
+    def both_paths(self, task, seats, h, **kw):
+        observed = {s["name"]: h[s["backend"]] for s in seats}
+        return (route.choose(task, {}, h, seed=1, seats=seats, **kw),
+                route.choose(task, {}, None, seed=1, seats=seats, seat_headroom=observed, **kw))
+
+    def test_wsl_only_repo_with_only_codex_allowance_gets_codex_on_wsl(self):
+        wsl_claude = {**CLAUDE, "placement": "wsl"}
+        tasks = [self.CS, {"role": "worker", "size": "S", "stack": "dotnet"},
+                 {"role": "worker", "size": "L", "stack": "msbuild"}, {"role": "worker", "size": "M", "tags": ["dotnet"]}]
+        for task in tasks:
+            for r in self.both_paths(task, [wsl_claude, CODEX], heads(claude=self.SPENT), platforms=["wsl"]):
+                self.assertEqual((r["backend"], r["seat"]), ("codex", "codex"), task)
+
+    def test_a_windows_only_repo_keeps_windows_claude(self):
+        for r in self.both_paths(self.CS, [CLAUDE, CODEX], heads(), platforms=["windows"]):
+            self.assertEqual((r["backend"], r["seat"]), ("claude", "claude"))
+
+    def test_codex_never_takes_dotnet_on_windows(self):
+        win_codex = {**CODEX, "placement": "windows"}          # config refuses this; the router must too
+        self.assertFalse(route.dotnet_seat_ok(win_codex, ["windows"]))
+        self.assertFalse(route.dotnet_seat_ok(win_codex, ["windows", "wsl"]))
+        for platforms in (["windows"], ["windows", "wsl"], None):
+            for r in self.both_paths(self.CS, [win_codex], heads(), platforms=platforms):
+                self.assertIsNone(r["backend"])
+        for seed in range(40):          # both platforms, both backends: Codex only ever lands on its WSL seat
+            r = route.choose(self.CS, {}, heads(), seed=seed, seats=[CLAUDE, CODEX], platforms=["windows", "wsl"])
+            self.assertIn(r["backend"], ("claude", "codex"))
+        self.assertEqual(route.dotnet_backends(["windows"]), ["claude"])
+        self.assertEqual(route.dotnet_backends(["windows", "wsl"]), ["claude", "codex"])
+
+    def test_explicit_windows_task_never_uses_codex(self):
+        task = {**self.CS, "platform": "windows"}
+        for r in self.both_paths(task, [CLAUDE, CODEX], heads(claude=self.SPENT)):
+            self.assertIsNone(r["backend"])
+
+    def test_non_dotnet_work_is_unchanged(self):
+        for r in self.both_paths(WORKER, [{**CLAUDE, "placement": "wsl"}, CODEX], heads(claude=self.SPENT),
+                                 platforms=["wsl"]):
+            self.assertEqual(r["backend"], "codex")
+
+    def test_no_seat_reason_names_the_dotnet_constraint(self):
+        for platforms in (["windows"], ["wsl"]):
+            seats = [CODEX] if platforms == ["windows"] else [{**CLAUDE, "placement": "windows"}]
+            r = route.choose(self.CS, {}, heads(), seed=1, seats=seats, platforms=platforms)
+            if platforms == ["wsl"]:
+                self.assertEqual(r["backend"], "claude")           # a Windows Claude seat can also run in WSL
+                continue
+            self.assertIsNone(r["backend"])
+            self.assertTrue(r["needs_owner"])
+            self.assertIn(".NET", r["reason"])
+            self.assertIn("Codex", r["reason"])
+            self.assertNotIn("max_workers", r["reason"])
+
+    def test_full_dotnet_seats_say_max_workers_and_defer(self):
+        seats = [{**CODEX, "max_workers": 1}]
+        r = route.choose(self.CS, {}, heads(), seed=1, seats=seats, seat_load={"codex": 1}, platforms=["wsl"])
+        self.assertIsNone(r["backend"])
+        self.assertFalse(r["needs_owner"])
+        self.assertIn("max_workers", r["reason"])
+        self.assertIn(".NET", r["reason"])

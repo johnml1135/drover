@@ -94,13 +94,15 @@ def is_dotnet(task):
         or "dotnet" in text or "msbuild" in text
 
 
-def rule_route(task, backends, load=None):
-    """{'backend','model','effort'}: S -> cheap tier, M/L -> mid tier; dotnet -> Claude; else the lighter backend."""
+def rule_route(task, backends, load=None, platforms=None):
+    """{'backend','model','effort'}: S -> cheap tier, M/L -> mid tier; else the lighter backend. dotnet takes Claude
+    (Windows or WSL) or, only where the repo allows WSL, Codex; never Codex on Windows."""
+    pool = backends or ["claude"]
     if is_dotnet(task):
-        backend = "claude"
-    else:
-        load = load or {}
-        backend = min(backends or ["claude"], key=lambda b: (load.get(b, 0), b != "claude"))
+        ok = route_mod.dotnet_backends(route_mod.dotnet_placements(task, platforms))
+        pool = [b for b in pool if b in ok] or ["claude"]
+    load = load or {}
+    backend = min(pool, key=lambda b: (load.get(b, 0), b != "claude"))
     ladder = ladders()[backend]
     return {"backend": backend, "model": ladder[min(start_idx()[task.get("size", "M")], len(ladder) - 1)]}
 
@@ -118,18 +120,22 @@ def _platform_tag(task):
     return plat if plat in ("linux", "windows") else None
 
 
-def placement_for(task, route, worktree=None):
+def placement_for(task, route, worktree=None, platforms=None):
     """'wsl' or 'windows'. A Codex seat runs where its seat is (WSL; config refuses Windows); a WSL Claude seat runs in
-    WSL; a linux platform tag (or the router's platform) means WSL; dotnet and msbuild are Windows; Claude otherwise
-    runs on Windows (unless the worktree is Linux-only)."""
+    WSL; a linux platform tag (or the router's platform) means WSL; dotnet takes Windows for a Claude seat that can and
+    the repo allows, else WSL (owner rule: windows + claude, or wsl + claude or codex); Claude otherwise runs on
+    Windows (unless the worktree is Linux-only)."""
     seat = seat_of(route)
+    plat = str(route.get("platform") or "").lower() or _platform_tag(task)
     if route.get("backend") == "codex":
         return seat["placement"] if seat else "wsl"
-    plat = str(route.get("platform") or "").lower() or _platform_tag(task)
     if plat == "linux":
         return "wsl"
-    if plat == "windows" or is_dotnet(task):
+    if plat == "windows":
         return "windows"           # a WSL seat cannot honour this: place() sends the task to the owner
+    if is_dotnet(task):
+        can = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
+        return "windows" if "windows" in can and "windows" in (platforms or config_mod.PLACEMENTS) else "wsl"
     if seat and seat["placement"] == "wsl":
         return "wsl"
     return "wsl" if worktree and launch_mod.is_linux_native(worktree) else "windows"
@@ -138,8 +144,8 @@ def placement_for(task, route, worktree=None):
 def place(task, route, worktree, prog):
     """(placement, None), or (None, reason) when no placement is within the repo's run platforms. A task tag, dotnet
     or the seat's own side is a hard need; otherwise the repo's default platform is tried before giving up."""
-    want = placement_for(task, route, worktree)
     plats = ((prog or {}).get("run") or {}).get("platforms") or list(config_mod.PLACEMENTS)
+    want = placement_for(task, route, worktree, plats)
     seat = seat_of(route)
     allowed = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
     hard = bool(_platform_tag(task) or route.get("platform") or is_dotnet(task)) \
@@ -1175,13 +1181,16 @@ class Dispatcher:
         return kw
 
     def _route(self, task, policy, admitted):
-        t = {**task, "platform": "windows", "stack": "dotnet"} if is_dotnet(task) else task
+        t = {**task, "stack": "dotnet"} if is_dotnet(task) else task    # placement: owner rule in route.py
+        if is_dotnet(task) and _platform_tag(task):
+            t["platform"] = _platform_tag(task)                         # an explicit tag narrows the router too
         load = {}
         for _, _, spec in self.live.values():
             load[spec["backend"]] = load.get(spec["backend"], 0) + 1
         choose = self.route_fn
         if choose is None:                       # drover.route not present: fixed rule
-            base = rule_route(task, admitted, load)
+            prog_ = self._repo(task)
+            base = rule_route(task, admitted, load, prog_["run"]["platforms"] if prog_ else None)
         else:
             heads = {b: self._headroom(b) for b in admitted}      # not-admitted plans stay out of the draw
             base = choose(t, policy["data"], heads, **self._route_kw(choose, task, admitted))

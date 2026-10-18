@@ -27,7 +27,9 @@ WSL is needed for only three reasons:
   - Claude workers default to Windows.
   - Codex workers always run in WSL.
   - Tasks tagged `platform: linux` run in WSL.
-  - dotnet and MSBuild run on Windows.
+  - dotnet and MSBuild: (Windows + Claude) or (WSL + (Claude or Codex)), within the repo's `[run] platforms`.
+    Amended 2026-10-17 by owner override of the earlier rule (Windows, Claude only). Reason: Codex on Windows leaves
+    login artifacts from shelling out, so Codex never takes .NET work on Windows; on WSL it is fine.
   - The router may override placement per task.
 - **Adoption after a hub restart:** find runner processes by the `--run-id` marker in their command line (`/proc` on
   Linux, CIM on Windows) and keep reading their files. Never signal a process that lacks the marker.

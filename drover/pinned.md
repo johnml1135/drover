@@ -22,7 +22,7 @@ Landing
 
 Environment
 - Admission, not you, decides capacity. Do not start extra parallel builds.
-- Windows dotnet and MSBuild builds run on Claude workers only.
+- dotnet and MSBuild work runs on Windows with Claude, or on WSL with Claude or Codex (never Codex on Windows: it leaves login artifacts from shelling out). The repo's `[run] platforms` still apply.
 - Check disk before heavy builds; a full host drive kills WSL.
 
 Context

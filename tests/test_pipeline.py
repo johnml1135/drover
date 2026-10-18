@@ -682,6 +682,24 @@ class CodexReview(Base):
         self.assertEqual(self.d.tick()["reviewed"], [tid])
         self.assertEqual(self.fl.of("review")[0]["backend"], "codex")
 
+    def test_wsl_dotnet_repo_runs_worker_wsl_gate_and_codex_review_without_windows(self):
+        self.prog["run"] = {"platforms": ["wsl"], "default": "wsl"}
+        self.prog["gate"]["platform"] = "wsl"
+        self.d = self.make(admit_fn=lambda plan, role, pct: {"allow": plan == "codex"}, wsl_up_fn=lambda: True)
+        tid = self.task(scope_files=["src/App.cs"])
+        self.assertEqual(self.d.tick()["launched"], [tid])
+        worker = self.fl.of("worker")[0]
+        self.assertEqual((worker["backend"], worker["placement"]), ("codex", "wsl"))
+        self.run_worker(tid, self.worker_commits(tid))
+        self.d.tick()
+        self.d.tick()
+        gates = ops.events(self.conn, task_id=tid, kind="gate-started")
+        self.assertEqual([g["data"]["platform"] for g in gates], ["wsl"])
+        review = self.fl.of("review")[0]
+        self.assertEqual((review["backend"], review["placement"]), ("codex", "wsl"))
+        for spec in self.fl.specs:
+            self.assertNotEqual(spec.get("placement"), "windows")
+
     def test_codex_reviewer_uses_repo_route_and_read_only_then_lands_the_exact_sha(self):
         tid, sha = self.to_gated()
         spec = self.fl.of("review")[0]
