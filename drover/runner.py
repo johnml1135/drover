@@ -385,9 +385,14 @@ def request_stop(runs_dir, run_id, reason="requested", nonce=None):
 
 def _scratch_path(value):
     root, path = Path("/tmp/drover-scratch"), Path(value)
-    if (IS_WINDOWS or path.parent != root or root.resolve() != root
-            or path.is_symlink() or path.resolve().parent != root):
-        raise ValueError("scratch must be a direct directory under /tmp/drover-scratch/")
+    parent = path.parent
+    direct = parent == root
+    task_scratch = Path(os.environ.get("TMPDIR", ""))
+    nested = (not direct and parent == task_scratch and parent.parent == root and parent.is_dir()
+              and not parent.is_symlink() and parent.resolve() == parent)
+    if (IS_WINDOWS or (not direct and not nested) or root.resolve() != root
+            or path.is_symlink() or path.resolve().parent != parent):
+        raise ValueError("scratch must be under /tmp/drover-scratch/ or its assigned TMPDIR")
     return path
 
 
@@ -396,6 +401,19 @@ def _cleanup_scratch(path):
         shutil.rmtree(_scratch_path(path))
     except (OSError, ValueError):
         pass
+
+
+def worker_scratch_env(scratch):
+    """Environment for a WSL worker's private temp and .NET caches; the global NuGet package cache stays shared."""
+    scratch = Path(scratch)
+    return {
+        "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
+        "DOTNET_CLI_HOME": str(scratch / "dotnet-home"),
+        "NUGET_HTTP_CACHE_PATH": str(scratch / "nuget-http"),
+        "NUGET_PLUGINS_CACHE_PATH": str(scratch / "nuget-plugins"),
+        "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1",
+        "NUGET_PACKAGES": str(Path.home() / ".nuget" / "packages"),
+    }
 
 
 def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=None, kill_after=KILL_AFTER_S,
@@ -443,7 +461,7 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
     if scratch is not None:
-        env.update({name: str(scratch) for name in ("TMPDIR", "TMP", "TEMP")})
+        env.update(worker_scratch_env(scratch))
     for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
         if env.get(key):
             env[key] = os.path.expanduser(env[key])

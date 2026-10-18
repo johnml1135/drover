@@ -102,6 +102,7 @@ def build_argv(spec):
         # can live under the state dir in TEMP or /tmp. Chmod is only hygiene,
         # not an access boundary (in particular on Windows).
         if scratch:
+            # The WSL runner derives .NET CLI and NuGet paths from this scratch; keep the shell override temp-only.
             value = json.dumps(scratch)
             argv[-1:-1] = ["-c", f"shell_environment_policy.set={{TMPDIR={value},TMP={value},TEMP={value}}}"]
     else:

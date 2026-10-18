@@ -83,6 +83,21 @@ class WindowsMetricsTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in kernel.QueryInformationJobObject.call_args_list], [8, 9])
 
 
+class ScratchEnvironmentTests(unittest.TestCase):
+    @unittest.skipIf(runner.IS_WINDOWS, "WSL worker environment runs on Linux")
+    def test_wsl_worker_environment_uses_scratch_and_keeps_user_nuget_packages(self):
+        scratch = Path('/tmp/drover-scratch/7-0123456789abcdef')
+
+        self.assertEqual(runner.worker_scratch_env(scratch), {
+            'TMPDIR': str(scratch), 'TMP': str(scratch), 'TEMP': str(scratch),
+            'DOTNET_CLI_HOME': str(scratch / 'dotnet-home'),
+            'NUGET_HTTP_CACHE_PATH': str(scratch / 'nuget-http'),
+            'NUGET_PLUGINS_CACHE_PATH': str(scratch / 'nuget-plugins'),
+            'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1',
+            'NUGET_PACKAGES': str(Path.home() / '.nuget' / 'packages'),
+        })
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -122,7 +137,10 @@ class Base(unittest.TestCase):
 @unittest.skipIf(runner.IS_WINDOWS, "WSL scratch lifecycle runs on Linux")
 class ScratchTests(Base):
     def scratch(self):
-        path = Path('/tmp/drover-scratch') / f'acme-{uuid.uuid4().hex}'
+        root = Path('/tmp/drover-scratch')
+        task_scratch = Path(os.environ.get('TMPDIR', ''))
+        parent = task_scratch if task_scratch.parent == root else root
+        path = parent / f'acme-{uuid.uuid4().hex}'
         self.addCleanup(shutil.rmtree, path, ignore_errors=True)
         return path
 
@@ -132,23 +150,42 @@ class ScratchTests(Base):
 from pathlib import Path
 from drover.ledger.db import connect
 scratch = Path(os.environ['TMPDIR'])
+env = {k: os.environ.get(k) for k in ('TMPDIR', 'TMP', 'TEMP', 'DOTNET_CLI_HOME',
+    'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'DOTNET_CLI_TELEMETRY_OPTOUT',
+    'DOTNET_NOLOGO', 'NUGET_PACKAGES')}
 with tempfile.TemporaryDirectory() as tmp:
     conn = connect(Path(tmp) / 'ledger.db', migrate_db=False)
     mode = conn.execute('PRAGMA journal_mode').fetchone()[0]
     conn.close()
-    print(json.dumps(dict(env={k: os.environ.get(k) for k in ('TMPDIR', 'TMP', 'TEMP')},
-                          mode=stat.S_IMODE(scratch.stat().st_mode), tmp=tmp, journal=mode)))
+    print(json.dumps(dict(env=env, mode=stat.S_IMODE(scratch.stat().st_mode), tmp=tmp, journal=mode)))
 (scratch / 'leftover').write_text('remove with run')
 """
         r = subprocess.run(self.cmd('scratch', code, extra=('--scratch-dir', str(scratch))),
                            env=ENV, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         data = json.loads(self.out('scratch'))
-        self.assertEqual(data['env'], dict(TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch)))
+        self.assertEqual(data['env'], {
+            'TMPDIR': str(scratch), 'TMP': str(scratch), 'TEMP': str(scratch),
+            'DOTNET_CLI_HOME': str(scratch / 'dotnet-home'),
+            'NUGET_HTTP_CACHE_PATH': str(scratch / 'nuget-http'),
+            'NUGET_PLUGINS_CACHE_PATH': str(scratch / 'nuget-plugins'),
+            'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1',
+            'NUGET_PACKAGES': str(Path.home() / '.nuget' / 'packages'),
+        })
         self.assertEqual(data['mode'], 0o700)
         self.assertEqual(Path(data['tmp']).parent, scratch)
         self.assertEqual(data['journal'], 'wal')
         self.assertFalse(scratch.exists())
+
+    @unittest.skipUnless(shutil.which('dotnet'), 'dotnet SDK is absent')
+    def test_dotnet_info_starts_with_scratch_environment(self):
+        with tempfile.TemporaryDirectory(prefix='dotnet-smoke-') as temp:
+            scratch = Path(temp) / 'scratch'
+            scratch.mkdir()
+            env = {**os.environ, **runner.worker_scratch_env(scratch)}
+            result = subprocess.run(['dotnet', '--info'], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn('.NET SDK', result.stdout)
 
     def test_scratch_is_cleaned_after_timeout_and_spawn_failure(self):
         for rid, code, kw, state in (
