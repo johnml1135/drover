@@ -22,10 +22,16 @@ Default db: `$DROVER_LEDGER`, else `<state dir>\ledger.db` on Windows (the state
 The dispatcher runs as a thread inside the Windows hub (`hub/dispatch.py`, `DirectPort`, one ledger connection per
 thread) and starts every worker through `drover.runner --detach`: Windows placement runs the hub's python directly,
 WSL placement goes through `wsl.exe --exec` (`runner.wsl_argv`, `--cd` to this directory so `drover` imports).
-Placement: Codex always WSL; `platform: linux` (task field, `platform:linux` tag, or that text in title/goal) WSL;
-dotnet/msbuild: Windows with a Claude seat, or WSL with a Claude or Codex seat (owner rule, 2026-10-17; Codex never
-takes .NET on Windows), within the repo's `[run] platforms` (a WSL-only repo puts .NET on WSL; a Windows-only repo keeps
-Windows + Claude), and with no such seat the task goes to the owner naming the rule; Claude otherwise Windows. Run files live in `<state dir>\runs\<id>\`.
+Placement rules:
+- Codex always runs in WSL.
+- `platform: linux` (task field, `platform:linux` tag, or that text in title/goal) means WSL.
+- dotnet/msbuild (owner rule, 2026-10-17): Windows with a Claude seat, or WSL with a Claude or Codex seat. Codex never
+  takes .NET on Windows.
+- The repo's `[run] platforms` still apply: a WSL-only repo puts .NET on WSL; a Windows-only repo keeps Windows + Claude.
+- With no such seat the task goes to the owner, and the reason names the rule.
+- Claude otherwise runs on Windows.
+
+Run files live in `<state dir>\runs\<id>\`.
 
 - One instance: the hub holds `<state dir>\dispatcher.lock`; `python -m drover.dispatcher` refuses while it is held and
   refuses to run at all off Windows (the lock is not shared between Windows and WSL).

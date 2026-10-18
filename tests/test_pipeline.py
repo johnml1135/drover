@@ -685,7 +685,26 @@ class CodexReview(Base):
     def test_wsl_dotnet_repo_runs_worker_wsl_gate_and_codex_review_without_windows(self):
         self.prog["run"] = {"platforms": ["wsl"], "default": "wsl"}
         self.prog["gate"]["platform"] = "wsl"
-        self.d = self.make(admit_fn=lambda plan, role, pct: {"allow": plan == "codex"}, wsl_up_fn=lambda: True)
+        runs = self.runs
+
+        class HostRunsWslGate(FakeLauncher):
+            """Checks the WSL gate argv and plan, then runs the same plan with host paths: wsl.exe and python3 are
+            not on every host (this suite also runs on Windows)."""
+            def launch(self, spec):
+                if spec.get("role") == "gate":
+                    assert spec["placement"] == "wsl" and spec["argv"][0] == "python3", spec["argv"]
+                    d = runner.run_dir(runs, spec["run_id"])
+                    body = json.loads((d / "plan.json").read_text())
+                    assert body["repo"].startswith("/"), body["repo"]
+                    body.update(repo=spec["cwd"], out=str(d / "receipt.json"))
+                    (d / "host-plan.json").write_text(json.dumps(body))
+                    spec = {**spec, "argv": [sys.executable, str(Path(pipeline.__file__).with_name("gatejob.py")),
+                                             "--plan", str(d / "host-plan.json")]}
+                    return super().launch(spec)
+                return super().launch(spec)
+        self.fl = HostRunsWslGate(self.runs)
+        self.d = self.make(admit_fn=lambda plan, role, pct: {"allow": plan == "codex"}, wsl_up_fn=lambda: True,
+                           launcher=self.fl)
         tid = self.task(scope_files=["src/App.cs"])
         self.assertEqual(self.d.tick()["launched"], [tid])
         worker = self.fl.of("worker")[0]

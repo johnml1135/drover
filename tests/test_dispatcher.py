@@ -542,6 +542,16 @@ class Placement(Base):
                          "codex")
         self.assertEqual(rr(cs, ["claude", "codex"], {"claude": 3}, ["windows", "wsl"])["backend"], "codex")
 
+    def test_rule_route_honours_an_explicit_platform_tag_for_dotnet(self):
+        rr = dispatcher.rule_route
+        cs = {"title": "t", "goal": "g", "scope_files": ["a/x.cs"], "size": "M"}
+        both = ["windows", "wsl"]
+        self.assertEqual(rr({**cs, "goal": "platform: windows"}, ["codex", "claude"], {"claude": 5}, both)["backend"],
+                         "claude")          # Windows tag: Claude only, never Codex
+        self.assertEqual(rr({**cs, "platform": "windows"}, ["codex"], None, both)["backend"], "claude")
+        self.assertEqual(rr({**cs, "goal": "platform: linux"}, ["codex", "claude"], {"claude": 5}, both)["backend"],
+                         "codex")
+
     def test_dispatch_records_placement_on_spec_and_event(self):
         self.allow["codex"] = False
         self.task(size="S", goal="platform: linux")

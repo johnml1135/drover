@@ -99,7 +99,8 @@ def rule_route(task, backends, load=None, platforms=None):
     (Windows or WSL) or, only where the repo allows WSL, Codex; never Codex on Windows."""
     pool = backends or ["claude"]
     if is_dotnet(task):
-        ok = route_mod.dotnet_backends(route_mod.dotnet_placements(task, platforms))
+        tag = _platform_tag(task)
+        ok = route_mod.dotnet_backends(route_mod.dotnet_placements({**task, "platform": tag} if tag else task, platforms))
         pool = [b for b in pool if b in ok] or ["claude"]
     load = load or {}
     backend = min(pool, key=lambda b: (load.get(b, 0), b != "claude"))

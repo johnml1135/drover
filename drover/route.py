@@ -116,12 +116,6 @@ def dotnet_seat_ok(seat, placements):
     return any(p in seat_placements(seat) and (p == "wsl" or seat["backend"] == "claude") for p in placements)
 
 
-def _is_dotnet_windows(task, platforms=None):
-    """Compatibility name: a .NET worker task (platform linux opts out); the placement rule is dotnet_seat_ok."""
-    return str(task.get("platform") or "").lower() != "linux" and is_dotnet_task(task) \
-        and bool(dotnet_placements(task, platforms))
-
-
 def reserves(seats):
     """{backend: (reserve_pct, director_reserve_pct)} from the seats: the best-priority seat's reserve, and the
     director seat's extra reserve that workers on that backend must leave untouched."""
