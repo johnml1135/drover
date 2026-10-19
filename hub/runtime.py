@@ -387,7 +387,10 @@ def prepare_release(source: Path, sha: str, root: Path, enrolled: dict, *,
                 seen = set()
                 expanded = 0
                 for entry in entries:
-                    name = entry.filename[:-1] if entry.is_dir() else entry.filename
+                    # ZipInfo truncates NULs and normalizes backslashes on
+                    # Windows. Validate the original archive name before a
+                    # malformed name can alias a legitimate tracked file.
+                    name = entry.orig_filename[:-1] if entry.is_dir() else entry.orig_filename
                     _path_name(name)
                     if name in seen:
                         _refuse('archive-path-collision')

@@ -249,6 +249,9 @@ class RuntimeTests(unittest.TestCase):
                     if entry.filename != name:
                         new.writestr(entry, old.read(entry))
                 entry = zipfile.ZipInfo(name)
+                # Preserve malformed wire names even on Windows, where the
+                # constructor normalizes backslashes before writing the ZIP.
+                entry.filename = name
                 entry.create_system = 3
                 entry.external_attr = mode << 16
                 new.writestr(entry, b'evil')
@@ -277,6 +280,32 @@ class RuntimeTests(unittest.TestCase):
             prepare_release(self.source, b, self.release_root, self.enrolled, disk=lambda _: required - 1)
         exported = prepare_release(self.source, b, self.release_root, self.enrolled, disk=lambda _: required)
         self.assertTrue(Path(exported['release_path']).is_dir())
+
+    def test_archive_raw_paths_refused_before_zip_normalization(self):
+        self.baseline()
+        self.write('hub/app.py', 'B')
+        b = self.commit()
+        original = git(self.source, 'archive', '--format=zip', b)
+        for raw_name in ('hub\\__main__.py', 'hub/__main__.py\x00ignored'):
+            with self.subTest(raw_name=raw_name):
+                buffer = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(original)) as old, zipfile.ZipFile(buffer, 'w') as new:
+                    for entry in old.infolist():
+                        data = old.read(entry)
+                        if entry.filename == 'hub/__main__.py':
+                            entry.filename = raw_name
+                        new.writestr(entry, data)
+                payload = buffer.getvalue()
+                def adapter(source, *args):
+                    return payload if args[0] == 'archive' else git(source, *args)
+                # Exercise Windows reader normalization on every platform.
+                with patch('zipfile.os.sep', '\\'):
+                    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                        entry = next(x for x in archive.infolist() if x.orig_filename == raw_name)
+                        self.assertEqual(entry.filename, 'hub/__main__.py')
+                    with self.assertRaisesRegex(ReleaseError, 'archive-path'):
+                        prepare_release(self.source, b, self.release_root, self.enrolled, git=adapter)
+                self.assertFalse((self.release_root / b).exists())
 
     def test_archive_is_exact_despite_git_export_attributes(self):
         self.baseline()
