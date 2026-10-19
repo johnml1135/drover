@@ -620,6 +620,60 @@ class ReadyToCommit(Base):
         self.d.tick()
         return spec["run_id"]
 
+    def blocked(self, tid, kind="verification-environment"):
+        spec = self.fl.of("worker")[-1]
+        text = json.dumps({"status": "blocked", "blocker": {"kind": kind, "detail": "cannot run suites"}, "note": "done"})
+        self.fl.handles[spec["run_id"]].result = result("blocked", text)
+        self.d.tick()
+
+    def test_environment_block_with_changes_goes_to_the_gate_without_replan(self):
+        tid = self.task(scope_files=["work.txt"])
+        self.d.tick()
+        wt = repos.native(self.get(tid)["worktree"])
+        (Path(wt) / "work.txt").write_text("finished\n")
+        self.blocked(tid)
+        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
+        self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
+        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="env-block-ready")), 1)
+        self.d.tick()
+        self.assertEqual(self.status(tid), "gated")
+
+    def test_environment_block_with_committed_work_ahead_of_base_goes_to_the_gate(self):
+        tid = self.task(scope_files=["work.txt"])
+        self.d.tick()
+        wt = repos.native(self.get(tid)["worktree"])
+        (Path(wt) / "work.txt").write_text("finished\n")
+        self.fix.git("add", "work.txt", cwd=wt)
+        self.fix.git("commit", "-m", "work", cwd=wt)
+        self.blocked(tid, "missing_windows_worker")
+        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
+        self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
+
+    def test_committed_work_ahead_of_base_outside_scope_is_refused(self):
+        tid = self.task(scope_files=["work.txt"])
+        self.d.tick()
+        wt = repos.native(self.get(tid)["worktree"])
+        (Path(wt) / "other.txt").write_text("x\n")
+        self.fix.git("add", "other.txt", cwd=wt)
+        self.fix.git("commit", "-m", "work", cwd=wt)
+        with self.assertRaisesRegex(pipeline.CommitRefused, "other.txt"):
+            self.pipe.commit_ready(self.get(tid), 1, "m")
+
+    def test_environment_block_without_changes_still_replans(self):
+        tid = self.task(scope_files=["work.txt"])
+        self.d.tick()
+        self.blocked(tid)
+        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "blocked")
+        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="replan-request")), 1)
+
+    def test_other_blocker_kinds_with_changes_still_replan(self):
+        tid = self.task(scope_files=["work.txt"])
+        self.d.tick()
+        wt = repos.native(self.get(tid)["worktree"])
+        (Path(wt) / "work.txt").write_text("x\n")
+        self.blocked(tid, "plan-wrong")
+        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="replan-request")), 1)
+
     def test_scoped_changes_are_committed_with_the_message_and_trailers_then_gated(self):
         tid = self.task(scope_files=["work.txt"])
         self.d.tick()
