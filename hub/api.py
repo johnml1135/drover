@@ -385,7 +385,7 @@ def get_settings(request: Request):
 
 
 # dispatch_ is the pause switch; gate_cmd_ names a command the dispatcher runs on Windows: neither is a worker's to set
-OWNER_SETTING_PREFIXES = ("wsl_", "dispatch_", "garden_", "tuner_", "gate_cmd_", "gate_slots", "gate_reserved", "ui_", "watchdog_", "auth_", "token",
+OWNER_SETTING_PREFIXES = ("wsl_", "dispatch_", "garden_", "tuner_", "gate_cmd_", "gate_slots", "gate_reserved", "gate_infra_retries", "ui_", "watchdog_", "auth_", "token",
                           "hub_", "tailscale")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 

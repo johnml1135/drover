@@ -59,11 +59,17 @@ class FakeLauncher:
     """Workers and reviews wait for the test to finish them; the gate run really executes gatejob, as the runner would."""
 
     def __init__(self, runs_dir):
-        self.specs, self.handles, self.runs_dir = [], {}, runs_dir
+        self.specs, self.handles, self.runs_dir, self.gate_script = [], {}, runs_dir, []
 
     def launch(self, spec):
         self.specs.append(spec)
-        if spec.get("role") == "gate":
+        if spec.get("role") == "gate" and self.gate_script:        # an infrastructure outcome: (status, returncode, output)
+            status, code, text = self.gate_script.pop(0)
+            (runner.run_dir(self.runs_dir, spec["run_id"]) / runner.OUT_FILE).write_text(text)
+            h = FakeHandle({"status": status, "record": None, "text": "", "handoff": None, "returncode": code,
+                            "timeout": "no output for 600s" if status == "timeout" else None,
+                            "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0}})
+        elif spec.get("role") == "gate":
             r = subprocess.run(spec["argv"], capture_output=True, text=True, cwd=spec["cwd"])
             out = runner.run_dir(self.runs_dir, spec["run_id"]) / runner.OUT_FILE
             out.write_text(r.stdout + r.stderr)
@@ -820,6 +826,68 @@ class GateAndReview(Base):
         spec = self.fl.of("worker")[-1]                                   # the relaunch: same worktree, excerpt in the brief
         self.assertIn("boom: it broke", spec["user_prompt"])
         self.assertEqual(spec["cwd"], self.get(tid)["worktree"])
+
+    def infra_task(self, script):
+        self.fl.gate_script = list(script)
+        tid = self.task()
+        self.d.tick()
+        sha = self.worker_commits(tid)
+        self.run_worker(tid, sha)
+        return tid, sha
+
+    def tick(self, n):
+        for _ in range(n):
+            self.d.tick()
+
+    def test_a_gate_timeout_reruns_only_the_gate_on_the_same_sha(self):
+        tid, sha = self.infra_task([("timeout", 1, "")])
+        self.tick(4)
+        runs = ops.list_runs(self.conn, tid)
+        self.assertEqual([(r["role"], r["outcome"]) for r in runs][:3], [("worker", "gated"), ("gate", "failed"), ("gate", "passed")])
+        self.assertEqual(sum(r["role"] == "worker" for r in runs), 1)
+        self.assertEqual(dispatcher.failures(runs), 0)
+        for kind in ("retry", "escalate", "replan-request"):
+            self.assertEqual(ops.events(self.conn, task_id=tid, kind=kind), [])
+        (ev,) = ops.events(self.conn, task_id=tid, kind="gate-infra-retry")
+        self.assertIn("timed out", ev["data"]["reason"])
+        self.assertEqual([e["data"]["sha"] for e in ops.events(self.conn, task_id=tid, kind="gate-started")], [sha, sha])
+        self.assertEqual(self.status(tid), "gated")
+
+    def test_a_refusal_with_no_receipt_and_unparsed_output_are_infrastructure(self):
+        tid, _ = self.infra_task([("error", 2, "usage: gatejob"), ("error", 1, "something odd happened\n")])
+        self.tick(5)
+        runs = ops.list_runs(self.conn, tid)
+        self.assertEqual(dispatcher.failures(runs), 0)
+        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="gate-infra-retry")), 2)
+        self.assertEqual(self.status(tid), "gated")
+
+    def test_infra_failures_past_the_limit_ask_the_owner_without_a_replan(self):
+        tid, _ = self.infra_task([("timeout", 1, "")] * 3)
+        self.tick(8)
+        self.assertEqual(self.status(tid), "needs-owner")
+        runs = ops.list_runs(self.conn, tid)
+        self.assertEqual([r["role"] for r in runs], ["worker", "gate", "gate", "gate"])
+        self.assertEqual(dispatcher.failures(runs), 0)
+        self.assertIn("timed out", self.states(tid)[-1][1])
+        self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
+        self.assertEqual(ops.events(self.conn, task_id=tid, kind="retry"), [])
+
+    def test_the_infra_retry_limit_is_the_gate_infra_retries_setting(self):
+        ops.set_setting(self.conn, "gate_infra_retries", "0")
+        tid, _ = self.infra_task([("timeout", 1, "")])
+        self.tick(3)
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertEqual(len(self.fl.of("gate")), 1)
+
+    def test_an_infra_failure_then_a_real_failure_takes_the_normal_failure_path(self):
+        self.prog["gate"]["commands"]["full"] = [sys.executable, "-c", "import sys; print('boom: it broke'); sys.exit(1)"]
+        tid, _ = self.infra_task([("timeout", 1, "")])
+        self.tick(4)
+        runs = ops.list_runs(self.conn, tid)
+        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="gate-infra-retry")), 1)
+        self.assertEqual(runs[0]["outcome"], "gate-fail")
+        self.assertEqual(dispatcher.failures(runs), 1)
+        self.assertIn(("ready", "retry"), self.states(tid))
 
     def test_a_worker_sha_that_is_not_the_worktree_head_is_a_failure_not_a_gate(self):
         tid = self.task()

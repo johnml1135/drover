@@ -39,6 +39,7 @@ from .pipeline import WorktreeRefused, truthy
 from .runner import ScanError
 
 PREDICTED_PCT = {"S": 0.5, "M": 1.5, "L": 3.0}
+DEFAULT_INFRA_RETRIES = 2                 # gate reruns on the same commit before the owner is asked; setting gate_infra_retries
 FAIL_OUTCOMES = contract.FAIL_OUTCOMES   # worker failures; launch-error/orphaned never count
 WALL_MIN = {"S": 30, "M": 60, "L": 120}
 IDLE_MIN = 10
@@ -674,10 +675,13 @@ class Dispatcher:
         excerpt = None
         if not passed:
             excerpt = self._gate_excerpt(run_id, receipt, info, result)
+            infra = self._gate_infra(receipt, result)
         row = p.finish_run(run_id, "passed" if passed else "failed",
                            note=(None if passed else excerpt.splitlines()[0][:280]),
                            tokens_in=0, tokens_out=0, tokens_cached=0)
         self._release(task_id)
+        if not passed and infra:
+            return self._gate_infra_retry(task_id, worker_id, sha, run_id, excerpt)
         prog = self.pipeline.repo(task)
         platforms = repos_mod.gate_platforms(prog) if prog else []
         if passed and len(platforms) > 1 and \
@@ -695,6 +699,34 @@ class Dispatcher:
             self._gate_passed(task, worker, sha, wall, info.get("diff_lines"), summary, run_id)
         else:
             self._gate_failed(task, worker, excerpt, wall, info.get("diff_lines"), summary, info.get("files") or [])
+
+    @staticmethod
+    def _gate_infra(receipt, result):
+        """True when a failed gate run says nothing about the code: it timed out, was refused or crashed without a
+        receipt (so its output names no test), or its failed step was killed rather than exiting nonzero. Such a run
+        is redone, never charged to the worker. A step that exited nonzero is the code's failure, parsed or not."""
+        if result["status"] == "timeout" or receipt is None or receipt.get("status") == "refused":
+            return True
+        step = next((s for s in receipt.get("steps") or [] if s.get("status") == "failed"), None)
+        code = (step or {}).get("exit_code")
+        return step is not None and not (isinstance(code, int) and code > 0)
+
+    def _gate_infra_retry(self, task_id, worker_id, sha, gate_run, excerpt):
+        """An infrastructure failure: the worker run stays `done`, so the next tick re-queues only the gate for the
+        same commit, up to the `gate_infra_retries` setting; after that the owner decides (no retry, no replan)."""
+        p = self.port
+        try:
+            limit = int(str(p.get_setting("gate_infra_retries", None) or DEFAULT_INFRA_RETRIES).strip())
+        except ValueError:
+            limit = DEFAULT_INFRA_RETRIES
+        used = sum(1 for e in p.events("gate-infra-retry")
+                   if e["data"].get("run") == worker_id and e["data"].get("sha") == sha)
+        line = (excerpt or "gate failed").splitlines()[0][:280]
+        if used >= max(limit, 0):
+            p.set_status(task_id, "needs-owner", reason=f"gate infrastructure failed {used + 1} times: {line}"[:300])
+            return
+        p.append_event("gate-infra-retry", {"run": worker_id, "sha": sha, "gate_run": gate_run, "reason": line,
+                                            "n": used + 1}, task_id)
 
     def _gate_passed(self, task, worker, sha, wall, diff_lines, summary, gate_run):
         p, tid = self.port, task["id"]
@@ -743,17 +775,20 @@ class Dispatcher:
             return None
         return d if isinstance(d, dict) else None
 
-    def _gate_excerpt(self, run_id, receipt, info, result):
-        """The failure excerpt (at most EXCERPT_LINES): parsed failures first, then the end of the gate's log. A refusal
-        or crash has no receipt, so it is the end of the run's own output."""
-        files = info.get("files") or []
+    def _gate_log(self, run_id, receipt):
         log = Path(receipt["log"]) if receipt and receipt.get("log") else None
         if log is None and getattr(self.pipeline, "runs_dir", None):
             log = runner_mod.run_dir(self.pipeline.runs_dir, run_id) / runner_mod.OUT_FILE
         try:
-            text = log.read_text(errors="replace") if log else ""
+            return log.read_text(errors="replace") if log else ""
         except OSError:
-            text = ""
+            return ""
+
+    def _gate_excerpt(self, run_id, receipt, info, result):
+        """The failure excerpt (at most EXCERPT_LINES): parsed failures first, then the end of the gate's log. A refusal
+        or crash has no receipt, so it is the end of the run's own output."""
+        files = info.get("files") or []
+        text = self._gate_log(run_id, receipt)
         lines = []
         if result["status"] == "timeout":
             lines.append(f"gate timed out ({result.get('timeout')})")
