@@ -531,23 +531,25 @@ class DetachTests(Base):
 
 class FindTests(Base):
     def test_find_matches_only_marker_processes(self):
+        # Discovery scans the host, so concurrent gates must not share a run id.
+        rid = f"find-{uuid.uuid4().hex}"
         decoys = [
             subprocess.Popen([PY, "-c", "import time;time.sleep(60)  # -m drover.runner --run-id decoy1"]),
             subprocess.Popen([PY, "-c", "import time;time.sleep(60)", "drover.runner", "--run-id", "decoy2"]),
         ]
         self.procs += decoys
-        p = self.start("f1", "import time;time.sleep(60)")
-        wait_for(lambda: (Path(self.runs) / "f1" / "status.json").exists())
-        found = wait_for(lambda: [r for r in runner.find_runners() if r["run_id"] == "f1"])
+        p = self.start(rid, "import time;time.sleep(60)")
+        wait_for(lambda: (Path(self.runs) / rid / "status.json").exists())
+        found = wait_for(lambda: [r for r in runner.find_runners() if r["run_id"] == rid])
         # under a venv the Popen pid is a launcher over the real runner, which is what status.json records
-        self.assertEqual(found, [{"pid": self.status("f1")["runner_pid"], "run_id": "f1"}])
+        self.assertEqual(found, [{"pid": self.status(rid)["runner_pid"], "run_id": rid}])
         ids = {r["run_id"] for r in runner.find_runners()}
         self.assertFalse(ids & {"decoy1", "decoy2"})
         self.assertFalse({r["pid"] for r in runner.find_runners()} & {d.pid for d in decoys})
-        subprocess.run([PY, "-m", "drover.runner", "stop", "--run-id", "f1", "--runs-dir", self.runs], env=ENV,
+        subprocess.run([PY, "-m", "drover.runner", "stop", "--run-id", rid, "--runs-dir", self.runs], env=ENV,
                        check=True, capture_output=True)
         p.wait(timeout=30)
-        self.assertEqual([r for r in runner.find_runners() if r["run_id"] == "f1"], [])
+        self.assertEqual([r for r in runner.find_runners() if r["run_id"] == rid], [])
 
     def test_parse_runner_argv(self):
         self.assertEqual(runner.parse_runner_argv(["pythonw.exe", "-m", "drover.runner", "--run-id", "c3"]), "c3")
