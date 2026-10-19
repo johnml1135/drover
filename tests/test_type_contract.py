@@ -98,6 +98,24 @@ class TypeContractTests(unittest.TestCase):
                 self.invalid('followups.propose_requires' if isinstance(guards, list)
                              else 'followups.propose_requires.' + next(iter(guards)), normalize_type, raw)
 
+    def test_placeholders_use_supported_values_not_reserved_ids(self):
+        for name in ('tunable', 'forms', 'fields_json', 'schema_version', 'routing', 'approval'):
+            for prefix in ('', 'task.'):
+                with self.subTest(name=prefix + name):
+                    self.invalid('context.template', normalize_type, self.definition(
+                        context={'template': '${' + prefix + name + '}.md'}))
+        for placeholder in ('${fields.missing}', '${task.fields.missing}', '${models.missing}', '${task.title'):
+            with self.subTest(placeholder=placeholder):
+                self.invalid('context.template', normalize_type,
+                             self.definition(context={'template': placeholder + '.md'}))
+        template = ('${repo}-${default_branch}-${id}-${task.id}-${title}-${task.title}-'
+                    '${task.type}-${fields.problem}-${task.fields.problem}-'
+                    '${framework.design}-${framework.plan}-${models.director}-${models.review}')
+        self.assertEqual(normalize_type(self.definition(description=template))['description'], template)
+        # Reserving a name still prevents it from becoming a custom field.
+        self.invalid('fields.tunable', normalize_type,
+                     self.definition(fields={'tunable': {'type': 'string'}}))
+
     def test_t7_access_links_and_aliases(self):
         resolved = normalize_type(self.definition(access={'read_access': ['drover@trunk']}))
         task = validate_task(self.payload(write=True, read_access=[], deps=[
@@ -114,6 +132,63 @@ class TypeContractTests(unittest.TestCase):
         self.invalid('goal', validate_task, self.payload(goal='a', description='b'), resolved)
         self.invalid('deps.0.kind', validate_task,
                      self.payload(deps=[{'depends_on': 'T-b', 'kind': 'related'}]), resolved)
+
+    def test_workspace_none_rejects_task_values_on_create_and_patch(self):
+        resolved = normalize_type(self.definition(access={'write': False}))
+        task = validate_task(self.payload(scope_files=[]), resolved)
+        for key, value in (('branch', 'drover/T-a'), ('worktree', '/task/worktree')):
+            with self.subTest(key=key):
+                self.invalid(key, validate_task, self.payload(**{key: value}), resolved)
+                self.invalid(key, validate_task, {key: value}, resolved, task)
+                self.assertIsNone(validate_task({key: None}, resolved, task)[key])
+                stored = {**task, key: value}
+                self.invalid(key, validate_task, {}, resolved, stored)
+        # A mode change must also reject values retained from the existing record.
+        writable = normalize_type(self.definition())
+        task = validate_task(self.payload(branch='drover/T-a', worktree='/task/worktree'), writable)
+        no_workspace = {'write': False, 'workspace': {'branch': 'none', 'worktree': 'none'},
+                        'landing': {'mode': 'no-repo-change', 'artifact': 'hub:tasks/${task.id}/result.md'}}
+        self.invalid('branch', validate_task, no_workspace, writable, task)
+        patched = validate_task({**no_workspace, 'branch': None, 'worktree': None}, writable, task)
+        self.assertIsNone(patched['branch'])
+        self.assertIsNone(patched['worktree'])
+        # Explicit values remain valid when the corresponding mode permits them.
+        for mode in ('new', 'existing'):
+            allowed = normalize_type(self.definition(workspace={'branch': mode, 'worktree': mode}))
+            self.assertEqual(validate_task(self.payload(branch='drover/T-a', worktree='/task/worktree'),
+                                           allowed)['branch'], 'drover/T-a')
+
+    def test_framework_binding_shape_on_create_and_patch(self):
+        resolved = normalize_type(self.definition())
+        self.invalid('framework', validate_task, self.payload(framework=42), resolved)
+        binding = {
+            'kind': 'superpowers', 'evidence': [{'path': 'docs/superpowers/specs/', 'exists': True}],
+            'version': None, 'repo': 'drover', 'ref_sha': 'a' * 40, 'override': None,
+            'root': 'docs/superpowers', 'design': 'docs/superpowers/specs/design.md',
+            'plan': 'docs/superpowers/plans/plan.md', 'tasks': 'docs/superpowers/plans/tasks.json',
+            'source': {'path': 'docs/superpowers/plans/tasks.json', 'metadata': {'imported': False}},
+        }
+        task = validate_task(self.payload(framework=binding), resolved)
+        self.assertEqual(task['framework'], binding)
+        self.assertEqual(validate_task({}, resolved, task)['framework'], binding)
+        updated = validate_task({'framework': {'version': 'v1', 'override': 'superpowers'}}, resolved, task)
+        self.assertEqual(updated['framework'], {**binding, 'version': 'v1', 'override': 'superpowers'})
+        self.assertIsNone(validate_task({'framework': None}, resolved, task)['framework'])
+        self.assertIsNone(validate_task(self.payload(framework=None), resolved)['framework'])
+        self.assertEqual(validate_task(self.payload(framework={}), resolved)['framework'], {})
+        invalid = [('framework', 42), ('framework', []), ('framework.unknown', {'unknown': True}),
+                   ('framework.evidence', {'evidence': {}}),
+                   ('framework.evidence.0', {'evidence': ['docs/specs/']}),
+                   ('framework.source', {'source': []})]
+        invalid += [('framework.' + key, {key: 42}) for key in binding if key not in ('evidence', 'source')]
+        invalid += [('framework.' + key, {key: None}) for key in binding
+                    if key not in ('version', 'override')]
+        for path, value in invalid:
+            with self.subTest(path=path, value=value):
+                self.invalid(path, validate_task, self.payload(framework=value), resolved)
+                self.invalid(path, validate_task, {'framework': value}, resolved, task)
+                self.invalid(path, validate_task, {}, resolved, {**task, 'framework': value})
+        self.assertEqual(task['framework'], binding)
 
     def test_field_kinds_bounds_and_required_nullable(self):
         fields = {
@@ -144,6 +219,28 @@ class TypeContractTests(unittest.TestCase):
         for core_id in ('write', 'fields_json', 'type_version', 'related', 'approved_at'):
             self.invalid('fields.' + core_id, normalize_type,
                          self.definition(fields={core_id: {'type': 'string'}}))
+
+    def test_required_enum_strings_are_nonempty_in_values_and_defaults(self):
+        for blank in ('', '   ', '\t\n'):
+            with self.subTest(blank=blank):
+                field = {'type': 'enum', 'enum': [blank, 'valid', 0, False], 'required': True}
+                resolved = normalize_type(self.definition(fields={'choice': field}))
+                self.invalid('fields.choice', validate_task,
+                             self.payload(fields={'choice': blank}), resolved)
+                task = validate_task(self.payload(fields={'choice': 'valid'}), resolved)
+                self.invalid('fields.choice', validate_task, {'fields': {'choice': blank}}, resolved, task)
+                self.invalid('fields.choice.default', normalize_type,
+                             self.definition(fields={'choice': {**field, 'default': blank}}))
+                # Required applies the trimming rule only to string enum values.
+                for value in (0, False):
+                    self.assertEqual(validate_task(self.payload(fields={'choice': value}),
+                                                   resolved)['fields']['choice'], value)
+                optional = normalize_type(self.definition(fields={'choice': {
+                    **field, 'required': False, 'default': blank}}))
+                self.assertEqual(validate_task(self.payload(fields={}), optional)['fields']['choice'], blank)
+        nullable = normalize_type(self.definition(fields={'choice': {
+            'type': 'enum', 'enum': ['valid'], 'required': True, 'nullable': True, 'default': None}}))
+        self.assertIsNone(validate_task(self.payload(fields={}), nullable)['fields']['choice'])
 
     def test_workspace_delivery(self):
         read_only = normalize_type(self.definition(access={'write': False, 'read_access': ['drover@trunk']}))

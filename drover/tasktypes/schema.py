@@ -263,6 +263,14 @@ assignee execution_phase revision parent_id result result_json framework framewo
 rank owner_kind model attempts policy_version handoff blocker created updated approved_at approved_by
 archived run_id runs events approval access workspace routing context skills gate review landing
 followups lifecycle forms tunable schema_version'''.split())
+# Template values are a separate contract from names reserved for transport,
+# storage and policy. Adding a reserved ID must never expose a new placeholder.
+TASK_TEMPLATE_VALUES = frozenset('''id title goal description repo acceptance scope_files priority
+size risk deps related branch worktree type kind type_version assignee parent_id write read_access'''.split())
+TEMPLATE_VALUES = frozenset({
+    'repo', 'default_branch', 'models.director', 'models.review',
+    'framework.design', 'framework.plan', 'framework.tasks', 'framework.root', 'framework.artifact',
+}) | TASK_TEMPLATE_VALUES | frozenset('task.' + key for key in TASK_TEMPLATE_VALUES)
 ROLES = ('worker', 'planner', 'reviewer')
 TUNABLE_PATHS = tuple(f'routing.{role}.{key}' for role in ROLES
                       for key in ('candidate_weights', 'model_preference', 'effort'))
@@ -327,6 +335,8 @@ def _value(value, field, path):
             if key in field and compare(value, field[key]):
                 _fail(path, f'violates {key} {field[key]}')
     elif kind == 'enum':
+        if isinstance(value, str):
+            _text(value, path, field.get('required', False))
         if not any(type(value) is type(item) and value == item for item in field['enum']):
             _fail(path, 'must be a declared enum value')
     elif kind == 'list':
@@ -398,11 +408,7 @@ def _placeholders(value, fields, path=''):
         for i, item in enumerate(value):
             _placeholders(item, fields, _path(path, i))
     elif isinstance(value, str):
-        allowed = {'repo', 'default_branch', 'models.director', 'models.review',
-                   'framework.design', 'framework.plan', 'framework.tasks', 'framework.root',
-                   'framework.artifact', 'task.id', 'task.type', 'task.kind'}
-        allowed.update(CORE_IDS)
-        allowed.update('task.' + key for key in CORE_IDS)
+        allowed = set(TEMPLATE_VALUES)
         allowed.update('fields.' + key for key in fields)
         allowed.update('task.fields.' + key for key in fields)
         rest = value
@@ -701,6 +707,25 @@ def _merge(old, new):
     return result
 
 
+def _framework(value, path='framework'):
+    """Check the nullable binding shape; adapters own framework/path semantics."""
+    if value is None:
+        return
+    _keys(value, FrameworkBinding.__annotations__, path)
+    for key in ('kind', 'version', 'repo', 'ref_sha', 'override', 'root', 'design', 'plan', 'tasks'):
+        if key in value:
+            if key in ('version', 'override') and value[key] is None:
+                continue
+            _text(value[key], _path(path, key), False)
+    if 'evidence' in value:
+        if not isinstance(value['evidence'], list):
+            _fail(path + '.evidence', 'must be a list')
+        for i, item in enumerate(value['evidence']):
+            _mapping(item, f'{path}.evidence.{i}')
+    if 'source' in value:
+        _mapping(value['source'], path + '.source')
+
+
 def validate_task(payload: dict, resolved_type: dict, existing: dict | None = None) -> dict:
     """Return a complete, detached record; patches preserve omitted values.
 
@@ -760,6 +785,8 @@ def validate_task(payload: dict, resolved_type: dict, existing: dict | None = No
             _text(task[key], key)
     if task.get('parent_id') is not None:
         _task_ref(task['parent_id'], 'parent_id')
+    if 'framework' in task:
+        _framework(task['framework'])
     if 'handoff' in task:
         _text(task['handoff'], 'handoff', False)
         if len(task['handoff']) > 1500:
@@ -842,6 +869,8 @@ def validate_task(payload: dict, resolved_type: dict, existing: dict | None = No
         if not task['scope_files']:
             _fail('scope_files', 'repository writes require a nonempty approved scope')
     for key in ('branch', 'worktree'):
+        if checked['workspace'][key] == 'none' and task.get(key) is not None:
+            _fail(key, 'must be null when workspace.' + key + ' is none')
         if checked['workspace'][key] == 'existing' and not task.get(key):
             _fail(key, 'existing workspace requires an explicit ' + key)
     task['kind'] = task['type']
