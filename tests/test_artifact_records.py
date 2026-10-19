@@ -1,5 +1,6 @@
 """Artifact completion metadata across runner output, persistence and launch recovery."""
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -37,9 +38,14 @@ class ArtifactRecords(unittest.TestCase):
         for index, frame in enumerate(final_frames(text)):
             with self.subTest(frame=frame["type"]):
                 rid = str(index)
-                # A tiny real worker exercises scan -> atomic record.json -> terminal status.
-                status = runner.supervise(rid, self.runs, [sys.executable, "-c", f"print({json.dumps(frame)!r})"],
-                                          nonce=NONCE, poll_s=0.01)
+                # Bound the real runner as well as its worker: a regression must fail before the gate idles out.
+                result = subprocess.run([
+                    sys.executable, "-m", "drover.runner", "--run-id", rid, "--runs-dir", str(self.runs),
+                    "--nonce", NONCE, "--wall-s", "10", "--kill-after", "1", "--",
+                    sys.executable, "-c", f"print({json.dumps(frame)!r})",
+                ], capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                status = runner.read_status(self.runs, rid)
                 self.assertEqual((status["state"], status["exit_code"]), ("exited", 0))
                 directory = self.runs / rid
                 self.assertEqual(runner.scan_record(directory / runner.OUT_FILE), DONE)
@@ -71,6 +77,17 @@ class ArtifactRecords(unittest.TestCase):
             self.assertEqual((result["status"], result["record"], result["adopted"]), ("done", DONE, True))
             self.assertEqual(json.loads((original.dir / runner.RECORD_FILE).read_text()), DONE)
         self.assertEqual(len(fake.calls), 1)
+
+    def test_tool_blocks_in_assistant_frames_never_complete(self):
+        text = json.dumps(DONE)
+        path = self.runs / runner.OUT_FILE
+        for kind in ("tool_result", "tool_use", "thinking"):
+            for final_text in ([], [{"type": "text", "text": "No completion record"}]):
+                with self.subTest(kind=kind, final_text=final_text):
+                    frame = {"type": "assistant", "message": {"content": [
+                        {"type": kind, "text": text}, *final_text]}}
+                    path.write_text(json.dumps(frame) + "\n", encoding="utf-8")
+                    self.assertIsNone(runner.scan_record(path))
 
     def test_record_authority_and_legacy(self):
         text = json.dumps(DONE)

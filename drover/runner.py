@@ -148,7 +148,8 @@ def _message_text(ev):
         return ev["result"]
     if t == "assistant" and isinstance(ev.get("message"), dict):
         content = ev["message"].get("content")
-        texts = [b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str)] \
+        texts = [b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"
+                 and isinstance(b.get("text"), str)] \
             if isinstance(content, list) else []
         return "\n".join(texts) if texts else None
     item = ev.get("item")
