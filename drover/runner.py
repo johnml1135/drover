@@ -25,6 +25,7 @@ from pathlib import Path
 IS_WINDOWS = sys.platform == "win32"
 KILL_AFTER_S = 15
 POLL_S = 0.2
+WATCH_GLOBS = ("*.step*.log",)       # a gate run's per-step logs, which gatejob fills while out.log stays quiet
 SCAN_BYTES = 8192
 MAX_SCAN_TRIES = 20
 NOTE_MAX = 300
@@ -430,9 +431,22 @@ def worker_scratch_env(scratch):
     }
 
 
+def _watched_sizes(d, globs):
+    """((name, size), ...) of the run directory files matching `globs`, sorted by name."""
+    seen = []
+    for g in globs:
+        for f in d.glob(g):
+            try:
+                seen.append((f.name, f.stat().st_size))
+            except OSError:
+                pass
+    return tuple(sorted(seen))
+
+
 def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=None, kill_after=KILL_AFTER_S,
-              poll_s=POLL_S, nonce=None, scratch_dir=None):
-    """Run the worker to its end. Returns the final status dict."""
+              poll_s=POLL_S, nonce=None, scratch_dir=None, watch_globs=WATCH_GLOBS):
+    """Run the worker to its end. Returns the final status dict. Growth of out.log or of any file in the run
+    directory matching `watch_globs` (a gate's per-step logs) counts as activity for the idle watchdog."""
     d = run_dir(runs_dir, run_id)
     d.mkdir(parents=True, exist_ok=True)
     out = d / OUT_FILE
@@ -463,7 +477,7 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
                 st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
                 return st.d
         return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason,
-                          scratch)
+                          scratch, watch_globs)
     finally:
         if scratch is not None:
             _cleanup_scratch(scratch)
@@ -471,7 +485,8 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
             signal.signal(sig, h)
 
 
-def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason, scratch=None):
+def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason, scratch=None,
+               watch_globs=WATCH_GLOBS):
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
     if scratch is not None:
@@ -498,7 +513,7 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
         st.set(state="running", pid=proc.pid)
         watch = open(out, "rb")        # an open handle's size is exact on Windows, where stat() can lag
         t0 = last_change = time.monotonic()
-        size, outcome = 0, None
+        size, outcome, watched = 0, None, ()
         while proc.poll() is None:
             now = time.monotonic()
             if peaks.last is None or now - peaks.last[0] >= 1:
@@ -506,13 +521,18 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
             watch.seek(0, 2)
             if watch.tell() != size:
                 size, last_change = watch.tell(), now
+            seen = _watched_sizes(d, watch_globs)
+            if seen != watched:
+                watched, last_change = seen, now
             stop = read_stop(d, nonce) or (sig_reason[0] if sig_reason else None)
             if stop:
                 outcome = ("killed", stop)
             elif wall_s and now - t0 > wall_s:
                 outcome = ("timeout", f"wall-clock limit {wall_s:g}s")
             elif idle_s and now - last_change > idle_s:
-                outcome = ("timeout", f"no output for {idle_s:g}s")
+                steps = [m.group(1) for name, _ in watched for m in [re.search(r"\.(step\d+)\.log$", name)] if m]
+                step = max(steps, key=lambda n: int(n[4:]), default=None)
+                outcome = ("timeout", f"no output for {idle_s:g}s" + (f" (stalled in {step})" if step else ""))
             if outcome:
                 tree.kill(kill_after)
                 break

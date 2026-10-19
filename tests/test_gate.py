@@ -2,6 +2,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -345,6 +346,39 @@ class LeaseTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             gate.run_leased(self.db, 'x', 'P2', lambda s: 1, slots=1, reserved=0, poll=0.01, timeout=0.1)
         self.assertEqual([t['task_id'] for t in gate.lease_queue(self.conn)], ['h'])
+
+
+class HeartbeatTests(unittest.TestCase):
+    def test_heartbeat_only_while_step_log_grows(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from drover import gatejob
+        buf, seen = io.StringIO(), []
+
+        def wait(pred):                              # bounded poll, not a timing race
+            end = time.monotonic() + 30
+            while not pred() and time.monotonic() < end:
+                time.sleep(0.01)
+            self.assertTrue(pred())
+
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / 'r.step1.log'
+
+            def slow(*a, log, **k):
+                with open(log, 'wb', buffering=0) as f:
+                    f.write(b'xy')
+                    wait(lambda: len(buf.getvalue().splitlines()) >= 1)
+                    n = len(buf.getvalue().splitlines())
+                    time.sleep(0.5)                  # many beats with no growth
+                    seen.extend([n, len(buf.getvalue().splitlines())])
+                return {'status': 'passed'}
+            with patch.object(gatejob, 'HEARTBEAT_S', 0.05), patch.object(gate, 'run_gate', slow), \
+                    redirect_stdout(buf):
+                r = gatejob._run_step(log, 'step1', d, 'out.json', ['x'])
+        self.assertEqual(r['status'], 'passed')
+        self.assertEqual(seen[0], seen[1])            # a silent step stops beating
+        self.assertIn('step1 running, 2 bytes', buf.getvalue())
 
 
 if __name__ == '__main__':

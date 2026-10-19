@@ -393,6 +393,25 @@ class RunTests(Base):
         self.assertGreater(time.monotonic() - t, 2.5)        # the ticks reset the idle clock
         self.assertLess(time.monotonic() - t, 30)
 
+    def test_step_log_growth_counts_as_activity(self):
+        code = ("import time,sys;f=open(sys.argv[1],'ab',buffering=0)\n"
+                "for _ in range(14): f.write(b'x');time.sleep(0.3)")
+        t = time.monotonic()
+        step = Path(self.runs) / "g1" / "receipt.step1.log"
+        p = self.cmd("g1", code, idle=2)
+        p += [str(step)]
+        r = subprocess.run(p, env=ENV, capture_output=True, text=True, timeout=60)
+        st = self.status("g1")
+        self.assertEqual(st["state"], "exited", r.stderr)
+        self.assertGreater(time.monotonic() - t, 2.5)        # silent on out.log for longer than idle_s
+
+    def test_idle_timeout_names_the_stalled_step(self):
+        step = Path(self.runs) / "g2" / "receipt.step2.log"
+        code = f"import time;open({str(step)!r},'wb').write(b'x');time.sleep(60)"
+        _, st = self.run_runner("g2", code, idle=2)
+        self.assertEqual(st["state"], "timeout")
+        self.assertIn("no output for 2s (stalled in step2)", st["reason"])
+
     def test_stop_request(self):
         p = self.start("s1", "import time;print('up',flush=True);time.sleep(60)")
         self.assertTrue(wait_for(lambda: (Path(self.runs) / "s1" / "status.json").exists()

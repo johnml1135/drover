@@ -9,6 +9,7 @@ Runs as a plain script so a WSL runner can start it from any cwd.
 import argparse
 import json
 import sys
+import threading
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -16,6 +17,36 @@ if __package__ in (None, ""):
     from drover import gate
 else:
     from . import gate
+
+
+HEARTBEAT_S = 30
+
+
+def _run_step(step_log, name, *args, **kw):
+    """gate.run_gate in a thread; every HEARTBEAT_S, while it runs and its step log has grown, print one line to
+    stdout (the run's out.log). A silent step prints nothing, so a hung step still trips the runner's idle watchdog."""
+    box = {}
+    def work():
+        try:
+            box["r"] = gate.run_gate(*args, log=step_log, **kw)
+        except BaseException as e:
+            box["e"] = e
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    last = -1
+    step_log.touch()
+    with open(step_log, "rb") as watch:        # an open handle's size is exact on Windows, where stat() can lag
+        while True:
+            t.join(HEARTBEAT_S)
+            if not t.is_alive():
+                break
+            size = watch.seek(0, 2)
+            if size != last:
+                last = size
+                print(f"gatejob: {name} running, {size} bytes of output", flush=True)
+    if "e" in box:
+        raise box["e"]
+    return box["r"]
 
 
 def run_plan(plan):
@@ -29,8 +60,8 @@ def run_plan(plan):
     log, steps, texts, started = out.with_suffix(".log"), [], [], gate.now()
     for i, command in enumerate(plan.get("commands") or [], 1):
         step_log = out.with_name(f"{out.stem}.step{i}.log")
-        r = gate.run_gate(repo, out.with_name(f"{out.stem}.step{i}.json"), command, base=base, priority=priority,
-                          log=step_log, project_pattern=plan.get("project_pattern", ""))
+        r = _run_step(step_log, f"step{i}", repo, out.with_name(f"{out.stem}.step{i}.json"), command, base=base,
+                      priority=priority, project_pattern=plan.get("project_pattern", ""))
         steps.append({"command": r["command"], "exit_code": r["exit_code"], "status": r["status"], "log": r["log"]})
         texts.append(f"$ {' '.join(r['command'])}\n" + step_log.read_text(errors="replace"))
         if r["status"] == "failed":
