@@ -61,6 +61,57 @@ def seat_env(spec):
     return {k: str(v) for k, v in (spec.get("env") or {}).items() if k in ENV_NAMES and v}
 
 
+def _claude_edit_rule(path):
+    """An absolute Claude Edit rule (also covers Write and NotebookEdit)."""
+    path = str(path).replace("\\", "/").rstrip("/")
+    return f"Edit(//{path.lstrip('/')}/**)"
+
+
+def _claude_external_git_dirs(cwd):
+    """Resolve Git's implicit write grants so they can be denied outside cwd.
+
+    Read the gitfile/commondir on the launcher's OS (the Windows hub can
+    inspect drive-backed WSL worktrees too). No Git command or hook runs.
+    """
+    workspace = Path(config.native(cwd)).resolve()
+
+    def resolve(base, value):
+        if not value:
+            raise ValueError("empty git metadata path")
+        path = config.native(value)
+        if os.name != "nt":
+            path = path.replace("\\", "/")
+        return (base / path).resolve(strict=True)
+
+    try:
+        for parent in (workspace, *workspace.parents):
+            marker = parent / ".git"
+            try:
+                marker.lstat()
+            except FileNotFoundError:
+                continue
+            if marker.is_dir():
+                gitdir = marker.resolve(strict=True)
+            else:
+                prefix, sep, target = marker.read_text(encoding="utf-8").strip().partition(":")
+                if prefix != "gitdir" or not sep:
+                    raise ValueError("invalid git metadata pointer")
+                gitdir = resolve(parent, target.strip())
+            common_file = gitdir / "commondir"
+            try:
+                common_file.lstat()
+            except FileNotFoundError:
+                common = gitdir
+            else:
+                common = resolve(gitdir, common_file.read_text(encoding="utf-8").strip())
+            if not gitdir.is_dir() or not common.is_dir():
+                raise ValueError("git metadata is not a directory")
+            return list(dict.fromkeys(str(path) for path in (common, gitdir) if not path.is_relative_to(workspace)))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot resolve git metadata for Claude sandbox: {exc}") from exc
+    return []
+
+
 class LaunchError(RuntimeError):
     def __init__(self, msg, missing=False, cancel_requested=False):
         super().__init__(msg)
@@ -72,12 +123,77 @@ def build_argv(spec):
     """(argv, stdin_text) for the spec's backend. The brief goes on stdin, the system block on the command line.
     A spec that carries its own `argv` (the gate run) is started as given."""
     if spec.get("argv"):
-        return [str(a) for a in spec["argv"]], spec.get("user_prompt") or ""
+        argv = [str(a) for a in spec["argv"]]
+        _reject_permission_bypass(argv)
+        return argv, spec.get("user_prompt") or ""
     m, e = config.model_id(spec["model"]), spec.get("effort") or EFFORT.get(spec["backend"])
     exe = spec.get("binary") or spec["backend"]
     if spec["backend"] == "claude":
+        readonly = spec.get("role") == "review" or spec.get("write") is not True
+        placement = spec.get("placement", "windows")
+        # Flags and settings verified against Claude Code 2.1.303. WSL requires
+        # bubblewrap; Windows Bash runs unsandboxed under a Job Object (trade-off accepted by owner, Q5).
         argv = [exe, "-p", "--output-format", "stream-json", "--verbose",
-                "--append-system-prompt", spec["system_append"], "--model", m, "--effort", e]
+                "--append-system-prompt", spec["system_append"], "--model", m, "--effort", e,
+                "--permission-mode", "dontAsk" if readonly else "acceptEdits",
+                "--permission-prompts", "none", "--setting-sources", ""]
+        permissions = {"allow": ["Read", "Grep", "Glob"], "deny": []}
+        settings = {"env": {}, "permissions": permissions}
+        scratch = spec.get("scratch_dir")
+        if scratch:
+            task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
+            scratch = runner.to_wsl_path(str(scratch)) if placement == "wsl" else to_windows_path(scratch)
+            settings["env"].update({"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch})
+        if readonly:
+            tools = "Read,Grep,Glob,Bash" if placement == "wsl" else "Read,Grep,Glob"
+            argv.extend(["--tools", tools])
+            permissions["deny"].extend(["Edit", "Write", "NotebookEdit"])
+            if placement != "wsl":
+                # Without a filesystem sandbox, even Bash could write.
+                permissions["deny"].append("Bash")
+        else:
+            task_access.check_read_roots(spec["cwd"], spec.get("read_dirs") or [])
+            if scratch:
+                permissions["allow"].append(_claude_edit_rule(scratch))
+            if placement != "wsl":
+                # acceptEdits covers file tools. Windows shell execution uses
+                # a Job Object (no filesystem sandbox) rather than Claude's POSIX sandbox.
+                permissions["allow"].append("Bash")
+        reads = []
+        if spec.get("read_dirs"):
+            reads = [str(path) for path in spec["read_dirs"]]
+            if placement == "wsl":
+                reads = [runner.to_wsl_path(path) for path in reads]
+            else:
+                reads = [to_windows_path(os.path.expanduser(path)) for path in reads]
+            permissions["deny"].extend(_claude_edit_rule(path) for path in reads)
+        worker_path = runner.to_wsl_path if placement == "wsl" else to_windows_path
+        workspace = spec.get("cwd") or os.getcwd()
+        cwd = worker_path(os.path.expanduser(str(workspace)))
+        external_git = [worker_path(path) for path in _claude_external_git_dirs(workspace)]
+        permissions["deny"].extend(_claude_edit_rule(path) for path in external_git)
+        if placement == "wsl":
+            defaults = ["/tmp/claude", "/private/tmp/claude", "~/.npm/_logs", "~/.claude/debug"]
+            filesystem = {}
+            if readonly:
+                # "/" alone does not stop Bash writing to cwd (shown on 2.1.303):
+                # deny cwd explicitly, plus the implicit default grants.
+                filesystem["denyWrite"] = ["/", cwd, *reads, *external_git, *defaults]
+                if scratch:
+                    filesystem["allowWrite"] = [scratch]
+            else:
+                filesystem["allowWrite"] = [cwd, scratch] if scratch else [cwd]
+                # allowWrite is additive. Claude also grants the linked worktree's
+                # shared Git directory and these temp/log directories by default.
+                filesystem["denyWrite"] = [*reads, *external_git, *defaults]
+            settings["sandbox"] = {
+                "enabled": True,
+                "failIfUnavailable": True,
+                "allowUnsandboxedCommands": False,
+                "autoAllowBashIfSandboxed": True,
+                "filesystem": filesystem,
+            }
+        argv.extend(["--settings", json.dumps(settings, separators=(",", ":"))])
     elif spec["backend"] == "codex":
         # codex exec has no system-prompt flag; developer_instructions is the config key for that layer
         sandbox = "read-only" if (spec.get("role") == "review" or spec.get("write") is False) else spec.get("sandbox", "workspace-write")
@@ -107,7 +223,23 @@ def build_argv(spec):
             argv[-1:-1] = ["-c", f"shell_environment_policy.set={{TMPDIR={value},TMP={value},TEMP={value}}}"]
     else:
         raise ValueError(f"headless launcher cannot run backend {spec['backend']!r}")
+    _reject_permission_bypass(argv)
     return argv, spec["user_prompt"]
+
+
+def _reject_permission_bypass(argv):
+    """Keep worker and supplied argv away from Claude's permission bypass modes."""
+    for i, arg in enumerate(argv):
+        if arg.partition("=")[0] in ("--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"):
+            raise ValueError("permission bypass is forbidden")
+        if arg == "--permission-mode" and i + 1 < len(argv) and argv[i + 1] == "bypassPermissions":
+            raise ValueError("permission bypass is forbidden")
+        if arg == "--permission-mode=bypassPermissions":
+            raise ValueError("permission bypass is forbidden")
+        value = arg.partition("=")[2] if arg.startswith("--settings=") else (
+            argv[i + 1] if arg == "--settings" and i + 1 < len(argv) else "")
+        if "bypassPermissions" in value:
+            raise ValueError("permission bypass is forbidden")
 
 
 class Usage:
@@ -477,6 +609,8 @@ class RunnerLauncher(Launcher):
             argv = [self.windows_exe(argv[0]), *argv[1:]]
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [self.drover_dir, os.environ.get("PYTHONPATH")])),
                **seat_env(spec)}
+        if spec.get("backend") == "claude" and spec.get("scratch_dir"):
+            env.update({name: str(spec["scratch_dir"]) for name in ("TMPDIR", "TMP", "TEMP")})
         return [self.python, "-m", "drover.runner", *self.runner_args(spec, d, argv, cwd)], env
 
     def launch(self, spec):
@@ -484,8 +618,10 @@ class RunnerLauncher(Launcher):
         spec.setdefault("nonce", uuid.uuid4().hex)           # the dispatcher normally picks and records it first
         d = runner.run_dir(self.runs_dir, rid)
         _fresh_run_dir(d)
-        if (spec["backend"] == "codex" and not spec.get("argv") and spec.get("write") is not False
-                and spec.get("role") != "review" and spec.get("sandbox", "workspace-write") == "workspace-write"):
+        claude_worker = spec["backend"] == "claude" and not spec.get("argv")
+        codex_writer = (spec["backend"] == "codex" and not spec.get("argv") and spec.get("write") is not False
+                        and spec.get("role") != "review" and spec.get("sandbox", "workspace-write") == "workspace-write")
+        if claude_worker or codex_writer:
             # Keep worker temp files out of shared /tmp (which may contain read
             # snapshots), and outside the run's control files and task diff.
             scratch = f"/tmp/drover-scratch/{rid}-{spec['nonce']}" if spec.get("placement") == "wsl" else (
