@@ -264,7 +264,7 @@ No interactive owner is available for T-9; all recommendations were used to writ
 
 | ID | Question | Recommendation |
 | --- | --- | --- |
-| D1 | Approve a YAML dependency and its installation footprint? | Approve pinned PyYAML in hub only; keep normalized workers/CLI stdlib-only; reject handwritten subset parser. Dependency task stays held until approved. |
+| D1 | Approve a YAML dependency and its installation footprint? | 2026-10-19: approved by owner (docket Q1: yes; owner approval script moved task proposed → ready). Pin PyYAML==6.0.3 in hub only, imported lazily with a constrained SafeLoader; keep normalized workers/CLI stdlib-only; reject handwritten subset parser. Dependency implementation is approved; installation and rollout verification remain owner-environment work. |
 | D2 | Can repo content define privileged types/hooks? | Only owner-configured repo layers outside worker checkouts; declarative actions only, core invariants immutable. |
 | D3 | Research/investigation defaults: docs commits or read-only results? | Read-only hub artifacts; use spec or an approved write override for committed research. Preserve T-7 explicit write values. |
 | D4 | How freely can types replace lifecycles? | Permit custom state names/graphs with fixed kernel phases, actor checks and mandatory delivery evidence. |
