@@ -133,6 +133,26 @@ class TypeContractTests(unittest.TestCase):
         self.invalid('deps.0.kind', validate_task,
                      self.payload(deps=[{'depends_on': 'T-b', 'kind': 'related'}]), resolved)
 
+    def test_access_write_is_strict_before_alias_resolution(self):
+        for write in (True, False):
+            resolved = normalize_type(self.definition(access={'write': write}))
+            task = validate_task(self.payload(write=write, access={'write': write}), resolved)
+            self.assertIs(task['write'], write)
+            self.assertIs(task['access']['write'], write)
+            patched = validate_task({'write': write, 'access': {'write': write}}, resolved, task)
+            self.assertIs(patched['write'], write)
+            self.assertIs(patched['access']['write'], write)
+            self.invalid('write', validate_task,
+                         self.payload(write=write, access={'write': not write}), resolved)
+            for invalid in (0, 1, 0.0, 1.0, 'true', None):
+                with self.subTest(write=write, access_write=invalid):
+                    self.invalid('access.write', validate_task,
+                                 self.payload(write=write, access={'write': invalid}), resolved)
+                    self.invalid('access.write', validate_task,
+                                 {'write': write, 'access': {'write': invalid}}, resolved, task)
+                    stored = {**task, 'access': {**task['access'], 'write': invalid}}
+                    self.invalid('access.write', validate_task, {}, resolved, stored)
+
     def test_workspace_none_rejects_task_values_on_create_and_patch(self):
         resolved = normalize_type(self.definition(access={'write': False}))
         task = validate_task(self.payload(scope_files=[]), resolved)

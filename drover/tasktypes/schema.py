@@ -817,6 +817,9 @@ def validate_task(payload: dict, resolved_type: dict, existing: dict | None = No
         else:
             _value(task['fields'][name], field, 'fields.' + name)
     _connections(task)
+    access = _mapping(task.get('access', {}), 'access')
+    if 'write' in access:
+        _boolean(access['write'], 'access.write')
     for key in ('write', 'read_access'):
         if key in patch.get('access', {}) and key in patch and patch[key] != patch['access'][key]:
             _fail(key, 'conflicts with access.' + key)
