@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 
 from markupsafe import Markup
 from drover import repos
-from drover.winproc import NO_WINDOW
 
 
 def first_paragraph(text):
@@ -112,7 +111,7 @@ def probe(prog):
     """Two bounded git calls per repo, only on the cache's background thread."""
     def git(*args):
         r = subprocess.run(['git', '-C', repos.native(prog['repo']), *args],
-                           capture_output=True, text=True, timeout=1, **NO_WINDOW)
+                           capture_output=True, text=True, timeout=1)
         if r.returncode:
             raise OSError(r.stderr[-200:])
         return r.stdout

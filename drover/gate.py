@@ -26,7 +26,6 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from .winproc import NO_WINDOW
 
 VERSION = 1
 PRIORITIES = ('P0', 'P1', 'P2', 'P3', 'P4')
@@ -166,7 +165,7 @@ def _gate_test_environment():
 def git(repo, *args, check=True):
     try:
         result = subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True,
-                                errors='replace', env=git_environment(), timeout=60, **NO_WINDOW)
+                                errors='replace', env=git_environment(), timeout=60)
     except subprocess.TimeoutExpired as error:
         raise GateError(f'git {" ".join(args)} timed out after 60 seconds') from error
     if check and result.returncode:
@@ -206,6 +205,64 @@ def now():
 
 def changed_paths(repo, base, tip='HEAD'):
     return [p for p in git(repo, 'diff', '--name-only', '--no-renames', f'{base}...{tip}').stdout.splitlines() if p]
+
+
+def _glob_re(pattern):
+    out, i, p = '', 0, _norm(pattern)
+    while i < len(p):
+        if p.startswith('**/', i):
+            out += '(?:.*/)?'
+            i += 3
+        elif p.startswith('**', i):
+            out += '.*'
+            i += 2
+        elif p[i] == '*':
+            out += '[^/]*'
+            i += 1
+        elif p[i] == '?':
+            out += '[^/]'
+            i += 1
+        else:
+            out += re.escape(p[i])
+            i += 1
+    return re.compile(out + r'\Z')
+
+
+DOCS_EXTENSIONS = ('.md', '.rst', '.txt', '.adoc')
+DOCS_EXACT = ('LICENSE', 'GLOSSARY.md')
+
+
+def _glob_hit(path, pattern):
+    rx = _glob_re(pattern)
+    return bool(rx.match(path) or ('/' not in _norm(pattern) and rx.match(path.rsplit('/', 1)[-1])))
+
+
+def docs_only(paths, globs):
+    """True when there is at least one path and every path is docs: it matches a positive glob, no `!` glob, and
+    has a docs extension (.md .rst .txt .adoc) or is exactly LICENSE or GLOSSARY.md. `**` crosses directories, `*`
+    does not; a glob without a slash matches the file name at any depth (`*.md` covers docs/a/b.md)."""
+    paths = [_norm(p) for p in paths]
+    positive = [g for g in globs or () if not g.startswith('!')]
+    negative = [g[1:] for g in globs or () if g.startswith('!')]
+    if not paths or not positive:
+        return False
+    return all((p in DOCS_EXACT or p.lower().endswith(DOCS_EXTENSIONS))
+               and any(_glob_hit(p, g) for g in positive) and not any(_glob_hit(p, g) for g in negative)
+               for p in paths)
+
+
+def changed_docs_only(repo, base, tip, globs):
+    """docs_only for `base...tip`, and false when any changed path is or was a symlink (git mode 120000)."""
+    paths = changed_paths(repo, base, tip)
+    if not docs_only(paths, globs):
+        return False
+    raw = git(repo, 'diff', '--raw', '--no-renames', '-z', f'{base}...{tip}').stdout
+    return not any(f.startswith(':') and '120000' in f.split()[:2] for f in raw.split('\0'))
+
+
+def docs_commands(base, sha, extra=None):
+    """The docs gate: `git diff --check base...sha`, then the repo's optional gate.commands.docs argv."""
+    return [['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', f'{base}...{sha}']] + ([list(extra)] if extra else [])
 
 
 def load_map(path=None):

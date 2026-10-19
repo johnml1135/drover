@@ -74,7 +74,7 @@ def run_plan(plan):
     receipt = dict(version=gate.VERSION, sha=sha, repo=str(repo), base_ref=base, base_sha=base_sha,
                    contains_base=has_base, command=[c for s in steps for c in s["command"]], pins=[], started=started,
                    finished=gate.now(), exit_code=failed["exit_code"] if failed else 0, priority=priority,
-                   scope=plan.get("scope"), steps=steps, tree_unchanged=gate.head(repo) == sha and not gate.dirty(repo),
+                   scope=plan.get("scope"), kind=plan.get("kind"), steps=steps, tree_unchanged=gate.head(repo) == sha and not gate.dirty(repo),
                    log=str(log), log_tail=log.read_text(errors="replace").splitlines()[-40:])
     receipt["passed"] = failed is None and receipt["tree_unchanged"]
     receipt["status"] = "passed" if receipt["passed"] else "failed"

@@ -1,16 +1,12 @@
 """Tests for the launcher's worker environment contracts."""
 import json
-import os
-import shutil
-import subprocess
-import sys
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import brief, launch, runner
+from drover import brief, launch
 
 
 def codex_settings(spec):
@@ -317,24 +313,10 @@ class CodexWorkerEnvironmentTests(unittest.TestCase):
             "system_append": "worker instructions", "user_prompt": "brief", "scratch_dir": scratch,
         })
 
-        self.assertEqual(settings["sandbox_workspace_write"]["writable_roots"], [scratch, "/tmp/.dotnet"])
-        self.assertIs(settings["sandbox_workspace_write"]["exclude_slash_tmp"], True)
+        self.assertEqual(settings["sandbox_workspace_write"]["writable_roots"], [scratch])
         self.assertEqual(settings["shell_environment_policy"]["set"], {
             "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch,
         })
-
-    def test_dotnet_root_is_granted_only_to_wsl_workspace_write(self):
-        base = {"backend": "codex", "model": "gpt-6.1-sol", "cwd": "/home/acme/work",
-                "system_append": "x", "user_prompt": "brief"}
-        for name, extra, expected in (
-                ("wsl read-only", {"placement": "wsl", "write": False}, False),
-                ("wsl review", {"placement": "wsl", "role": "review"}, False),
-                ("windows write", {"placement": "windows", "cwd": r"R:\work"}, False),
-                ("wsl write", {"placement": "wsl"}, True)):
-            with self.subTest(name):
-                argv, _ = launch.build_argv({**base, **extra, "scratch_dir": "/tmp/drover-scratch/7-0123456789abcdef"})
-                self.assertEqual("/tmp/.dotnet" in "\n".join(argv), expected)
-                self.assertIn("sandbox_workspace_write.exclude_slash_tmp=true", argv)
 
     def test_launcher_passes_worker_scratch_to_wsl_runner_only(self):
         launcher = launch.RunnerLauncher(runs_dir="/runs", distro="Ubuntu", drover_dir="/repo", windows=False)
@@ -379,25 +361,3 @@ class CodexWorkerEnvironmentTests(unittest.TestCase):
         self.assertIn("package that is missing", guidance)
         self.assertIn("cache read is denied", guidance)
         self.assertIn("ask the owner to arrange an approved readable local cache", guidance)
-
-
-@unittest.skipUnless(shutil.which("codex") and shutil.which("dotnet") and sys.platform == "linux",
-                     "codex or dotnet is absent")
-class DotnetSandboxIntegrationTests(unittest.TestCase):
-    def test_dotnet_info_runs_under_the_real_wsl_sandbox_flags(self):
-        runner.ensure_dotnet_shm()
-        with tempfile.TemporaryDirectory(dir="/tmp/drover-scratch" if Path("/tmp/drover-scratch").is_dir() else None,
-                                         prefix="sbx-") as scratch:
-            argv, _ = launch.build_argv({
-                "backend": "codex", "model": "gpt-6.1-sol", "placement": "wsl", "cwd": scratch,
-                "system_append": "x", "user_prompt": "brief", "scratch_dir": scratch})
-            flags = [a for i, a in enumerate(argv[:-1]) if argv[i - 1] == "-c" and a.startswith("sandbox_workspace_write.")]
-            cmd = ["codex", "sandbox", "-c", "sandbox_mode=\"workspace-write\""]
-            for f in flags:
-                cmd += ["-c", f]
-            env = {**os.environ, **runner.worker_scratch_env(scratch)}
-            r = subprocess.run([*cmd, "--", "dotnet", "--info"], cwd=scratch, env=env, capture_output=True,
-                               text=True, timeout=120)
-        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
-        self.assertNotIn("EROFS", r.stderr + r.stdout)
-        self.assertNotIn("Read-only file system", r.stderr + r.stdout)

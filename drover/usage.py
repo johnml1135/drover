@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import config
 from .ledger import ops, tx
-from .winproc import NO_WINDOW
 
 WINDOWS = {300: 'five_hour', 10080: 'seven_day'}
 HOURS = {'five_hour': 5, 'seven_day': 168}
@@ -276,7 +275,7 @@ class Poller:
                             "sys.exit(subprocess.call(json.loads(sys.argv[2])))")
                     argv = ['wsl.exe', '-d', self.distro, '--exec', 'python3', '-c', code,
                             json.dumps(account), json.dumps(argv)]
-                proc = self.run(argv, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30, **NO_WINDOW)
+                proc = self.run(argv, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
                 raw = proc.stdout or ''
                 if proc.returncode:
                     raise ValueError('usage command failed')

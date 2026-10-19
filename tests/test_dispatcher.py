@@ -1247,11 +1247,6 @@ class Briefs(unittest.TestCase):
         self.assertEqual(order, sorted(order))
         self.assertIn("a.py:10-20", u)
 
-    def test_finish_block_says_the_gate_runs_full_suites_and_sandbox_limits_are_not_blockers(self):
-        text = brief.ACTION_RECORD
-        for phrase in ("full WSL and Windows suites", "targeted tests only", "not a blocker", "approved design"):
-            self.assertIn(phrase, text)
-
     def test_pinned_file_limits(self):
         self.assertLessEqual(len(brief.pinned_text().splitlines()), 40)
 

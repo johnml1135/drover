@@ -1,5 +1,6 @@
 """The pipeline: pause switch, repo config, worktrees, gate runs, reviews, decisions and the landing loop."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -543,6 +544,73 @@ class GatePlatform(Base):
         self.assertEqual((wide["kind"], len(wide["commands"])), ("full", 1))
         self.assertIn("-All", wide["commands"][0])
 
+    def docs_plan(self, files, gate=None, commands=None):
+        raw = {"name": "p", "repo": str(self.fix.repo), "worktrees": str(Path(self.tmp.name) / "dw"),
+               "gate": {"platform": "windows", "commands": {"full": ["check", "-All"], **(commands or {})}, **(gate or {})}}
+        prog = repos.normalize(raw)
+        tid = self.task()
+        pipe = pipeline.Pipeline(self.port, repos_map={"p": prog}, runs_dir=self.runs)
+        base = pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs).worktree(self.get(tid))
+        for name in files:
+            sha = self.fix.commit(name, "x\n", cwd=base)
+        return pipe, pipe.gate_plan({**self.get(tid), "worktree": base}, prog, sha), base, sha
+
+    def test_docs_only_diff_gets_the_docs_gate_and_a_mixed_diff_the_full_one(self):
+        _, plan, _, sha = self.docs_plan(["docs/x.md", "docs/deep/y.txt", "README.md"], commands={"docs": ["lint"]})
+        self.assertEqual(plan["kind"], "docs")
+        self.assertEqual(plan["commands"], [["git", "-c", "core.whitespace=-blank-at-eol", "diff", "--check", f"main...{sha}"], ["lint"]])
+        _, plan, _, _ = self.docs_plan(["docs/x.md", "drover/a.py"])
+        self.assertEqual((plan["kind"], plan["commands"]), ("full", [["check", "-All"]]))
+        _, plan, _, _ = self.docs_plan(["docsx/x.txt"])
+        self.assertEqual(plan["kind"], "full")
+
+    def test_docs_classification_is_strict(self):
+        for files in (["docs/conf.py"], [".github/workflows/x.md"], ["docs/x.md", "docs/build.sh"]):
+            self.assertEqual(self.docs_plan(files)[1]["kind"], "full", files)
+        self.assertEqual(self.docs_plan(["LICENSE", "GLOSSARY.md", "docs/a.rst"])[1]["kind"], "docs")
+
+    def test_a_symlink_named_like_docs_is_not_docs(self):
+        pipe, _, base, _ = self.docs_plan(["docs/x.md"])
+        link = Path(base) / "docs" / "link.md"
+        os.symlink("../drover/a.py", link)
+        self.fix.git("add", "-A", cwd=base)
+        self.fix.git("commit", "-q", "-m", "link", cwd=base)
+        sha = self.fix.git("rev-parse", "HEAD", cwd=base)
+        prog = repos.normalize({"name": "p", "repo": str(self.fix.repo), "gate": {"commands": {"full": ["x"]}}})
+        plan = pipe.gate_plan({**self.get(self.task()), "worktree": base}, prog, sha)
+        self.assertEqual(plan["kind"], "full")
+
+    def test_markdown_hard_breaks_pass_the_docs_gate(self):
+        from drover import gatejob
+        pipe, _, base, _ = self.docs_plan(["docs/x.md"])
+        sha = self.fix.commit("docs/hard.md", "line one  \nline two\n", cwd=base)
+        prog = repos.normalize({"name": "p", "repo": str(self.fix.repo), "gate": {"commands": {"full": ["x"]}}})
+        plan = pipe.gate_plan({**self.get(self.task()), "worktree": base}, prog, sha)
+        self.assertEqual(plan["kind"], "docs")
+        argv, _ = pipe.gate_argv(plan, 11, "P2", self.prog)
+        self.assertEqual(gatejob.main(["--plan", argv[-1]]), 0)
+
+    def test_docs_gate_has_an_off_switch_and_per_repo_globs(self):
+        self.assertEqual(self.docs_plan(["docs/x.md"], gate={"docs_only": False})[1]["kind"], "full")
+        self.assertEqual(self.docs_plan(["docs/x.md"], gate={"docs_only_globs": []})[1]["kind"], "full")
+        self.assertEqual(self.docs_plan(["notes/a.txt"], gate={"docs_only_globs": ["notes/**"]})[1]["kind"], "docs")
+        self.assertEqual(self.docs_plan(["docs/x.md"], gate={"docs_only_globs": ["notes/**"]})[1]["kind"], "full")
+
+    def test_docs_receipt_records_kind_and_exact_sha_and_licenses_landing(self):
+        from drover import gate, gatejob
+        pipe, plan, base, sha = self.docs_plan(["docs/x.md"])
+        argv, receipt = pipe.gate_argv(plan, 9, "P2", self.prog)
+        r = gatejob.main(["--plan", argv[-1]])
+        self.assertEqual(r, 0)
+        got = json.loads(receipt.read_text())
+        self.assertEqual((got["kind"], got["sha"], got["status"]), ("docs", sha, "passed"))
+        self.assertEqual(gate.problems(got, base, "main"), [])
+        bad = self.fix.commit("docs/bad.md", "<<<<<<< ours\n", cwd=base)
+        plan2 = pipe.gate_plan({**self.get(self.task()), "worktree": base}, repos.normalize({
+            "name": "p", "repo": str(self.fix.repo), "gate": {"commands": {"full": ["x"]}}}), bad)
+        argv, receipt = pipe.gate_argv(plan2, 10, "P2", self.prog)
+        self.assertEqual(gatejob.main(["--plan", argv[-1]]), 1)
+
 
 class ReadyToCommit(Base):
     def ready(self, tid, message="Finish scoped work\n\nExplain the change."):
@@ -551,60 +619,6 @@ class ReadyToCommit(Base):
         self.fl.handles[spec["run_id"]].result = result("ready_to_commit", text)
         self.d.tick()
         return spec["run_id"]
-
-    def blocked(self, tid, kind="verification-environment"):
-        spec = self.fl.of("worker")[-1]
-        text = json.dumps({"status": "blocked", "blocker": {"kind": kind, "detail": "cannot run suites"}, "note": "done"})
-        self.fl.handles[spec["run_id"]].result = result("blocked", text)
-        self.d.tick()
-
-    def test_environment_block_with_changes_goes_to_the_gate_without_replan(self):
-        tid = self.task(scope_files=["work.txt"])
-        self.d.tick()
-        wt = repos.native(self.get(tid)["worktree"])
-        (Path(wt) / "work.txt").write_text("finished\n")
-        self.blocked(tid)
-        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
-        self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
-        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="env-block-ready")), 1)
-        self.d.tick()
-        self.assertEqual(self.status(tid), "gated")
-
-    def test_environment_block_with_committed_work_ahead_of_base_goes_to_the_gate(self):
-        tid = self.task(scope_files=["work.txt"])
-        self.d.tick()
-        wt = repos.native(self.get(tid)["worktree"])
-        (Path(wt) / "work.txt").write_text("finished\n")
-        self.fix.git("add", "work.txt", cwd=wt)
-        self.fix.git("commit", "-m", "work", cwd=wt)
-        self.blocked(tid, "missing_windows_worker")
-        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
-        self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
-
-    def test_committed_work_ahead_of_base_outside_scope_is_refused(self):
-        tid = self.task(scope_files=["work.txt"])
-        self.d.tick()
-        wt = repos.native(self.get(tid)["worktree"])
-        (Path(wt) / "other.txt").write_text("x\n")
-        self.fix.git("add", "other.txt", cwd=wt)
-        self.fix.git("commit", "-m", "work", cwd=wt)
-        with self.assertRaisesRegex(pipeline.CommitRefused, "other.txt"):
-            self.pipe.commit_ready(self.get(tid), 1, "m")
-
-    def test_environment_block_without_changes_still_replans(self):
-        tid = self.task(scope_files=["work.txt"])
-        self.d.tick()
-        self.blocked(tid)
-        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "blocked")
-        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="replan-request")), 1)
-
-    def test_other_blocker_kinds_with_changes_still_replan(self):
-        tid = self.task(scope_files=["work.txt"])
-        self.d.tick()
-        wt = repos.native(self.get(tid)["worktree"])
-        (Path(wt) / "work.txt").write_text("x\n")
-        self.blocked(tid, "plan-wrong")
-        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="replan-request")), 1)
 
     def test_scoped_changes_are_committed_with_the_message_and_trailers_then_gated(self):
         tid = self.task(scope_files=["work.txt"])

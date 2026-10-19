@@ -1,3 +1,4 @@
+import json
 import sys
 import subprocess
 import tempfile
@@ -70,6 +71,55 @@ class LandingCase(unittest.TestCase):
         kw.setdefault('push', True)
         kw.setdefault('decider', fake_decider())
         return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kw)
+
+
+class DocsBatchTests(LandingCase):
+    def red_gate(self):
+        return landing.make_gate([sys.executable, '-c', 'raise SystemExit(1)'], 'origin/main', self.r.root / 'receipts',
+                                 available=False, docs_globs=['docs/**', '*.md'])
+
+    def test_a_docs_only_batch_regates_with_the_docs_gate(self):
+        self.gate = self.red_gate()
+        self.task('a', {'docs/a.md': 'a'})
+        res = self.land()
+        self.assertEqual(res['outcome'], 'landed')
+        kinds = [json.loads(p.read_text()).get('kind') for p in (self.r.root / 'receipts').glob('gate-*-1.json')]
+        self.assertEqual(kinds, ['docs'])
+
+    def test_a_mixed_batch_regates_with_the_full_command(self):
+        self.gate = self.red_gate()
+        self.task('a', {'docs/a.md': 'a'})
+        self.task('b', {'code.py': 'b'})
+        self.assertNotEqual(self.land()['outcome'], 'landed')
+
+
+class HubDocsGate(LandingCase):
+    """The hub's LandingService builds the batch gate from the repo config."""
+
+    def service_gate(self, **gate_cfg):
+        from types import SimpleNamespace
+        from drover import repos
+        from hub.dispatch import LandingService
+        prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo), 'gate': {
+            'platform': 'windows', 'commands': {'full': [sys.executable, '-c', 'raise SystemExit(1)']}, **gate_cfg}})
+        svc = LandingService(SimpleNamespace(path=None), SimpleNamespace(), gate_kw={'available': False})
+        return svc.gate_fn(prog, 'origin/main', self.r.root / 'receipts', None)
+
+    def test_docs_only_batch_uses_the_docs_gate_and_a_mixed_batch_the_full_one(self):
+        self.gate = self.service_gate()
+        self.task('a', {'docs/a.md': 'a  \n'})
+        self.assertEqual(self.land()['outcome'], 'landed')
+
+    def test_mixed_batch_and_the_off_switch_use_the_full_command(self):
+        self.gate = self.service_gate()
+        self.task('a', {'docs/a.md': 'a'})
+        self.task('b', {'code.py': 'b'})
+        self.assertNotEqual(self.land()['outcome'], 'landed')
+
+    def test_docs_only_off_switch(self):
+        self.gate = self.service_gate(docs_only=False)
+        self.task('a', {'docs/a.md': 'a'})
+        self.assertNotEqual(self.land()['outcome'], 'landed')
 
 
 class WorktreeTests(LandingCase):

@@ -22,7 +22,6 @@ from pathlib import Path
 
 from . import config, decisions, repos
 from .tool_discovery import DISCOVERY_SCRIPT, parse_discovery
-from .winproc import NO_WINDOW
 
 # The thresholds settled in plan section 12 were set for the owner's machine: 64 GB RAM (queue 6 GB free, hold 4 GB),
 # C: of 476 GB (queue 50, hold 25) and a 931 GB data drive (queue 75, hold 25). Levels scale from those, so that machine
@@ -46,7 +45,7 @@ class WizardError(Exception):
 
 def _run(cmd, timeout=10):
     try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout, **NO_WINDOW)
+        return subprocess.run(cmd, capture_output=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
 

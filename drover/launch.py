@@ -23,7 +23,6 @@ from pathlib import Path
 from . import config, task_access
 from . import runner
 from .runner import ScanError
-from .winproc import NO_WINDOW
 
 HAIKU_CEILING = 80_000        # the pricing line is 100K; rotate before it
 TAIL_LINES = 200
@@ -207,14 +206,10 @@ def build_argv(spec):
         if scratch:
             task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
             scratch = runner.to_wsl_path(str(scratch)) if spec.get("placement") == "wsl" else to_windows_path(scratch)
-        # The .NET runtime hard-codes /tmp/.dotnet/shm for named mutexes (ignores TMPDIR); /tmp stays read-only otherwise.
-        roots = [r for r in (scratch,) if r]
-        if sandbox == "workspace-write" and spec.get("placement") == "wsl":
-            roots.append(runner.DOTNET_SHM_ROOT)
         argv = [exe, "exec", "--json", "-s", sandbox, "-C", cwd, "-m", m, "-c", f"model_reasoning_effort={e}",
                 "-c", f"developer_instructions={json.dumps(spec['system_append'])}",
                 "-c", 'approval_policy="never"',
-                "-c", f"sandbox_workspace_write.writable_roots={json.dumps(roots)}",
+                "-c", f"sandbox_workspace_write.writable_roots={json.dumps([scratch] if scratch else [])}",
                 "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                 "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-"]
         # Both sandbox modes allow reads outside cwd. --add-dir grants WRITE
@@ -724,7 +719,7 @@ def normalize_run_ids(found):
 def wsl_running(distro, run=subprocess.run):
     """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
     try:
-        r = run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=20, **NO_WINDOW)
+        r = run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return False
     raw = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()

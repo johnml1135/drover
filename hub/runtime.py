@@ -30,7 +30,6 @@ import tempfile
 from uuid import UUID
 import zipfile
 import zlib
-from drover.winproc import NO_WINDOW
 
 if __package__:
     from .reload_protocol import PROTOCOL, RUN_FORMAT, ProtocolError, atomic_json, validate_record
@@ -85,7 +84,7 @@ def _git(source, *args):
     env.update(GIT_OPTIONAL_LOCKS='0', GIT_NO_REPLACE_OBJECTS='1')
     with tempfile.TemporaryFile() as output:
         result = subprocess.run(['git', '-C', str(source), *args], stdout=output,
-                                stderr=subprocess.DEVNULL, env=env, **NO_WINDOW)
+                                stderr=subprocess.DEVNULL, env=env)
         if result.returncode:
             _refuse('git-probe-failed')
         # Bound compressed archives and pathological tree/status output too.

@@ -13,7 +13,6 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 from . import config, garden, gate, launch, origin, repos, runner, worktrees
-from .winproc import NO_WINDOW
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -45,7 +44,7 @@ def git(repo, *args, check=False, timeout=None):
     """git with an argv list. A timeout is a failed command (rc 124), never a hang."""
     try:
         r = subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True, errors="replace",
-                           timeout=timeout, **NO_WINDOW)
+                           timeout=timeout)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {timeout}s")
     if check and r.returncode:
@@ -82,22 +81,12 @@ class Pipeline:
             if paths:
                 raise CommitRefused("worktree changed after Drover committed this run", paths)
             return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()
+        if not paths:
+            raise CommitRefused("no changes")
         scope = [re.sub(r":\d+(?:-\d+)?$", "", s.replace("\\", "/")).removeprefix("./").rstrip("/")
                  for s in task.get("scope_files") or []]
-
-        def out_of_scope(ps):
-            return [p for p in ps if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope)]
-        if not paths:
-            prog = self.repo(task)
-            base = self.base_ref(prog) if prog else None
-            if base and not trailers.strip("\0 \n") and git(repo, "rev-list", "--count", f"{base}..HEAD").stdout.strip() not in ("", "0"):
-                ahead = git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD", check=True).stdout
-                outside = out_of_scope(sorted(p for p in ahead.split("\0") if p))
-                if outside:
-                    raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
-                return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()   # committed by the worker: gate HEAD
-            raise CommitRefused("no changes")
-        outside = out_of_scope(paths)
+        outside = [p for p in paths if not any(
+            fnmatchcase(p, s) or p.startswith(s + "/") for s in scope)]
         if outside:
             raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
         git(repo, "add", "-A", check=True)
@@ -372,6 +361,9 @@ class Pipeline:
                 kind, commands = "none", []
         elif "scoped" in cmds and not any("{project}" in a for a in cmds["scoped"]):
             kind, commands = "scoped", [cmds["scoped"]]
+        g = prog["gate"]
+        if kind != "none" and g.get("docs_only", True) and gate.changed_docs_only(repo, base, sha, g.get("docs_only_globs", repos.DOCS_ONLY_GLOBS)):
+            kind, commands = "docs", gate.docs_commands(base, sha, cmds.get("docs"))
         return {"kind": kind, "commands": commands, "scope": scope, "base": base, "repo": repo, "sha": sha,
                 "project_pattern": prog["gate"].get("project_pattern", ""),
                 "diff_lines": self.diff_lines(repo, base, sha), "files": paths, "platform": platform}
@@ -387,7 +379,7 @@ class Pipeline:
             return runner.to_wsl_path(str(p)) if wsl else str(p)
         out = d / "receipt.json"
         body = {"repo": m(plan["repo"]), "base": plan["base"], "sha": plan["sha"], "commands": plan["commands"],
-                "scope": plan["scope"], "out": m(out), "priority": priority,
+                "scope": plan["scope"], "kind": plan.get("kind"), "out": m(out), "priority": priority,
                 "project_pattern": plan.get("project_pattern", "")}
         (d / "plan.json").write_text(json.dumps(body), encoding="utf-8")
         script = Path(__file__).with_name("gatejob.py")

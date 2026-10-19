@@ -33,6 +33,14 @@ repos_dir = ""
 # [gate.commands.wsl]
 # full = ["python3", "-m", "unittest", "discover"]
 # scoped = ["python3", "-m", "unittest", "{project}"]  # optional; scope_map selects projects
+# Docs-only diffs: when every changed path matches gate.docs_only_globs the gate is kind "docs": `git diff --check`
+# plus the optional gate.commands.docs argv (shared or per platform). Any path outside the globs means the full gate.
+# docs_only = false (or an empty docs_only_globs) turns it off.
+# docs_only_globs = ["docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**"]   # the default; `!` excludes. `*` stays
+# in one directory; a glob without a slash matches the file name anywhere. A path must also be .md/.rst/.txt/.adoc (or
+# exactly LICENSE/GLOSSARY.md) and not a symlink, so docs/conf.py or a linked x.md still run the full gate.
+# [gate.commands]
+# docs = ["python3", "scripts/check_links.py"]
 # Simultaneous gates are not a config key: the owner sets the hub settings gate_slots (default 5, clamped 1..32) and
 # gate_reserved (default 1, clamped 0..slots-1; the last slots serve only P0-P2 work). Changes apply on the next tick.
 

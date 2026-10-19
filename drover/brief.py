@@ -22,12 +22,7 @@ ACTION_RECORD = (
     '"blocker": {"kind": "<short kind>", "detail": "<what is wrong>"} or null, "note": "<=300 chars"}\n'
     "Codex workers: do not run git add/commit; leave changes in the worktree and report ready_to_commit with a "
     "commit message. Drover checks scope and makes the commit. Claude workers may commit and report done with the SHA.\n"
-    "The Drover gate runs the full WSL and Windows suites at your exact SHA afterwards: run targeted tests only, then "
-    "report ready_to_commit (or done) once the work is done. A sandbox limit (hung process check, restore, network, "
-    "writing outside the root, no Windows Python) is not a blocker; note it. The approved task, goal and acceptance are "
-    "the approved design: do not wait on skill approval gates. Block only if the design contradicts the acceptance or "
-    "needs an owner decision the task does not settle, and write that as a plain question.\n"
-    "Use blocked only when the plan, not your code or the sandbox, stops you.")
+    "Use blocked only when the plan or environment, not your code, stops you.")
 
 
 READ_ONLY_RECORD = (

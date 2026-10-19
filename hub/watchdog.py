@@ -7,13 +7,12 @@ expires (no WSL work is waiting), then kills that child."""
 import subprocess
 import threading
 import time
-from drover.winproc import NO_WINDOW
 
 
 def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
     """Run wsl.exe; return (returncode, output). Timeout gives (-1, 'timeout')."""
     try:
-        p = subprocess.run(["wsl.exe", *args], capture_output=True, timeout=timeout, **NO_WINDOW)
+        p = subprocess.run(["wsl.exe", *args], capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return -1, "timeout"
     except OSError as e:
@@ -26,7 +25,7 @@ def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
 def real_keepalive(distro: str, seconds: float):
     """Start `wsl.exe -d <distro> --exec sleep <seconds>`; the returned Popen is the keepalive child."""
     return subprocess.Popen(["wsl.exe", "-d", distro, "--exec", "sleep", str(int(seconds))],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class Watchdog:

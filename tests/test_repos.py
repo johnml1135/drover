@@ -49,6 +49,18 @@ class GateCommands(unittest.TestCase):
         self.assertTrue(self.repo({}, unknown=True)['gate']['unknown'])
         self.assertTrue(self.repo({'wsl': {'scoped': ['check']}}, unknown=True)['gate']['unknown'])
 
+    def test_docs_only_defaults_override_and_validation(self):
+        g = self.repo({'full': ['x']})['gate']
+        self.assertEqual((g['docs_only'], g['docs_only_globs']), (True, ['docs/**', '*.md', 'GLOSSARY.md', 'LICENSE', '!.github/**']))
+        g = self.repo({'full': ['x']}, docs_only=False, docs_only_globs=['a/**'])['gate']
+        self.assertEqual((g['docs_only'], g['docs_only_globs']), (False, ['a/**']))
+        d = self.repo({'full': ['x'], 'docs': ['lint'], 'wsl': {'docs': ['lint3']}})
+        self.assertEqual(repos.gate_commands(d, 'windows')['docs'], ['lint'])
+        self.assertEqual(repos.gate_commands(d, 'wsl')['docs'], ['lint3'])
+        for bad in ({'docs_only': 'yes'}, {'docs_only_globs': 'docs/**'}, {'docs_only_globs': ['']}):
+            with self.assertRaises(repos.RepoError):
+                self.repo({'full': ['x']}, **bad)
+
     def test_unknown_keys_and_malformed_commands_name_the_config_path(self):
         cases = [({'ful': ['x']}, 'gate.commands.ful'),
                  ({'linux': {'full': ['x']}}, 'gate.commands.linux'),

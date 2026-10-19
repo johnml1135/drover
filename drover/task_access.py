@@ -12,7 +12,6 @@ import tempfile
 import threading
 
 from . import config, repos, task_context
-from .winproc import NO_WINDOW
 
 _LOCK = threading.Lock()
 
@@ -38,7 +37,7 @@ def check_read_roots(cwd, paths):
 
 def _git(path, *args):
     r = subprocess.run(['git', '--no-optional-locks', '-C', str(path), *args],
-                       capture_output=True, text=True, timeout=60, **NO_WINDOW)
+                       capture_output=True, text=True, timeout=60)
     if r.returncode:
         raise ValueError(f'read checkout: {r.stderr.strip()[-250:]}')
     return r.stdout.strip()

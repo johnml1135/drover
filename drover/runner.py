@@ -21,7 +21,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from .winproc import CREATE_NO_WINDOW, NO_WINDOW
 
 IS_WINDOWS = sys.platform == "win32"
 KILL_AFTER_S = 15
@@ -262,6 +261,8 @@ if IS_WINDOWS:
     JOB_EXTENDED_LIMIT_CLASS = 9
     CREATE_SUSPENDED = 0x4
     CREATE_NEW_PROCESS_GROUP = 0x200
+    CREATE_NO_WINDOW = 0x08000000
+    DETACHED_PROCESS = 0x8
     CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
     def _resume(handle):
@@ -417,22 +418,6 @@ def _cleanup_scratch(path):
         pass
 
 
-DOTNET_SHM_ROOT = "/tmp/.dotnet"
-
-
-def ensure_dotnet_shm(root=DOTNET_SHM_ROOT):
-    """Create <root>/shm (sticky, 1777) for the .NET named-mutex shared memory; leave an existing one alone."""
-    shm = Path(root) / "shm"
-    if shm.is_dir():
-        return
-    created = not Path(root).is_dir()
-    Path(root).mkdir(parents=True, exist_ok=True)
-    if created:
-        os.chmod(root, 0o1777)      # sticky and world-writable like /tmp; chmod because mkdir's mode obeys the umask
-    shm.mkdir(exist_ok=True)
-    os.chmod(shm, 0o1777)
-
-
 def worker_scratch_env(scratch):
     """Environment for a WSL worker's private temp and .NET caches; the global NuGet package cache stays shared."""
     scratch = Path(scratch)
@@ -505,10 +490,6 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
     if scratch is not None:
-        try:
-            ensure_dotnet_shm()
-        except OSError:
-            pass                    # best effort: a .NET worker reports its own EROFS/EACCES
         env.update(worker_scratch_env(scratch))
     for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
         if env.get(key):
@@ -594,9 +575,7 @@ def detach(run_id, runs_dir, child_args, wait_s=DETACH_WAIT_S, nonce=None):
     with open(d / RUNNER_LOG, "ab") as log:
         kw = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
         if IS_WINDOWS:
-            # CREATE_NO_WINDOW, not a detached console: a console app with none to inherit gets a fresh visible console (a Windows
-            # Terminal window under the default-terminal setting); the runner still outlives the hub via its own group.
-            flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
             try:
                 proc = subprocess.Popen(cmd, env=env, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kw)
             except OSError:         # the parent's job does not allow breakaway: the runner dies with that job
@@ -707,7 +686,7 @@ def _proc_cmdlines_windows():
     script = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
               "Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId,CommandLine | ConvertTo-Json")
     try:
-        r = subprocess.run([_powershell(), "-NoProfile", "-Command", script], capture_output=True, timeout=60, **NO_WINDOW)
+        r = subprocess.run([_powershell(), "-NoProfile", "-Command", script], capture_output=True, timeout=60)
         if r.returncode != 0:
             raise ScanError(f"powershell exited {r.returncode}")
         text = r.stdout.decode("utf-8", errors="replace").strip()

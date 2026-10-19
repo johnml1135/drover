@@ -21,7 +21,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from .winproc import NO_WINDOW
 
 DAY = 86400
 TAG = 'drover-tag.json'
@@ -37,7 +36,7 @@ EPIC_TITLE = 'Garden'
 def git(cwd, *args, check=False):
     # GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, so a scan writes nothing.
     r = subprocess.run(['git', '-C', str(cwd), *args], text=True, capture_output=True, errors='replace',
-                       env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'), **NO_WINDOW)
+                       env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
     if check and r.returncode:
         raise RuntimeError('git %s: %s' % (' '.join(args), r.stderr.strip()))
     return r
@@ -130,7 +129,7 @@ def _cim_rows():
     out = subprocess.run(
         ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
          'Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress'],
-        capture_output=True, text=True, timeout=30, errors='replace', **NO_WINDOW)
+        capture_output=True, text=True, timeout=30, errors='replace')
     if out.returncode or not out.stdout.strip():
         raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
     data = json.loads(out.stdout)

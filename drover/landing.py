@@ -20,7 +20,6 @@ from . import config, gate, origin, worktrees
 from .port import DirectPort
 from .ledger import ops
 from .ledger.db import connect, default_path, tx
-from .winproc import NO_WINDOW
 
 MIN_SIZE, MAX_SIZE = 1, 5
 
@@ -64,7 +63,7 @@ FETCH_TIMEOUT_S = 120
 def git(repo, *args, check=True, timeout=None):
     try:
         r = subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True, errors='replace',
-                           timeout=timeout, **NO_WINDOW)
+                           timeout=timeout)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {timeout}s')
     if check and r.returncode:
@@ -206,14 +205,25 @@ def build_tip(repo, worktree, base_sha, tasks):
     return git(worktree, 'rev-parse', 'HEAD').stdout.strip(), applied, conflicts
 
 
-def make_gate(command, base_ref, out_dir, *, priority='P1', db_path=None, **kw):
-    """gate_fn for run_batch: runs the full gate on the worktree's HEAD (under the ranked lease when db_path is set)."""
+def make_gate(command, base_ref, out_dir, *, priority='P1', db_path=None, docs_globs=None, docs_extra=None, **kw):
+    """gate_fn for run_batch: runs the full gate on the worktree's HEAD (under the ranked lease when db_path is set).
+    With docs_globs, a batch whose every changed path matches runs the docs gate instead; a mixed batch stays full."""
     out_dir = Path(out_dir)
 
     def run(worktree, tip, tasks):
         def go(_slot=None):
-            return gate.run_gate(worktree, out_dir / f'gate-{tip[:12]}-{len(tasks)}.json', command, base=base_ref,
-                                 priority=priority, **kw)
+            out = out_dir / f'gate-{tip[:12]}-{len(tasks)}.json'
+            if docs_globs and gate.changed_docs_only(worktree, base_ref, tip, docs_globs):
+                r = None
+                for i, cmd in enumerate(gate.docs_commands(base_ref, tip, docs_extra)):
+                    r = gate.run_gate(worktree, out.with_name(f'{out.stem}.docs{i}.json'), cmd, base=base_ref,
+                                      priority=priority, **kw)
+                    if not r['passed']:
+                        break
+                r['kind'] = 'docs'
+                out.write_text(json.dumps(r, indent=2) + '\n')
+                return r
+            return gate.run_gate(worktree, out, command, base=base_ref, priority=priority, **kw)
         if db_path:
             return gate.run_leased(db_path, 'batch:' + ','.join(t['id'] for t in tasks), priority, go)
         return go()
@@ -575,6 +585,8 @@ def main(argv=None):
             s.add_argument('--out', required=True, help='directory for receipts')
             s.add_argument('--priority', choices=gate.PRIORITIES, default='P1')
             s.add_argument('--lease', action='store_true', help='take a ranked gate slot in the ledger')
+            s.add_argument('--docs-glob', action='append', default=[],
+                           help='docs-only glob; a batch whose every path matches runs git diff --check, not the command')
             s.add_argument('command', nargs=argparse.REMAINDER)
     v = sub.add_parser('velocity')
     v.add_argument('--json', action='store_true')
@@ -591,7 +603,7 @@ def main(argv=None):
             print(json.dumps(batch) if a.json else '\n'.join(f"{t['id']}  {t['branch']}  {len(t['files'])} file(s)" for t in batch))
             return 0
         command = a.command[1:] if a.command[:1] == ['--'] else a.command
-        fn = make_gate(command, a.branch, a.out, priority=a.priority,
+        fn = make_gate(command, a.branch, a.out, priority=a.priority, docs_globs=a.docs_glob or None,
                        db_path=(a.db or default_path()) if a.lease else None)
         r = run_batch(conn, a.repo, fn, remote=a.remote, branch=a.branch, size=a.size, repo_name=a.repo_name)
         print(json.dumps(r) if a.json else f"{r['outcome']}: landed {r['landed']} dropped {r['dropped']} gates {r['gates']}")

@@ -7,7 +7,6 @@ import tomllib
 from pathlib import Path
 
 from .lock import FileLock
-from .winproc import NO_WINDOW
 
 IGNORE = 'ledger.db*\nruns/\nrescue/\nlogs/\nhub-token\n*.log\n.decisions.lock\n'
 AUTHORS = ('owner', 'tuner', 'wizard', 'dispatcher')
@@ -21,7 +20,7 @@ def _git(state, *args):
     try:
         result = subprocess.run(['git', '-C', str(state), '-c', 'user.name=Drover',
                                  '-c', 'user.email=drover@example.invalid', *args],
-                                capture_output=True, text=True, errors='replace', timeout=30, **NO_WINDOW)
+                                capture_output=True, text=True, errors='replace', timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         raise DecisionError(f'git: {exc}') from exc
     if result.returncode:

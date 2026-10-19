@@ -227,9 +227,6 @@ def _real_decide(*a, **kw):
     return decide.decide(*a, recorder=lambda result: None, **kw)    # the dispatcher records into the ledger itself
 
 
-ENV_BLOCK_KINDS = ("verification_environment", "missing_windows_worker")
-
-
 class Dispatcher:
     def __init__(self, port, launcher=None, resources_fn=None, admit_fn=None, decide_fn=None, gate_fn=None,
                  worktree_fn=None, state=None, headroom_fn=None, route_fn=None, now_fn=time.time, scan_fn=None,
@@ -369,8 +366,6 @@ class Dispatcher:
                 p.set_status(task_id, "needs-owner", reason=f"rotated {rotations} times without finishing")
             else:
                 p.set_status(task_id, "ready", reason="rotated")
-        elif st == "blocked" and self._env_block_to_ready(task_id, run_id, rec, usage, result):
-            pass
         elif st == "blocked":
             p.finish_run(run_id, "blocked", note=note, **usage)
             self._replan(task_id, "blocker", blocker=rec["blocker"])
@@ -395,24 +390,6 @@ class Dispatcher:
         else:
             p.finish_run(run_id, st, note=(result.get("text") or "")[-250:] or None, **usage)
             self._failed(task_id, run_id, "no action-state record" if st == "no-record" else "worker error")
-
-    def _env_block_to_ready(self, task_id, run_id, rec, usage, result):
-        """A worker blocked only by the sandbox (the Drover gate runs the full suites) with work in its worktree is
-        committed and sent to the gate; no replan. False when it does not apply or the commit is refused."""
-        kind = str((rec.get("blocker") or {}).get("kind") or "").lower().replace("-", "_")
-        if kind not in ENV_BLOCK_KINDS or self.pipeline is None:
-            return False
-        p, task = self.port, self.port.get_task(task_id)
-        if task.get("write", True) is False:
-            return False
-        note = f"sandbox limit, sent to gate: {(rec.get('blocker') or {}).get('detail', '')} {rec.get('note') or ''}".strip()[:300]
-        try:
-            sha = self.pipeline.commit_ready(task, run_id, str(task.get("title") or task_id).strip() or task_id)
-        except (WorktreeRefused, OSError):
-            return False
-        p.append_event("env-block-ready", {"run": run_id, "kind": kind, "sha": sha}, task_id)
-        self._after_done(task_id, {**result, "record": {**rec, "status": "done", "sha": sha}}, run_id, usage, note)
-        return True
 
     def _allowance_used(self, spec):
         """What this run cost per window: the used-% now minus the used-% at launch. None when either is unknown

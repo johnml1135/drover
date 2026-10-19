@@ -8,7 +8,7 @@ Keys: repo, worktrees (Windows paths; default <paths.worktrees>\\<name>.worktree
 remote; [run] platforms (a list of windows|wsl, default both),
 default (the platform used when nothing else decides); [gate] platform (windows|wsl|both: both must pass on each),
 unknown, scope_map,
-timeout_s, idle_s and [gate.commands] full/scoped (argv lists, `{project}` filled per selected test project),
+timeout_s, idle_s and [gate.commands] full/scoped/docs (argv lists, `{project}` filled per selected test project),
 optionally overridden per key by [gate.commands.windows] and [gate.commands.wsl];
 [review] backend, seat, model, effort, high_risk_model; [land] policy (batch|single); [landing] mode (local; pr reserved), push (false), remote (origin), main (main).
 Legacy [land].push, remote and default_branch remain readable; [landing] takes precedence.
@@ -46,13 +46,16 @@ def _commands(raw, what, platforms=True):
     out = {}
     for key, value in raw.items():
         path = f"{what}.{key}"
-        if key in ("full", "scoped"):
+        if key in ("full", "scoped", "docs"):
             out[key] = _argv(value, path)
         elif platforms and key in PLATFORMS:
             out[key] = _commands(value, path, platforms=False)
         else:
             raise RepoError(f"{path} is not a supported gate command key")
     return out
+
+
+DOCS_ONLY_GLOBS = ("docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**")
 
 
 def normalize(raw, name=None):
@@ -85,6 +88,12 @@ def normalize(raw, name=None):
         for p in gate_plats:
             if "full" not in cmds.get(p, {}) and "full" not in cmds:
                 raise RepoError(f"{name}: a known gate needs gate.commands.{p}.full or shared gate.commands.full")
+    docs_only = g.get("docs_only", True)
+    docs_globs = g.get("docs_only_globs", list(DOCS_ONLY_GLOBS))
+    if not isinstance(docs_only, bool):
+        raise RepoError(f"{name}: gate.docs_only must be a boolean")
+    if not isinstance(docs_globs, list) or not all(isinstance(x, str) and x.strip() for x in docs_globs):
+        raise RepoError(f"{name}: gate.docs_only_globs must be a list of non-empty globs")
     land = dict(raw.get("land") or {})
     policy = str(land.get("policy") or "batch")
     if policy not in ("batch", "single"):
@@ -130,6 +139,7 @@ def normalize(raw, name=None):
             "gate": {"platform": platform, "unknown": unknown, "scope_map": g.get("scope_map"),
                      "timeout_s": float(g.get("timeout_s") or 3600), "idle_s": float(g.get("idle_s") or 1200),
                      "project_pattern": str(g.get("project_pattern") or ""),
+                     "docs_only": docs_only, "docs_only_globs": docs_globs,
                      "commands": cmds, "hint": g.get("hint") or ""},
             "review": {"backend": backend, "seat": rev.get("seat"), "model": model,
                        "effort": rev.get("effort"), "high_risk_model": high_model},
@@ -168,7 +178,7 @@ def gate_platforms(prog):
 def gate_commands(prog, platform):
     """Effective full/scoped argv for one gate platform; overrides replace shared keys individually."""
     commands = prog["gate"]["commands"]
-    return {**{k: v for k, v in commands.items() if k in ("full", "scoped")}, **commands.get(platform, {})}
+    return {**{k: v for k, v in commands.items() if k in ("full", "scoped", "docs")}, **commands.get(platform, {})}
 
 
 def load_all(directory=None):
