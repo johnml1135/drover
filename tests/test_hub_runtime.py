@@ -367,6 +367,72 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release))['reasons'],
                                  ['manifest-corrupt'])
 
+    def test_healthy_b_manifest_numeric_type_corruption_refused_with_baseline_a_intact(self):
+        baseline = self.baseline()
+        baseline_path = Path(baseline['release_path']) / 'manifest.json'
+        baseline_bytes = baseline_path.read_bytes()
+        self.write('hub/app.py', 'B')
+        b = self.commit()
+        release = prepare_release(self.source, b, self.release_root, self.enrolled)
+        # Extension fields are not type-checked by the protocol validator;
+        # their integrity must also be covered by the recomputed digest.
+        release['metadata'] = {'sequence': 1}
+        self.reseal(release)
+        manifest = Path(release['release_path']) / 'manifest.json'
+        receipt = self.receipt(release)
+        self.assertTrue(check_recovery(self.enrolled, release, receipt)['eligible'])
+        for changes in ({'required_schema': 4.0}, {'ledger_schema': 4.0},
+                        {'required_schema': 4.0, 'ledger_schema': 4.0},
+                        {'protocol': True}, {'run_format': True},
+                        {'metadata': {'sequence': True}}, {'metadata': {'sequence': 1.0}}):
+            with self.subTest(changes=changes):
+                changed = {**release, **changes}
+                # Python dict equality masks all these on-disk corruptions.
+                self.assertEqual(changed, release)
+                manifest.write_text(json.dumps(changed), encoding='utf-8')
+                self.assertEqual(check_recovery(self.enrolled, release, receipt),
+                                 {'eligible': False, 'reasons': ['manifest-corrupt']})
+                with self.assertRaisesRegex(ReleaseError, 'manifest-corrupt'):
+                    child_command(self.enrolled, release, 12, INSTANCE)
+                self.assertEqual(baseline_path.read_bytes(), baseline_bytes)
+
+    def test_manifest_special_files_refused_before_open_including_baseline_reads(self):
+        baseline = self.baseline()
+        self.write('hub/app.py', 'B')
+        b = self.commit()
+        release = prepare_release(self.source, b, self.release_root, self.enrolled)
+        original_lstat, original_read = Path.lstat, Path.read_text
+        for selected in (baseline, release):
+            manifest = Path(selected['release_path']) / 'manifest.json'
+            for kind, attributes in ((stat.S_IFIFO, 0), (stat.S_IFDIR, 0),
+                                     (stat.S_IFLNK, 0), (stat.S_IFSOCK, 0),
+                                     (stat.S_IFREG, 0x400)):
+                with self.subTest(sha=selected['sha'], kind=kind, attributes=attributes):
+                    def metadata(path, *args, **kwargs):
+                        value = original_lstat(path, *args, **kwargs)
+                        if path != manifest:
+                            return value
+                        class SpecialFile:
+                            st_mode = stat.S_IMODE(value.st_mode) | kind
+                            st_file_attributes = attributes
+                            def __getattr__(self, name):
+                                return getattr(value, name)
+                        return SpecialFile()
+
+                    def read(path, *args, **kwargs):
+                        if path == manifest:
+                            self.fail('opened a manifest with unsafe file metadata')
+                        return original_read(path, *args, **kwargs)
+
+                    # Inject metadata so FIFO/reparse checks execute on Windows
+                    # too, and a regression cannot hang the test opening a FIFO.
+                    with patch.object(Path, 'lstat', metadata), patch.object(Path, 'read_text', read):
+                        self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release)),
+                                         {'eligible': False, 'reasons': ['manifest-corrupt']})
+                        if selected is baseline:
+                            self.assertEqual(check_eligibility(self.enrolled, self.a, b, 4),
+                                             {'eligible': False, 'reasons': ['manifest-corrupt']})
+
     def test_broken_compressed_stream_is_an_explicit_archive_refusal(self):
         self.baseline()
         self.write('hub/app.py', 'B')

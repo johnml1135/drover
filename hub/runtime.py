@@ -199,6 +199,10 @@ def _read_json(path):
             result[key] = value
         return result
     try:
+        metadata = path.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or
+                getattr(metadata, 'st_file_attributes', 0) & 0x400):
+            _refuse('manifest-corrupt')
         value = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=unique)
         if not isinstance(value, dict):
             _refuse('manifest-corrupt')
@@ -229,7 +233,16 @@ def _verify_release(release, *, _directory=None):
         _refuse('release-path-mismatch')
     if _directory is not None:
         root = _directory
-    if (root / MANIFEST).is_symlink() or _read_json(root / MANIFEST) != release:
+    manifest = _read_json(root / MANIFEST)
+    try:
+        validate_record('release', manifest)
+        stored_digest = _manifest_digest(manifest)
+    except (ProtocolError, ValueError):
+        _refuse('manifest-corrupt')
+    # Dict equality alone accepts numeric type changes (True == 1, 4.0 == 4).
+    # Bind the on-disk JSON types to both its own digest and the trusted input.
+    if (stored_digest != manifest.get('manifest_digest') or
+            stored_digest != release['manifest_digest'] or manifest != release):
         _refuse('manifest-corrupt')
     actual = {}
     total = 0
