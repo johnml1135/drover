@@ -73,7 +73,7 @@
 {% endif %}
 {% endfor %}
 
-{% if garden %}<h2>Garden deletions</h2>{% endif %}
+{% if garden %}<h2>Cleanup candidates</h2>{% endif %}
 {% for b in garden %}
 <section class="card"><h3>{{ b.title }}</h3>
   {% if b.recommendation %}<p class="muted">Recommendation: {{ b.recommendation }}</p>{% endif %}
@@ -92,7 +92,7 @@
 </form>
 {% endif %}
 
-{% if failed %}<h2>Failed and blocked</h2>{% endif %}
+{% if failed %}<h2>Failed and stuck</h2>{% endif %}
 {% for f in failed %}
 <section class="card">{% with t=f %}{% include "_task_card.html" %}{% endwith %}
   <div class="actions">{{ comment_btn('task', f.id) }}</div></section>

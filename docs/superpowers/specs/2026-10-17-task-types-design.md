@@ -1,5 +1,7 @@
 # Configurable task types, lifecycles and owner work
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 Date: 2026-10-17. Status: proposed; recommendations below enable planning, not deployment approval.
 
 ## Problem, intent and boundaries

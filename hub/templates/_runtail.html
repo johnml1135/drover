@@ -1,6 +1,6 @@
 {% from "_macros.html" import badge %}
 <div id="runtail"{% if run.live %} hx-get="/runs/{{ run.id }}/tail" hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"{% endif %}>
-  <p>{{ badge(run.outcome, 'ok' if run.outcome in ('landed','passed','ok') else 'bad' if run.outcome in ('failed','error') else '') }}
+  <p>{{ badge(run.outcome | label, 'ok' if run.outcome in ('landed','merged','passed','ok') else 'bad' if run.outcome in ('failed','error') else '') }}
     <span class="muted">{{ run.model }}{% if run.effort %} / {{ run.effort }}{% endif %} on {{ run.backend }}; allowance {{ run.allowance_used or 'n/a' }}; {{ run.wall_time or 'running' }}</span></p>
   <pre class="tail" aria-label="Run output (read-only)" tabindex="0">{{ tail or '(no output yet)' }}</pre>
 </div>

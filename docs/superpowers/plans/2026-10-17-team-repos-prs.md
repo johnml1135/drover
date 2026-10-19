@@ -1,5 +1,7 @@
 # Team Repositories and PRs Implementation Plan
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver team repository work through owner-approved GitHub PR effects and verified human merges while preserving solo local delivery.

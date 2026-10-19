@@ -49,7 +49,7 @@
         line: { dash: "dot", color: "#888", width: 1 } }; }) });
     plot("chart-tokens", Object.values(tokens), { yaxis: { title: "Tokens" } });
     plot("chart-resources", Object.values(resources), { yaxis: { title: "GB / load" } });
-    plot("chart-throughput", [{ type: "bar", name: "Landings", x: Object.keys(days), y: Object.values(days) }],
+    plot("chart-throughput", [{ type: "bar", name: "Merges", x: Object.keys(days), y: Object.values(days) }],
       { yaxis: { title: "Tasks", dtick: 1 } });
   }).catch(function () { error.hidden = false; error.textContent = "Statistics could not load. Refresh to retry."; });
 }());

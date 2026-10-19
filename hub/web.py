@@ -17,9 +17,12 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["markdown"] = markdown
+# Owner-facing names for stored status values; the stored values themselves are renamed later.
+DISPLAY_LABELS = {"gated": "checked", "landed": "merged", "needs-owner": "Waiting on you", "landing": "merging"}
+templates.env.filters["label"] = lambda v: DISPLAY_LABELS.get(v, v)
 router = APIRouter()
 
-TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("runs", "Runs"), ("landing", "Landing"), ("health", "Health"), ("stats", "Stats")]
+TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("runs", "Runs"), ("landing", "Merge queue"), ("health", "Health"), ("stats", "Stats")]
 GROUPS = ("epic", "state", "repo", "model")
 FILTERS = ("state", "repo", "model", "low")
 KINDS = {"owner", "import", "tuner", "garden", "task", "epic", "question", "run"}

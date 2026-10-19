@@ -1,5 +1,7 @@
 # Safe self-reload for Drover
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 Date: 2026-10-17. Status: proposed; recommendations used without an interactive owner.
 Deliverable: research and specification only. Implementation is a separate backlog.
 

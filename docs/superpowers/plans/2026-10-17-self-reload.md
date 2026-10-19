@@ -1,5 +1,7 @@
 # Safe Self-Reload Implementation Plan
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans per assigned Drover task. Drover schedules the dependency graph; each worker implements only its own file scope. Steps use checkbox (`- [ ]`) syntax. No implementation is authorized by this research deliverable.
 
 **Goal:** Safely replace the Windows hub after a relevant self-landing while detached workers continue, with verified startup and one automatic runtime fallback.

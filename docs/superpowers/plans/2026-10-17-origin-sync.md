@@ -1,5 +1,7 @@
 # T-2 origin sync execution record
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 The task description is the owner-approved design. Work stays on the assigned task branch; Drover owns committing and gating.
 
 - Add validated repo `[landing]` defaults, retain legacy repo keys, and reject reserved PR mode.

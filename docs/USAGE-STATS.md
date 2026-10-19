@@ -47,7 +47,7 @@ borrowing a different Claude account creates an owner question. Only an explicit
 
 Run statistics remain in `run_stats` with their task and run. Counters include
 sessions, handoffs, compactions, additional attempts per role (retries), model
-changes between attempts (escalations), and work repeated after a failed gate or
+changes between attempts (escalations), and work repeated after a failed check run or
 review (rework). Token totals use the backend's model breakdown when available,
 and otherwise the run's model. `tokens_total` includes cached reads once (Codex input already includes them). Unknown peaks remain null. CPU peaks are sampled
 process-tree utilisation (100% equals one CPU), RAM is resident/peak job memory,
@@ -57,13 +57,13 @@ Existing runs are migrated with their known tokens and timings; unavailable
 historical telemetry stays unknown.
 
 Hourly UTC buckets contain current allowance and burn per window, host resource
-facts, queue counts and active workers. Tokens and landings are additive counters
-written at run completion and landing transitions, so refreshing a gauge or
+facts, queue counts and active workers. Tokens and merges are additive counters
+written at run completion and merge transitions, so refreshing a gauge or
 deleting a task cannot erase throughput. The dispatcher tick keeps hourly data
 35 days, folds older buckets into daily data, and keeps daily history 365 days.
 Daily flow counters sum; gauges retain the latest sampled value and scalar
 resource min/max ranges. Run/task rows have no automatic expiry. Run logs expire
-after 30 days; action records and gate receipts remain. The Stats tab plots both
+after 30 days; action records and CI results remain. The Stats tab plots both
 hourly and daily data using Plotly.js 2.35.2. Historical series are host-wide;
 `--task` filters permanent run and task details.
 

@@ -33,16 +33,16 @@ Placement rules:
 
 Run files live in `<state dir>\runs\<id>\`.
 
-- Gate slots: hub settings `gate_slots` (default 5, clamped 1..32) and `gate_reserved` (default 1, clamped 0..slots-1) set how
-  many gates run at once; owner-only, read each tick, no restart. An invalid value logs once and uses the default. The
-  heartbeat carries `gate_queue: {waiting, oldest_s, slots}`. Landing batches (`run_leased`) keep the default slot count.
+- CI runners: hub settings `gate_slots` (default 5, clamped 1..32) and `gate_reserved` (default 1, clamped 0..slots-1) set how
+  many checks run at once; owner-only, read each tick, no restart. An invalid value logs once and uses the default. The
+  heartbeat carries `gate_queue: {waiting, oldest_s, slots}`. Merge groups (`run_leased`) keep the default slot count.
 - One instance: the hub holds `<state dir>\dispatcher.lock`; `python -m drover.dispatcher` refuses while it is held and
   refuses to run at all off Windows (the lock is not shared between Windows and WSL).
 - Restart: open runs are adopted by run id from `runner.find_runners()` plus `wsl.exe --exec python3 -m drover.runner
   find --json` (WSL only when a WSL run is open, or a run's placement, recorded in a `run-launching` event before the
   launch, is unknown, in which case both sides are scanned). The dispatcher picks the launch nonce, records it in the `run-launching` event and passes it as `runner --nonce`, so a
   stop-request can be written before status.json exists and a late runner honours it. A launch that timed out gets one and its task is
-  requeued only after a scan shows no runner for that run id. A finish that raises is retried (3 tries) and the gate runs
+  requeued only after a scan shows no runner for that run id. A finish that raises is retried (3 tries) and the checks run
   at most once per run (`gate-started`/`gate-done` events). A failed scan is unknown and requeues nothing; an open run with no
   runner and no terminal `status.json` is orphaned after 2 consecutive clean scans.
 - A task with no eligible backend or no placement is skipped for the tick and backed off 1, 2, 4 ... 30 minutes

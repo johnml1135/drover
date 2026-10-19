@@ -1,5 +1,7 @@
 # Configurable Task Types Implementation Plan
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Drover task isolation/admission and worker constraints take precedence. Steps use checkbox syntax for tracking; Codex workers do not git add/commit.
 
 **Goal:** One versioned declarative type contract drives tasks, lifecycles, agent execution and owner actions across the website and CLI.

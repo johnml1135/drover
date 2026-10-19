@@ -60,17 +60,17 @@ task worktree or writable scratch directory. These settings use the documented
 [Codex sandbox configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
 Before accepting any worker outcome, Drover checks read snapshot
 HEAD and status, including staged, untracked and ignored changes. A changed or
-unverifiable snapshot blocks the run before any commit or gate. The launch
+unverifiable snapshot blocks the run before any commit or checks run. The launch
 manifest is retained in an owner-reserved event for restart verification.
 Read-only workers report the existing read checkout HEAD with their findings;
-that SHA identifies an input, not a new commit. Completion goes to needs-owner
+that SHA identifies an input, not a new commit. Completion is marked Waiting on you
 for review of the findings. The owner sees **Accept findings** on the page and in
 the inbox. Acceptance moves successful read-only work to the existing terminal
-`landed` state, satisfying blocking dependencies, and records the owner's decision
-and run id. It creates no commit, gate run or landing entry. This shortcut requires
+`landed` state (shown as merged), satisfying blocking dependencies, and records the owner's decision
+and run id. It creates no commit, checks run or merge queue entry. This shortcut requires
 the latest run to be a finished `read-only-done` worker run and is owner-only;
 failed or unfinished work retains the retry approval behavior. Write tasks keep the existing
-commit, gate and landing path.
+commit, checks and merge path.
 
 The Inbox and Plan reuse a task card with a link to `/tasks/{id}`. The task page
 supports Card and Page views, owner editing, both dependency directions, related

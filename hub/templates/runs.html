@@ -9,7 +9,7 @@
 <h2>Runs</h2>
 {% for r in runs %}
 <section class="card run">
-  <h3><a href="/runs/{{ r.id }}">{{ r.task or r.id }}</a> {{ badge(r.outcome, 'ok' if r.outcome in ('landed','passed','ok') else 'bad' if r.outcome in ('failed','error') else '') }}</h3>
+  <h3><a href="/runs/{{ r.id }}">{{ r.task or r.id }}</a> {{ badge(r.outcome | label, 'ok' if r.outcome in ('landed','merged','passed','ok') else 'bad' if r.outcome in ('failed','error') else '') }}</h3>
   <dl class="kv">
     <dt>Model</dt><dd>{{ r.model }}{% if r.effort %} / {{ r.effort }}{% endif %}</dd>
     <dt>Backend</dt><dd>{{ r.backend }}</dd>

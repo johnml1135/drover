@@ -1,5 +1,7 @@
 # Task Context Implementation Plan
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 > **For agentic workers:** Execute inline in the assigned T-7 worktree. Drover owns commits and landing.
 
 **Goal:** Give owners and workers complete task context, safe access declarations, and compact/full task views.

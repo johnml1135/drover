@@ -11,7 +11,7 @@
 {% else %}
 <article class="task-page">
 <h2>{{ task.id }} · {{ task.title }}</h2>
-<p><span class="pill status status-{{ task.status }}">{{ task.status }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
+<p><span class="pill status status-{{ task.status }}">{{ task.status | label }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
 {% if task.reason %}<p class="task-reason">{{ task.reason }}</p>{% endif %}
 {% if task.blocker %}<p class="task-reason">Blocker: {{ task.blocker }}</p>{% endif %}
 <dl class="kv task-fields">

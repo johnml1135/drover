@@ -47,7 +47,7 @@ The example TOML documents every supported key.
 
 ## Repo rules
 
-One repo is one git repository with its own execution, gate and landing rules.
+One repo is one git repository with its own execution, checks and merge rules.
 Private repo files live in `<state>/repos/*.toml`.
 An explicitly configured repo-config directory may replace that location.
 A legacy `programs/` directory is read only if `repos/` is missing.
@@ -59,17 +59,17 @@ Repo files declare the path, default branch, remote and worktree location.
 `[gate].platform` selects Windows, WSL or both, with both required to pass.
 `[gate.commands]` supplies shared `full` and optional `scoped` argv lists.
 `[gate.commands.windows]` and `[gate.commands.wsl]` can override either key independently;
-an omitted key falls back to its shared value. A known gate must resolve `full` on every
-selected gate platform. Other command keys are rejected. Task gates select a plan for each
-platform; batch gates use each platform's resolved `full` command. The wizard writes the shared form.
+an omitted key falls back to its shared value. A known check must resolve `full` on every
+selected check platform. Other command keys are rejected. Task checks select a plan for each
+platform; merge group full CI uses each platform's resolved `full` command. The wizard writes the shared form.
 Placement outside the allowed platforms sends the task to the owner.
-Unknown gates generate an owner question rather than an invented test command.
-`[land].policy` selects single-task or batched landing; pushing defaults off.
+Unknown checks generate an owner question rather than an invented test command.
+`[land].policy` selects single-task merging or merge groups; pushing defaults off.
 
 ## Tasks and write scope
 
 A task has acceptance criteria, a file scope and at most one home repo.
-A coding task writes only its home repo and lands as one squashed commit.
+A coding task writes only its home repo and merges as one squashed commit.
 It may read other repos, branches and earlier reports as context.
 A research task has no home repo and produces a report.
 An epic groups tasks under a written plan, potentially across repos.
@@ -83,14 +83,14 @@ See ADR 0003 for the single-repo write contract.
 
 A pair coordinates a provider and one or more consumers in other repos.
 The tasks use matching branch names across those repos.
-During development, each consumer gate builds against the provider worktree branch.
-The provider must pass its gate and review and land before its consumers.
-Each consumer then gates again against the landed provider main.
+During development, each consumer's checks build against the provider worktree branch.
+The provider must pass its checks and review and merge before its consumers.
+Each consumer then runs checks again against the merged provider main.
 A rejected provider holds its consumers.
 A rework request contains a fixed label and an explanatory comment.
 Labels are api-shape, missing-capability, bug, performance and other.
 Routing tries a local decision, then a cheap worker, then the default director.
-A landed provider or several consumers require the director.
+A merged provider or several consumers require the director.
 A pair accepts at most two rework requests.
 
 ## Seats and allowance
@@ -112,9 +112,9 @@ Director capacity is reserved before worker admission consumes it.
 
 ## Routing and resources
 
-Workers start at a suitable model tier for task size and risk.
+Workers start at a suitable model level for task size and risk.
 Cheap workers handle small tasks, initial review and routine triage where effective.
-Retries escalate through a configured ladder rather than retrying indefinitely.
+Retries escalate through the configured escalation levels rather than retrying indefinitely.
 The router considers eligible seats, placement, allowance headroom and reset time.
 Trackers measure load, available RAM, disk space, WSL health and VRAM.
 Queue thresholds admit no new work; hold thresholds stop work.
@@ -147,32 +147,32 @@ The hub records the intended placement and nonce before launching a run.
 After restart, adoption uses run-id and nonce markers, never an arbitrary PID.
 A failed process scan is unknown and cannot justify an orphan decision.
 Two clean scans are required before an absent runner is considered orphaned.
-Finish processing reuses an existing gate result rather than gating twice.
+Finish processing reuses an existing CI result rather than running checks twice.
 Backoff prevents unavailable infrastructure from blocking the rest of the queue.
 
-## Gates, reviews and landing
+## Checks, reviews and merging
 
-Gate receipts apply to exact commit SHAs and unchanged, clean trees.
-Gate commands are argv lists, never task-provided shell interpolation.
+CI results apply to exact commit SHAs and unchanged, clean trees.
+Check and CI commands are argv lists, never task-provided shell interpolation.
 Scope maps and optional project patterns come from each repo's `[gate]` table.
-Without a scope map, the full gate runs without a project filter.
+Without a scope map, full CI runs without a project filter.
 Relative scope-map paths resolve against the configured repo root.
-An unmapped changed path widens the gate to the full command.
+An unmapped changed path widens the checks to the full command.
 Failure parsing links failures to changed files where possible.
 Review verdicts also identify the exact reviewed SHA.
-Landing batches exist only to share gate time across disjoint tasks.
-Batch size ranges from one to five and starts at three.
+Merge groups exist only to share CI time across disjoint tasks.
+Merge group size ranges from one to five and starts at three.
 A clearly attributable failure drops the responsible task.
 Ambiguous attribution gets one local choice; low confidence falls back to bisection.
-Batching turns off when the median gate duration is ten minutes or less.
+Merge groups turn off when the median full CI duration is ten minutes or less.
 `[landing]` defaults to mode local, push false, remote origin, main main; pr mode is reserved and rejected.
-Local main is fetched and synchronized before branching and again immediately before landing.
+Local main is fetched and synchronized before branching and again immediately before merging.
 Main advances through compare-and-swap update-ref; the owner checkout files and index stay untouched.
-Local ahead-only history is retained for subsequent unpushed landings; two-sided divergence needs the owner.
+Local ahead-only history is retained for subsequent unpushed merges; two-sided divergence needs the owner.
 Fetch failure pauses that repo and opens a retry alert, without using cached refs.
-Remote movement during the gate replays the batch and gates it again; replay conflicts need the owner.
-Landing is local; optional push follows it and push failure alerts without undoing the landing.
-The owner-only Landing page offers a POST Push main action for repos ahead of the fetched remote.
+Remote movement during full CI replays the merge group and runs full CI on it again; replay conflicts need the owner.
+Merging is local; optional push follows it and push failure alerts without undoing the merge.
+The owner-only Merge queue page offers a POST Push main action for repos ahead of the fetched remote.
 
 ## Local decisions and tuning
 
@@ -188,10 +188,10 @@ The cadence advances only when a pass adopts no change.
 Fewer than twenty new runs skips a pass without advancing it.
 Cost deterioration, changed prices/models, a new repo or manual reset restarts cadence.
 Every pass audits missed and needless escalations.
-Automatic changes cover routing weights, thresholds, batch size, cadence and small cap adjustments.
+Automatic changes cover routing weights, thresholds, merge group size, cadence and small cap adjustments.
 Brief templates, criteria, pinned rules and shadow promotion require owner approval.
 Safety rules, installs and deployments are never automatically tuned.
-Replanning holds affected work and dependents while a fresh director returns a ledger diff.
+Replanning freezes affected work and dependents while a fresh director returns a ledger diff.
 A diff within epic scope that loosens no acceptance criteria can apply automatically.
 Other replans require the owner.
 
@@ -210,7 +210,7 @@ Automatic push is best effort and a failure preserves the local commit.
 
 ## Owner interface and observability
 
-The hub provides Inbox, Plan, Runs, Landing and Health views.
+The hub provides Inbox, Plan, Runs, Merge queue and Health views.
 Owner questions support choices and free text; comments attach to tracked work.
 The owner approves backlog, risky cleanup and policy proposals.
 Scripted board rendering and notifications need no model calls.

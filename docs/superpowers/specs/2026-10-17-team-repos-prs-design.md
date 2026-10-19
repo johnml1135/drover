@@ -1,5 +1,7 @@
 # Team repositories, pull requests and owner PR work
 
+> Historical document, written before the 2026-10 terminology change. Read: gate -> checks / full CI, receipt -> CI result, landing -> merging, landed -> merged, landing batch -> merge group, needs-owner -> Waiting on you, docket -> Inbox, garden -> cleanup, rung/tier/ladder -> escalation level, HOLD/LAND -> changes requested/approved. See GLOSSARY.md.
+
 Date: 2026-10-17. Status: proposed; owner recommendations support planning, not activation.
 
 ## Intent and boundaries
