@@ -16,7 +16,8 @@ from unittest.mock import Mock, patch
 from drover import runner
 
 PKG_ROOT = str(Path(runner.__file__).resolve().parents[1])
-ENV = {**os.environ, "PYTHONPATH": PKG_ROOT}
+ENV = {k: v for k, v in os.environ.items() if k != "DROVER_DETACHED_IN_JOB"}
+ENV["PYTHONPATH"] = PKG_ROOT
 PY = sys.executable
 
 
@@ -435,45 +436,89 @@ class DetachTests(Base):
         self.assertEqual(info["run_id"], "d1")
         self.assertTrue(wait_for(lambda: self.status("d1")["state"] == "exited"))
         self.assertIn("late", self.out("d1"))
-        self.assertEqual(self.status("d1")["runner_pid"], info["runner_pid"])
-        # Windows may refuse breakaway from the gate's parent Job Object.
+        status = self.status("d1")
+        self.assertEqual(status["state"], "exited")
+        self.assertEqual(status["runner_pid"], info["runner_pid"])
         self.assertIsInstance(info["detached_in_job"], bool)
-        self.assertEqual(info["detached_in_job"], self.status("d1")["detached_in_job"])
+        self.assertIsInstance(status["detached_in_job"], bool)
+        self.assertEqual(info["detached_in_job"], status["detached_in_job"])
         if not runner.IS_WINDOWS:
             self.assertFalse(info["detached_in_job"])
+            self.assertFalse(status["detached_in_job"])
 
     def test_windows_detach_reports_breakaway_success_and_refusal(self):
-        # Mock process creation so both Windows paths run on every platform,
-        # independently of the job policy of the machine running the suite.
         flags = {"DETACHED_PROCESS": 0x8, "CREATE_NEW_PROCESS_GROUP": 0x200,
                  "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
-        for refused in (False, True):
-            with self.subTest(breakaway_refused=refused):
-                rid = f"breakaway-{refused}"
-                proc = Mock(pid=123)
-                attempts = [OSError(5, "breakaway refused"), proc] if refused else [proc]
-                status = {"state": "running", "runner_pid": 456}
-                with patch.multiple(runner, IS_WINDOWS=True, create=True, **flags), \
-                        patch.dict(os.environ, {"DROVER_DETACHED_IN_JOB": "0"}), \
-                        patch.object(runner.subprocess, "Popen", side_effect=attempts) as popen, \
-                        patch.object(runner, "read_status", return_value=status):
-                    info = runner.detach(rid, self.runs, ["--run-id", rid])
-                self.assertNotIn("error", info)
-                self.assertEqual(info["runner_pid"], 456)
-                self.assertIs(info["detached_in_job"], refused)
-                self.assertEqual(popen.call_count, 2 if refused else 1)
-                base_flags = flags["DETACHED_PROCESS"] | flags["CREATE_NEW_PROCESS_GROUP"]
-                first = popen.call_args_list[0].kwargs
-                self.assertEqual(first["creationflags"], base_flags | flags["CREATE_BREAKAWAY_FROM_JOB"])
-                self.assertEqual(first["env"]["DROVER_DETACHED_IN_JOB"], "0")
-                log = (Path(self.runs) / rid / runner.RUNNER_LOG).read_text()
-                if refused:
-                    fallback = popen.call_args_list[1].kwargs
-                    self.assertEqual(fallback["creationflags"], base_flags)
-                    self.assertEqual(fallback["env"]["DROVER_DETACHED_IN_JOB"], "1")
-                    self.assertIn("breakaway from the parent job was refused", log)
-                else:
-                    self.assertEqual(log, "")
+        base_flags = flags["DETACHED_PROCESS"] | flags["CREATE_NEW_PROCESS_GROUP"]
+
+        def run_detach(run_id, attempts):
+            proc = Mock(pid=123)
+            popen = Mock(side_effect=attempts(proc))
+            observed_status = {}
+
+            def read_child_status(_runs_dir, _run_id):
+                child_env = popen.call_args.kwargs["env"]
+                observed_status.update(state="running", runner_pid=456,
+                                       detached_in_job=child_env.get("DROVER_DETACHED_IN_JOB") == "1")
+                return observed_status
+
+            clock = Mock(return_value=100)
+            with patch.multiple(runner, IS_WINDOWS=True, create=True, **flags), \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch.object(runner.subprocess, "Popen", popen), \
+                    patch.object(runner, "read_status", side_effect=read_child_status), \
+                    patch.object(runner.time, "monotonic", clock):
+                info = runner.detach(run_id, self.runs, ["--run-id", run_id])
+            clock.assert_called_once_with()
+            return info, dict(observed_status), popen
+
+        with self.subTest(breakaway_succeeds=True):
+            info, status, popen = run_detach("breakaway-success", lambda proc: [proc])
+            self.assertEqual(popen.call_count, 1)
+            first = popen.call_args_list[0].kwargs
+            self.assertEqual(first["creationflags"], base_flags | flags["CREATE_BREAKAWAY_FROM_JOB"])
+            self.assertNotIn("DROVER_DETACHED_IN_JOB", first["env"])
+            self.assertIs(info["detached_in_job"], False)
+            self.assertIs(status["detached_in_job"], False)
+            self.assertEqual(info["detached_in_job"], status["detached_in_job"])
+
+        with self.subTest(breakaway_refused=True):
+            refused = OSError(5, "breakaway refused")
+            info, status, popen = run_detach("breakaway-fallback", lambda proc: [refused, proc])
+            self.assertEqual(popen.call_count, 2)
+            first, fallback = [call.kwargs for call in popen.call_args_list]
+            self.assertEqual(first["creationflags"], base_flags | flags["CREATE_BREAKAWAY_FROM_JOB"])
+            self.assertNotIn("DROVER_DETACHED_IN_JOB", first["env"])
+            self.assertEqual(fallback["creationflags"], base_flags)
+            self.assertEqual(fallback["env"]["DROVER_DETACHED_IN_JOB"], "1")
+            self.assertIs(info["detached_in_job"], True)
+            self.assertIs(status["detached_in_job"], True)
+            self.assertEqual(info["detached_in_job"], status["detached_in_job"])
+            log = (Path(self.runs) / "breakaway-fallback" / runner.RUNNER_LOG).read_text()
+            self.assertIn("breakaway from the parent job was refused", log)
+
+    def test_windows_detach_propagates_failed_fallback_spawn(self):
+        flags = {"DETACHED_PROCESS": 0x8, "CREATE_NEW_PROCESS_GROUP": 0x200,
+                 "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        base_flags = flags["DETACHED_PROCESS"] | flags["CREATE_NEW_PROCESS_GROUP"]
+        first_error = OSError(5, "breakaway refused")
+        fallback_error = OSError(87, "fallback spawn failed")
+        popen = Mock(side_effect=[first_error, fallback_error])
+
+        with patch.multiple(runner, IS_WINDOWS=True, create=True, **flags), \
+                patch.dict(os.environ, {}, clear=True), \
+                patch.object(runner.subprocess, "Popen", popen), \
+                patch.object(runner.time, "monotonic", Mock(return_value=100)):
+            with self.assertRaises(OSError) as raised:
+                runner.detach("breakaway-fallback-fails", self.runs, ["--run-id", "breakaway-fallback-fails"])
+
+        self.assertIs(raised.exception, fallback_error)
+        self.assertEqual(popen.call_count, 2)
+        first, fallback = [call.kwargs for call in popen.call_args_list]
+        self.assertEqual(first["creationflags"], base_flags | flags["CREATE_BREAKAWAY_FROM_JOB"])
+        self.assertNotIn("DROVER_DETACHED_IN_JOB", first["env"])
+        self.assertEqual(fallback["creationflags"], base_flags)
+        self.assertEqual(fallback["env"]["DROVER_DETACHED_IN_JOB"], "1")
 
     def test_detach_reports_a_child_that_dies(self):
         r = subprocess.run([PY, "-m", "drover.runner", "--run-id", "d2", "--runs-dir", self.runs, "--detach",
