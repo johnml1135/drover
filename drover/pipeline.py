@@ -82,12 +82,22 @@ class Pipeline:
             if paths:
                 raise CommitRefused("worktree changed after Drover committed this run", paths)
             return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()
-        if not paths:
-            raise CommitRefused("no changes")
         scope = [re.sub(r":\d+(?:-\d+)?$", "", s.replace("\\", "/")).removeprefix("./").rstrip("/")
                  for s in task.get("scope_files") or []]
-        outside = [p for p in paths if not any(
-            fnmatchcase(p, s) or p.startswith(s + "/") for s in scope)]
+
+        def out_of_scope(ps):
+            return [p for p in ps if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope)]
+        if not paths:
+            prog = self.repo(task)
+            base = self.base_ref(prog) if prog else None
+            if base and not trailers.strip("\0 \n") and git(repo, "rev-list", "--count", f"{base}..HEAD").stdout.strip() not in ("", "0"):
+                ahead = git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD", check=True).stdout
+                outside = out_of_scope(sorted(p for p in ahead.split("\0") if p))
+                if outside:
+                    raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
+                return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()   # committed by the worker: gate HEAD
+            raise CommitRefused("no changes")
+        outside = out_of_scope(paths)
         if outside:
             raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
         git(repo, "add", "-A", check=True)
