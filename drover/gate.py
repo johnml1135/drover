@@ -117,7 +117,7 @@ def _with_unittest_traceback(argv):
     module = next((i for i in range(1, len(inner) - 1) if inner[i:i + 2] == ['-m', 'unittest']), None)
     if module is None:
         return command
-    instrumented = [inner[0], *inner[1:module], '-c', UNITTEST_TRACEBACK_HOOK, 'unittest', *inner[module + 2:]]
+    instrumented = [inner[0], *inner[1:module], '-c', UNITTEST_TRACEBACK_HOOK, *inner[module + 2:]]
     return command[:start] + instrumented
 
 

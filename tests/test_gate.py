@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -139,8 +140,19 @@ class DiagnosticTests(unittest.TestCase):
         out = gate._with_unittest_traceback(['timeout', '10', 'python3', '-m', 'unittest', 'tests.test_x'])
         self.assertEqual(out[:3], ['timeout', '10', 'python3'])
         self.assertIn('dump_traceback_later(500', out[4])
-        self.assertEqual(out[-2:], ['unittest', 'tests.test_x'])
+        self.assertEqual(out[5:], ['tests.test_x'])
         self.assertEqual(gate._with_unittest_traceback(['echo', 'hi']), ['echo', 'hi'])
+
+    def test_instrumented_discover_runs(self):
+        # The hook supplies argv[0]; an extra 'unittest' argument hid 'discover' and failed every gate.
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, 'tests').mkdir()
+            Path(d, 'tests', '__init__.py').write_text('')
+            Path(d, 'tests', 'test_ok.py').write_text('import unittest\nclass T(unittest.TestCase):\n    def test_ok(self): pass\n')
+            cmd = gate._with_unittest_traceback([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-t', '.'])
+            r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('Ran 1 test', r.stderr)
         env = gate.git_environment({'A': '1'})
         self.assertEqual((env['GIT_TERMINAL_PROMPT'], env['GIT_ASKPASS'], env['A']), ('0', '', '1'))
 
