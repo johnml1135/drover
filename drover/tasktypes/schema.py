@@ -439,7 +439,8 @@ def _forms(raw, fields, write):
         if len(set(names)) != len(names):
             _fail(path + '.fields', 'duplicate form field')
         for i, name in enumerate(names):
-            if name not in fields and name not in CORE_IDS and not (action == 'answer' and name == 'questions'):
+            # Reserved storage/policy names are not necessarily action inputs.
+            if name not in fields and name not in TASK_INPUTS and not (action == 'answer' and name == 'questions'):
                 _fail(f'{path}.fields.{i}', 'unknown form field')
         if action == 'create':
             for required in base:

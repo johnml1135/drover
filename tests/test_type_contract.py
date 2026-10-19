@@ -300,6 +300,28 @@ class TypeContractTests(unittest.TestCase):
         self.invalid('fields.problem.required', normalize_type,
                      self.definition(fields={'problem': {'type': 'string', 'required': 1}}))
 
+    def test_forms_reject_unsupported_action_inputs(self):
+        base = ['title', 'repo', 'goal', 'scope_files', 'problem']
+        for action in ('create', 'edit', 'answer'):
+            for name in ('fields_json', 'approval', 'approved_at', 'approved_by',
+                         'execution_phase', 'schema_version', 'forms', 'unknown'):
+                with self.subTest(action=action, name=name):
+                    self.invalid('forms.' + action + '.fields.5', normalize_type,
+                                 self.definition(forms={action: {'fields': base + [name]}}))
+
+        # Task aliases, access inputs and custom fields remain valid form inputs.
+        names = base + ['kind', 'description', 'write', 'read_access', 'related', 'enabled']
+        for action in ('create', 'edit', 'answer'):
+            with self.subTest(action=action):
+                normalized = normalize_type(self.definition(forms={action: {'fields': names}}))
+                self.assertEqual(normalized['forms'][action]['fields'], names)
+        answer = normalize_type(self.definition(forms={'answer': {'fields': ['questions']}}))
+        self.assertEqual(answer['forms']['answer']['fields'], ['questions'])
+        for action in ('create', 'edit'):
+            with self.subTest(action=action):
+                self.invalid('forms.' + action + '.fields.5', normalize_type,
+                             self.definition(forms={action: {'fields': base + ['questions']}}))
+
     def test_invalid_shapes_have_field_errors(self):
         for raw, path in (
             (self.definition(context={'template': 3}), 'context.template'),
