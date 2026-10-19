@@ -5,14 +5,14 @@ task_events kind 'gate' and decisions.outcome. Parsers accept the legacy shapes 
 """
 import json
 
-OUTCOMES = ("gated", "gate-fail", "no-record", "error", "launch-error", "timeout", "rotated", "orphaned",
+OUTCOMES = ("gated", "gate-fail", "no-record", "error", "launch-error", "provider-error", "timeout", "rotated", "orphaned",
             "unverified", "blocked", "done", "passed", "failed", "land", "hold")
 # `done` is a worker run that finished and awaits its gate (amended to gated or gate-fail). Gate runs end `passed` or
 # `failed`, review runs `land` or `hold`: none of these is a worker failure, so FAIL_OUTCOMES leaves them out.
 # The dispatcher counts a `hold` against the worker run it reviewed.
 PIPELINE_OUTCOMES = ("done", "passed", "failed", "land", "hold")   # written only when a pipeline gates and reviews
 PASS_OUTCOMES = ("gated",)                                     # a worker run that passed its gate
-FAIL_OUTCOMES = ("gate-fail", "no-record", "error", "timeout")  # worker failures; launch-error/orphaned never count
+FAIL_OUTCOMES = ("gate-fail", "no-record", "error", "timeout")  # worker failures; launch-error/provider-error/orphaned never count
 GATE_EVENT = "gate"
 EXCERPT_LINES = 60
 

@@ -399,6 +399,8 @@ def set_status(conn, task_id, new, actor="system", reason=None, blocker=None, da
                      (new, _j(blocker) if blocker else None, approved, stamp(), task_id))
         event(conn, "status", actor, {"from": old, "to": new, "reason": reason, **(data or {})},
               task_id=task_id, epic_id=t["epic_id"])
+        if new != "blocked" and (old == "blocked" or new in states.TERMINAL):
+            release_stale_holds(conn, actor, source=task_id)     # the source stopped holding: free what it held
         return get_task(conn, task_id)
 
 
@@ -463,6 +465,37 @@ def remove_hold(conn, task_id, source, actor="system", reason=None):
             return False
         _restore(conn, t, actor, f"{source} released")
         return True
+
+
+def _hold_is_stale(conn, holder_id, hold):
+    """A hold is stale when its source task is terminal (landed or cancelled), or, for a replan hold, no longer
+    blocked (its replan ended). Manual holds, a task's own hold and holds whose source is no task never go stale."""
+    src = hold.get("source")
+    if not src or src == "manual" or src == holder_id:
+        return False
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (src,)).fetchone()
+    if row is None:
+        return False
+    return row[0] in states.TERMINAL or (hold.get("reason") == "replan" and row[0] != "blocked")
+
+
+def release_stale_holds(conn, actor="dispatcher", source=None):
+    """Release every stale hold (only those of `source` when given); a task left with no hold returns to its prior
+    status (blocker.prev, never past an owner approval). Returns the released task ids."""
+    with tx(conn):
+        like = f'%"{source}"%' if source else "%"
+        released = []
+        for (tid,) in conn.execute("SELECT id FROM tasks WHERE status='blocked' AND blocker LIKE ? ORDER BY id",
+                                   (like,)).fetchall():
+            holds, _ = _holds_of(get_task(conn, tid))
+            stale = [h for h in holds if (source is None or h.get("source") == source) and _hold_is_stale(conn, tid, h)]
+            for h in stale:
+                if remove_hold(conn, tid, h["source"], actor, h["reason"]):
+                    released.append(tid)
+        if released:
+            event(conn, "stale-holds-released", actor, {"released": released, **({"source": source} if source else {})},
+                  task_id=source)
+        return released
 
 
 def block(conn, task_id, reason, actor="system"):
@@ -720,10 +753,15 @@ def replan_hold(conn, task_id, actor="system", reason="replan"):
 def replan_release(conn, task_id, actor="system", reason="replan"):
     """Remove this source's replan holds everywhere (pass reason="urgent" for urgent ones, None for all). Returns the ids that actually left blocked."""
     with tx(conn):
-        released = []
+        held = []
         for r in conn.execute("SELECT id FROM tasks WHERE status='blocked' ORDER BY id").fetchall():
-            if remove_hold(conn, r[0], task_id, actor, reason):
-                released.append(r[0])
+            holds, _ = _holds_of(get_task(conn, r[0]))
+            if any(h["source"] == task_id and (reason is None or h["reason"] == reason) for h in holds):
+                held.append(r[0])
+        for tid in held:
+            remove_hold(conn, tid, task_id, actor, reason)
+        # a task may already have left blocked when the source's own status change released it (see set_status)
+        released = [tid for tid in held if get_task(conn, tid)["status"] != "blocked"]
         event(conn, "release", actor, {"released": released}, task_id=task_id)
         return released
 

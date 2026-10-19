@@ -484,6 +484,51 @@ class ReplanTests(Base):
             ops.replan_hold(self.conn, t["id"])
 
 
+class StaleHoldTests(Base):
+    def last_status_actor(self, tid):
+        return [e for e in ops.events(self.conn, task_id=tid, kind="status")][-1]["actor"]
+
+    def test_cancel_releases_dependents_as_the_actor(self):
+        a = self.task("a")
+        b = self.task("b", deps=[a["id"]])
+        ops.replan_hold(self.conn, a["id"])
+        self.assertEqual(self.status(b["id"]), "blocked")
+        ops.set_status(self.conn, a["id"], "cancelled", "owner", reason="drop")
+        self.assertEqual(self.status(b["id"]), "ready")
+        self.assertEqual(self.last_status_actor(b["id"]), "owner")
+
+    def test_source_leaving_replan_releases(self):
+        a = self.task("a")
+        b = self.task("b", deps=[a["id"]])
+        ops.replan_hold(self.conn, a["id"])
+        ops.set_status(self.conn, a["id"], "ready", "owner", reason="replanned")
+        self.assertEqual(self.status(b["id"]), "ready")
+
+    def test_sweep_releases_old_stale_holds_as_dispatcher_and_keeps_proposed(self):
+        a = self.task("a")
+        b = self.task("b", deps=[a["id"]], status="proposed")
+        c = self.task("c", deps=[a["id"]])
+        ops.replan_hold(self.conn, a["id"])
+        ops.block(self.conn, c["id"], "manual reason")
+        self.conn.execute("UPDATE tasks SET status='cancelled', blocker=NULL WHERE id=?", (a["id"],))   # pre-fix state
+        self.assertEqual(self.status(b["id"]), "blocked")
+        released = ops.release_stale_holds(self.conn, "dispatcher")
+        self.assertEqual(released, [b["id"]])
+        self.assertEqual(self.status(b["id"]), "proposed")
+        self.assertIsNone(ops.get_task(self.conn, b["id"])["approved_at"])
+        self.assertEqual(self.last_status_actor(b["id"]), "dispatcher")
+        self.assertEqual(self.status(c["id"]), "blocked")          # the manual hold stays
+        self.assertEqual([h["source"] for h in ops.get_task(self.conn, c["id"])["blocker"]["holds"]], ["manual"])
+        self.assertEqual(ops.release_stale_holds(self.conn, "dispatcher"), [])
+
+    def test_live_replan_source_keeps_its_holds(self):
+        a = self.task("a")
+        b = self.task("b", deps=[a["id"]])
+        ops.replan_hold(self.conn, a["id"])
+        self.assertEqual(ops.release_stale_holds(self.conn, "dispatcher"), [])
+        self.assertEqual(self.status(b["id"]), "blocked")
+
+
 class BacklogGateTests(Base):
     def test_blocked_route_cannot_reach_ready_unapproved(self):
         for first in ("proposed", "draft"):

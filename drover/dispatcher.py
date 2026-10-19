@@ -44,6 +44,8 @@ FAIL_OUTCOMES = contract.FAIL_OUTCOMES   # worker failures; launch-error/orphane
 WALL_MIN = {"S": 30, "M": 60, "L": 120}
 IDLE_MIN = 10
 MAX_LAUNCH_ERRORS = 3
+MAX_PROVIDER_ERRORS = 5     # provider errors in a row (never counted as task failures) before the owner is alerted
+PROVIDER_COOLDOWN_S = 300   # a review is not restarted this soon after a provider error
 CLAIM_STALE_S = 300
 SCAN_EVERY_S = 60            # how often live runs are checked against the process list
 ORPHAN_SCANS = 2             # consecutive clean scans that miss a run's runner before it is orphaned
@@ -291,6 +293,15 @@ class Dispatcher:
         self.port.append_event("replan-request", {"trigger": trigger, **data}, task_id)
         self.port.replan_hold(task_id, "replan")
 
+    def _release_stale_holds(self):
+        """Release holds whose source task is landed, cancelled or out of replan (also clears holds left from before
+        this sweep existed). Scans the blocked tasks once per tick (cost grows with their number); never raises."""
+        try:
+            return self.port.release_stale_holds()
+        except Exception as e:
+            self._safe_event("stale-hold-error", {"error": repr(e)[:300]})
+            return []
+
     # ---- reap ---------------------------------------------------------------------------------------
     def reap(self):
         """Finish runs whose result is in. A run stays in `live` until _finish succeeds; a failing finish is logged and
@@ -358,6 +369,8 @@ class Dispatcher:
             p.finish_run(run_id, "read-only-done", note=note, **usage)
             p.append_event("read-only-done", {"run": run_id, "note": note}, task_id)
             return p.set_status(task_id, "needs-owner", reason="Read-only work completed; approve to accept the findings and complete the task")
+        if result.get("provider_error") and st in ("error", "no-record", "timeout"):
+            return self._provider_error(task_id, run_id, result["provider_error"], usage)
         if st == "timeout":
             p.finish_run(run_id, "timeout", note=f"timeout: {result.get('timeout')}"[:300], **usage)
             self._failed(task_id, run_id, f"worker timed out ({result.get('timeout')})")
@@ -395,6 +408,32 @@ class Dispatcher:
         else:
             p.finish_run(run_id, st, note=(result.get("text") or "")[-250:] or None, **usage)
             self._failed(task_id, run_id, "no action-state record" if st == "no-record" else "worker error")
+
+    def _provider_streak(self, task_id, runs):
+        """Provider-error runs in a row at the end of the history, counted only after the task's last status change
+        by someone other than the dispatcher (an owner requeue starts the count again)."""
+        since = max((e.get("at") or "" for e in self.port.events("status")
+                     if e.get("task_id") == task_id and e.get("actor") not in ("dispatcher", None)), default="")
+        n = 0
+        for r in reversed([r for r in runs if r["ended"] is not None]):
+            if r["outcome"] != "provider-error" or (r["ended"] or "") < since:
+                break
+            n += 1
+        return n
+
+    def _provider_error(self, task_id, run_id, message, usage):
+        """A provider-side error (capacity, rate limit, 5xx, expired auth) says nothing about the task: the run ends
+        `provider-error`, which FAIL_OUTCOMES leaves out, so it counts toward no retry, escalate or replan. The task
+        goes back to ready behind a growing backoff; a persistent streak goes to the owner."""
+        p = self.port
+        p.finish_run(run_id, "provider-error", note=f"provider error: {message}"[:290], **usage)
+        p.append_event("provider-error", {"run": run_id, "message": message[:300]}, task_id)
+        streak = self._provider_streak(task_id, p.list_runs(task_id))
+        if streak >= MAX_PROVIDER_ERRORS:
+            return p.set_status(task_id, "needs-owner", reason=f"{streak} provider errors in a row: {message}"[:300])
+        minutes = min(BACKOFF_MAX_MIN, 2 ** (streak - 1))
+        p.set_status(task_id, "ready", reason=f"provider error: {message}"[:300])
+        p.set_backoff(task_id, self.now() + minutes * 60, minutes)
 
     def _env_block_to_ready(self, task_id, run_id, rec, usage, result):
         """A worker blocked only by the sandbox (the Drover gate runs the full suites) with work in its worktree is
@@ -544,7 +583,7 @@ class Dispatcher:
         if any(r["ended"] is None for r in runs):
             return False
         for r in reversed(runs):
-            if r["role"] == "gate" or (r["role"] == "review" and r["outcome"] in ("no-record", "error", "timeout")):
+            if r["role"] == "gate" or (r["role"] == "review" and r["outcome"] in ("no-record", "error", "timeout", "provider-error")):
                 continue
             return r["role"] == "worker" and r["outcome"] == "gated"
         return False
@@ -873,6 +912,9 @@ class Dispatcher:
         if self._review_streak(runs) >= MAX_REVIEW_TRIES:
             p.set_status(tid, "needs-owner", reason=f"{MAX_REVIEW_TRIES} reviews in a row gave no verdict")
             return False
+        last = next((r for r in reversed(runs) if r["role"] == "review" and r["ended"]), None)
+        if last and last["outcome"] == "provider-error" and self.now() - _epoch(last["ended"]) < PROVIDER_COOLDOWN_S:
+            return False
         if pl.head(task) != sha:
             p.set_status(tid, "ready", reason="the worktree moved after the gate; work must be gated again")
             return False
@@ -936,6 +978,12 @@ class Dispatcher:
                          gate_receipt=contract.gate_receipt(False, excerpt=excerpt, review=True), **usage)
             p.append_event("review-done", {"run": run_id, "verdict": "HOLD", "findings": rec["findings"]}, task_id)
             return self._failed(task_id, worker_id, excerpt)
+        if result.get("provider_error") and result["status"] in ("error", "no-record", "timeout"):
+            p.finish_run(run_id, "provider-error", note=f"provider error: {result['provider_error']}"[:290], **usage)
+            p.append_event("provider-error", {"run": run_id, "message": result["provider_error"][:300]}, task_id)
+            if self._provider_streak(task_id, p.list_runs(task_id)) >= MAX_PROVIDER_ERRORS:
+                p.set_status(task_id, "needs-owner", reason=f"{MAX_PROVIDER_ERRORS} provider errors in a row")
+            return
         why = {"timeout": "timeout", "error": "error"}.get(result["status"], "no-record")
         p.finish_run(run_id, why, note=(f"no usable verdict ({verdict or result['status']})")[:280], **usage)
         if self._review_streak(p.list_runs(task_id)) >= MAX_REVIEW_TRIES:
@@ -1408,6 +1456,7 @@ class Dispatcher:
             out["recovered"] = self.watch_runs()
         out["recovered"] += self.requeue_stale_claims()
         self.check_stale()
+        self._release_stale_holds()
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
             return out
         if self.pipeline:

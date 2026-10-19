@@ -247,6 +247,39 @@ def _reject_permission_bypass(argv):
             raise ValueError("permission bypass is forbidden")
 
 
+# Provider phrasing only (Anthropic API error types, Claude Code's "API Error: <status>" line, Codex's capacity and
+# limit messages). Bare words such as "authentication" or "500" are not here: a failing test mentions them too.
+PROVIDER_ERROR = re.compile(
+    r"overloaded_error|rate_limit_error|api_error\b|authentication_error|permission_error|"
+    r"^\s*API Error:?\s*(429|401|5\d\d)\b|Selected model is at capacity|model is at capacity|"
+    r"Credit balance is too low|OAuth token has expired|usage limit (reached|has been reached)|"
+    r"you(?:'|\u2019)ve hit your (usage )?limit|rate limit (exceeded|reached)|\b429 Too Many Requests|"
+    r"(?:^|\W)503 Service Unavailable|Please run /login|Invalid API key", re.I)
+PROVIDER_STATUS = (401, 429, 500, 502, 503, 504, 529)
+PROGRESS_EVENTS = ("assistant", "user", "item.started", "item.completed", "turn.started", "turn.completed")
+
+
+def provider_error_of(ev):
+    """The message of a provider-side error that ended a turn, else None. Qualifies only: an `error` or
+    `turn.failed` stream event (codex) or an error `result` (claude) whose text uses provider phrasing, or an
+    error `result` carrying a structured api_error_status. Free text a worker printed never qualifies."""
+    t = ev.get("type")
+    msg = None
+    if t == "error":
+        msg = ev.get("message")
+    elif t == "turn.failed":
+        err = ev.get("error")
+        msg = err.get("message") if isinstance(err, dict) else err
+    elif t == "result" and ev.get("is_error"):
+        status = ev.get("api_error_status")
+        if isinstance(status, int) and not isinstance(status, bool) and status in PROVIDER_STATUS:
+            return f"API Error: {status} {str(ev.get('result') or '')}"[:300].strip()
+        msg = ev.get("result")
+    if isinstance(msg, str) and PROVIDER_ERROR.search(msg):
+        return msg[:300]
+    return None
+
+
 class Usage:
     """Token totals plus the context size of the latest request, from claude stream-json or codex --json events."""
 
@@ -255,9 +288,15 @@ class Usage:
         self.text, self._claude_final = "", False
         self.sessions, self.compactions, self.models = set(), 0, {}
         self._messages = set()
+        self.provider_error = None
 
     def feed(self, ev):
         t = ev.get("type")
+        perr = provider_error_of(ev)
+        if perr:
+            self.provider_error = perr
+        elif t in PROGRESS_EVENTS:
+            self.provider_error = None       # the run went on after the error: it is not what ended it
         if ev.get("session_id"):
             self.sessions.add(ev["session_id"])
         if t == "thread.started" and ev.get("thread_id"):
@@ -520,6 +559,7 @@ class RunnerHandle:
         return {"status": status, "record": record, "usage": usage.as_dict(), "text": text,
                 "handoff": rotation_handoff(self.spec["task"], usage, self.ceiling) if rotate else None,
                 "returncode": rc, "timeout": reason if state == "timeout" else None, "tail_error": self.tail.error,
+                "provider_error": None if record else usage.provider_error,
                 "adopted": bool(self.spec.get("adopted")), "peaks": st.get("peaks", {})}
 
     def poll(self):

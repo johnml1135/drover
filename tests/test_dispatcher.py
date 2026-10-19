@@ -522,6 +522,86 @@ class ParserAndRotation(Base):
         self.assertEqual(self.events("escalate")[0]["data"]["to"], "sonnet-5.5")
 
 
+class ProviderErrors(Base):
+    def test_provider_error_is_not_a_task_failure(self):
+        t = self.task(size="S")
+        for i in range(2):
+            self.d.tick()
+            self.finish(i, {**res("error"), "provider_error": "Selected model is at capacity."})
+            self.d.tick()
+            runs = ops.list_runs(self.conn, t)
+            self.assertEqual(runs[-1]["outcome"], "provider-error")
+            self.assertEqual(dispatcher.failures(runs), 0)
+            self.assertEqual(self.status(t), "ready")
+            self.assertEqual(self.events("replan-request"), [])
+            self.conn.execute("DELETE FROM settings WHERE key LIKE 'backoff%'")
+            self.d.now = lambda: time.time() + 10 ** 6 * (i + 1)
+        self.assertEqual(len(self.events("provider-error")), 2)
+
+    def test_persistent_provider_errors_alert_the_owner(self):
+        t = self.task(size="S")
+        for i in range(dispatcher.MAX_PROVIDER_ERRORS):
+            self.d.now = lambda i=i: time.time() + 10 ** 6 * (i + 1)
+            self.d.tick()
+            self.finish(i, {**res("error"), "provider_error": "429 rate limit"})
+            self.d.tick()
+        self.assertEqual(self.status(t), "needs-owner")
+
+    def test_usage_classifies_provider_errors_from_the_stream(self):
+        u = launch.Usage()
+        u.feed({"type": "error", "message": "Selected model is at capacity. Please try a different model."})
+        self.assertIn("at capacity", u.provider_error)
+        v = launch.Usage()
+        v.feed({"type": "turn.failed", "error": {"message": "compile failed in tests"}})
+        self.assertIsNone(v.provider_error)
+        w = launch.Usage()
+        w.feed({"type": "result", "is_error": True, "api_error_status": 529, "result": "Overloaded"})
+        self.assertIn("529", w.provider_error)
+        x = launch.Usage()
+        x.feed({"type": "result", "is_error": True, "result": "API Error: 429 rate_limit_error"})
+        self.assertIsNotNone(x.provider_error)
+
+    def test_real_failures_are_not_provider_errors(self):
+        for text in ("3 tests failed: test_authentication_flow", "assertion 500 != 200",
+                     "unauthorized access test failed", "quota calculation is wrong"):
+            for ev in ({"type": "result", "is_error": True, "result": text}, {"type": "error", "message": text},
+                       {"type": "turn.failed", "error": {"message": text}}):
+                self.assertIsNone(launch.provider_error_of(ev), (text, ev["type"]))
+
+    def test_provider_error_is_not_sticky(self):
+        u = launch.Usage()
+        u.feed({"type": "error", "message": "Selected model is at capacity."})
+        u.feed({"type": "assistant", "message": {"content": [{"type": "text", "text": "carrying on"}]}})
+        self.assertIsNone(u.provider_error)
+
+    def test_owner_requeue_resets_the_provider_streak(self):
+        t = self.task(size="S")
+        for i in range(dispatcher.MAX_PROVIDER_ERRORS):
+            self.d.now = lambda i=i: time.time() + 10 ** 6 * (i + 1)
+            self.d.tick()
+            self.finish(i, {**res("error"), "provider_error": "429 rate limit"})
+            self.d.tick()
+        self.assertEqual(self.status(t), "needs-owner")
+        time.sleep(1.1)
+        ops.set_status(self.conn, t, "ready", "owner", reason="requeue")
+        n = dispatcher.MAX_PROVIDER_ERRORS
+        self.d.now = lambda: time.time() + 10 ** 7
+        self.d.tick()
+        self.finish(n, {**res("error"), "provider_error": "429 rate limit"})
+        self.d.tick()
+        self.assertEqual(self.status(t), "ready")
+
+    def test_tick_sweeps_stale_holds_as_dispatcher(self):
+        src = self.task(ready=False)
+        dep = self.task(deps=[src])
+        ops.replan_hold(self.conn, src)
+        self.conn.execute("UPDATE tasks SET status='cancelled', blocker=NULL WHERE id=?", (src,))
+        self.d.tick()
+        self.assertEqual(self.status(dep), "ready")
+        last = [e for e in ops.events(self.conn, task_id=dep, kind="status")][-1]
+        self.assertEqual(last["actor"], "dispatcher")
+
+
 class Timeouts(Base):
     def test_dispatcher_records_timeout_and_counts_it(self):
         t = self.task(size="S")
@@ -999,8 +1079,9 @@ class ContractRoundTrip(Base):
         from drover import contract
         outcomes = set()
         scen = [res("done", DONE), res("done", DONE), res("no-record", "x"), res("error", "boom"),
-                {**res("timeout"), "timeout": "wall"}, res("rotate"), res("blocked", BLOCKED), res("done", DONE)]
-        gates = [{"ok": True}, {"ok": False, "excerpt": "x"}, None, None, None, None, None, {"needs_owner": "why"}]
+                {**res("timeout"), "timeout": "wall"}, res("rotate"), res("blocked", BLOCKED), res("done", DONE),
+                {**res("error"), "provider_error": "429 rate limit"}]
+        gates = [{"ok": True}, {"ok": False, "excerpt": "x"}, None, None, None, None, None, {"needs_owner": "why"}, None]
         for result, gate in zip(scen, gates):
             self.gate = gate or {"ok": True}
             t = self.one(result)
