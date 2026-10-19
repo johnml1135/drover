@@ -37,6 +37,8 @@ WINPATH_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$", re.S)
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9]{16,64}$")
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+ARTIFACT_URI_RE = re.compile(r"hub:tasks/[A-Za-z0-9][A-Za-z0-9._-]*/result\.md")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PYTHON_RE = re.compile(r"(?i)python(w)?(\d+(\.\d+)?)?(\.exe)?")
 KIND_MAX, DETAIL_MAX = 40, 2000
 DETACH_WAIT_S = 5
@@ -80,6 +82,7 @@ def read_status(runs_dir, run_id):
 
 # ---- action record ----------------------------------------------------------------------------------------
 def _record_from(obj):
+    """Normalize a worker claim; artifact persistence and delivery authority are checked by the dispatcher."""
     if not isinstance(obj, dict) or obj.get("status") not in ("done", "blocked", "ready_to_commit"):
         return None
     note, blocker = str(obj.get("note") or "")[:NOTE_MAX], obj.get("blocker")
@@ -90,7 +93,17 @@ def _record_from(obj):
         if isinstance(message, str) and message.strip() and "\0" not in message:
             return {"status": status, "sha": "", "commit_message": message.strip(), "blocker": None, "note": note}
         status, blocker = "blocked", {"kind": "no-commit-message", "detail": "ready_to_commit requires a commit message"}
-    if status == "done" and not sha:     # a done claim without a real commit sha is not done
+    if status == "done" and "artifact" in obj:
+        artifact = obj["artifact"]
+        uri = artifact.get("uri") if isinstance(artifact, dict) else None
+        digest = artifact.get("sha256") if isinstance(artifact, dict) else None
+        if (obj.get("sha") in (None, "") and isinstance(uri, str) and ARTIFACT_URI_RE.fullmatch(uri)
+                and isinstance(digest, str) and SHA256_RE.fullmatch(digest)):
+            return {"status": status, "sha": "", "artifact": {"uri": uri, "sha256": digest},
+                    "blocker": None, "note": note}
+        status, blocker = "blocked", {"kind": "invalid-artifact",
+                                      "detail": "done requires a normalized hub task-result URI and sha256, without a commit sha"}
+    if status == "done" and not sha:
         status, blocker = "blocked", {"kind": "no-sha", "detail": "worker reported done without a valid commit sha"}
     if status == "blocked":
         if not isinstance(blocker, dict) or not all(blocker.get(k) for k in BLOCKER_KEYS):
