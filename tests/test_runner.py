@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -177,6 +178,17 @@ with tempfile.TemporaryDirectory() as tmp:
         self.assertEqual(Path(data['tmp']).parent, scratch)
         self.assertEqual(data['journal'], 'wal')
         self.assertFalse(scratch.exists())
+
+    def test_ensure_dotnet_shm_creates_world_writable_dir_and_keeps_existing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / '.dotnet'
+            runner.ensure_dotnet_shm(root)
+            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o1777)
+            self.assertEqual(stat.S_IMODE((root / 'shm').stat().st_mode), 0o1777)
+            root.chmod(0o755)
+            runner.ensure_dotnet_shm(root)
+            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o755)
+        self.assertEqual(runner.DOTNET_SHM_ROOT, '/tmp/.dotnet')
 
     @unittest.skipUnless(shutil.which('dotnet'), 'dotnet SDK is absent')
     def test_dotnet_info_starts_with_scratch_environment(self):

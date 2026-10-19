@@ -417,6 +417,22 @@ def _cleanup_scratch(path):
         pass
 
 
+DOTNET_SHM_ROOT = "/tmp/.dotnet"
+
+
+def ensure_dotnet_shm(root=DOTNET_SHM_ROOT):
+    """Create <root>/shm (sticky, 1777) for the .NET named-mutex shared memory; leave an existing one alone."""
+    shm = Path(root) / "shm"
+    if shm.is_dir():
+        return
+    created = not Path(root).is_dir()
+    Path(root).mkdir(parents=True, exist_ok=True)
+    if created:
+        os.chmod(root, 0o1777)      # sticky and world-writable like /tmp; chmod because mkdir's mode obeys the umask
+    shm.mkdir(exist_ok=True)
+    os.chmod(shm, 0o1777)
+
+
 def worker_scratch_env(scratch):
     """Environment for a WSL worker's private temp and .NET caches; the global NuGet package cache stays shared."""
     scratch = Path(scratch)
@@ -489,6 +505,10 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
     if scratch is not None:
+        try:
+            ensure_dotnet_shm()
+        except OSError:
+            pass                    # best effort: a .NET worker reports its own EROFS/EACCES
         env.update(worker_scratch_env(scratch))
     for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
         if env.get(key):

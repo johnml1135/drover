@@ -207,10 +207,14 @@ def build_argv(spec):
         if scratch:
             task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
             scratch = runner.to_wsl_path(str(scratch)) if spec.get("placement") == "wsl" else to_windows_path(scratch)
+        # The .NET runtime hard-codes /tmp/.dotnet/shm for named mutexes (ignores TMPDIR); /tmp stays read-only otherwise.
+        roots = [r for r in (scratch,) if r]
+        if sandbox == "workspace-write" and spec.get("placement") == "wsl":
+            roots.append(runner.DOTNET_SHM_ROOT)
         argv = [exe, "exec", "--json", "-s", sandbox, "-C", cwd, "-m", m, "-c", f"model_reasoning_effort={e}",
                 "-c", f"developer_instructions={json.dumps(spec['system_append'])}",
                 "-c", 'approval_policy="never"',
-                "-c", f"sandbox_workspace_write.writable_roots={json.dumps([scratch] if scratch else [])}",
+                "-c", f"sandbox_workspace_write.writable_roots={json.dumps(roots)}",
                 "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                 "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "-"]
         # Both sandbox modes allow reads outside cwd. --add-dir grants WRITE
