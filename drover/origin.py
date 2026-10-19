@@ -2,7 +2,8 @@
 import json
 import subprocess
 from pathlib import Path
-from .winproc import NO_WINDOW
+
+from . import hostgit
 
 FETCH_TIMEOUT_S = 120
 PAUSE_KEY = '_origin_pause_'
@@ -22,8 +23,7 @@ class MainMoved(SyncError):
 
 def git(repo, *args, check=True, timeout=None):
     try:
-        r = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True,
-                           errors='replace', timeout=timeout, **NO_WINDOW)
+        r = hostgit.run(repo, *args, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
         r = subprocess.CompletedProcess(args, 124, '', '')
     if check and r.returncode:

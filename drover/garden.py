@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from .winproc import NO_WINDOW
 
+from . import hostgit
+
 DAY = 86400
 TAG = 'drover-tag.json'
 SIDE_LOCKS = ('wsl', 'windows')
@@ -36,8 +38,7 @@ EPIC_TITLE = 'Garden'
 
 def git(cwd, *args, check=False):
     # GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, so a scan writes nothing.
-    r = subprocess.run(['git', '-C', str(cwd), *args], text=True, capture_output=True, errors='replace',
-                       env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'), **NO_WINDOW)
+    r = hostgit.run(cwd, *args, env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
     if check and r.returncode:
         raise RuntimeError('git %s: %s' % (' '.join(args), r.stderr.strip()))
     return r

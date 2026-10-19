@@ -16,11 +16,10 @@ import tempfile
 import time
 from pathlib import Path, PureWindowsPath
 
-from . import config, gate, origin, worktrees
+from . import config, gate, hostgit, origin, worktrees
 from .port import DirectPort
 from .ledger import ops
 from .ledger.db import connect, default_path, tx
-from .winproc import NO_WINDOW
 
 MIN_SIZE, MAX_SIZE = 1, 5
 
@@ -63,8 +62,7 @@ FETCH_TIMEOUT_S = 120
 
 def git(repo, *args, check=True, timeout=None):
     try:
-        r = subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True, errors='replace',
-                           timeout=timeout, **NO_WINDOW)
+        r = hostgit.run(repo, *args, timeout=timeout)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {timeout}s')
     if check and r.returncode:

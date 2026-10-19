@@ -1,6 +1,7 @@
 """The pipeline: pause switch, repo config, worktrees, gate runs, reviews, decisions and the landing loop."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import brief, config, contract, dispatcher, gate, landing, launch, pipeline, repos, runner
+from drover import brief, config, contract, dispatcher, gate, hostgit, landing, launch, pipeline, repos, runner
 from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -358,31 +359,111 @@ class Worktrees(Base):
         self.assertEqual(Path(self.pipe.worktree(self.get(tid))), other)
         self.assertEqual(self.get(tid)["worktree"], str(other))
 
-    def test_refuses_a_dirty_worktree_it_does_not_own_but_not_one_it_owns(self):
+    def test_a_dirty_foreign_worktree_is_untouched_and_the_task_branches_from_the_committed_tip(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
         self.fix.git("worktree", "add", "-q", other, "feat")
         (other / "scratch.txt").write_text("owner's work\n")
         tid = self.task(branch="feat")
-        with self.assertRaises(pipeline.WorktreeRefused) as cm:
-            self.pipe.worktree(self.get(tid))
-        self.assertIn("uncommitted", str(cm.exception))
-        self.assertTrue((other / "scratch.txt").exists())
+        wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self.assertNotEqual(Path(wt).resolve(), other.resolve())
+        self.assertEqual((other / "scratch.txt").read_text(), "owner's work\n")
+        self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
+        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "feat"))
+        ev = [e for e in ops.events(self.conn, task_id=tid, kind="worktree-fallback")]
+        self.assertEqual(ev[-1]["data"]["source_branch"], "feat")
+        self.assertIn("uncommitted", ev[-1]["data"]["reason"])
         mine = self.task()
         wt = repos.native(self.pipe.worktree(self.get(mine)))
         (Path(wt) / "wip.txt").write_text("worker in progress\n")
         self.assertEqual(self.pipe.worktree(self.get(mine)), self.get(mine)["worktree"])   # owned: fine
 
-    def test_the_dispatcher_sends_a_refused_task_to_the_owner_and_launches_nothing(self):
+    def test_a_missing_registered_worktree_gets_a_fresh_task_branch_and_nothing_is_pruned(self):
+        self.fix.branch("feat", {"f.txt": "f\n"})
+        other = Path(self.tmp.name) / "other"
+        self.fix.git("worktree", "add", "-q", other, "feat")
+        shutil.rmtree(other)                                   # registered in git, gone from disk
+        tid = self.task(branch="feat")
+        wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
+        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "feat"))
+        self.assertIn(str(other.name), self.fix.git("worktree", "list", "--porcelain"))   # registration kept
+        self.assertIn("unreachable", ops.events(self.conn, task_id=tid, kind="worktree-fallback")[-1]["data"]["reason"])
+
+    def test_a_wsl_only_worktree_of_a_windows_hub_is_probed_through_wsl_and_a_stale_one_falls_back(self):
+        self.fix.branch("feat", {"f.txt": "f\n"})
+        calls = []
+        real = subprocess.run
+
+        def fake_wsl(argv, *a, **kw):
+            if argv[0] == "wsl.exe":
+                calls.append(argv)
+                return subprocess.CompletedProcess(argv, 128, "", "fatal: cannot change to '/home/johnm/work/x'")
+            return real(argv, *a, **kw)
+        tid = self.task(branch="feat")
+        ops.update_task(self.conn, tid, worktree="/home/johnm/work/motif.worktrees/x")
+        with patch("subprocess.run", fake_wsl), \
+                patch.object(hostgit, "routes_through_wsl", lambda p, nt=None: str(p).startswith("/home/")):
+            wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self.assertTrue(calls and calls[0][:5] == ["wsl.exe", "-d", "Ubuntu", "--exec", "git"], calls)
+        self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
+        self.assertTrue(Path(wt).exists())
+
+    def test_hostgit_routes_only_wsl_only_paths_through_wsl_from_windows(self):
+        self.assertEqual(hostgit.argv("/home/johnm/w", ["status"], nt=True, distro="Ubuntu"),
+                         ["wsl.exe", "-d", "Ubuntu", "--exec", "git", "-C", "/home/johnm/w", "status"])
+        self.assertEqual(hostgit.argv("/home/johnm/w", ["status"], nt=False)[0], "git")
+        self.assertEqual(hostgit.argv("/mnt/h/r", ["status"], nt=True)[0], "git")
+        self.assertEqual(hostgit.argv("/home/j/w", ["worktree", "add", "H:\\x"], nt=True, distro="U")[-1], "/mnt/h/x")
+
+    def _absolute_pointer(self, wt):
+        admin = Path(self.fix.git("-C", wt, "rev-parse", "--absolute-git-dir"))
+        (Path(wt) / ".git").unlink()
+        (Path(wt) / ".git").write_text(f"gitdir: {admin}\n")
+
+    def test_an_owned_worktree_gets_a_relative_pointer_without_a_repo_wide_extension(self):
+        tid = self.task()
+        wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self._absolute_pointer(wt)
+        config_before = self.fix.git("config", "--local", "-l")        # worktree add itself may have set the extension
+        self.pipe.worktree(self.get(tid))
+        pointer = (Path(wt) / ".git").read_text().strip().removeprefix("gitdir: ")
+        self.assertFalse(Path(pointer).is_absolute(), pointer)
+        self.assertEqual(self.fix.git("rev-parse", "--is-inside-work-tree", cwd=wt), "true")
+        self.assertEqual(self.fix.git("config", "--local", "-l"), config_before)
+
+    def test_a_foreign_clean_worktree_pointer_is_not_edited(self):
+        self.fix.branch("feat", {"f.txt": "f\n"})
+        other = Path(self.tmp.name) / "other"
+        self.fix.git("worktree", "add", "-q", other, "feat")
+        self._absolute_pointer(other)
+        before = (other / ".git").read_text()
+        self.pipe.worktree(self.get(self.task(branch="feat")))
+        self.assertEqual((other / ".git").read_text(), before)
+
+    def test_a_failed_pointer_fix_logs_and_falls_back_to_a_fresh_branch(self):
+        tid = self.task()
+        wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self._absolute_pointer(wt)
+        with patch.object(pipeline.Pipeline, "_relativize", return_value=False):
+            self.pipe.worktree(self.get(tid))
+        self.assertTrue(ops.events(self.conn, task_id=tid, kind="worktree-repair-failed"))
+        self.assertTrue(ops.events(self.conn, task_id=tid, kind="worktree-fallback"))
+
+    def test_hostgit_translates_path_arguments_only(self):
+        a = hostgit.argv("/home/j/w", ["commit", "-m", "fix C:\\x", "--", "R:\\f"], nt=True, distro="U")
+        self.assertEqual(a[-4:], ["-m", "fix C:\\x", "--", "R:\\f"])
+        a = hostgit.argv("/home/j/w", ["worktree", "add", "-b", "C:\\br", "D:\\wt", "E:\\ref"], nt=True, distro="U")
+        self.assertEqual(a[-5:], ["add", "-b", "C:\\br", "/mnt/d/wt", "E:\\ref"])
+
+    def test_the_dispatcher_launches_on_a_fresh_branch_when_the_registered_worktree_is_dirty(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
         self.fix.git("worktree", "add", "-q", other, "feat")
         (other / "scratch.txt").write_text("x\n")
         tid = self.task(branch="feat")
-        self.assertEqual(self.d.tick()["launched"], [])
-        t = self.get(tid)
-        self.assertEqual(t["status"], "needs-owner")
-        self.assertIn("uncommitted", [e for e in ops.events(self.conn, task_id=tid, kind="status")][-1]["data"]["reason"])
+        self.assertEqual(self.d.tick()["launched"], [tid])
+        self.assertTrue((other / "scratch.txt").exists())
 
     def test_wsl_placement_gets_the_worktree_in_its_config_form_and_the_launcher_maps_it(self):
         self.assertEqual(runner.to_wsl_path("R:\\repos\\acme-lib.worktrees\\drover-T1"),
