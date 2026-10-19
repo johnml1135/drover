@@ -306,5 +306,37 @@ class Tee(Base):
         self.assertEqual(r.returncode, 0); self.assertEqual(r.stdout.strip(), 'allowance n/a')
 
 
+class FiveHourFormula(unittest.TestCase):
+    def setUp(self):
+        self.state, self.home = tempfile.mkdtemp(), tempfile.mkdtemp()
+
+    def allowed(self, five_left, hours, role='worker', **cfg_over):
+        reset = None if hours is None else NOW + hours * 3600
+        reading = al._result('claude', 'live', NOW - 60, {
+            'five_hour': dict(used_pct=100 - five_left, resets_at=reset, window_hours=5.0),
+            'seven_day': dict(used_pct=10, resets_at=NOW + 86400, window_hours=168.0)})
+        cfg = al.load_config(self.state)
+        cfg['claude'].update(cfg_over)
+        return al.admit('claude', role, 0, self.state, self.home, NOW, reading=reading, config=cfg)['allow']
+
+    def test_floor_follows_hours_to_reset(self):
+        self.assertEqual(al.five_hour_floor(0), 5.0)
+        self.assertEqual(al.five_hour_floor(1.5), 12.5)
+        self.assertEqual(al.five_hour_floor(5), 30.0)
+        self.assertEqual(al.five_hour_floor(None), 30.0)
+        self.assertEqual(al.five_hour_floor(2, 1.0, 2.0), 5.0)
+
+    def test_admit_uses_the_formula_at_0_1_5_5_hours_and_unknown_reset(self):
+        self.assertTrue(self.allowed(5.5, 0.0)); self.assertFalse(self.allowed(4.5, 0.0))
+        self.assertTrue(self.allowed(12.6, 1.5)); self.assertFalse(self.allowed(12.4, 1.5))
+        self.assertTrue(self.allowed(30.5, 5)); self.assertFalse(self.allowed(29.5, 5))
+        self.assertTrue(self.allowed(30.5, None)); self.assertFalse(self.allowed(29.5, None))
+
+    def test_directors_use_the_same_five_hour_floor_and_it_is_configurable(self):
+        self.assertFalse(self.allowed(12.4, 1.5, role='director'))
+        self.assertTrue(self.allowed(12.6, 1.5, role='planner'))
+        self.assertTrue(self.allowed(8.0, 1.5, five_hour_base_pct=1.0, five_hour_per_hour_pct=2.0))
+
+
 if __name__ == '__main__':
     unittest.main()

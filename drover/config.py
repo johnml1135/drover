@@ -42,7 +42,7 @@ DEFAULT_SEATS = [
      "director_reserve_pct": 0.0, "director": False, "placement": "wsl", "binary": "codex", "config_dir": ""},
 ]
 SEAT_DEFAULTS = {"priority": 1, "max_workers": 0, "reserve_pct": 10.0, "director_reserve_pct": 0.0,
-                 "director": False, "config_dir": "", "codex_home": "", "sandbox": "workspace-write"}
+                 "five_hour_base_pct": 5.0, "five_hour_per_hour_pct": 5.0, "director": False, "config_dir": "", "codex_home": "", "sandbox": "workspace-write"}
 DEFAULT_TRACKERS = [
     {"kind": "load", "name": "load", "enabled": True, "queue_per_core": 2.5, "hold_per_core": 3.5},
     {"kind": "ram", "name": "ram", "enabled": True, "queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0},
@@ -241,6 +241,8 @@ def _seat(raw, index):
                                  path + ["max_workers"])
     seat["reserve_pct"] = _range(_scalar(seat["reserve_pct"], float, path + ["reserve_pct"]), 0, 100,
                                  path + ["reserve_pct"])
+    for k in ("five_hour_base_pct", "five_hour_per_hour_pct"):
+        seat[k] = _range(_scalar(seat[k], float, path + [k]), 0, 100, path + [k])
     seat["director_reserve_pct"] = _range(_scalar(seat["director_reserve_pct"], float,
                                                   path + ["director_reserve_pct"]), 0, 100,
                                           path + ["director_reserve_pct"])
@@ -535,6 +537,15 @@ def seat_by_name(name, cfg=None):
 
 def director_seat(cfg=None):
     return next(s for s in (cfg or get())["seats"] if s["director"])
+
+
+def director_seats(cfg=None):
+    """Seats a director/planner run may use, in order: Claude seats (the director first, then by priority), then
+    the other seats by priority as a last resort."""
+    seats = (cfg or get())["seats"]
+    claude = sorted((s for s in seats if s["backend"] == "claude"), key=lambda s: (not s["director"], s["priority"], s["name"]))
+    rest = sorted((s for s in seats if s["backend"] != "claude"), key=lambda s: (s["priority"], s["name"]))
+    return claude + rest
 
 
 def seats_for(backend, cfg=None):

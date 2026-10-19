@@ -91,6 +91,30 @@ class DirectorReserve(unittest.TestCase):
             self.assertEqual(r["seat"], "claude")
         self.assertEqual(route.choose(WORKER, {}, heads(), seed=1, seats=[other, CLAUDE])["seat"], "second")
 
+    def test_director_work_falls_back_claude_then_personal_then_codex(self):
+        cfg = config.validate({"seats": [
+            {"name": "codex", "backend": "codex", "priority": 1},
+            {"name": "claude", "backend": "claude", "priority": 2, "director": True},
+            {"name": "claude-personal", "backend": "claude", "priority": 3}]})
+        config.use(cfg)
+        self.addCleanup(config.reset)
+        self.assertEqual([s["name"] for s in config.director_seats()], ["claude", "claude-personal", "codex"])
+        full, gone = {"remaining_pct": 80.0}, {"remaining_pct": 0.0}
+        for h, want in (({"claude": full, "claude-personal": full, "codex": full}, "claude"),
+                        ({"claude": gone, "claude-personal": full, "codex": full}, "claude-personal"),
+                        ({"claude": gone, "claude-personal": gone, "codex": full}, "codex")):
+            r = route.choose({"role": "planner"}, {}, seats=cfg["seats"], seat_headroom=h)
+            self.assertEqual(r["seat"], want)
+            self.assertEqual(config.seat_env(config.seat_by_name(r["seat"])).keys(),
+                             {"CODEX_HOME"} if want == "codex" else {"CLAUDE_CONFIG_DIR"})
+
+    def test_the_five_hour_formula_gates_a_seat_by_reset_time(self):
+        seat = {**CLAUDE, "five_hour_base_pct": 5.0, "five_hour_per_hour_pct": 5.0}
+        def h(left, hours): return {"remaining_pct": left, "windows": {"five_hour": {"remaining_pct": left, "hours_to_reset": hours}}}
+        self.assertTrue(route._seat_admits(seat, h(13.0, 1.5), True))
+        self.assertFalse(route._seat_admits(seat, h(12.0, 1.5), True))
+        self.assertTrue(route._seat_admits(seat, h(6.0, 0.0), True))
+
     def test_the_allowance_module_reads_the_same_reserves(self):
         from drover import allowance
         with_cfg = config.load(env={}, home_path="/nonexistent", overlay="/nonexistent")

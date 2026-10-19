@@ -65,7 +65,9 @@ name = "codex"
 backend = "codex"
 priority = 1
 max_workers = 0
-reserve_pct = 10.0
+reserve_pct = 10.0           # seven_day floor
+five_hour_base_pct = 5.0     # five_hour floor = base + per_hour x hours until that window resets
+five_hour_per_hour_pct = 5.0 # (5% at reset, 30% with 5 hours left; unknown reset counts as 5 hours)
 director = false
 director_reserve_pct = 0.0
 placement = "wsl"

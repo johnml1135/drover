@@ -15,6 +15,8 @@ WINDOWS = {'five_hour': 5.0, 'seven_day': 168.0}  # hours
 CODEX_WINDOW_NAMES = {300: 'five_hour', 10080: 'seven_day'}
 PLANS = ('claude', 'codex')
 DIRECTOR_ROLES = ['director', 'planner']
+FIVE_HOUR_BASE_PCT = 5.0
+FIVE_HOUR_PER_HOUR_PCT = 5.0
 
 
 def __getattr__(name):   # DEFAULTS stays importable; it follows the active config
@@ -28,9 +30,21 @@ def defaults():
     director seat's extra reserve): 10% each, plus 25% kept back for the Claude director, unless the config says more."""
     from . import config, route
     out = {}
-    for backend, (reserve, director) in route.reserves(config.get()['seats']).items():
-        out[backend] = dict(reserve_pct=reserve, director_reserve_pct=director, director_roles=list(DIRECTOR_ROLES))
+    seats = config.get()['seats']
+    for backend, (reserve, director) in route.reserves(seats).items():
+        best = min((s for s in seats if s['backend'] == backend), key=lambda s: s['priority'])
+        out[backend] = dict(reserve_pct=reserve, director_reserve_pct=director, director_roles=list(DIRECTOR_ROLES),
+                            five_hour_base_pct=best.get('five_hour_base_pct', FIVE_HOUR_BASE_PCT),
+                            five_hour_per_hour_pct=best.get('five_hour_per_hour_pct', FIVE_HOUR_PER_HOUR_PCT))
     return out
+
+
+def five_hour_floor(hours_to_reset, base=None, per_hour=None):
+    """Five-hour floor: base% plus per_hour% for each hour until the window resets (unknown reset: a full window)."""
+    base = FIVE_HOUR_BASE_PCT if base is None else base
+    per_hour = FIVE_HOUR_PER_HOUR_PCT if per_hour is None else per_hour
+    hours = WINDOWS['five_hour'] if hours_to_reset is None else min(max(0.0, hours_to_reset), WINDOWS['five_hour'])
+    return base + per_hour * hours
 # List-price ratios relative to the cheapest-listed baseline family of each plan.
 PRIOR_RATIO = {'claude': {'opus': 2.0, 'sonnet': 1.0, 'haiku': 0.05},
                'codex': {'sol': 20.0, 'luna': 1.0}}
@@ -198,7 +212,7 @@ def load_config(state=None):
         user = _load_json(base / 'config.json') or {}
     for plan, vals in (user.items() if isinstance(user, dict) else ()):
         if plan in cfg and isinstance(vals, dict):
-            for k in ('reserve_pct', 'director_reserve_pct'):
+            for k in ('reserve_pct', 'director_reserve_pct', 'five_hour_base_pct', 'five_hour_per_hour_pct'):
                 v = _num(vals.get(k), 0, 100)
                 if v is not None: cfg[plan][k] = v
             if isinstance(vals.get('director_roles'), list): cfg[plan]['director_roles'] = [str(r) for r in vals['director_roles']]
@@ -250,10 +264,12 @@ def admit(plan, role, predicted_pct, state=None, home=None, now=None, reading=No
         need = _num(need, 0)
         if need is None: return decision(False, 'predicted_pct must be a non-negative number')
         floor = cfg['reserve_pct']
-        if name == 'seven_day' and not privileged: floor += cfg['director_reserve_pct']
+        if name == 'five_hour':
+            floor = five_hour_floor(w['hours_to_reset'], cfg.get('five_hour_base_pct'), cfg.get('five_hour_per_hour_pct'))
+        elif name == 'seven_day' and not privileged: floor += cfg['director_reserve_pct']
         left = w['remaining_pct'] - need
         if left < floor:
-            why = 'director reserve' if floor > cfg['reserve_pct'] else 'reserve'
+            why = 'five-hour formula' if name == 'five_hour' else 'director reserve' if floor > cfg['reserve_pct'] else 'reserve'
             return decision(False, f'{name}: {left:g}% would remain, below the {floor:g}% {why} floor')
     return decision(True, 'within reserves')
 

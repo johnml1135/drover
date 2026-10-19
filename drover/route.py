@@ -213,12 +213,10 @@ def seat_placements(seat):
 
 def eligible_seats(seats, seat_load=None, platforms=None, privileged=False):
     """Seats with a free worker slot that can run somewhere the repo allows; a director or planner run only takes
-    the director seat."""
+    a seat of the director chain (config.director_seats): any seat, tried in that order."""
     load = seat_load or {}
     out = []
     for s in seats:
-        if privileged and not s["director"]:
-            continue
         if s["max_workers"] and load.get(s["name"], 0) >= s["max_workers"]:
             continue
         if platforms is not None and not set(seat_placements(s)) & set(platforms):
@@ -260,6 +258,24 @@ def _backends_by_priority(allowed, seats):
     return sorted(b for b, pr in best.items() if pr == low)
 
 
+def _seat_admits(seat, h, protected):
+    """A seat's reading clears its floors: five_hour by the reset-time formula, seven_day (or a plain remaining
+    figure) by the seat's reserve when protected."""
+    if not h or h["remaining_pct"] <= 0:
+        return False
+    windows = h.get("windows") or {}
+    for name, w in windows.items():
+        if name == "five_hour":
+            from .allowance import five_hour_floor
+            floor = five_hour_floor(w.get("hours_to_reset"), seat.get("five_hour_base_pct"),
+                                    seat.get("five_hour_per_hour_pct"))
+        else:
+            floor = seat["reserve_pct"] if protected else 0.0
+        if w["remaining_pct"] <= floor:
+            return False
+    return bool(windows) or not protected or h["remaining_pct"] > seat["reserve_pct"]
+
+
 def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering, rng, borrow_approved):
     """Choose an account using measured allowance only; model policy stays inside that account."""
     cfg = config_mod.get()
@@ -276,22 +292,27 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
                        "effort": cfg["director"]["effort"]}]
     allowed = eligible_seats(seats, seat_load, platforms)
     if privileged:
-        allowed = [s for s in allowed if s["name"] == (requested or default)]
+        chain = [s["name"] for s in config_mod.director_seats({"seats": seats})]
+        allowed = [s for s in allowed if s["name"] == requested] if requested else \
+            sorted(allowed, key=lambda s: chain.index(s["name"]))
     dotnet = key.startswith("worker:") and is_dotnet_task(task)
     if dotnet:
         allowed = [s for s in allowed if dotnet_seat_ok(s, dotnet_placements(task, platforms))]
     if not allowed and not (privileged and not requested):
         return no_seat_route(seats, platforms, privileged and not requested, task if dotnet else None, seat_load)
     ranks = {r["seat"]: r for r in ordering or []}
-    allowed.sort(key=lambda s: (not ranks.get(s["name"], {}).get("urgent", False), s["priority"],
-                                (seat_load or {}).get(s["name"], 0), s["name"]))
+    if not privileged or requested:
+        allowed.sort(key=lambda s: (not ranks.get(s["name"], {}).get("urgent", False), s["priority"],
+                                    (seat_load or {}).get(s["name"], 0), s["name"]))
     for seat in allowed:
         h = heads.get(seat["name"])
-        # The default director may use its reserve. A borrowed account keeps its own floor.
+        # The default director may use its reserve. Other accounts keep their own floor.
         protected = not (privileged and seat["name"] == default)
-        if not h or h["remaining_pct"] <= 0 or (protected and h["remaining_pct"] <= seat["reserve_pct"]):
+        if not _seat_admits(seat, h, protected):
             continue
         pool = [c for c in candidates if c["backend"] == seat["backend"]]
+        if not pool and privileged:    # last-resort codex seat: the configured worker model for that backend
+            pool = [c for c in default_candidates("worker:M") if c["backend"] == seat["backend"]]
         if not pool:
             continue
         c = pick_candidate(pool, rng, (policy or {}).get("min_first_pass", MIN_FIRST_PASS))
@@ -300,13 +321,6 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
                                                else cfg["models"]["efforts"]["mid"]),
                 "harness": c.get("harness", "default"),
                 "reason": ranks.get(seat["name"], {}).get("reason", f"priority {seat['priority']}")}
-    if privileged and not requested:
-        other = [s for s in eligible_seats(seats, seat_load, platforms) if s["name"] != default
-                 and s["backend"] == "claude" and (heads.get(s["name"]) or {}).get("remaining_pct", 0) > s["reserve_pct"]]
-        if other:
-            seat = min(other, key=lambda s: (s["priority"], s["name"]))
-            return {"backend": None, "seat": None, "needs_owner": True, "borrow_seat": seat["name"],
-                    "reason": "director borrowing requires owner approval"}
     return {"backend": None, "seat": None, "reason": "no allowance above reserve"}
 
 
@@ -335,6 +349,8 @@ def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=Non
         family = cfg["models"]["director"].split("-")[0]
         cands = [c for c in cands if c["model"].startswith(family)] or default_candidates("director")
     have = {s["backend"] for s in seats}
+    if privileged:   # codex is the last resort for director work
+        cands += [c for c in default_candidates("worker:M") if c["backend"] != "claude"]
     cands = [c for c in cands if c["backend"] in have]
     heads = {b: _norm_headroom((allowance_headroom or {}).get(b), b, all_seats) for b in ("claude", "codex")}
     allowed = []
@@ -351,7 +367,9 @@ def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=Non
         return {"backend": None, "model": None, "effort": None, "harness": None, "seat": None,
                 "reason": "no allowance above reserve"}
     backends = _backends_by_priority(allowed, seats)
-    if len(backends) == 2:
+    if privileged:
+        backend = "claude" if any(c["backend"] == "claude" for c in allowed) else allowed[0]["backend"]
+    elif len(backends) == 2:
         backend = "claude" if rng.random() < _p_claude(heads, privileged) else "codex"
     else:
         backend = backends[0]
@@ -359,6 +377,7 @@ def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=Non
     c = pick_candidate(pool, rng, (policy or {}).get("min_first_pass", MIN_FIRST_PASS))
     effort = c.get("effort") or (top_effort(cfg)[c["backend"]] if key == "worker:S"
                                  else cfg["models"]["efforts"]["mid"])
-    seat = pick_seat(seats, backend, seat_load)
+    seat = (next(x for x in config_mod.director_seats({"seats": seats}) if x["backend"] == backend) if privileged
+            else pick_seat(seats, backend, seat_load))
     return {"seat": seat["name"], "backend": c["backend"], "model": c["model"], "effort": effort,
             "harness": c.get("harness", "default")}

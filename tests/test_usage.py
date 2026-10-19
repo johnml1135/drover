@@ -158,6 +158,8 @@ class MeasuredRouting(unittest.TestCase):
         self.assertEqual((r['seat'], r['model'], r['effort']), ('claude', 'opus-5.5', 'max'))
         task = {'role': 'director', 'director_seat': 'other'}
         self.assertTrue(route.choose(task, {}, seats=[a, b], seat_headroom=h)['needs_owner'])
+        h['claude'] = {'remaining_pct': 0}
+        self.assertEqual(route.choose({'role': 'director'}, {}, seats=[a, b], seat_headroom=h)['seat'], 'other')
         self.assertEqual(route.choose(task, {}, seats=[a, b], seat_headroom=h, director_borrow_approved=True)['seat'], 'other')
 
 
@@ -308,7 +310,7 @@ class DispatcherSeats(unittest.TestCase):
             self.assertEqual(spec['env'], {'CLAUDE_CONFIG_DIR': str(Path(tmp) / 'account')})
             self.assertEqual(stats.query(conn, task=tid)['runs'][0]['stats']['seat'], 'acme-seat')
 
-    def test_director_borrow_opens_one_owner_question_and_requires_explicit_choice(self):
+    def test_director_falls_back_to_the_next_claude_seat_without_asking(self):
         from drover import dispatcher
         from drover.port import DirectPort
         from drover.ledger import ops
@@ -325,12 +327,8 @@ class DispatcherSeats(unittest.TestCase):
             d = dispatcher.Dispatcher(DirectPort(conn), launcher=FakeLauncher(), now_fn=lambda: NOW)
             task, policy = {**ops.get_task(conn, tid), 'role': 'director'}, {'data': {}, 'version': None}
             result = d._route(task, policy, ['claude'])
-            self.assertTrue(result['needs_owner'])
-            result = d._route(task, policy, ['claude'])
-            self.assertEqual(len(ops.open_questions(conn)), 1)
-            ops.answer_question(conn, ops.open_questions(conn)[0]['id'], 'Approve borrowing')
-            result = d._route(task, policy, ['claude'])
             self.assertEqual(result['seat'], 'alternate')
+            self.assertEqual(ops.open_questions(conn), [])
 
 
 class ObservationEdges(unittest.TestCase):

@@ -220,6 +220,7 @@ class Validation(unittest.TestCase):
         self.bad(seat.format(n="a", b="claude", extra="director=true\n") +
                  seat.format(n="c", b="codex", extra="placement='windows'\n"), "codex must run in wsl")
         self.bad(seat.format(n="a", b="claude", extra="director=true\nreserve_pct=120\n"), "reserve_pct must be between")
+        self.bad(seat.format(n="a", b="claude", extra="five_hour_per_hour_pct=-1\n"), "five_hour_per_hour_pct must be between")
         self.bad(seat.format(n="a", b="claude", extra="director=true\nmax_workers=-1\n"), "max_workers must be between")
         self.bad(seat.format(n="a b", b="claude", extra="director=true\n"), "letters, digits")
         self.bad(seat.format(n="a", b="claude", extra="director=true\npriority='high'\n"), "priority must be a whole number")
