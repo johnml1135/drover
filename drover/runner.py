@@ -625,6 +625,30 @@ def parse_runner_argv(argv):
     return None
 
 
+def _runner_runs_dir(argv):
+    """The runs directory from a valid runner command line, else None."""
+    argv = list(argv)
+    if parse_runner_argv(argv) is None:
+        return None
+    rest = argv[3:]
+    if "--" in rest:
+        rest = rest[:rest.index("--")]
+    for j, arg in enumerate(rest):
+        if arg == "--runs-dir" and j + 1 < len(rest):
+            return rest[j + 1]
+        if arg.startswith("--runs-dir="):
+            return arg[len("--runs-dir="):]
+    return None
+
+
+def _same_path(left, right):
+    try:
+        return os.path.normcase(os.path.abspath(os.path.expanduser(str(left)))) == \
+            os.path.normcase(os.path.abspath(os.path.expanduser(str(right))))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _proc_cmdlines_linux():
     for e in os.scandir("/proc"):
         if e.name.isdigit():
@@ -679,19 +703,21 @@ def _proc_cmdlines_windows():
     return out
 
 
-def find_runners(run_id=None, cmdlines=None):
+def find_runners(run_id=None, cmdlines=None, runs_dir=None):
     """[{pid, run_id}] for live runner processes, one per run id. A venv launcher over its child python gives two
     matching processes; the child is reported, as it is the runner whose pid status.json records. Raises ScanError when the process
     list cannot be read on Windows: treat that as unknown, never as no runners.
 
-    `cmdlines` (iterable of (pid, argv[, parent pid])) is for injection in tests."""
+    `cmdlines` (iterable of (pid, argv[, parent pid])) is for injection in tests. `runs_dir` narrows discovery to a
+    single runner owner directory, which is useful when concurrent test processes scan the host."""
     if cmdlines is None:
         cmdlines = _proc_cmdlines_windows() if IS_WINDOWS else _proc_cmdlines_linux()
     by_id = {}
     for row in cmdlines:
         pid, argv, ppid = (tuple(row) + (None,))[:3]
         rid = parse_runner_argv(argv)
-        if rid and (run_id is None or rid == run_id):
+        if rid and (run_id is None or rid == run_id) and \
+                (runs_dir is None or _same_path(_runner_runs_dir(argv), runs_dir)):
             by_id.setdefault(rid, []).append((pid, ppid))
     found = []
     for rid, procs in by_id.items():

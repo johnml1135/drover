@@ -21,8 +21,10 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 VERSION = 1
@@ -41,6 +43,11 @@ LOG_LINE = re.compile(r'^\s+log:\s+(\S.*?)\s*$', re.MULTILINE)
 TOTALS = re.compile(r'^\s+all projects\s+[\d,.]+ s\s+passed\s+(\d+)\s+failed\s+(\d+)', re.MULTILINE)
 GATE_TROUBLE = re.compile(r'^\s+(?:stopped:|reported zero test results)', re.MULTILINE)
 KILL_CODES = (124, 137, 143)
+GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
+UNITTEST_TRACEBACK_HOOK = ("import faulthandler,runpy,sys; "
+                           "faulthandler.dump_traceback_later(500, exit=False); "
+                           "sys.argv=['unittest', *sys.argv[1:]]; "
+                           "runpy.run_module('unittest', run_name='__main__')")
 CLASS_NAME = re.compile(r'^[A-Za-z_][\w.+]*$')
 PROJECT_NAME = re.compile(r'^[A-Za-z_][\w.]*$')
 # -f and -fi stay out: pwsh reads them as -File, and a full gate is launched with it.
@@ -86,15 +93,81 @@ def wrap_command(command, priority, memory_max='8G', max_seconds=1800, available
     return wrapper + ['--'] + inner, wrapper
 
 
-def _spawn(argv, repo, stream):
+def _spawn(argv, repo, stream, env=None):
     kw = {'preexec_fn': _default_interrupt} if os.name == 'posix' else {}
-    return subprocess.run(argv, cwd=repo, stdout=stream, stderr=subprocess.STDOUT, **kw).returncode
+    command = _with_unittest_traceback(argv)
+    return subprocess.run(command, cwd=repo, stdout=stream, stderr=subprocess.STDOUT,
+                          env=git_environment(env), **kw).returncode
+
+
+def _with_unittest_traceback(argv):
+    """Schedule a diagnostic traceback for direct `python -m unittest` gate commands."""
+    command = list(argv)
+    start = 0
+    if command[:1] == ['systemd-run'] and '--' in command:
+        start = command.index('--') + 1
+    if command[start:start + 1] == ['timeout'] and len(command) > start + 2:
+        start += 2
+    inner = command[start:]
+    if len(inner) < 3 or not re.fullmatch(r'(?i)(?:python(?:w)?(?:\d+(?:\.\d+)?)?(?:\.exe)?|py(?:\.exe)?)',
+                                          Path(inner[0]).name):
+        return command
+    module = next((i for i in range(1, len(inner) - 1) if inner[i:i + 2] == ['-m', 'unittest']), None)
+    if module is None:
+        return command
+    instrumented = [inner[0], *inner[1:module], '-c', UNITTEST_TRACEBACK_HOOK, 'unittest', *inner[module + 2:]]
+    return command[:start] + instrumented
+
+
+def git_environment(base=None):
+    """Environment that keeps Git noninteractive even when a machine has an interactive credential helper."""
+    env = os.environ.copy() if base is None else dict(base)
+    env.update(GIT_PROMPT_ENV)
+    return env
+
+
+def _remove_stale_gitfix_temp():
+    """Remove only Drover's own abandoned git fixture directories, and only after a full day."""
+    cutoff = time.time() - 24 * 60 * 60
+    for path in Path(tempfile.gettempdir()).glob('drover-fix-*'):
+        try:
+            if path.lstat().st_mtime >= cutoff:
+                continue
+            if path.is_symlink() or not path.is_dir():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
+        except OSError:
+            continue
+
+
+@contextmanager
+def _gate_test_environment():
+    """Give tests a parent for temporary fixtures; run_gate owns and removes it unless already provided."""
+    env = git_environment()
+    parent = env.get('DROVER_TEST_TMPDIR')
+    owned = not parent
+    if owned:
+        _remove_stale_gitfix_temp()
+        parent = tempfile.mkdtemp(prefix='drover-fix-gate-')
+    else:
+        Path(parent).mkdir(parents=True, exist_ok=True)
+    env['DROVER_TEST_TMPDIR'] = str(parent)
+    try:
+        yield env
+    finally:
+        if owned:
+            shutil.rmtree(parent, ignore_errors=True)
 
 
 # ---- git ------------------------------------------------------------------------------------------------
 
 def git(repo, *args, check=True):
-    result = subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True, errors='replace')
+    try:
+        result = subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True,
+                                errors='replace', env=git_environment(), timeout=60)
+    except subprocess.TimeoutExpired as error:
+        raise GateError(f'git {" ".join(args)} timed out after 60 seconds') from error
     if check and result.returncode:
         raise GateError(f'git {" ".join(args)}: {result.stderr.strip()}')
     return result
@@ -500,7 +573,7 @@ def expand(template, name, owner):
 
 
 def retry_failures(repo, log, log_text, code, projects, *, retry_failed, retry_command, failure_pattern, priority,
-                   memory_max, max_seconds, expect_runs, available, project_pattern=""):
+                   memory_max, max_seconds, expect_runs, available, project_pattern="", env=None):
     """Rerun each failing class alone. -> (retries {class: [attempt...]}, flakes, failed classes, refusal)."""
     expected = expect_runs or max(1, len(projects))
     evidence, refusal = failure_evidence(repo, log_text, code, failure_pattern, expected)
@@ -525,7 +598,7 @@ def retry_failures(repo, log, log_text, code, projects, *, retry_failed, retry_c
             argv, _ = wrap_command(command, priority, memory_max, max_seconds, available)
             since = time.time() - 2
             with open(path, 'w') as stream:
-                rerun = _spawn(argv, repo, stream)
+                rerun = _spawn(argv, repo, stream, env=env)
             retry_text = path.read_text(errors='replace')
             mine = [m for m in methods if m.rsplit('.', 1)[0] == name]
             confirmed = rerun == 0 and retry_passed(retry_text) and methods_passed(repo, mine, retry_text, since)
@@ -569,15 +642,16 @@ def run_gate(repo, out, command, *, base='origin/main', pins=(), priority='P2', 
     out.parent.mkdir(parents=True, exist_ok=True)
     started = now()
     argv, wrapper = wrap_command(command, priority, memory_max, max_seconds, available)
-    with open(log, 'w') as stream:
-        code = _spawn(argv, repo, stream)
     retries, flakes, failed_classes, refusal = {}, [], [], None
-    if code != 0 and retry_failed:
-        retries, flakes, failed_classes, refusal = retry_failures(
-            repo, log, log.read_text(errors='replace'), code, list(scope['projects']) if scope else [],
-            retry_failed=retry_failed, retry_command=retry_command, failure_pattern=failure_pattern,
-            priority=priority, memory_max=memory_max, max_seconds=max_seconds, expect_runs=expect_runs,
-            available=available, project_pattern=project_pattern)
+    with _gate_test_environment() as child_env:
+        with open(log, 'w') as stream:
+            code = _spawn(argv, repo, stream, env=child_env)
+        if code != 0 and retry_failed:
+            retries, flakes, failed_classes, refusal = retry_failures(
+                repo, log, log.read_text(errors='replace'), code, list(scope['projects']) if scope else [],
+                retry_failed=retry_failed, retry_command=retry_command, failure_pattern=failure_pattern,
+                priority=priority, memory_max=memory_max, max_seconds=max_seconds, expect_runs=expect_runs,
+                available=available, project_pattern=project_pattern, env=child_env)
     unchanged = head(repo) == sha and not dirty(repo)
     tail = log.read_text(errors='replace').splitlines()[-40:]
     if code == 0:

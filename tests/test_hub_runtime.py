@@ -16,6 +16,7 @@ from unittest.mock import patch
 import zipfile
 
 from hub.runtime import ReleaseError, prepare_release, check_eligibility, check_recovery, child_command
+from tests.gitfix import sh
 
 
 INSTANCE = '10000000-0000-4000-8000-000000000001'
@@ -26,8 +27,7 @@ def digest(data):
 
 
 def git(source, *args):
-    return subprocess.run(['git', '-C', str(source), *args], check=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+    return sh('git', '-C', str(source), *args, text=False).stdout
 
 
 class RuntimeTests(unittest.TestCase):

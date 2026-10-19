@@ -559,7 +559,7 @@ class FindTests(Base):
         self.procs += decoys
         p = self.start(rid, "import time;time.sleep(60)")
         wait_for(lambda: (Path(self.runs) / rid / "status.json").exists())
-        found = wait_for(lambda: [r for r in runner.find_runners() if r["run_id"] == rid])
+        found = wait_for(lambda: runner.find_runners(runs_dir=self.runs))
         # under a venv the Popen pid is a launcher over the real runner, which is what status.json records
         self.assertEqual(found, [{"pid": self.status(rid)["runner_pid"], "run_id": rid}])
         ids = {r["run_id"] for r in runner.find_runners()}
@@ -568,7 +568,10 @@ class FindTests(Base):
         subprocess.run([PY, "-m", "drover.runner", "stop", "--run-id", rid, "--runs-dir", self.runs], env=ENV,
                        check=True, capture_output=True)
         p.wait(timeout=30)
-        self.assertEqual([r for r in runner.find_runners() if r["run_id"] == rid], [])
+        runner_pid = self.status(rid)["runner_pid"]
+        self.assertTrue(wait_for(lambda: not alive(runner_pid), timeout=30),
+                        f"runner process {runner_pid} did not exit before the deadline")
+        self.assertEqual(wait_for(lambda: runner.find_runners(runs_dir=self.runs) == [], timeout=30), True)
 
     def test_parse_runner_argv(self):
         self.assertEqual(runner.parse_runner_argv(["pythonw.exe", "-m", "drover.runner", "--run-id", "c3"]), "c3")
@@ -593,9 +596,11 @@ class FindTests(Base):
             self.assertIsNone(runner.parse_runner_argv(bad), bad)
 
     def test_find_runners_injected(self):
-        lines = [(7, ok_argv("a")), (8, ["python3", "x.py"]), (9, ok_argv("b"))]
+        lines = [(7, ok_argv("a") + ["--runs-dir", "runs-a"]),
+                 (8, ["python3", "x.py"]), (9, ok_argv("b") + ["--runs-dir", "runs-b"])]
         self.assertEqual(runner.find_runners(cmdlines=lines), [{"pid": 7, "run_id": "a"}, {"pid": 9, "run_id": "b"}])
         self.assertEqual(runner.find_runners("b", cmdlines=lines), [{"pid": 9, "run_id": "b"}])
+        self.assertEqual(runner.find_runners(cmdlines=lines, runs_dir="runs-a"), [{"pid": 7, "run_id": "a"}])
 
 
     def test_find_dedupes_launcher_pair_keeping_child(self):

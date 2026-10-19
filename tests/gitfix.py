@@ -1,13 +1,34 @@
 """Fake git repos in temp dirs for the landing, gate and garden tests."""
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 
-def sh(*args, cwd=None, check=True):
-    r = subprocess.run([str(a) for a in args], cwd=cwd, text=True, capture_output=True)
+def sh(*args, cwd=None, check=True, text=True):
+    command = [str(a) for a in args]
+    env = os.environ.copy()
+    env.update(GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never', GIT_ASKPASS='')
+    is_clone = len(command) > 1 and Path(command[0]).stem.lower() == 'git' and command[1] == 'clone'
+    attempts = 2 if is_clone else 1
+    r = None
+    for _ in range(attempts):
+        try:
+            run_env = {**env, **({'GIT_TRACE': '1'} if is_clone else {})}
+            r = subprocess.run(command, cwd=cwd, env=run_env, text=text, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired as error:
+            stdout, stderr = error.stdout or '', error.stderr or ''
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors='replace')
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors='replace')
+            r = subprocess.CompletedProcess(command, 124, stdout, stderr)
+        if not check or r.returncode == 0:
+            return r
     if check and r.returncode:
-        raise AssertionError(f'{" ".join(map(str, args))} failed: {r.stderr}')
+        stderr = r.stderr.decode(errors='replace') if isinstance(r.stderr, bytes) else r.stderr
+        raise AssertionError(f'{" ".join(command)} failed with return code {r.returncode}; '
+                             f'GIT_TRACE=1 stderr:\n{stderr}')
     return r
 
 
@@ -15,11 +36,12 @@ class Repo:
     """A bare `remote.git` and a clone `repo` with one pushed base commit on main."""
 
     def __init__(self, ignore=''):
-        self.tmp = tempfile.TemporaryDirectory(prefix='drover-fix-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='drover-fix-', dir=os.environ.get('DROVER_TEST_TMPDIR'))
         self.root = Path(self.tmp.name)
         self.remote, self.repo = self.root / 'remote.git', self.root / 'repo'
         sh('git', 'init', '-q', '--bare', '-b', 'main', self.remote)
-        sh('git', 'clone', '-q', self.remote, self.repo)
+        # An explicit file URL avoids Git for Windows interpreting a drive-letter path as remote syntax.
+        sh('git', 'clone', '-q', self.remote.resolve().as_uri(), self.repo)
         for k, v in (('user.name', 'test'), ('user.email', 't@example.invalid')):
             self.git('config', k, v)
         self.commit('base.txt', 'base\n')

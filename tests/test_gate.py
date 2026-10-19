@@ -134,6 +134,17 @@ class WrapTests(unittest.TestCase):
         self.assertEqual(gate.wrap_command(['t'], 'P4', available=False), (['t'], None))
 
 
+class DiagnosticTests(unittest.TestCase):
+    def test_unittest_command_gets_traceback_hook_and_git_env(self):
+        out = gate._with_unittest_traceback(['timeout', '10', 'python3', '-m', 'unittest', 'tests.test_x'])
+        self.assertEqual(out[:3], ['timeout', '10', 'python3'])
+        self.assertIn('dump_traceback_later(500', out[4])
+        self.assertEqual(out[-2:], ['unittest', 'tests.test_x'])
+        self.assertEqual(gate._with_unittest_traceback(['echo', 'hi']), ['echo', 'hi'])
+        env = gate.git_environment({'A': '1'})
+        self.assertEqual((env['GIT_TERMINAL_PROMPT'], env['GIT_ASKPASS'], env['A']), ('0', '', '1'))
+
+
 class ReceiptTests(unittest.TestCase):
     def setUp(self):
         self.r = Repo()

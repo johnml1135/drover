@@ -8,6 +8,7 @@ Runs as a plain script so a WSL runner can start it from any cwd.
 """
 import argparse
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -50,6 +51,7 @@ def _run_step(step_log, name, *args, **kw):
 
 
 def run_plan(plan):
+    os.environ.update(gate.GIT_PROMPT_ENV)
     repo, out = Path(plan["repo"]), Path(plan["out"])
     base, sha, priority = plan.get("base") or "origin/main", plan["sha"], plan.get("priority") or "P2"
     if gate.head(repo) != sha:
