@@ -105,9 +105,10 @@ class Commands(Base):
                         ('sandbox_workspace_write.', 'shell_environment_policy.'))))
                 sandbox = settings['sandbox_workspace_write']
                 roots = sandbox['writable_roots']
-                self.assertEqual(len(roots), 1)
+                self.assertEqual(len(roots), 2 if placement == 'wsl' else 1)
                 if placement == 'wsl':
-                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}'])
+                    # The second root is the pre-created .NET shared-memory directory (named mutexes).
+                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}', runner.DOTNET_SHM_ROOT])
                     self.assertEqual(head[head.index('--scratch-dir') + 1], roots[0])
                     self.assertEqual(list(self.dir(rid).glob('scratch-*')), [])
                 else:

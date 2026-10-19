@@ -139,7 +139,8 @@ class DiagnosticTests(unittest.TestCase):
     def test_unittest_command_gets_traceback_hook_and_git_env(self):
         out = gate._with_unittest_traceback(['timeout', '10', 'python3', '-m', 'unittest', 'tests.test_x'])
         self.assertEqual(out[:3], ['timeout', '10', 'python3'])
-        self.assertIn('dump_traceback_later(500', out[4])
+        self.assertIn('threading.Timer(500', out[4])
+        self.assertNotIn('faulthandler', out[4])
         self.assertEqual(out[5:], ['tests.test_x'])
         self.assertEqual(gate._with_unittest_traceback(['echo', 'hi']), ['echo', 'hi'])
 
@@ -155,6 +156,26 @@ class DiagnosticTests(unittest.TestCase):
         self.assertIn('Ran 1 test', r.stderr)
         env = gate.git_environment({'A': '1'})
         self.assertEqual((env['GIT_TERMINAL_PROMPT'], env['GIT_ASKPASS'], env['A']), ('0', '', '1'))
+
+    def test_stall_diagnostics_print_stacks_and_allow_suite_to_finish(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, 'test_wait.py').write_text(
+                'import threading, unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    def test_wait(self):\n'
+                '        for thread in threading.enumerate():\n'
+                '            if isinstance(thread, threading.Timer):\n'
+                '                thread.join(timeout=5)\n'
+                '                self.assertFalse(thread.is_alive())\n')
+            cmd = gate._with_unittest_traceback([sys.executable, '-m', 'unittest', 'test_wait'])
+            # Exercise the real diagnostic callback without waiting 500 seconds.
+            cmd[2] = cmd[2].replace('Timer(500,', 'Timer(0.02,')
+            result = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('stall diagnostics', result.stderr)
+        self.assertIn('most recent call last', result.stderr)
+        self.assertIn('Ran 1 test', result.stderr)
+        self.assertIn('OK', result.stderr)
 
 
 class ReceiptTests(unittest.TestCase):

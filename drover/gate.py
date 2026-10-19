@@ -46,10 +46,16 @@ TOTALS = re.compile(r'^\s+all projects\s+[\d,.]+ s\s+passed\s+(\d+)\s+failed\s+(
 GATE_TROUBLE = re.compile(r'^\s+(?:stopped:|reported zero test results)', re.MULTILINE)
 KILL_CODES = (124, 137, 143)
 GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
-UNITTEST_TRACEBACK_HOOK = ("import faulthandler,runpy,sys; "
-                           "faulthandler.dump_traceback_later(500, exit=False); "
-                           "sys.argv=['unittest', *sys.argv[1:]]; "
-                           "runpy.run_module('unittest', run_name='__main__')")
+# Use a Python timer for stall diagnostics instead of the faulthandler watchdog
+# that was active when long Windows CI runs crashed with 0xC0000005.
+UNITTEST_TRACEBACK_HOOK = (
+    "import runpy,sys,threading,traceback; "
+    "dump=lambda: (print('Timeout (0:08:20)! stall diagnostics', file=sys.stderr), "
+    "[(print('Thread 0x%x (most recent call last):' % t, file=sys.stderr), traceback.print_stack(f, file=sys.stderr)) "
+    "for t, f in sys._current_frames().items()], sys.stderr.flush()); "
+    "w=threading.Timer(500, dump); w.daemon=True; w.start(); "
+    "sys.argv=['unittest', *sys.argv[1:]]; "
+    "runpy.run_module('unittest', run_name='__main__')")
 CLASS_NAME = re.compile(r'^[A-Za-z_][\w.+]*$')
 PROJECT_NAME = re.compile(r'^[A-Za-z_][\w.]*$')
 # -f and -fi stay out: pwsh reads them as -File, and a full gate is launched with it.

@@ -1,9 +1,10 @@
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from drover import brief, launch
+from drover import brief, launch, runner
 from drover import task_access
 from tests.gitfix import Repo
 
@@ -24,7 +25,8 @@ class AccessTests(unittest.TestCase):
                 argv, _ = launch.build_argv(spec)
                 self.assertEqual(argv[argv.index('-s') + 1], 'workspace-write')
                 self.assertNotIn('--add-dir', argv)
-                self.assertIn('sandbox_workspace_write.writable_roots=[]', argv)
+                roots = [] if placement == 'windows' else [runner.DOTNET_SHM_ROOT]
+                self.assertIn(f'sandbox_workspace_write.writable_roots={json.dumps(roots)}', argv)
                 self.assertIn('sandbox_workspace_write.exclude_slash_tmp=true', argv)
                 self.assertIn('sandbox_workspace_write.exclude_tmpdir_env_var=true', argv)
                 self.assertIn('approval_policy="never"', argv)

@@ -30,7 +30,10 @@ import tempfile
 from uuid import UUID
 import zipfile
 import zlib
-from drover.winproc import NO_WINDOW
+
+# The frozen bootstrap is copied without application modules. Keep subprocess
+# flags here so both package and standalone imports remain stdlib-only.
+NO_WINDOW = {'creationflags': 0x08000000} if os.name == 'nt' else {}
 
 if __package__:
     from .reload_protocol import PROTOCOL, RUN_FORMAT, ProtocolError, atomic_json, validate_record
