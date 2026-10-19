@@ -536,6 +536,19 @@ class Dispatcher:
         self.port.append_event("worker-done", {"run": run_id, "sha": result["record"]["sha"]}, task_id)
         self.port.finish_run(run_id, "done", note=note, **usage)
 
+    def _gate_limits(self):
+        """(slots, reserved) from the hub settings, read on every lease attempt so a change applies on the next tick."""
+        return gate_mod.configured_limits(self.port.get_setting)
+
+    def _gate_queue(self):
+        """{waiting, oldest_s, slots}: gate tickets not yet holding a slot, the longest wait, and the slot count in force."""
+        try:
+            now = time.time()
+            wait = [now - t["requested"] for t in gate_mod.lease_queue(self.port.conn) if t["slot"] is None]
+            return {"waiting": len(wait), "oldest_s": int(max(wait, default=0)), "slots": self._gate_limits()[0]}
+        except Exception:
+            return None
+
     def _lease(self, task):
         """A gate slot for the task, or None while it waits. One ticket per task, kept across ticks."""
         conn, tid = self.port.conn, task["id"]
@@ -544,7 +557,7 @@ class Dispatcher:
             if tk is None:
                 tk = self.tickets[tid] = gate_mod.lease_request(conn, tid, task["priority"], holder="dispatcher")
             try:
-                return gate_mod.lease_acquire(conn, tk, ttl=LEASE_TTL_S)
+                return gate_mod.lease_acquire(conn, tk, *self._gate_limits(), ttl=LEASE_TTL_S)
             except gate_mod.GateError:          # the ticket expired while the dispatcher was paused or busy
                 self.tickets.pop(tid, None)
         return None
@@ -1328,7 +1341,7 @@ class Dispatcher:
         p = self.port
         policy = p.get_policy()
         enabled = self.enabled_fn()
-        p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused"})
+        p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self._gate_queue()})
         out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
         if not self.recovered:

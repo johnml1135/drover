@@ -33,6 +33,8 @@ repos_dir = ""
 # [gate.commands.wsl]
 # full = ["python3", "-m", "unittest", "discover"]
 # scoped = ["python3", "-m", "unittest", "{project}"]  # optional; scope_map selects projects
+# Simultaneous gates are not a config key: the owner sets the hub settings gate_slots (default 5, clamped 1..32) and
+# gate_reserved (default 1, clamped 0..slots-1; the last slots serve only P0-P2 work). Changes apply on the next tick.
 
 [paths]
 # The state dir holds ledger.db, runs\, rescue\, hub-token, dispatcher.lock, config.toml and repos\, under an

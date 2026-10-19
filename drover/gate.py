@@ -697,6 +697,7 @@ LEASE_SCHEMA = ("CREATE TABLE IF NOT EXISTS gate_tickets (id INTEGER PRIMARY KEY
                 " rank INTEGER NOT NULL, holder TEXT NOT NULL, slot INTEGER, requested REAL NOT NULL,"
                 " heartbeat REAL NOT NULL)")
 DEFAULT_SLOTS, DEFAULT_RESERVED, DEFAULT_RESERVED_RANK, DEFAULT_TTL = 5, 1, 2, 60.0
+MAX_SLOTS = 32
 AGING_S = 1800.0   # a waiting ticket gains one effective rank per 30 minutes, so P4 work cannot starve
 
 
@@ -708,6 +709,32 @@ def rank_for(priority):
 def _tx(conn):
     from .ledger.db import tx
     return tx(conn)
+
+
+def lease_limits(slots, reserved):
+    """(slots, reserved) from raw hub-setting values: slots clamped to 1..MAX_SLOTS, reserved to 0..slots-1.
+    A value that is not an integer raises ValueError (the caller falls back to the default)."""
+    slots = max(1, min(MAX_SLOTS, int(str(slots).strip())))
+    return slots, max(0, min(int(str(reserved).strip()), slots - 1))
+
+
+_BAD_LIMITS = {}   # setting key -> last invalid raw value logged
+
+
+def configured_limits(get_setting):
+    """(slots, reserved) from the hub settings `gate_slots`/`gate_reserved`, read through get_setting(key, default).
+    Missing or invalid values use the defaults (an invalid one logs once per value); the result is clamped."""
+    out = []
+    for key, default in (("gate_slots", DEFAULT_SLOTS), ("gate_reserved", DEFAULT_RESERVED)):
+        raw = get_setting(key, None)
+        try:
+            out.append(default if raw in (None, "") else int(str(raw).strip()))
+        except ValueError:
+            if _BAD_LIMITS.get(key) != raw:
+                _BAD_LIMITS[key] = raw
+                print(f"drover.gate: ignoring {key}={raw!r}: not an integer, using {default}", file=sys.stderr)
+            out.append(default)
+    return lease_limits(*out)
 
 
 def lease_request(conn, task_id, priority, holder='gate', at=None):
@@ -768,11 +795,15 @@ def lease_queue(conn):
     return [dict(r) for r in conn.execute("SELECT * FROM gate_tickets ORDER BY rank, id")]
 
 
-def run_leased(db_path, task_id, priority, fn, *, slots=DEFAULT_SLOTS, reserved=DEFAULT_RESERVED,
+def run_leased(db_path, task_id, priority, fn, *, slots=None, reserved=None,
                reserved_rank=DEFAULT_RESERVED_RANK, ttl=DEFAULT_TTL, poll=0.25, timeout=None, holder='gate'):
-    """Wait for a slot in the ledger at `db_path`, call fn(slot) while a heartbeat thread keeps the lease, release."""
+    """Wait for a slot in the ledger at `db_path` (slots/reserved default to the hub settings), call fn(slot) while a heartbeat thread keeps the lease, release."""
     from .ledger.db import connect
     conn = connect(db_path)
+    if slots is None or reserved is None:       # the owner's gate_slots/gate_reserved, shared with the dispatcher
+        from .ledger import ops
+        cfg = configured_limits(lambda k, d: ops.get_setting(conn, k, d))
+        slots, reserved = cfg[0] if slots is None else slots, cfg[1] if reserved is None else reserved
     ticket = lease_request(conn, task_id, priority, holder)
     stop, thread = threading.Event(), None
     try:

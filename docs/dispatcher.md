@@ -33,6 +33,9 @@ Placement rules:
 
 Run files live in `<state dir>\runs\<id>\`.
 
+- Gate slots: hub settings `gate_slots` (default 5, clamped 1..32) and `gate_reserved` (default 1, clamped 0..slots-1) set how
+  many gates run at once; owner-only, read each tick, no restart. An invalid value logs once and uses the default. The
+  heartbeat carries `gate_queue: {waiting, oldest_s, slots}`. Landing batches (`run_leased`) keep the default slot count.
 - One instance: the hub holds `<state dir>\dispatcher.lock`; `python -m drover.dispatcher` refuses while it is held and
   refuses to run at all off Windows (the lock is not shared between Windows and WSL).
 - Restart: open runs are adopted by run id from `runner.find_runners()` plus `wsl.exe --exec python3 -m drover.runner

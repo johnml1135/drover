@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import queue
@@ -8,6 +9,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+from unittest import mock
 from pathlib import Path
 
 from drover import brief, dispatcher, launch
@@ -127,6 +129,39 @@ class Admission(Base):
     def test_heartbeat(self):
         self.d.tick()
         self.assertIsNotNone(ops.get_setting(self.conn, "dispatcher_heartbeat"))
+
+
+class GateSlots(Base):
+    def test_defaults_then_settings_then_clamp(self):
+        self.assertEqual(self.d._gate_limits(), (5, 1))
+        ops.set_setting(self.conn, "gate_slots", "8")
+        ops.set_setting(self.conn, "gate_reserved", "2")
+        self.assertEqual(self.d._gate_limits(), (8, 2))
+        ops.set_setting(self.conn, "gate_slots", "100")
+        ops.set_setting(self.conn, "gate_reserved", "100")
+        self.assertEqual(self.d._gate_limits(), (32, 31))
+
+    def test_invalid_falls_back_and_logs_once(self):
+        ops.set_setting(self.conn, "gate_slots", "lots")
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(self.d._gate_limits(), (5, 1))
+            self.assertEqual(self.d._gate_limits(), (5, 1))
+        self.assertEqual(err.getvalue().count("gate_slots"), 1)
+
+    def test_lease_honours_slots_setting(self):
+        ops.set_setting(self.conn, "gate_slots", "8")
+        ops.set_setting(self.conn, "gate_reserved", "0")
+        tasks = [{"id": f"t{i}", "priority": "P2"} for i in range(9)]
+        got = [self.d._lease(t) for t in tasks]
+        self.assertEqual(sorted(got[:8]), list(range(8)))
+        self.assertIsNone(got[8])
+
+    def test_heartbeat_reports_gate_queue(self):
+        self.d._lease({"id": "t0", "priority": "P2"})
+        self.d.tick()
+        hb = json.loads(ops.get_setting(self.conn, "dispatcher_heartbeat"))
+        self.assertEqual(hb["gate_queue"]["slots"], 5)
+        self.assertEqual(hb["gate_queue"]["waiting"], 0)
 
 
 class Cap(Base):

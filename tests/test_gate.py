@@ -294,6 +294,43 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(self.acq(old, slots=2, reserved=1, at=at, ttl=1e9), 0)
         self.assertEqual(self.acq(old2, slots=2, reserved=1, at=at, ttl=1e9), None)   # slot 1 is reserved for P0/P1
 
+    def test_eight_slots_let_eight_through(self):
+        ts = [gate.lease_request(self.conn, f't{i}', 'P2') for i in range(9)]
+        got = [self.acq(t, slots=8, reserved=0) for t in ts]
+        self.assertEqual(sorted(got[:8]), list(range(8)))
+        self.assertIsNone(got[8])
+        gate.lease_release(self.conn, ts[0])
+        self.assertEqual(self.acq(ts[8], slots=8, reserved=0), got[0])
+
+    def test_reserved_rule_unchanged_at_eight_slots(self):
+        low = [gate.lease_request(self.conn, f'l{i}', 'P3') for i in range(8)]
+        got = [self.acq(t, slots=8, reserved=1) for t in low]
+        self.assertEqual(sorted(g for g in got if g is not None), list(range(7)))   # slot 7 is the reserve
+        top = gate.lease_request(self.conn, 'top', 'P1')
+        self.assertEqual(self.acq(top, slots=8, reserved=1), 7)
+
+    def test_run_leased_follows_setting_so_landing_reaches_slot_six(self):
+        from drover.ledger import ops
+        ops.set_setting(self.conn, 'gate_slots', '8')
+        ops.set_setting(self.conn, 'gate_reserved', '0')
+        held = [gate.lease_request(self.conn, f'h{i}', 'P2', holder='dispatcher') for i in range(5)]
+        for i, t in enumerate(held):
+            self.assertEqual(self.acq(t, slots=8, reserved=0), i)
+        for i in range(5, 7):                       # slots 5 and 6 are taken by others
+            t = gate.lease_request(self.conn, f'x{i}', 'P2')
+            self.assertEqual(self.acq(t, slots=8, reserved=0), i)
+        got = gate.run_leased(self.db, 'batch:a', 'P2', lambda slot: slot, poll=0.01, timeout=1)
+        self.assertEqual(got, 7)                    # beyond the old default of 5
+        self.assertEqual(gate.run_leased(self.db, 'b', 'P2', lambda s: s, slots=8, reserved=0, poll=0.01, timeout=1), 7)
+
+    def test_lease_limits_clamp(self):
+        self.assertEqual(gate.lease_limits(8, 1), (8, 1))
+        self.assertEqual(gate.lease_limits('0', '-3'), (1, 0))
+        self.assertEqual(gate.lease_limits(99, 99), (32, 31))
+        self.assertEqual(gate.lease_limits(3, 5), (3, 2))
+        with self.assertRaises(ValueError):
+            gate.lease_limits('many', 1)
+
     def test_run_leased_releases(self):
         got = gate.run_leased(self.db, 't', 'P2', lambda slot: slot + 10, poll=0.01)
         self.assertEqual(got, 10)
