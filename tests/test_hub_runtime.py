@@ -481,6 +481,98 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(check_eligibility(self.enrolled, self.a, self.a, 4,
                                                wsl_probe=probe, wsl_live_run_ids=[612])['eligible'], expected)
 
+    def test_new_candidate_checks_existing_parent_then_exported_wsl_path(self):
+        self.baseline()
+        self.write('hub/app.py', 'candidate\n')
+        b = self.commit()
+        destination = self.release_root / b
+        probes = []
+
+        def reachable(path):
+            probes.append(path)
+            return path.is_dir()
+
+        result = check_eligibility(self.enrolled, self.a, b, 4,
+                                   wsl_probe=reachable, wsl_live_run_ids=[612])
+        self.assertEqual(result, {'eligible': True, 'reasons': []})
+        self.assertEqual(probes, [self.release_root])
+        self.assertFalse(destination.exists())
+        probes.clear()
+        release = prepare_release(self.source, b, self.release_root, self.enrolled,
+                                  wsl_probe=reachable, wsl_live_run_ids=[612])
+        self.assertEqual(probes, [self.release_root, destination])
+        self.assertTrue((destination / 'manifest.json').is_file())
+        probes.clear()
+        self.assertTrue(check_eligibility(self.enrolled, self.a, b, 4,
+                                         wsl_probe=reachable, wsl_live_run_ids=[612])['eligible'])
+        self.assertEqual(probes, [destination])
+        probes.clear()
+        self.assertEqual(prepare_release(self.source, b, self.release_root, self.enrolled,
+                                         wsl_probe=reachable, wsl_live_run_ids=[612]), release)
+        self.assertEqual(probes, [destination, destination])
+
+    def test_first_enrollment_checks_existing_ancestor_then_exported_wsl_path(self):
+        probes = []
+
+        def reachable(path):
+            probes.append(path)
+            return path.is_dir()
+
+        self.assertFalse(self.release_root.exists())
+        release = prepare_release(
+            self.source, self.a, self.release_root, self.enrolled,
+            first_enrollment=True,
+            baseline_probe=lambda *_: {'ledger_schema': 4, 'required_schema': 4},
+            wsl_probe=reachable, wsl_live_run_ids=[612])
+        destination = Path(release['release_path'])
+        self.assertEqual(probes, [self.root, destination])
+        self.assertTrue((destination / 'manifest.json').is_file())
+
+    def test_unreachable_wsl_parent_refuses_before_export(self):
+        self.baseline()
+        self.write('hub/app.py', 'candidate\n')
+        b = self.commit()
+        probes = []
+
+        def unreachable(path):
+            probes.append(path)
+            return False
+
+        self.assertEqual(check_eligibility(self.enrolled, self.a, b, 4,
+                                          wsl_probe=unreachable, wsl_live_run_ids=[612])['reasons'],
+                         ['wsl-release-unreachable'])
+        with self.assertRaisesRegex(ReleaseError, 'wsl-release-unreachable'):
+            prepare_release(self.source, b, self.release_root, self.enrolled,
+                            git=lambda *_: self.fail('unreachable parent must refuse before Git export'),
+                            wsl_probe=unreachable, wsl_live_run_ids=[612])
+        self.assertEqual(probes, [self.release_root, self.release_root])
+        self.assertEqual([path.name for path in self.release_root.iterdir()], [self.a])
+
+    def test_reachable_parent_cannot_authorize_unreachable_exported_wsl_path(self):
+        self.baseline()
+        self.write('hub/app.py', 'candidate\n')
+        b = self.commit()
+        destination = self.release_root / b
+        probes = []
+
+        def parent_only(path):
+            self.assertTrue(path.is_dir())
+            probes.append(path)
+            return path == self.release_root
+
+        for attempt in ('new export', 'retained reuse'):
+            with self.subTest(attempt=attempt):
+                probes.clear()
+                with self.assertRaisesRegex(ReleaseError, 'wsl-release-unreachable'):
+                    prepare_release(self.source, b, self.release_root, self.enrolled,
+                                    wsl_probe=parent_only, wsl_live_run_ids=[612])
+                self.assertEqual(probes, [self.release_root, destination] if attempt == 'new export'
+                                 else [destination])
+                self.assertTrue((destination / 'manifest.json').is_file())
+        self.assertEqual(check_eligibility(self.enrolled, self.a, b, 4,
+                                          wsl_probe=parent_only, wsl_live_run_ids=[612])['reasons'],
+                         ['wsl-release-unreachable'])
+
     def test_recovery_compares_both_paths_with_native_case_rules(self):
         release = self.baseline()
         # Exercise Windows normcase behavior on every platform.

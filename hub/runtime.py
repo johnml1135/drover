@@ -313,7 +313,8 @@ def _anchors(enrolled, baseline=None):
     return anchors
 
 
-def _machine(enrolled, release_path, interpreter_probe, wsl_probe, wsl_live_run_ids):
+def _machine(enrolled, release_path, interpreter_probe, wsl_probe, wsl_live_run_ids, *,
+             before_export=False):
     try:
         if interpreter_probe(Path(enrolled['interpreter']['path'])) != enrolled['interpreter']['identity']:
             _refuse('interpreter-change')
@@ -321,7 +322,13 @@ def _machine(enrolled, release_path, interpreter_probe, wsl_probe, wsl_live_run_
         _refuse('interpreter-unavailable')
     needed = wsl_live_run_ids if wsl_live_run_ids is not None else enrolled.get('wsl_live_run_ids', [])
     if needed:
-        if wsl_probe is None or not wsl_probe(Path(release_path)):
+        path = Path(release_path)
+        if before_export:
+            # New SHA directories do not exist yet. Check the closest existing
+            # mapped parent now; publication must check the final path too.
+            while not path.exists() and path != path.parent:
+                path = path.parent
+        if wsl_probe is None or not wsl_probe(path):
             _refuse('wsl-release-unreachable')
 
 
@@ -369,7 +376,8 @@ def prepare_release(source: Path, sha: str, root: Path, enrolled: dict, *,
     if _canonical(root) != _canonical(_state_root(enrolled) / 'releases'):
         _refuse('release-path-mismatch')
     destination = root.resolve() / sha
-    _machine(enrolled, destination, interpreter_probe, wsl_probe, wsl_live_run_ids)
+    _machine(enrolled, destination, interpreter_probe, wsl_probe, wsl_live_run_ids,
+             before_export=True)
     anchors = None if first_enrollment else _anchors(enrolled, baseline)
     if first_enrollment and (baseline_probe is None or 'baseline' in enrolled):
         _refuse('baseline-probe-required')
@@ -461,6 +469,7 @@ def prepare_release(source: Path, sha: str, root: Path, enrolled: dict, *,
             existing = _verify_release(_read_json(destination / MANIFEST))
             if existing != release:
                 _refuse('release-not-identical')
+            _machine(enrolled, destination, interpreter_probe, wsl_probe, wsl_live_run_ids)
             return existing
         # A valid published directory is nonempty; rename cannot overwrite it.
         # Empty preexisting directories are refused above as corrupt releases.
@@ -475,6 +484,7 @@ def prepare_release(source: Path, sha: str, root: Path, enrolled: dict, *,
             if existing != release:
                 _refuse('release-not-identical')
         _sync_directory(root)
+        _machine(enrolled, destination, interpreter_probe, wsl_probe, wsl_live_run_ids)
         return release
     finally:
         if staging.exists():
@@ -519,7 +529,7 @@ def check_eligibility(enrolled: dict, running_sha: str, target_sha: str,
             if contracts['bootstrap_digest'] != enrolled['bootstrap_digest']:
                 _refuse('bootstrap-change')
         _machine(enrolled, _state_root(enrolled) / 'releases' / target_sha,
-                 interpreter_probe, wsl_probe, wsl_live_run_ids)
+                 interpreter_probe, wsl_probe, wsl_live_run_ids, before_export=True)
     return _result(check)
 
 
