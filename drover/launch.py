@@ -23,6 +23,7 @@ from pathlib import Path
 from . import config, task_access
 from . import runner
 from .runner import ScanError
+from .winproc import NO_WINDOW
 
 HAIKU_CEILING = 80_000        # the pricing line is 100K; rotate before it
 TAIL_LINES = 200
@@ -719,7 +720,7 @@ def normalize_run_ids(found):
 def wsl_running(distro, run=subprocess.run):
     """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
     try:
-        r = run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=20)
+        r = run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=20, **NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return False
     raw = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()

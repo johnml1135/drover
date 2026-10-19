@@ -23,6 +23,7 @@ import tomllib
 from pathlib import Path
 
 from . import config as config_mod
+from .winproc import NO_WINDOW
 
 GB = 1024 ** 3
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
@@ -155,7 +156,7 @@ def vhdx_dir():
     if not distro or not os.path.exists(REG):
         return None
     try:
-        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10).stdout
+        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10, **NO_WINDOW).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
     name = base = None
@@ -199,7 +200,7 @@ def read_vram():
     cmd = ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
     for exe in (['nvidia-smi.exe'] if is_windows() else ['nvidia-smi', 'nvidia-smi.exe']):
         try:
-            out = subprocess.run([exe, *cmd], text=True, capture_output=True, timeout=10)
+            out = subprocess.run([exe, *cmd], text=True, capture_output=True, timeout=10, **NO_WINDOW)
             used, total = (float(x) for x in out.stdout.splitlines()[0].split(','))
             return [used, total] if total > 0 else None
         except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
@@ -271,7 +272,7 @@ def read_wsl(distro, windows, mem_wanted):
         if up and mem_wanted:
             try:
                 text = subprocess.run(['wsl.exe', '-d', distro, '--exec', 'cat', '/proc/meminfo'], text=True,
-                                      capture_output=True, timeout=20).stdout
+                                      capture_output=True, timeout=20, **NO_WINDOW).stdout
             except (OSError, subprocess.SubprocessError):
                 text = None
     else:

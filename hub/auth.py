@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
+from drover.winproc import NO_WINDOW
 
 TS_HEADER = "tailscale-user-login"
 
@@ -25,7 +26,7 @@ def _icacls(settings):
 
     def run(args):
         return subprocess.run(["icacls", *args], capture_output=True, text=True,
-                              timeout=30, check=True).stdout
+                              timeout=30, check=True, **NO_WINDOW).stdout
     return run
 
 
@@ -82,7 +83,7 @@ def real_tailscale(args: list[str]) -> str:
     for exe in ("tailscale", r"C:\Program Files\Tailscale\tailscale.exe"):
         try:
             return subprocess.run([exe, *args], capture_output=True, text=True,
-                                  timeout=20, check=True).stdout
+                                  timeout=20, check=True, **NO_WINDOW).stdout
         except (OSError, subprocess.SubprocessError):
             continue
     return ""

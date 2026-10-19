@@ -466,9 +466,9 @@ class DetachTests(Base):
             self.assertFalse(status["detached_in_job"])
 
     def test_windows_detach_reports_breakaway_success_and_refusal(self):
-        flags = {"DETACHED_PROCESS": 0x8, "CREATE_NEW_PROCESS_GROUP": 0x200,
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_NEW_PROCESS_GROUP": 0x200,
                  "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
-        base_flags = flags["DETACHED_PROCESS"] | flags["CREATE_NEW_PROCESS_GROUP"]
+        base_flags = flags["CREATE_NO_WINDOW"] | flags["CREATE_NEW_PROCESS_GROUP"]
 
         def run_detach(run_id, attempts):
             proc = Mock(pid=123)
@@ -516,10 +516,18 @@ class DetachTests(Base):
             log = (Path(self.runs) / "breakaway-fallback" / runner.RUNNER_LOG).read_text()
             self.assertIn("breakaway from the parent job was refused", log)
 
+    def test_runner_has_no_detached_process_flag(self):
+        self.assertFalse(hasattr(runner, "DETACHED_PROCESS"))
+        self.assertNotIn("DETACHED_PROCESS", Path(runner.__file__).read_text())
+
+    def test_no_window_helper_is_empty_off_windows(self):
+        from drover import winproc
+        self.assertEqual(winproc.NO_WINDOW, {"creationflags": 0x08000000} if os.name == "nt" else {})
+
     def test_windows_detach_propagates_failed_fallback_spawn(self):
-        flags = {"DETACHED_PROCESS": 0x8, "CREATE_NEW_PROCESS_GROUP": 0x200,
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_NEW_PROCESS_GROUP": 0x200,
                  "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
-        base_flags = flags["DETACHED_PROCESS"] | flags["CREATE_NEW_PROCESS_GROUP"]
+        base_flags = flags["CREATE_NO_WINDOW"] | flags["CREATE_NEW_PROCESS_GROUP"]
         first_error = OSError(5, "breakaway refused")
         fallback_error = OSError(87, "fallback spawn failed")
         popen = Mock(side_effect=[first_error, fallback_error])

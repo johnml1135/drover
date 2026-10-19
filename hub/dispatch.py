@@ -17,6 +17,7 @@ from drover.ledger import ops
 from drover.lock import FileLock, LockHeld
 from drover.pipeline import Pipeline, truthy
 from drover.port import DirectPort
+from drover.winproc import NO_WINDOW
 
 log = logging.getLogger("hub.dispatcher")
 
@@ -133,7 +134,7 @@ class LandingService:
                     "--out", runner.to_wsl_path(str(out)), "--repo", runner.to_wsl_path(str(worktree)), "--base",
                     base_ref, "--priority", "P1", "--json", "--", *command]
             try:
-                proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s)
+                proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s, **NO_WINDOW)
             except subprocess.TimeoutExpired:
                 raise gate.GateError(f"the WSL gate timed out after {timeout_s:g}s")
             try:

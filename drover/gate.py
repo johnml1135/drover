@@ -26,6 +26,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from .winproc import NO_WINDOW
 
 VERSION = 1
 PRIORITIES = ('P0', 'P1', 'P2', 'P3', 'P4')
@@ -165,7 +166,7 @@ def _gate_test_environment():
 def git(repo, *args, check=True):
     try:
         result = subprocess.run(['git', '-C', str(repo), *args], text=True, capture_output=True,
-                                errors='replace', env=git_environment(), timeout=60)
+                                errors='replace', env=git_environment(), timeout=60, **NO_WINDOW)
     except subprocess.TimeoutExpired as error:
         raise GateError(f'git {" ".join(args)} timed out after 60 seconds') from error
     if check and result.returncode:

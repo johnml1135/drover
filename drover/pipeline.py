@@ -13,6 +13,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 from . import config, garden, gate, launch, origin, repos, runner, worktrees
+from .winproc import NO_WINDOW
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -44,7 +45,7 @@ def git(repo, *args, check=False, timeout=None):
     """git with an argv list. A timeout is a failed command (rc 124), never a hang."""
     try:
         r = subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True, errors="replace",
-                           timeout=timeout)
+                           timeout=timeout, **NO_WINDOW)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {timeout}s")
     if check and r.returncode:

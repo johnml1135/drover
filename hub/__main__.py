@@ -11,6 +11,7 @@ import uvicorn
 
 from hub.app import create_app
 from hub.settings import Settings
+from drover.winproc import NO_WINDOW
 
 log = logging.getLogger("hub")
 
@@ -23,7 +24,7 @@ def discover_wsl_ip(adapter_glob: str) -> str | None:
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
                              capture_output=True, text=True, timeout=30,
-                             env={**os.environ, "DROVER_ADAPTER": adapter_glob}).stdout.strip()
+                             env={**os.environ, "DROVER_ADAPTER": adapter_glob}, **NO_WINDOW).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out if out and out != "0.0.0.0" and not out.startswith("127.") else None

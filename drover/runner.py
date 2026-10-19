@@ -21,6 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from .winproc import CREATE_NO_WINDOW, NO_WINDOW
 
 IS_WINDOWS = sys.platform == "win32"
 KILL_AFTER_S = 15
@@ -261,8 +262,6 @@ if IS_WINDOWS:
     JOB_EXTENDED_LIMIT_CLASS = 9
     CREATE_SUSPENDED = 0x4
     CREATE_NEW_PROCESS_GROUP = 0x200
-    CREATE_NO_WINDOW = 0x08000000
-    DETACHED_PROCESS = 0x8
     CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
     def _resume(handle):
@@ -575,7 +574,9 @@ def detach(run_id, runs_dir, child_args, wait_s=DETACH_WAIT_S, nonce=None):
     with open(d / RUNNER_LOG, "ab") as log:
         kw = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
         if IS_WINDOWS:
-            flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            # CREATE_NO_WINDOW, not a detached console: a console app with none to inherit gets a fresh visible console (a Windows
+            # Terminal window under the default-terminal setting); the runner still outlives the hub via its own group.
+            flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
             try:
                 proc = subprocess.Popen(cmd, env=env, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kw)
             except OSError:         # the parent's job does not allow breakaway: the runner dies with that job
@@ -686,7 +687,7 @@ def _proc_cmdlines_windows():
     script = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
               "Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId,CommandLine | ConvertTo-Json")
     try:
-        r = subprocess.run([_powershell(), "-NoProfile", "-Command", script], capture_output=True, timeout=60)
+        r = subprocess.run([_powershell(), "-NoProfile", "-Command", script], capture_output=True, timeout=60, **NO_WINDOW)
         if r.returncode != 0:
             raise ScanError(f"powershell exited {r.returncode}")
         text = r.stdout.decode("utf-8", errors="replace").strip()
