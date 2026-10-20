@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, placement, wizard
+from drover import config, placement, repos, wizard
 from drover.tool_discovery import DISCOVERY_SCRIPT
 
 DRIVES = [{"path": "C:\\", "free_gb": 200.0, "total_gb": 500.0}, {"path": "R:\\", "free_gb": 600.0, "total_gb": 1000.0}]
@@ -207,6 +207,30 @@ class Answers(Base):
 
 
 class Writing(Base):
+    def test_rerun_preserves_machine_repo_behavior_without_versioned_config(self):
+        from tests.gitfix import Repo
+        fixture = Repo()
+        self.addCleanup(fixture.cleanup)
+        machine = {"name": "alpha", "repo": str(fixture.repo),
+                   "scripts": {"test": "scripts/check.ps1", "lint": "scripts/lint.ps1"},
+                   "run": {"platforms": ["wsl"], "default": "wsl",
+                           "env": {"CHECK_MODE": "full"}, "sandbox_writable_roots": ["/tmp/check-cache"]},
+                   "gate": {"platform": "wsl", "timeout_s": 123, "idle_s": 45,
+                            "docs_only": False, "docs_only_globs": ["docs/**"]}}
+        path = self.state / "repos" / "alpha.toml"
+        path.parent.mkdir(parents=True)
+        path.write_text(config.dumps(machine), encoding="utf-8")
+        before = repos.load(machine)
+        self.assertFalse((fixture.repo / "drover.toml").exists())
+        for _ in range(2):
+            code, _ = self.run_wizard(defaults=True, answers={"repos": [{"name": "alpha"}], "state_git": False})
+            self.assertEqual(code, 0)
+            saved = repos.read_machine(path)
+            after = repos.load(saved)
+            for key in ("scripts", "gate", "run"):
+                self.assertEqual(after[key], before[key], key)
+                self.assertEqual(saved[key], machine[key], key)
+
     def test_existing_codex_home_survives_init_defaults_and_serialization(self):
         account = '/home/acme/.codex-acme-lib'
         old = config.validate({'seats': [config.DEFAULT_SEATS[0],

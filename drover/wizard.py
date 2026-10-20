@@ -690,7 +690,7 @@ def example_for(name):
 
 
 def repo_toml(p, worktrees_root):
-    """Write machine locations and environment; repo behavior stays versioned in drover.toml."""
+    """Write machine settings, preserving saved repo behavior as fallback and overrides."""
     base = p.get("base") or {}
     repo = p["repo"]
     trees = (worktrees_root.rstrip("\\/") + ("\\" if "\\" in worktrees_root else "/") + p["name"] + ".worktrees"
@@ -698,9 +698,9 @@ def repo_toml(p, worktrees_root):
     canonical = repos.normalize({**base, "name": p["name"], "repo": repo})
     raw = {"name": p["name"], "repo": repo, "worktrees": base.get("worktrees", trees),
            "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
-    run = {k: v for k, v in base.get("run", {}).items() if k in ("env", "sandbox_writable_roots")}
-    if run:
-        raw["run"] = run
+    for key in ("scripts", "gate", "run"):
+        if key in base:
+            raw[key] = base[key]
     raw["landing"] = {"push": p.get("push", False)}
     repos.normalize(raw)
     return config.dumps(raw)
