@@ -917,7 +917,7 @@ class Recovery(Base):
 class HeadOfLine(Base):
     def setUp(self):
         super().setUp()
-        self.t = 1_000_000.0
+        self.t = 1_700_000_000.0
         self.no_route = set()
         self.allow["codex"] = False
 
@@ -988,7 +988,7 @@ class HardeningFixtures(Base):
     def setUp(self):
         super().setUp()
         self.allow["codex"] = False
-        self.t = 2_000_000.0
+        self.t = 1_700_000_000.0
 
 
 class LaunchPersistence(HardeningFixtures):

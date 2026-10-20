@@ -324,7 +324,7 @@ class Worktrees(Base):
                     return real(repo, *args, **kw)
 
                 tid = self.task()
-                with patch.object(pipeline, "git", fake), patch.object(placement, "is_linux_native", return_value=True):
+                with patch.object(pipeline, "git", fake), patch.object(placement, "is_linux_native", return_value=True), patch.object(placement, 'routes_through_wsl', return_value=False):
                     wt = self.pipe.worktree(self.get(tid))
                 self.assertEqual(len(calls), 2 if legacy else 1)
                 for args in calls:
@@ -572,12 +572,12 @@ class Safety(Base):
             return real(repo, *a, **kw)
         tid = self.task()
         from unittest import mock
-        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: False):
+        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: False), patch.object(placement, 'routes_through_wsl', return_value=False):
             with self.assertRaises(pipeline.WorktreeRefused) as cm:
                 self.pipe.worktree(self.get(tid))
         self.assertIn("relative-paths", str(cm.exception))
         self.assertFalse((Path(self.tmp.name) / "wts" / f"drover-{tid}").exists())
-        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: True):
+        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: True), patch.object(placement, 'routes_through_wsl', return_value=False):
             # a path only one OS can open may fall back to absolute gitdir pointers
             self.assertTrue(self.pipe.worktree(self.get(tid)))
 
