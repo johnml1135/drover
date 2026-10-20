@@ -221,7 +221,7 @@ class Writing(Base):
         path.parent.mkdir(parents=True)
         path.write_text(config.dumps(machine), encoding="utf-8")
         before = repos.load(machine)
-        self.assertFalse((fixture.repo / "drover.toml").exists())
+        self.assertFalse((fixture.repo / ".drover/config.toml").exists())
         for _ in range(2):
             code, _ = self.run_wizard(defaults=True, answers={"repos": [{"name": "alpha"}], "state_git": False})
             self.assertEqual(code, 0)

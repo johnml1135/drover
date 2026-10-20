@@ -10,17 +10,13 @@ from drover import config
 REPO = Path(__file__).resolve().parents[1]
 
 
-def load(toml="", overlay="", env=None):
-    """config.load over a temp home holding config.toml (and an optional overlay file); no real files, no real env."""
+def load(toml="", env=None):
+    """Load an isolated machine config without real files or environment."""
     with tempfile.TemporaryDirectory() as d:
-        home = Path(d) / "home"
-        home.mkdir()
+        home = Path(d)
         if toml:
             (home / "config.toml").write_text(toml, encoding="utf-8")
-        ov = Path(d) / "overlay.toml"
-        if overlay:
-            ov.write_text(overlay, encoding="utf-8")
-        return config.load(home, ov, env or {})
+        return config.load(home, env or {})
 
 
 class Defaults(unittest.TestCase):
@@ -74,7 +70,7 @@ class Defaults(unittest.TestCase):
 
     def test_state_dir_defaults_to_the_home_dir(self):
         with tempfile.TemporaryDirectory() as d:
-            c = config.load(Path(d), Path(d) / "none.toml", {})
+            c = config.load(Path(d), {})
             self.assertEqual(c["paths"]["state_dir"], "")
             self.assertEqual(config.state_dir(c), config.home())
         self.assertEqual(config.home({}), Path.home() / ".drover")
@@ -92,34 +88,8 @@ class Layers(unittest.TestCase):
         c = load("[capacity]\nparallel_cap = 6\n[hub]\nui_port = 9000\n")
         self.assertEqual((c["capacity"]["parallel_cap"], c["hub"]["ui_port"], c["hub"]["api_port"]), (6, 9000, 8766))
 
-    def test_overlay_wins_over_the_home_file(self):
-        c = load("[capacity]\nparallel_cap = 6\n[hub]\nui_port = 9000\n", "[capacity]\nparallel_cap = 2\n")
-        self.assertEqual((c["capacity"]["parallel_cap"], c["hub"]["ui_port"]), (2, 9000))
-
-    def test_overlay_comes_from_the_checkout_not_the_cwd(self):
-        self.assertEqual(config.CHECKOUT, REPO)
-        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cwd:
-            (Path(cwd) / ".drover").mkdir()
-            (Path(cwd) / ".drover" / "config.toml").write_text("[capacity]\nparallel_cap = 9\n")
-            old = os.getcwd()
-            os.chdir(cwd)
-            try:
-                self.assertEqual(config.load(Path(d), env={})["capacity"]["parallel_cap"], 4)
-            finally:
-                os.chdir(old)
-
-    def test_overlay_path_can_be_named_by_env(self):
-        with tempfile.TemporaryDirectory() as d:
-            ov = Path(d) / "mine.toml"
-            ov.write_text("[capacity]\nparallel_cap = 8\n")
-            self.assertEqual(config.load(Path(d), env={"DROVER_OVERLAY": str(ov)})["capacity"]["parallel_cap"], 8)
-            self.assertEqual(config.load(Path(d), env={"DROVER_OVERLAY": str(Path(d) / "none")})["capacity"]["parallel_cap"], 4)
-
-    def test_the_test_suite_never_reads_the_checkouts_overlay(self):
-        self.assertTrue(os.environ["DROVER_OVERLAY"].endswith("no-overlay.toml"))
-
     def test_env_overrides_everything(self):
-        c = load("[capacity]\nparallel_cap = 6\n", "[capacity]\nparallel_cap = 2\n",
+        c = load("[capacity]\nparallel_cap = 6\n",
                  {"DROVER_CAPACITY_PARALLEL_CAP": "7", "DROVER_HUB_TAILSCALE": "no", "DROVER_HUB_ALLOWED_LOGINS": "a@x, b@y",
                   "DROVER_DECIDER_MODELS_PRIMARY": "tev1", "DROVER_POLICY_TAU": "0.7"})
         self.assertEqual(c["capacity"]["parallel_cap"], 7)
@@ -246,7 +216,7 @@ class Validation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "config.toml").write_text("[hub]\nui_port = 'x'\n")
             with self.assertRaisesRegex(config.ConfigError, "config.toml"):
-                config.load(Path(d), Path(d) / "none", {})
+                config.load(Path(d), {})
 
 
 class Writer(unittest.TestCase):

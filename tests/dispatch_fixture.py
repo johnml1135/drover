@@ -23,7 +23,7 @@ class FakePipeline:
     def __init__(self, port, runs_dir):
         self.port, self.runs_dir = port, runs_dir or str(config.state_path("runs"))
         self.prog = repos.normalize({'name': 'p', 'repo': WORKTREE,
-                                     'scripts': {'test': 'scripts/drover/test.ps1'}})
+                                     'scripts': {'test': '.drover/scripts/test.ps1'}})
         self.prog['review'].update(backend='codex', model='gpt-6.1-sol', high_risk_model='gpt-6.1-sol', seat=None)
         self.ci = FixtureCI(self.runs_dir)
         self.current_head = lambda: 'abc1234'

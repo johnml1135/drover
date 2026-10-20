@@ -58,7 +58,9 @@ At enrollment, export a clean source HEAD with `git archive --format=zip <40-hex
 
 Run the existing installed `hub/.venv/Scripts/python.exe` directly with `-m hub`, CWD and sole project import root set to the release. Strip inherited project `PYTHONPATH` entries before setting it. Do not run `uv sync`, resolve dependencies, or install on reload. The existing installation creates the venv (`hub/scripts/Install-Drover.ps1:88-97`); dependencies are declared in `hub/pyproject.toml:5-16`.
 
-Pin absolute ledger, runs, repo-config, config-home, token, source-root and overlay paths in the enrollment manifest. Set `DROVER_OVERLAY` to the original source overlay and preserve the owner environment. This matters because `drover/config.py:25,465-472` otherwise derives the overlay from the imported checkout and `drover/launch.py:402,440-449` derives runner code from its own package. Repo configs continue pointing to actual repositories; snapshots are never a landing destination. Both Windows and WSL runner imports come from the retained release. Require the release path to be reachable through the existing WSL drive mapping before enabling reload with WSL runs.
+Pin absolute ledger, runs, repo-config, config-home, token and source-root paths in the enrollment manifest.
+The legacy `paths.overlay` field remains inert compatibility metadata; application overlays and their environment
+exports are removed. Preserve the owner environment and retain the release's runner import roots. Repo configs continue pointing to actual repositories; snapshots are never a landing destination. Both Windows and WSL runner imports come from the retained release. Require the release path to be reachable through the existing WSL drive mapping before enabling reload with WSL runs.
 
 ## Detection and eligibility
 

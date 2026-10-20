@@ -127,17 +127,10 @@ class Windows(unittest.TestCase):
         self.assertIn(facts['platform'], ('wsl', 'windows'))
 
 
-class Config(unittest.TestCase):
-    def test_toml_overrides(self):
-        cfg = resources.load_config()
-        self.assertEqual(cfg['disk']['c_queue_gb'], 50)
-        cfg['ram']['hold_gb'] = 8
-        r = resources.check(fake=wsl(ram_available_gb=7), config=cfg)
-        self.assertEqual(r['verdict'], 'hold')
 
 
 class Trackers(unittest.TestCase):
-    """The config's [[trackers]] drive check(); the old resources.toml shape still works."""
+    """The config's [[trackers]] drive check()."""
 
     def cfg(self, *trackers):
         from drover import config
@@ -202,36 +195,8 @@ class Trackers(unittest.TestCase):
         self.assertTrue(up)
         self.assertEqual((mem['used_gb'], mem['cap_gb']), (14.0, 16.0))
 
-    def test_legacy_resources_toml_shape(self):
-        legacy = {'load': {'queue_per_core': 1.0, 'hold_per_core': 9.0}, 'ram': {'hold_gb': 1.0},
-                  'disk': {'c_queue_gb': 10, 'c_hold_gb': 5}, 'gpu': {'vram_fallback_pct': 50}}
-        r = resources.check(fake=wsl(load5=4.1, ram_available_gb=20, disk_free_gb=disks(c=7), vram=[60, 100]), config=legacy)
-        self.assertEqual(r['verdict'], 'queue')
-        self.assertEqual(len([x for x in r['reasons'] if 'load' in x or 'C:' in x]), 2)
-        self.assertEqual(r['decider'], 'decider-fallback')
 
-    def test_legacy_file_in_the_state_dir_overrides_the_trackers(self):
-        import tempfile
-        from pathlib import Path
-        from drover import config
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / 'resources.toml').write_text('[ram]\nhold_gb = 5.5\n[disk]\nc_queue_gb = 60\n')
-            config.use(config.load(Path(d), Path(d) / 'none', {'DROVER_PATHS_STATE_DIR': d}))
-            self.addCleanup(config.reset)
-            t = {x['name']: x for x in resources.trackers_of()}
-            self.assertEqual((t['ram']['hold_gb'], t['c']['queue_gb'], t['c']['hold_gb']), (5.5, 60.0, 25.0))
-            self.assertEqual(resources.load_config()['disk']['c_queue_gb'], 60.0)
 
-    def test_load_config_keeps_the_old_shape_and_a_given_file(self):
-        import tempfile
-        from pathlib import Path
-        cfg = resources.load_config()
-        self.assertEqual(cfg['ram'], {'queue_base_gb': 6.0, 'queue_per_worker_gb': 0.5, 'hold_gb': 4.0})
-        self.assertEqual(cfg['load'], {'queue_per_core': 2.5, 'hold_per_core': 3.5})
-        with tempfile.NamedTemporaryFile('w', suffix='.toml', delete=False) as f:
-            f.write('[ram]\nhold_gb = 1.5\n')
-        self.addCleanup(os.unlink, f.name)
-        self.assertEqual(resources.load_config(f.name)['ram']['hold_gb'], 1.5)
 
 
 REG_OUT = (

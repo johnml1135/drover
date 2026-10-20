@@ -24,7 +24,7 @@ GO = {"verdict": "go", "slots": 10, "reasons": []}
 
 
 def prog_dict(repo, worktrees, gate_cmd=None, unknown=False, push=False, **kw):
-    script = Path(repo) / "scripts/drover/test.ps1"
+    script = Path(repo) / ".drover/scripts/drover/test.ps1"
     if (Path(repo) / ".git").exists() and not script.exists():
         script.parent.mkdir(parents=True, exist_ok=True)
         exe = sys.executable.replace("'", "''")
@@ -33,7 +33,7 @@ def prog_dict(repo, worktrees, gate_cmd=None, unknown=False, push=False, **kw):
         subprocess.run(["git", "-C", str(repo), "commit", "-m", "add fixture action"], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(repo), "push", "origin", "HEAD:main"], check=True, capture_output=True)
     raw = {"name": "p", "repo": str(repo), "worktrees": str(worktrees),
-           "scripts": {} if unknown else {"test": "scripts/drover/test.ps1"},
+           "scripts": {} if unknown else {"test": ".drover/scripts/drover/test.ps1"},
            "run": {"env": {"DROVER_FIXTURE_CODE": gate_cmd[-1] if gate_cmd else "pass"}},
            "gate": {"platform": "windows", "timeout_s": 60, "idle_s": 60},
            "land": {"push": push}, **kw}
@@ -252,7 +252,7 @@ class Repos(unittest.TestCase):
 
 class UnknownGate(Base):
     def test_missing_task_checkout_keeps_versioned_gate_config_before_recovery(self):
-        self.fix.commit('drover.toml', '[scripts]\ntest="scripts/drover/test.ps1"\n')
+        self.fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/drover/test.ps1"\n')
         self.fix.git('push', 'origin', 'HEAD:main')
         machine = {'name': 'p', 'repo': str(self.fix.repo), 'worktrees': str(Path(self.tmp.name) / 'wts')}
         pipe = pipeline.Pipeline(self.port, repos_map={'p': repos.load(machine)})
@@ -262,7 +262,7 @@ class UnknownGate(Base):
         self.assertEqual(ops.open_questions(self.conn), [])
         recovered = pipe.worktree(self.get(tid))
         self.assertTrue(placement.reachable(recovered))
-        self.assertEqual(pipe.repo(self.get(tid))['scripts']['test'], 'scripts/drover/test.ps1')
+        self.assertEqual(pipe.repo(self.get(tid))['scripts']['test'], '.drover/scripts/drover/test.ps1')
 
     def test_missing_repo_path_goes_to_owner_without_crashing(self):
         self.pipe._repos = {'p': {'name': 'p', 'gate': {'unknown': True}}}
@@ -286,9 +286,9 @@ class UnknownGate(Base):
         self.assertEqual([q["title"] for q in qs], ["What is the test script path for p?"])
         self.d.tick()
         self.assertEqual(len(ops.open_questions(self.conn)), 1)           # not again
-        ops.answer_question(self.conn, qs[0]["id"], text="scripts/drover/test.ps1")
+        ops.answer_question(self.conn, qs[0]["id"], text=".drover/scripts/drover/test.ps1")
         self.d.tick()
-        self.assertEqual(json.loads(ops.get_setting(self.conn, "gate_cmd_p"))["cmd"], "scripts/drover/test.ps1")
+        self.assertEqual(json.loads(ops.get_setting(self.conn, "gate_cmd_p"))["cmd"], ".drover/scripts/drover/test.ps1")
         self.assertEqual(len(self.fl.of("worker")), 3)                    # b and c came back too, and launched
         self.assertEqual(len(ops.open_questions(self.conn)), 0)
         self.assertFalse(self.pipe.repo({"repo": "p"})["gate"]["unknown"])
@@ -297,18 +297,18 @@ class UnknownGate(Base):
         t = self.task()
         self.d.tick()
         qid = int(ops.get_setting(self.conn, "_gate_question_p"))
-        for forged in ("scripts/drover/test.ps1",                                     # a bare string, as a token would PUT
+        for forged in (".drover/scripts/drover/test.ps1",                                     # a bare string, as a token would PUT
                        json.dumps({"cmd": "evil", "question": qid, "actor": "owner"}),   # the question is not answered
                        json.dumps({"cmd": "evil", "question": 999, "actor": "owner"})):  # not this repo's question
             ops.set_setting(self.conn, "gate_cmd_p", forged)
             self.assertTrue(self.pipe.repo({"repo": "p"})["gate"]["unknown"], forged)
             self.d.tick()
             self.assertEqual(self.status(t), "needs-owner")
-        ops.answer_question(self.conn, qid, text="scripts/drover/other.ps1")
+        ops.answer_question(self.conn, qid, text=".drover/scripts/drover/other.ps1")
         ops.set_setting(self.conn, "gate_cmd_p", json.dumps({"cmd": "evil", "question": qid, "actor": "owner"}))
         self.assertTrue(self.pipe.repo({"repo": "p"})["gate"]["unknown"])       # text differs from the answer
         self.d.tick()
-        self.assertEqual(self.pipe.repo({"repo": "p"})["scripts"]["test"], "scripts/drover/other.ps1")
+        self.assertEqual(self.pipe.repo({"repo": "p"})["scripts"]["test"], ".drover/scripts/drover/other.ps1")
 
     def test_an_answer_recorded_by_anyone_but_the_owner_is_ignored(self):
         self.task()
@@ -751,7 +751,7 @@ class ReadyToCommit(Base):
         (wt / "notes.md").write_text("notes")
         self.fix.git("add", "notes.md", cwd=wt)
         self.ready(tid)
-        self.assertEqual(self.fix.git("ls-tree", "-r", "--name-only", "HEAD", cwd=wt), "notes.md\nscripts/drover/test.ps1\nsrc/new file.txt")
+        self.assertEqual(self.fix.git("ls-tree", "-r", "--name-only", "HEAD", cwd=wt), ".drover/scripts/drover/test.ps1\nnotes.md\nsrc/new file.txt")
         self.assertEqual(self.fix.git("status", "--porcelain", cwd=wt), "")
 
     def test_retry_after_a_ledger_error_recovers_the_commit_instead_of_blocking_or_committing_twice(self):
@@ -1256,7 +1256,7 @@ class Landing(Base):
         (pdir / 'p.toml').write_text(
             f'name="p"\nrepo={json.dumps(str(self.fix.repo))}\n'
             f'worktrees={json.dumps(str(Path(self.tmp.name) / "wts"))}\n'
-            '[scripts]\ntest="scripts/drover/test.ps1"\n[gate]\nplatform="windows"\ndocs_only=false\n'
+            '[scripts]\ntest=".drover/scripts/drover/test.ps1"\n[gate]\nplatform="windows"\ndocs_only=false\n'
             '[land]\npolicy="single"\n[run.env]\nDROVER_FIXTURE_CODE=' + json.dumps(code) + '\n')
         db_path = Path(self.tmp.name) / 'l.db'
         child_code = ('from hub.dispatch import LandingService; from hub.store import Store; '
@@ -1300,7 +1300,7 @@ class Landing(Base):
         pdir.mkdir()
         (pdir / "p.toml").write_text(
             f'name = "p"\nrepo = {json.dumps(str(self.fix.repo))}\nworktrees = {json.dumps(str(Path(self.tmp.name) / "wts"))}\n'
-            f'[gate]\nplatform = "windows"\n[scripts]\ntest = "scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
+            f'[gate]\nplatform = "windows"\n[scripts]\ntest = ".drover/scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
         store = Store(Path(self.tmp.name) / "l.db")
         self.addCleanup(store.close)
         svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir)
@@ -1333,7 +1333,7 @@ class Landing(Base):
         pdir.mkdir()
         (pdir / "p.toml").write_text(
             f'name = "p"\nrepo = {json.dumps(str(self.fix.repo))}\nworktrees = {json.dumps(str(Path(self.tmp.name) / "wts"))}\n'
-            f'[gate]\nplatform = "windows"\n[scripts]\ntest = "scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
+            f'[gate]\nplatform = "windows"\n[scripts]\ntest = ".drover/scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
         svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir)
         out = svc.tick()
         self.assertEqual(out["p"]["outcome"], "refused")
@@ -1355,7 +1355,7 @@ class AnsweredScriptGate(Base):
         tid = self.task()
         self.d.tick()
         question = ops.open_questions(self.conn)[0]
-        ops.answer_question(self.conn, question['id'], text='scripts/drover/test.ps1')
+        ops.answer_question(self.conn, question['id'], text='.drover/scripts/drover/test.ps1')
         self.assertEqual(self.d.tick()['launched'], [tid])
         self.run_worker(tid, self.worker_commits(tid))
         self.d.tick()

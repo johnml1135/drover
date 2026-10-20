@@ -100,7 +100,7 @@ class DirectorReserve(unittest.TestCase):
 
     def test_the_allowance_module_reads_the_same_reserves(self):
         from drover import allowance
-        with_cfg = config.load(env={}, home_path="/nonexistent", overlay="/nonexistent")
+        with_cfg = config.load(env={}, home_path="/nonexistent")
         config.use(with_cfg)
         self.addCleanup(config.reset)
         self.assertEqual(allowance.defaults()["claude"]["director_reserve_pct"], 25.0)

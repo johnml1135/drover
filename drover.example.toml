@@ -2,9 +2,9 @@
 #
 # Copy to %USERPROFILE%\.drover\config.toml (or run `python -m drover init`, which writes one for your machine).
 # Omitted keys use built-in defaults; the seats below demonstrate the recommended account setup.
-# Layers, lowest first: this file's defaults, <home>/config.toml, <drover checkout>/.drover/config.toml (an optional
-# overlay; DROVER_OVERLAY names another file), then DROVER_* environment variables. DROVER_HOME names the folder
-# holding config.toml (default ~/.drover). Every scalar key can be set from the environment as DROVER_<SECTION>_<KEY>, for example
+# Machine layers, lowest first: built-in defaults, <home>/config.toml, then recognized DROVER_* variables.
+# DROVER_HOME names the folder holding config.toml (default ~/.drover). There is no application overlay.
+# Environment overrides use DROVER_<SECTION>_<KEY>, for example
 # DROVER_HUB_UI_PORT=9000, DROVER_PATHS_STATE_DIR=D:\drover, DROVER_DECIDER_DEVICE=cpu; lists are comma-separated.
 # Older names still work: DROVER_OLLAMA_URL, DROVER_REPOS_DIR, DROVER_WSL_USER, DROVER_WSL_DISTRO.
 # Check a file with: python -m drover config --check FILE      Show the effective values: python -m drover config --show
@@ -17,15 +17,17 @@
 # is read with a warning only when repos/ is missing. DROVER_REPO_CONFIGS_DIR overrides this key.
 repos_dir = ""
 
-# Repo configuration has two layers: the target repo's drover.toml at the selected commit,
-# then <state>/repos/<name>.toml with machine overrides. One loader merges and validates both.
+# Repo configuration has two layers: the target repo's .drover/config.toml at the selected commit,
+# then <state>/repos/<name>.toml with machine facts. One loader merges and validates both.
+# After adoption all machine policy is rejected; absent entries retain complete machine fallback.
 # A machine file names the repo, worktrees, default branch and remote; it may set [run.env]
 # for machine tool paths. Commit repo rules and action scripts with the code they describe.
 #
-# Example versioned drover.toml:
+# Example versioned .drover/config.toml:
+# schema_version = 1
 # [scripts]
-# test = "scripts/drover/test.ps1"
-# docs = "scripts/drover/docs.ps1"  # optional action for documentation-only changes
+# test = ".drover/scripts/test.ps1"
+# docs = ".drover/scripts/docs.ps1"  # optional action for documentation-only changes
 # [run]
 # platforms = ["windows", "wsl"]
 # default = "wsl"
@@ -148,8 +150,8 @@ parallel_cap = 4            # workers at once, all seats; the tuner may move it 
 
 # Trackers: resource checks before new work starts. queue = start nothing new, hold = stop everything. A [[trackers]]
 # entry with the name of a built-in one overrides just the keys you give; a new name adds a tracker; enabled = false
-# switches one off. Unknown facts never block. (The old resources.toml in the state dir is still read and overrides
-# the matching trackers.)
+# switches one off. Unknown facts never block. Legacy resources.toml is ignored; migrate its thresholds
+# into named trackers. See docs/configuration.md and `python -m drover config explain trackers`.
 [[trackers]]
 kind = "load"               # 5-minute load average per core
 name = "load"

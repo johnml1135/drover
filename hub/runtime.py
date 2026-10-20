@@ -598,7 +598,6 @@ def child_command(enrolled: dict, release: dict, generation: int, instance: str,
               not k.upper().startswith('DROVER_RELOAD_')}
     path = release['release_path']
     result.update(PYTHONPATH=path, PYTHONSAFEPATH='1', PYTHONDONTWRITEBYTECODE='1',
-                  DROVER_OVERLAY=enrolled['paths']['overlay'],
                   DROVER_HOME=enrolled['paths']['config_home'],
                   DROVER_REPO_CONFIGS_DIR=enrolled['paths']['repo_config'],
                   DROVER_RELOAD_STATE_ROOT=str(_state_root(enrolled)),
@@ -607,5 +606,7 @@ def child_command(enrolled: dict, release: dict, generation: int, instance: str,
                   DROVER_RELOAD_GENERATION=str(generation), DROVER_RELOAD_INSTANCE=instance,
                   DROVER_RELOAD_REQUIRED_SCHEMA=str(release['required_schema']))
     for name, value in enrolled['paths'].items():
+        if name == 'overlay':
+            continue
         result['DROVER_RELOAD_' + name.upper()] = value
     return [enrolled['interpreter']['path'], '-P', '-m', 'hub'], result, path

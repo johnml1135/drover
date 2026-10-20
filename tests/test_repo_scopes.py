@@ -79,3 +79,12 @@ class Scopes(RepoCase):
                     with self.assertRaises(repos.RepoError) as caught:
                         repos.load(raw)
                     self.assertIn(key, str(caught.exception))
+
+    def test_replacing_an_answer_never_overrides_an_identical_committed_script(self):
+        self.adopt()
+        answered = repos.with_test_script(repos.load(self.machine), SCRIPT)
+        answered = repos.with_test_script(answered, 'scripts/replacement.ps1')
+        self.assertEqual(answered['scripts']['test'], SCRIPT)
+        no_script = self.adopt(scripts={})
+        answered = repos.load(answered, no_script)
+        self.assertEqual(answered['scripts']['test'], 'scripts/replacement.ps1')

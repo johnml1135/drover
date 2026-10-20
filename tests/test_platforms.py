@@ -15,7 +15,7 @@ def repo(repo, worktrees, platforms=None, gate_platform="windows", default=None)
     p = prog_dict(repo, worktrees)
     raw = {"name": "p", "repo": p["repo"], "worktrees": p["worktrees"],
            "run": {"platforms": ["windows", "wsl"] if platforms is None else platforms, **({"default": default} if default else {})},
-           "scripts": {"test": "scripts/drover/test.ps1"}, "gate": {"platform": gate_platform}}
+           "scripts": {"test": ".drover/scripts/test.ps1"}, "gate": {"platform": gate_platform}}
     return repos.normalize(raw)
 
 
@@ -66,7 +66,7 @@ class Normalize(unittest.TestCase):
             (Path(d) / "repos").mkdir()
             (Path(d) / "repos" / "mine.toml").write_text(
                 'name="mine"\nrepo="R:\\\\r"\nworktrees="R:\\\\w"\n[gate]\nunknown=true\n')
-            config.use(config.load(Path(d), Path(d) / "none", {"DROVER_PATHS_STATE_DIR": d}))
+            config.use(config.load(Path(d), {"DROVER_PATHS_STATE_DIR": d}))
             self.addCleanup(config.reset)
             self.assertEqual(list(repos.load_all()), ["mine"])
 

@@ -695,7 +695,11 @@ def repo_toml(p, worktrees_root):
     repo = p["repo"]
     trees = (worktrees_root.rstrip("\\/") + ("\\" if "\\" in worktrees_root else "/") + p["name"] + ".worktrees"
              if worktrees_root else repo.rstrip("\\/") + ".worktrees")
-    raw = repos.machine_overrides(p["name"], repo, trees, base=base, push=p.get("push", False))
+    resolved = p.get("resolved")
+    if resolved is None:
+        resolved = _resolve_repo(p["name"], repo, base, p.get("state", config.state_dir()))
+    raw = repos.machine_overrides(p["name"], repo, trees, base=resolved, push=p.get("push"),
+                                  adopted=resolved["_adopted"])
     return config.dumps(raw)
 
 
@@ -708,8 +712,14 @@ def _saved_repo(state, name):
         return None
 
 
+def _resolve_repo(name, repo, base, state):
+    """Resolve the selected checkout using the actual saved machine filename."""
+    path = _inside(state, Path(config.native(state)) / "repos" / f"{name}.toml")
+    return repos.load({**(base or {}), "name": str(name), "repo": str(repo)}, machine_path=path)
+
+
 def q_repos(a, d, found_repos, worktrees, state):
-    a.say("\n9. Repos: machine paths and landing policy; repo actions live in drover.toml.")
+    a.say("\n9. Repos: machine paths and landing policy; repo actions live in .drover/config.toml.")
     if "repos" in a.answers:
         out = [_repo_answer(x, state) for x in a.answers["repos"]]
         for p in out:
@@ -731,10 +741,17 @@ def q_repos(a, d, found_repos, worktrees, state):
         existing = _saved_repo(state, name)
         base = existing if existing is not None else example_for(name)
         repo = a.ask(f"repo_{k}_repo", f"{name}: repo path", repos.machine_defaults(existing, r["path"])["repo"])
-        a.say(f"   {name}: actions and run platforms come from the repo's versioned drover.toml")
-        push = a.ask(f"repo_{k}_push", f"{name}: push landed work to the remote?",
-                     bool(repos.machine_defaults(base)["push"]), to_bool)
-        p = {"name": name, "repo": repo, "push": push, "base": base, "existing": existing is not None}
+        a.say(f"   {name}: actions and run platforms come from the repo's versioned .drover/config.toml")
+        resolved = _resolve_repo(name, repo, base, state)
+        push = None
+        if resolved["_adopted"]:
+            if f"repo_{k}_push" in a.answers:
+                raise WizardError(f"{name}: push belongs in .drover/config.toml after adoption")
+        else:
+            push = a.ask(f"repo_{k}_push", f"{name}: push landed work to the remote?",
+                         bool(repos.machine_defaults(base)["push"]), to_bool)
+        p = {"name": name, "repo": repo, "push": push, "base": base, "resolved": resolved,
+             "existing": existing is not None}
         repo_toml(p, worktrees)
         out.append(p)
     _examples_note(a, out)
@@ -753,9 +770,12 @@ def _repo_answer(x, state):
     base = existing
     if base is None and x.get("from_example", True):
         base = example_for(x["name"])
-    return {"name": str(x["name"]), "repo": str(x.get("repo", repos.machine_defaults(base)["repo"])),
-            "push": bool(x.get("push", repos.machine_defaults(base)["push"])),
-            "base": base, "existing": existing is not None}
+    name = str(x["name"])
+    repo = str(x.get("repo", repos.machine_defaults(base)["repo"]))
+    resolved = _resolve_repo(name, repo, base, state)
+    return {"name": name, "repo": repo, "push": x["push"] if "push" in x else None,
+            "base": base, "resolved": resolved, "existing": existing is not None}
+
 
 
 # ---- assembling and writing -----------------------------------------------------------------------------------

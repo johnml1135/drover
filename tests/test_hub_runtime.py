@@ -663,10 +663,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(env['PYTHONSAFEPATH'], '1')
         self.assertEqual(env['PYTHONDONTWRITEBYTECODE'], '1')
         self.assertEqual(env['OWNER_SETTING'], 'preserved')
-        self.assertEqual(env['DROVER_OVERLAY'], self.enrolled['paths']['overlay'])
+        self.assertNotIn('DROVER_OVERLAY', env)
+        self.assertNotIn('DROVER_RELOAD_OVERLAY', env)
         self.assertEqual(env['DROVER_HOME'], self.enrolled['paths']['config_home'])
         self.assertEqual(env['DROVER_REPO_CONFIGS_DIR'], self.enrolled['paths']['repo_config'])
         for name, value in self.enrolled['paths'].items():
+            if name == 'overlay':
+                continue
             self.assertEqual(env['DROVER_RELOAD_' + name.upper()], value)
         self.assertEqual(env['DROVER_RELOAD_REQUIRED_SCHEMA'], '4')
 
@@ -706,7 +709,7 @@ class RuntimeTests(unittest.TestCase):
         self.write('hub/__main__.py',
                    'import json, os\nfrom pathlib import Path\nimport drover.launch\n'
                    'print(json.dumps({"hub":str(Path(__file__).resolve()),'
-                   '"runner_root":str(drover.launch.ROOT),"overlay":os.environ["DROVER_OVERLAY"]}))\n')
+                   '"runner_root":str(drover.launch.ROOT),"overlay":"DROVER_OVERLAY" in os.environ,"reload_overlay":"DROVER_RELOAD_OVERLAY" in os.environ}))\n')
         self.a = self.commit()
         release = self.baseline()
         self.write('hub/__main__.py', 'raise RuntimeError("mutable source imported")\n')
@@ -720,7 +723,8 @@ class RuntimeTests(unittest.TestCase):
         report = json.loads(process.stdout)
         self.assertEqual(report['hub'], str(Path(cwd) / 'hub/__main__.py'))
         self.assertEqual(report['runner_root'], cwd)
-        self.assertEqual(report['overlay'], self.enrolled['paths']['overlay'])
+        self.assertFalse(report['overlay'])
+        self.assertFalse(report['reload_overlay'])
 
     def test_frozen_module_supports_package_and_sibling_imports_without_application_or_sqlite(self):
         bootstrap = self.root / 'frozen bootstrap'

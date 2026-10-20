@@ -3,8 +3,7 @@
 check() returns {verdict: go|queue|hold, reasons, facts, slots, wsl: {verdict, reasons}}. Unknown facts never block.
 The wsl tracker never feeds the global verdict (a Windows task must not wait for WSL): the dispatcher consults
 result['wsl'] only for work that needs WSL. Runs on WSL (full) and on Windows (no /proc: load is unknown, RAM via
-GlobalMemoryStatusEx). The old resources.toml ([load] [ram] [disk] [gpu]) is still read from the state dir and
-overrides the matching trackers; a config dict in that old shape is accepted by check() and load_config().
+GlobalMemoryStatusEx).
 Tests inject facts through the DROVER_RESOURCES_FAKE env var or the `fake` argument, a JSON object:
   platform "wsl"|"windows", load5, cores, ram_available_gb, ollama_ram_gb,
   disk_free_gb {tracker name: GB} (null or missing = unknown), vram [used_mb, total_mb] or null, read_only bool,
@@ -20,7 +19,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 from . import config as config_mod
@@ -28,60 +26,14 @@ from . import config as config_mod
 GB = 1024 ** 3
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
 VHDX_WARNING = 'cannot locate VHDX host drive; set DROVER_VHDX_DIR'
-LEGACY_FILE = 'resources.toml'
-LEGACY_DISKS = {'h': 'h', 'wsl': 'wsl', 'c': 'c'}
 
 
 def trackers_of(config=None):
-    """The tracker list for a config: a full config, a legacy-shaped dict ([load] [ram] [disk] [gpu]) or the process
-    config with the state dir's resources.toml laid over it."""
-    if config is not None and 'trackers' in config:
-        return [t for t in config['trackers'] if t.get('enabled', True)]
-    base = [dict(t) for t in config_mod.get()['trackers']]
-    legacy = config
-    if legacy is None:
-        path = config_mod.state_path(LEGACY_FILE)
-        legacy = _read_legacy(path) if path.exists() else {}
-    return [t for t in _apply_legacy(base, legacy) if t.get('enabled', True)]
-
-
-def _apply_legacy(trackers, legacy):
-    by_name = {t['name']: t for t in trackers}
-    for kind, values in legacy.items():
-        values = values or {}
-        if kind in ('load', 'ram') and kind in by_name:
-            by_name[kind].update({k: v for k, v in values.items() if k in by_name[kind]})
-        elif kind == 'disk':
-            for key, value in values.items():
-                name, _, rest = key.partition('_')
-                field = {'queue_gb': 'queue_gb', 'hold_gb': 'hold_gb'}.get(rest)
-                if name in by_name and field:
-                    by_name[name][field] = float(value)
-        elif kind == 'gpu' and 'vram' in by_name and 'vram_fallback_pct' in values:
-            by_name['vram']['fallback_pct'] = float(values['vram_fallback_pct'])
-    return trackers
-
-
-def _read_legacy(path):
-    with open(path, 'rb') as handle:
-        return tomllib.load(handle)
-
-
-def load_config(path=None):
-    """The thresholds in the old resources.toml shape, from the config's trackers (and the legacy file, if any)."""
-    trackers = {t['name']: t for t in trackers_of()}
-    out = {'load': {k: trackers['load'][k] for k in ('queue_per_core', 'hold_per_core')},
-           'ram': {k: trackers['ram'][k] for k in ('queue_base_gb', 'queue_per_worker_gb', 'hold_gb')},
-           'disk': {}, 'gpu': {'vram_fallback_pct': trackers['vram']['fallback_pct']},
-           'paths': {'windows_drives': ['C', 'H']}}
-    for name in LEGACY_DISKS:
-        if name in trackers:
-            out['disk'][name + '_queue_gb'] = trackers[name]['queue_gb']
-            out['disk'][name + '_hold_gb'] = trackers[name]['hold_gb']
-    if path:
-        for section, values in _read_legacy(Path(path)).items():
-            out.setdefault(section, {}).update(values)
-    return out
+    """Enabled trackers from the process config or an explicit tracker configuration."""
+    cfg = config_mod.get() if config is None else config
+    if not isinstance(cfg, dict) or 'trackers' not in cfg:
+        raise config_mod.ConfigError("resource configuration must contain trackers; legacy dictionaries are unsupported")
+    return [t for t in cfg['trackers'] if t.get('enabled', True)]
 
 
 def is_windows():

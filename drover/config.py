@@ -2,10 +2,8 @@
 
     python -m drover.config [--show] [--get paths.state_dir] [--check FILE]
 
-Layers, lowest first: built-in DEFAULTS, <home>/config.toml, the overlay <drover checkout>/.drover/config.toml, then
-DROVER_* environment overrides. The home is $DROVER_HOME or ~/.drover (%USERPROFILE%\\.drover on Windows). The overlay
-is read from the drover checkout (or the file named by DROVER_OVERLAY), never from the current directory: a worker
-writing inside a worktree cannot plant one.
+Layers, lowest first: built-in DEFAULTS, <home>/config.toml, then recognized DROVER_* environment overrides.
+The home is $DROVER_HOME or ~/.drover (%USERPROFILE%\\.drover on Windows).
 Tables merge key by key; [[trackers]] merge by name; [[seats]] replace the default seats as a whole.
 Environment: DROVER_<SECTION>_<KEY> for every scalar key (DROVER_HUB_UI_PORT, DROVER_PATHS_STATE_DIR,
 DROVER_DECIDER_MODELS_PRIMARY, DROVER_CAPACITY_PARALLEL_CAP, ...), lists comma-separated, plus the older names in
@@ -22,7 +20,6 @@ import sys
 import tomllib
 from pathlib import Path
 
-CHECKOUT = Path(__file__).resolve().parents[1]
 BACKENDS = ("claude", "codex")
 PLACEMENTS = ("windows", "wsl")
 TRACKER_KINDS = ("ram", "disk", "load", "vram", "wsl")
@@ -450,7 +447,7 @@ def _parse_env(text, default, name):
     return text
 
 
-def _apply_env(raw, env):
+def _apply_env(raw, env, *, sources=None):
     for name, dotted in env_names().items():
         if name not in env or env[name] == "":
             continue
@@ -462,41 +459,56 @@ def _apply_env(raw, env):
         for p in parts[:-1]:
             target = target.setdefault(p, {})
         target[parts[-1]] = _parse_env(env[name], default, name)
+        if sources is not None:
+            sources.update(_source_leaves(target[parts[-1]], "env:" + name, tuple(parts)))
     return raw
 
 
-def load(home_path=None, overlay=None, env=None):
-    """The validated config. home_path: the directory holding config.toml (default home()); overlay: the repo-local
-    file (default <checkout>/.drover/config.toml); env: the environment (default os.environ). Missing files are fine."""
+def load(home_path=None, env=None, *, sources=None):
+    """Load machine defaults, the state config.toml, and recognized environment values."""
     env = os.environ if env is None else env
-    raw = {}
     base = Path(home_path) if home_path else home(env)
-    overlay = overlay or env.get("DROVER_OVERLAY") or CHECKOUT / ".drover" / "config.toml"
-    for path in (base / "config.toml", Path(overlay)):
-        layer = _read(path)
-        if layer is not None:
-            layer = _legacy(layer)
-            try:
-                validate(layer)                 # each file on its own, so an error can name it
-            except ConfigError as e:
-                raise ConfigError(f"{path}: {e}") from e
-            raw = _merge_layer(raw, layer)
-    raw = _apply_env(raw, env)
+    path = base / "config.toml"
+    raw = _read(path)
+    raw = _legacy(raw) if raw is not None else {}
     try:
-        return validate(raw)
+        validate(raw)
+    except ConfigError as e:
+        raise ConfigError(f"{path}: {e}") from e
+    label = "machine:" + str(path.resolve())
+    origins = _source_leaves(raw, label)
+    raw = _apply_env(raw, env, sources=origins)
+    try:
+        cfg = validate(raw)
     except ConfigError as e:
         raise ConfigError(f"configuration error: {e}") from e
 
-
-def _merge_layer(raw, layer):
-    """Layer tables merge key by key; [[seats]] replace; [[trackers]] accumulate (merged by name at validation)."""
-    layer = dict(layer)
-    out = {k: v for k, v in raw.items() if k != "trackers"}
-    trackers = list(raw.get("trackers") or []) + list(layer.pop("trackers", None) or [])
-    out = _merge(out, layer)
-    if trackers:
-        out["trackers"] = trackers
-    return out
+    normalized = _source_leaves(cfg, "default")
+    for key in normalized:
+        if key in origins and not key.startswith("trackers."):
+            normalized[key] = origins[key]
+    # Tracker input merges by name before its normalized list receives indices.
+    supplied = {}
+    kinds = {t["name"]: t["kind"] for t in DEFAULT_TRACKERS}
+    for tracker in raw.get("trackers", []):
+        name = tracker.get("name", tracker.get("kind"))
+        kind = tracker.get("kind", kinds.get(name))
+        previous = supplied.get(name, {}) if kind == kinds.get(name) else {}
+        supplied[name] = {**previous, **tracker}
+        kinds[name] = kind
+    for name, tracker in supplied.items():
+        index = next(i for i, item in enumerate(cfg["trackers"]) if item["name"] == name)
+        normalized.update(_source_leaves(tracker, label, ("trackers", str(index))))
+    for i, seat in enumerate(raw.get("seats", DEFAULT_SEATS)):
+        for field, dependencies in (("placement", ("backend",)), ("binary", ("backend",)),
+                                    ("director_reserve_pct", ("backend", "director"))):
+            if field not in seat:
+                deps = {f"seats.{i}.{key}": normalized[f"seats.{i}.{key}"] for key in dependencies}
+                normalized[f"seats.{i}.{field}"] = "derived:" + json.dumps(deps, sort_keys=True, separators=(",", ":"))
+    if sources is not None:
+        sources.clear()
+        sources.update(normalized)
+    return cfg
 
 
 _cache = {}
@@ -505,7 +517,9 @@ _cache = {}
 def get():
     """The process-wide config, loaded on first use. Tests call reset() or use()."""
     if "cfg" not in _cache:
-        _cache["cfg"] = load()
+        origins = {}
+        cfg = load(sources=origins)
+        _cache.update(cfg=cfg, sources=origins)
     return _cache["cfg"]
 
 
@@ -513,9 +527,9 @@ def reset():
     _cache.clear()
 
 
-def use(cfg):
+def use(cfg, *, sources=None):
     """Install a config for this process (tests, `drover init`)."""
-    _cache["cfg"] = cfg
+    _cache.update(cfg=cfg, sources=dict(sources) if sources is not None else _source_leaves(cfg, "injected"))
 
 
 # ---- views used by the rest of the package ---------------------------------------------------------------------
@@ -575,14 +589,79 @@ def model_id(model, cfg=None):
     return (cfg or get())["models"]["ids"].get(model, model)
 
 
+def _source_leaves(value, label, prefix=()):
+    """Terminal selectors, including empty containers, with escaped literal components."""
+    if isinstance(value, (dict, list)) and value:
+        out = {}
+        items = value.items() if isinstance(value, dict) else enumerate(value)
+        for key, child in items:
+            if not prefix and str(key).startswith("_"):
+                continue
+            out.update(_source_leaves(child, label, prefix + (str(key),)))
+        return out
+    selector = ".".join(str(p).replace("\\", "\\\\").replace(".", "\\.") for p in prefix)
+    return {selector: label}
+
+
+def _selector_parts(key):
+    """Parse a selector; only dots and backslashes may be escaped."""
+    if not isinstance(key, str) or not key:
+        raise ConfigError(f"invalid selector {key}")
+    parts, part, escaped = [], "", False
+    for char in key:
+        if escaped:
+            if char not in (".", "\\"):
+                raise ConfigError(f"invalid selector {key}")
+            part += char
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ".":
+            if not part:
+                raise ConfigError(f"invalid selector {key}")
+            parts.append(part)
+            part = ""
+        else:
+            part += char
+    if escaped or not part:
+        raise ConfigError(f"invalid selector {key}")
+    parts.append(part)
+    if parts[0].startswith("_"):
+        raise ConfigError(f"unknown selector {key}")
+    return parts
+
+
 def dig(cfg, dotted):
     value = cfg
-    for part in dotted.split("."):
-        if isinstance(value, list):
-            value = value[int(part)]
-        else:
-            value = value[part]
+    try:
+        for part in _selector_parts(dotted):
+            if isinstance(value, list):
+                if not part.isascii() or not part.isdigit() or str(int(part)) != part:
+                    raise ValueError(part)
+                value = value[int(part)]
+            elif isinstance(value, dict):
+                value = value[part]
+            else:
+                raise KeyError(part)
+    except (KeyError, IndexError, ValueError, TypeError):
+        raise ConfigError(f"unknown or invalid selector {dotted}") from None
     return value
+
+
+def explain_value(cfg, key, sources):
+    value = dig(cfg, key)
+    terminals = _source_leaves(value, "default", tuple(_selector_parts(key)))
+    return {"key": key, "value": value,
+            "sources": {path: sources.get(path, "default") for path in terminals}}
+
+
+def source_of(key):
+    cfg = get()
+    result = explain_value(cfg, key, _cache["sources"])
+    origins = result["sources"]
+    if key in origins and len(origins) == 1:
+        return origins[key]
+    return "aggregate:" + json.dumps(origins, sort_keys=True, separators=(",", ":"))
 
 
 # ---- writing TOML (there is no stdlib writer) -----------------------------------------------------------------
@@ -633,7 +712,11 @@ def dumps(table, _path=()):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="drover.config")
-    ap.add_argument("action", nargs="?", choices=("sync",))
+    ap.add_argument("action", nargs="?", choices=("sync", "explain", "migrate-machine"))
+    ap.add_argument("key", nargs="?")
+    ap.add_argument("--apply", action="store_true", help="apply machine migration after backing up the file")
+    ap.add_argument("--repo", metavar="NAME")
+    ap.add_argument("--revision", metavar="REV")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--reason", help="reason for a configuration sync decision")
     ap.add_argument("--show", action="store_true", help="print the effective config as TOML")
@@ -649,7 +732,103 @@ def main(argv=None):
             validate(raw)
             print(f"{a.check}: ok")
             return 0
-        cfg = load()
+        origins = {}
+        cfg = load(sources=origins)
+        if a.action == "migrate-machine":
+            from datetime import datetime, timezone
+            from . import repos
+            if not a.key or a.repo or a.revision is not None:
+                raise ConfigError("migrate-machine requires a repository name")
+            path = next((p for p in sorted(repos_dir(cfg).glob("*.toml"))
+                         if p.stem.lower() == a.key.lower()), None)
+            if path is None:
+                raise ConfigError(f"no repo {a.key!r}")
+            original = path.read_bytes()
+            raw = tomllib.loads(original.decode("utf-8"))
+            # The loader remains the sole reader/validator of committed policy.
+            facts = {k: v for k, v in raw.items()
+                     if k in ("name", "repo", "worktrees", "remote", "default_branch")}
+            if "run" in raw and not isinstance(raw["run"], dict):
+                raise ConfigError(f"{path}: run must be a table")
+            if "env" in raw.get("run", {}):
+                facts["run"] = {"env": raw["run"]["env"]}
+            facts.setdefault("name", path.stem)
+            use(cfg, sources=origins)
+            committed = repos.load(facts, machine_path=path, sources=origins)
+            if not committed["_adopted"]:
+                raise ConfigError("commit .drover/config.toml before migrating the machine file")
+            print(f"Machine facts for {path}:\n{dumps(facts)}", end="")
+            print("Policy belongs in committed .drover/config.toml:")
+            differences = []
+            for table, value in raw.items():
+                if table in facts and table != "run":
+                    continue
+                for field, supplied in (value.items() if isinstance(value, dict) and value else [(None, value)]):
+                    key = f"{table}.{field}" if field is not None else table
+                    if key == "run.env":
+                        continue
+                    if key == "gate.commands":
+                        print("  gate.commands: obsolete, ignored by the loader; commands now come from scripts.test")
+                        continue
+                    canonical = "landing.push" if key == "land.push" else key
+                    try:
+                        actual = dig(committed, canonical)
+                    except ConfigError:
+                        differences.append(f"{key}: machine={supplied!r}, committed=<absent>")
+                        continue
+                    # Placement sets have a canonical order in the loader.
+                    expected = [p for p in repos.PLATFORMS if p in supplied] if key == "run.platforms" \
+                        and isinstance(supplied, list) and supplied and all(p in repos.PLATFORMS for p in supplied) else supplied
+                    if type(expected) in (int, float) and type(actual) in (int, float):
+                        same = expected == actual
+                    else:
+                        same = type(expected) is type(actual) and expected == actual
+                    if not same:
+                        differences.append(f"{key}: machine={supplied!r}, committed={actual!r}")
+                    else:
+                        source = origins.get(canonical, "")
+                        present = source.startswith("repo:") or any(
+                            label.startswith("repo:") for selector, label in origins.items()
+                            if selector.startswith(canonical + "."))
+                        print(f"  {key}: {supplied!r} (" +
+                              ("already in committed entry" if present else "matches repository default") + ")")
+            if differences:
+                raise ConfigError("policy differs; refusing migration:\n" + "\n".join(differences))
+            if raw == facts:
+                print("Machine file is already facts-only.")
+            elif a.apply:
+                backup = path.with_name(path.name + ".bak-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+                with backup.open("xb") as stream:
+                    stream.write(original)
+                path.write_text(dumps(facts), encoding="utf-8")
+                print(f"Backup: {backup}\nApplied machine migration.")
+            else:
+                print("Dry run; use --apply to back up and write the facts-only file.")
+            return 0
+        if a.apply:
+            raise ConfigError("--apply requires migrate-machine")
+        if a.action == "explain":
+            if not a.key:
+                raise ConfigError("explain requires a key")
+            if a.revision is not None and not a.repo:
+                raise ConfigError("revision requires repository scope (--repo)")
+            if a.repo:
+                from . import repos
+                path = next((p for p in sorted(repos_dir(cfg).glob("*.toml"))
+                             if p.stem.lower() == a.repo.lower()), None)
+                if path is None:
+                    raise ConfigError(f"no repo {a.repo!r}")
+                try:
+                    raw = repos.read_machine(path)
+                except (OSError, tomllib.TOMLDecodeError) as e:
+                    raise ConfigError(f"{path}: {e}") from e
+                use(cfg, sources=origins)
+                raw.setdefault("name", path.stem)
+                cfg = repos.load(raw, a.revision or "HEAD", machine_path=path, sources=origins)
+            print(json.dumps(explain_value(cfg, a.key, origins)))
+            return 0
+        if a.repo or a.revision is not None or a.key:
+            raise ConfigError("key, --repo and --revision require explain")
         if a.action == "sync":
             from . import decisions
             try:
@@ -666,7 +845,7 @@ def main(argv=None):
             return 0
         print(dumps(cfg), end="")
         return 0
-    except (ConfigError, KeyError, IndexError, ValueError) as e:
+    except (ConfigError, KeyError, IndexError, ValueError, OSError) as e:
         print(f"drover.config: {e}", file=sys.stderr)
         return 2
 

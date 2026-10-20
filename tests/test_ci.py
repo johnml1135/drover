@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from drover import ci, repos, runner
+from drover import ci, config, repos, runner
 from drover.ledger import db, ci as slots
 from tests.gitfix import Repo
 
@@ -23,22 +23,25 @@ class CITests(unittest.TestCase):
         self.addCleanup(self.repo.cleanup)
         self.runs = self.repo.root / 'runs'
         self.service = ci.CI(self.runs)
-        self.machine = {'name': 'fixture', 'repo': str(self.repo.repo),
-                        'run': {'platforms': [PLATFORM], 'default': PLATFORM},
-                        'gate': {'platform': PLATFORM, 'timeout_s': 30, 'idle_s': 10}}
+        self.machine = {'name': 'fixture', 'repo': str(self.repo.repo), 'run': {'env': {}}}
+
+    def repo_config(self, *, scripts=None, gate=None):
+        return config.dumps({'schema_version': 1,
+                             'scripts': scripts if scripts is not None else {'test': '.drover/scripts/check action.ps1'},
+                             'run': {'platforms': [PLATFORM], 'default': PLATFORM},
+                             'gate': {'platform': PLATFORM, 'timeout_s': 30, 'idle_s': 10, **(gate or {})}})
 
     def configure(self, code, docs=False):
         exe = sys.executable.replace("'", "''")
-        self.repo.commit('scripts/check action.ps1',
+        self.repo.commit('.drover/scripts/check action.ps1',
                          f"if ($args.Count) {{ exit 97 }}\n& '{exe}' -c '{code.replace(chr(39), chr(39)*2)}'\nexit $LASTEXITCODE\n")
-        self.repo.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\n[gate]\n'
-                         f'docs_only={str(docs).lower()}\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': docs}))
         self.repo.git('checkout', '-b', 'topic')
         return repos.load(self.machine)
 
     def test_composed_wsl_command_runs_a_tiny_unittest_project_verbatim(self):
         exe = sys.executable.replace("'", "''")
-        self.repo.commit('scripts/check action.ps1',
+        self.repo.commit('.drover/scripts/check action.ps1',
                          'if ($args.Count) { exit 97 }\n'
                          f"& '{exe}' -m unittest discover -s sample_tests\nexit $LASTEXITCODE\n")
         self.repo.commit('sample_tests/test_sample.py',
@@ -46,9 +49,9 @@ class CITests(unittest.TestCase):
                          ' def test_context(self):\n'
                          '  self.assertEqual(os.environ["DROVER_CI_KIND"], "checks")\n'
                          '  self.assertIn("source.txt", json.loads(os.environ["DROVER_CHANGED_FILES"]))\n'
-                         '  self.assertTrue(pathlib.Path("drover.toml").is_file())\n'
+                         '  self.assertTrue(pathlib.Path(".drover/config.toml").is_file())\n'
                          '  print("fixture: passed")\n')
-        self.repo.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\n[gate]\ndocs_only=false\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False}))
         self.repo.git('checkout', '-b', 'topic')
         commit = self.repo.commit('source.txt', 'changed')
         prog = repos.load(self.machine)
@@ -69,7 +72,7 @@ class CITests(unittest.TestCase):
         result = self.service.run(prog, self.repo.repo, commit)
         self.assertEqual((result['passed'], result['exit_code'], result['kind']), (False, 7, 'full'))
         self.assertEqual(result['log_tail'], ['PASSED summary'])
-        self.repo.commit('scripts/check action.ps1', 'Set-Content source.txt changed-again\nexit 0\n')
+        self.repo.commit('.drover/scripts/check action.ps1', 'Set-Content source.txt changed-again\nexit 0\n')
         commit = self.repo.git('rev-parse', 'HEAD')
         result = self.service.run(prog, self.repo.repo, commit)
         self.assertEqual((result['exit_code'], result['tree_unchanged'], result['passed']), (0, False, False))
@@ -99,17 +102,18 @@ class CITests(unittest.TestCase):
             result = self.service.run(prog, self.repo.repo, commit, kind=kind)
             self.assertTrue(result['passed'])
             self.assertEqual(result['kind'], 'docs')
-        self.repo.commit('scripts/docs.ps1', 'Write-Output "docs script"\nexit 0\n')
-        self.repo.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\ndocs="scripts/docs.ps1"\n')
+        self.repo.commit('.drover/scripts/docs.ps1', 'Write-Output "docs script"\nexit 0\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(scripts={'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
         self.repo.git('branch', '-f', 'main', 'HEAD')
         commit = self.repo.commit('docs/next.md', 'more docs\n')
         result = self.service.run(prog, self.repo.repo, commit)
         self.assertIn('--check', result['steps'][0]['command'])
-        self.assertEqual(result['steps'][1]['command'][-1], 'scripts/docs.ps1')
+        self.assertEqual(result['steps'][1]['command'][-1], '.drover/scripts/docs.ps1')
         self.assertIn('docs script', result['log_tail'])
 
     def test_docs_policy_through_prepare(self):
         self.configure('raise SystemExit(99)', docs=True)
+        original = self.repo.git('rev-parse', 'main')
         for files, policy, expected in (
                 ({'docs/readme.md': 'docs\n', 'source.py': 'code\n'}, {}, 'checks'),
                 ({'.github/readme.md': 'docs\n'}, {}, 'checks'),
@@ -119,11 +123,12 @@ class CITests(unittest.TestCase):
                 ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': []}, 'checks'),
                 ({'guide/readme.md': 'docs\n'}, {'docs_only_globs': ['**/*.md', '!guide/**']}, 'checks')):
             with self.subTest(files=files, policy=policy):
-                self.repo.git('checkout', '-B', 'case', 'main')
+                self.repo.git('checkout', '-B', 'case', original)
+                self.repo.commit('.drover/config.toml', self.repo_config(gate=policy))
+                self.repo.git('branch', '-f', 'main', 'HEAD')
                 for path, content in files.items():
                     commit = self.repo.commit(path, content)
-                machine = {**self.machine, 'gate': {**self.machine['gate'], **policy}}
-                context = self.service.prepare(machine, self.repo.repo, commit, 'docs-policy')
+                context = self.service.prepare(self.machine, self.repo.repo, commit, 'docs-policy')
                 self.assertEqual(context['kind'], expected)
                 plan = json.loads((self.runs / 'docs-policy' / 'plan.json').read_text())
                 self.assertEqual('--check' in plan['commands'][0], expected == 'docs')
@@ -247,8 +252,8 @@ class CITests(unittest.TestCase):
 
     def test_docs_script_cannot_bypass_diff_check(self):
         self.configure('raise SystemExit(99)', docs=True)
-        self.repo.commit('scripts/docs.ps1', 'Write-Output "docs script ran"\nexit 0\n')
-        self.repo.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\ndocs="scripts/docs.ps1"\n')
+        self.repo.commit('.drover/scripts/docs.ps1', 'Write-Output "docs script ran"\nexit 0\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(scripts={'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
         self.repo.git('branch', '-f', 'main', 'HEAD')
         for content, diagnostic in (('<<<<<<< ours\ntext\n=======\nother\n>>>>>>> theirs\n',
                                      'conflict marker'), ('text\n\n', 'blank line at EOF')):
@@ -309,13 +314,13 @@ class CITests(unittest.TestCase):
                            'assert sys.argv[1] == "1800"\n' +
                            f'os.execv({shutil.which("timeout")!r}, ["timeout", ".3", *sys.argv[2:]])\n')
         timeout.chmod(0o755)
-        commit = self.repo.commit('scripts/check action.ps1', 'Write-Output "started"\nStart-Sleep 60\nexit 0\n')
+        commit = self.repo.commit('.drover/scripts/check action.ps1', 'Write-Output "started"\nStart-Sleep 60\nexit 0\n')
         result = self.service.run(prog, self.repo.repo, commit, priority='P4')
         self.assertEqual((result['passed'], result['exit_code']), (False, 124))
         # The old fallback remains valid on machines without a usable user bus.
         scope.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
         calls.unlink()
-        commit = self.repo.commit('scripts/check action.ps1', 'Write-Output "unwrapped"\nexit 0\n')
+        commit = self.repo.commit('.drover/scripts/check action.ps1', 'Write-Output "unwrapped"\nexit 0\n')
         result = self.service.run(prog, self.repo.repo, commit, priority='P4')
         self.assertTrue(result['passed'])
         self.assertIn('unwrapped', result['log_tail'])
@@ -323,8 +328,10 @@ class CITests(unittest.TestCase):
 
     def test_wall_timeout_stops_a_script_that_keeps_printing(self):
         self.configure('import time; exec("while True: print(1,flush=True); time.sleep(.05)")')
+        self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False, 'timeout_s': 1}))
+        self.repo.git('branch', '-f', 'main', 'HEAD')
         commit = self.repo.commit('source.txt', 'changed')
-        prog = {**self.machine, 'gate': {**self.machine['gate'], 'timeout_s': 1, 'idle_s': 10}}
+        prog = repos.load(self.machine)
         conn = db.connect(self.repo.root / 'ledger.db')
         self.addCleanup(conn.close)
         with self.assertRaisesRegex(ci.CIError, 'wall-clock limit'):
@@ -368,8 +375,10 @@ class CITests(unittest.TestCase):
 
     def test_silent_script_times_out_and_releases_its_ci_runner(self):
         prog = self.configure('import time; time.sleep(60)')
+        self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False, 'idle_s': .4}))
+        self.repo.git('branch', '-f', 'main', 'HEAD')
         commit = self.repo.commit('source.txt', 'changed')
-        prog = repos.load({**self.machine, 'gate': {**self.machine['gate'], 'idle_s': .4}})
+        prog = repos.load(self.machine)
         conn = db.connect(self.repo.root / 'ledger.db')
         self.addCleanup(conn.close)
         with self.assertRaisesRegex(ci.CIError, 'timed out'):

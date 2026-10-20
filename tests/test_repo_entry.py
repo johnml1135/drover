@@ -75,3 +75,37 @@ class Entry(RepoCase):
                     repos.load(self.machine, sha)
                 for detail in (ENTRY, sha, key):
                     self.assertIn(detail, str(caught.exception))
+
+    def test_supplied_fields_validate_before_normalization(self):
+        cases = {
+            'run.default': [[], False, '', 'other'],
+            'gate.platform': [[], False, '', 'other', 'WSL'],
+            'review.model': [False, [], 1, ''],
+            'review.high_risk_model': [False, [], 1, ''],
+            'review.backend': [False, [], '', 'other'],
+            'review.seat': [False, [], 1, ''],
+            'review.effort': [False, [], 1, ''],
+            'land.policy': [[], False, '', 'other'],
+            'land.push': [[], 1, 'false'],
+            'landing.push': [[], 1, 'false'],
+            'landing.mode': [[], False, '', 'other', 'pr'],
+            'gate.timeout_s': [True, [], '12'],
+            'gate.idle_s': [False, [], '12'],
+        }
+        for key, values in cases.items():
+            table, field = key.split('.')
+            for value in values:
+                sha = self.adopt(**{table: {field: value}})
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(repos.RepoError) as caught:
+                        repos.load(self.machine, sha)
+                    for detail in (ENTRY, sha, key):
+                        self.assertIn(detail, str(caught.exception))
+
+    def test_legacy_fallback_keeps_permissive_defaults(self):
+        prog = repos.load({**self.machine, 'run': {'default': []},
+                           'gate': {'platform': [], 'timeout_s': True},
+                           'review': {'model': False}, 'land': {'policy': []}})
+        self.assertEqual(prog['run']['default'], 'windows')
+        self.assertEqual(prog['gate']['timeout_s'], 1.0)
+        self.assertEqual(prog['land']['policy'], 'batch')

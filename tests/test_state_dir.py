@@ -14,7 +14,7 @@ class StateDir(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.state = Path(self.tmp.name) / "state"
-        config.use(config.load(Path(self.tmp.name), Path(self.tmp.name) / "none",
+        config.use(config.load(Path(self.tmp.name),
                                {"DROVER_PATHS_STATE_DIR": str(self.state)}))
         self.addCleanup(config.reset)
 

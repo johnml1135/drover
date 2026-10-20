@@ -185,7 +185,7 @@ class Pipeline:
             hint = repos.ci_policy(prog).get("hint")
             qid = self.port.ask_question(
                 "task", tid, f"What is the test script path for {name}?",
-                body=("Add [scripts] test to drover.toml, or answer with its relative .ps1 script path."
+                body=("Add [scripts] test to .drover/config.toml, or answer with its relative .ps1 script path."
                       + (f" Hint: {hint}." if hint else "")), needs_owner=True)
             self.port.set_setting(GATE_Q_KEY + name.lower(), qid)
         else:

@@ -1,0 +1,23 @@
+schema_version = 1
+
+# Repo rules travel with the commit. Machine files supply local facts.
+[scripts]
+test = ".drover/scripts/test.ps1"
+
+[run]
+platforms = ["windows", "wsl"]
+default = "wsl"
+
+[gate]
+platform = "both"
+timeout_s = 1800
+idle_s = 1500
+
+[review]
+backend = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+
+[land]
+policy = "batch"
+push = false

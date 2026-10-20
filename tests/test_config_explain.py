@@ -130,3 +130,24 @@ class Explain(RepoCase):
         self.assertEqual(normalized['remote'], 'origin')
         self.assertEqual(seed['remote'], 'machine:explicit')
         self.assertIn('review.model', seed)
+
+    def test_invalid_repository_limit_names_entry_commit_and_key(self):
+        for key in ('timeout_s', 'idle_s'):
+            sha = self.adopt(gate={key: ['invalid']})
+            with self.subTest(key=key), self.assertRaises(repos.RepoError) as caught:
+                repos.load(self.machine, sha)
+            for detail in (ENTRY, sha, 'gate.' + key):
+                self.assertIn(detail, str(caught.exception))
+
+    def test_schema_version_is_attributed_to_committed_entry(self):
+        sha = self.adopt()
+        sources = {}
+        prog = repos.load(self.machine, sha, sources=sources)
+        self.assertEqual(prog['schema_version'], 1)
+        self.assertEqual(sources.get('schema_version'), 'repo:' + ENTRY + '@' + sha)
+
+    def test_raw_dictionary_cannot_claim_to_be_a_resolved_envelope(self):
+        loaded = repos.load(self.machine)
+        self.assertEqual(repos.load(loaded)['repo'], loaded['repo'])
+        with self.assertRaises(repos.RepoError):
+            repos.load(dict(loaded))

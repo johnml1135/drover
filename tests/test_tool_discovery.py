@@ -35,8 +35,8 @@ class ToolDiscovery(unittest.TestCase):
                         '[ "$3" = -NonInteractive ] && [ "$4" = -File ] || exit 91\n'
                         'exec /bin/sh "$5"\n')
         pwsh.chmod(0o755)
-        fix.commit('scripts/check action.ps1', 'printf "discovered-script-ran\\n"\n')
-        sha = fix.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\n'
+        fix.commit('.drover/scripts/check action.ps1', 'printf "discovered-script-ran\\n"\n')
+        sha = fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/check action.ps1"\n'
                          '[gate]\ndocs_only=false\n')
         with closing(Store(fix.root / 'ledger.db')) as store:
             def probe(argv, timeout):

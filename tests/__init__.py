@@ -10,7 +10,6 @@ from drover import config
 _home = tempfile.mkdtemp(prefix="drover-test-home-")
 atexit.register(shutil.rmtree, _home, ignore_errors=True)
 os.environ["DROVER_HOME"] = _home
-os.environ["DROVER_OVERLAY"] = os.path.join(_home, "no-overlay.toml")    # never the checkout's .drover/config.toml
 for _name in config.env_names():
     os.environ.pop(_name, None)
 config.reset()

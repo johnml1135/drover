@@ -48,11 +48,13 @@ Open `http://127.0.0.1:8765`. For installation at login and remote access, follo
 Re-run `python -m drover init` and select a discovered repo. Alternatively, copy
 [acme-lib.toml](repos/acme-lib.toml) into `<state>/repos/`, then edit its name, repo path,
 worktree path, default branch and remote. [acme-app.toml](repos/acme-app.toml) is another neutral example.
-Machine files hold local facts; repository rules belong in a committed `drover.toml` at the repo root:
+Machine files hold local facts; repository rules belong in a committed `.drover/config.toml`:
 
 ```toml
+schema_version = 1
+
 [scripts]
-test = "scripts/drover/test.ps1"
+test = ".drover/scripts/test.ps1"
 
 [run]
 platforms = ["windows", "wsl"]
@@ -69,11 +71,14 @@ Task checks receive `DROVER_CI_KIND=checks` and `DROVER_CHANGED_FILES` as a JSON
 full CI receives kind `full`, and documentation checks receive `docs`.
 PowerShell and the repo's tools must already be installed on each selected platform.
 
-The loader reads `drover.toml` from the commit being worked or checked, then applies the machine file's
-overrides. Until a repo has its own file, those same keys can live in the machine file through the same merge.
-`[run.env]` supplies machine environment entries, and `[run].sandbox_writable_roots` declares extra writable
-paths below `/tmp`; the runner creates them with mode 0777. Repo brief text belongs in the versioned file.
-Inspect effective repo configuration with `python -m drover.repos --json`.
+The loader reads `.drover/config.toml` from the commit being worked or checked. After adoption, the machine
+file may contain only `name`, `repo`, `worktrees`, `remote`, `default_branch` and `[run.env]`; policy leftovers
+are errors. Machine env overrides repository env by variable name. Without the committed entry, complete
+machine policy remains the migration fallback. Dirty config files and root `drover.toml` are ignored.
+The repository's `[run].sandbox_writable_roots` declares extra writable paths below `/tmp`; the runner creates
+them with mode 0777. Repo brief text belongs in the versioned entry.
+Inspect origins with `python -m drover config explain scripts --repo NAME`, or inspect effective values with
+`python -m drover.repos --json`. See [configuration and migration](docs/configuration.md).
 
 Packaged examples are loaded only with `DROVER_EXAMPLES=1`, when no private `repos/` directory exists. A legacy
 `programs/` directory is read with a deprecation warning; move its files into `repos/` when convenient.
@@ -116,7 +121,7 @@ permit your intended use and check their licences before deployment.
 Run checks from the checkout root:
 
 ```sh
-pwsh -NoLogo -NoProfile -NonInteractive -File scripts/drover/test.ps1
+pwsh -NoLogo -NoProfile -NonInteractive -File .drover/scripts/test.ps1
 ```
 
 The script selects the platform's Python, runs `python -m unittest discover -s tests -t .`,

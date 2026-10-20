@@ -111,3 +111,15 @@ class Sources(unittest.TestCase):
                         else:
                             self.call(fn, cfg, selector, sources)
                     self.assertIn(selector, str(caught.exception))
+
+    def test_tracker_kind_replacement_drops_obsolete_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.toml'
+            path.write_text('[[trackers]]\nname="ram"\nkind="ram"\nenabled=false\nqueue_base_gb=9.0\n'
+                            '[[trackers]]\nname="ram"\nkind="disk"\nqueue_gb=200.0\n', encoding='utf-8')
+            sources = {}
+            cfg = self.call('load', home_path=directory, env={}, sources=sources)
+            self.assertEqual(cfg['trackers'][1]['kind'], 'disk')
+            self.assertNotIn('queue_base_gb', cfg['trackers'][1])
+            self.assertNotIn('trackers.1.queue_base_gb', sources)
+            self.assertEqual(sources['trackers.1.enabled'], 'default')

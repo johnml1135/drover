@@ -53,11 +53,11 @@ class LandingCase(unittest.TestCase):
         self.script.write_text(SCRIPT)
         exe = sys.executable.replace("'", "''")
         script = str(self.script).replace("'", "''")
-        self.r.commit('scripts/check.ps1', f"& '{exe}' '{script}'\nexit $LASTEXITCODE\n")
+        self.r.commit('.drover/scripts/check.ps1', f"& '{exe}' '{script}'\nexit $LASTEXITCODE\n")
         self.r.git('push', '-q', 'origin', 'HEAD:main')
         self.r.git('fetch', '-q', 'origin')
         self.prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo),
-                                     'scripts': {'test': 'scripts/check.ps1'}, 'gate': {'docs_only': False}})
+                                     'scripts': {'test': '.drover/scripts/check.ps1'}, 'gate': {'docs_only': False}})
         self.ci = ci.CI(self.r.root / 'receipts')
         self.gate = lambda checkout, commit, tasks: self.ci.run(self.prog, checkout, commit, base='origin/main')
         self.work = self.r.root / 'batch-wt'
@@ -526,7 +526,7 @@ class RunTests(LandingCase):
         (configs / 'p.toml').write_text(
             f'name="p"\nrepo={json.dumps(str(self.r.repo))}\n'
             f'worktrees={json.dumps(str(trees))}\n')
-        self.r.commit('drover.toml', '[scripts]\ntest="scripts/check.ps1"\n[gate]\ndocs_only=false\n')
+        self.r.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/check.ps1"\n[gate]\ndocs_only=false\n')
         store = Store(self.r.root / 'ledger.db')
         self.addCleanup(store.close)
         settings = Settings(runs_dir=self.r.root / 'receipts')
@@ -536,7 +536,7 @@ class RunTests(LandingCase):
         count, release = self.r.root / 'count', self.r.root / 'release'
         self.addCleanup(release.touch)
         # The script stays live until the test lets the adopted runner finish.
-        self.r.commit('scripts/check.ps1',
+        self.r.commit('.drover/scripts/check.ps1',
                       f"Add-Content '{count}' started\n"
                       f"while (-not (Test-Path '{release}')) {{ Start-Sleep -Milliseconds 50 }}\nexit 0\n")
         self.r.git('push', '-q', 'origin', 'HEAD:main')

@@ -45,7 +45,7 @@ class DeleteRegressions(unittest.TestCase):
         self.assertEqual([q['id'] for q in self.inbox_questions()], [str(qid)])
         self.assertEqual(ops.get_question(self.conn, private)['status'], 'open')
         self.assertEqual(ops.get_setting(self.conn, '_gate_question_acme-lib'), str(qid))
-        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
+        ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
         self.pipe.sync_gates()
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
         self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
@@ -86,7 +86,7 @@ class DeleteRegressions(unittest.TestCase):
         self.assertEqual(ops.get_question(self.conn, qid)['target_id'], target)
         with self.assertRaises(ops.NotFound):
             ops.get_question(self.conn, private)
-        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
+        ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
         self.pipe.sync_gates()
         self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
@@ -94,7 +94,7 @@ class DeleteRegressions(unittest.TestCase):
     def test_answered_gate_keeps_owner_provenance_and_command(self):
         source, target = self.task('Source'), self.task('Target')
         qid = self.gate_question(source)
-        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
+        ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
         self.pipe.sync_gates()
         command = ops.get_setting(self.conn, 'gate_cmd_acme-lib')
         ops.archive_task(self.conn, target)
@@ -107,7 +107,7 @@ class DeleteRegressions(unittest.TestCase):
     def test_last_task_clears_gate_references_before_next_task(self):
         source = self.task('Source')
         qid = self.gate_question(source)
-        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
+        ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
         self.pipe.sync_gates()
         ops.delete_task(self.conn, source, confirm=True)
         self.assertIsNone(ops.get_setting(self.conn, '_gate_question_acme-lib'))

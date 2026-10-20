@@ -2,7 +2,9 @@
 import sys
 
 USAGE = """usage: python -m drover init [--defaults] [--answers FILE.toml] [--state-dir DIR]
-       python -m drover config [sync [--json]] [--show] [--get KEY] [--check FILE]"""
+       python -m drover config [sync [--json]] [--show] [--get KEY] [--check FILE]
+       python -m drover config explain KEY [--repo NAME] [--revision REV]
+       python -m drover config migrate-machine NAME [--apply]"""
 
 
 def main(argv=None):

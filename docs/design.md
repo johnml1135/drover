@@ -33,9 +33,8 @@ Installation applies an owner-only ACL to the state directory.
 ## Configuration
 
 The primary configuration is TOML, parsed with the standard library.
-Built-in defaults are overlaid by the home config and a checkout-local override.
-Environment overrides apply last.
-The checkout override is anchored to the Drover checkout, not a worker's cwd.
+Built-in defaults are overlaid by the home config, then environment overrides apply last
+(ADR 0005). Repository policy is read separately from the committed `.drover/config.toml`.
 Tables merge by key; named trackers merge by name; seats replace as a list.
 Unknown keys and invalid values produce errors naming the configuration key.
 `[paths]` controls repo roots, worktrees, state and WSL settings.
@@ -48,9 +47,9 @@ The example TOML documents every supported key.
 ## Repo rules
 
 One repo is one git repository with its own execution, checks and merge rules.
-The target repo's committed `drover.toml` owns its rules and action script paths.
-The one repo loader reads that file from the commit being worked or checked, then overlays
-`<state>/repos/<name>.toml`. The machine file names checkout paths, worktree paths, default branch,
+The target repo's committed `.drover/config.toml` owns its rules and action script paths.
+The one repo loader reads that file from the commit being worked or checked, then merges
+`<state>/repos/<name>.toml` machine facts. After adoption, machine policy is rejected. The machine file names checkout paths, worktree paths, default branch,
 remote and machine environment. An explicitly configured directory may replace the private location.
 A missing versioned file contributes an empty layer during migration; the merge is the same.
 A legacy `programs/` directory is read only if `repos/` is missing and emits a deprecation warning.

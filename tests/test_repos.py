@@ -52,7 +52,7 @@ class LandingConfig(unittest.TestCase):
         answers = {'name': 'acme-lib', 'repo': '~/repos/acme-lib', 'platforms': ['wsl'],
                    'push': True, 'base': base, 'existing': True}
         saved = tomllib.loads(wizard.repo_toml(answers, ''))
-        self.assertEqual(saved['landing'], {'push': True})
+        self.assertEqual(saved['landing'], {'push': True, 'mode': 'local'})
         self.assertEqual((saved['remote'], saved['default_branch']), ('upstream', 'trunk'))
 
 
@@ -65,16 +65,16 @@ class VersionedRepoConfig(unittest.TestCase):
                         'run': {'env': {'MACHINE_VALUE': 'override'}}}
 
     def test_commit_then_machine_merge_and_dirty_config_is_ignored(self):
-        first = self.fix.commit('drover.toml', '[scripts]\ntest="scripts/check.ps1"\n'
+        first = self.fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/check.ps1"\n'
                                 '[run]\nplatforms=["wsl"]\ndefault="wsl"\n'
                                 '[run.env]\nMACHINE_VALUE="repo"\nREPO_VALUE="kept"\n')
-        second = self.fix.commit('drover.toml', '[scripts]\ntest="scripts/next.ps1"\n')
-        (self.fix.repo / 'drover.toml').write_text('invalid = [')
+        second = self.fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/next.ps1"\n')
+        (self.fix.repo / '.drover/config.toml').write_text('invalid = [')
         old = repos.load(self.machine, first)
-        self.assertEqual(old['scripts'], {'test': 'scripts/check.ps1'})
+        self.assertEqual(old['scripts'], {'test': '.drover/scripts/check.ps1'})
         self.assertEqual(old['run']['env'], {'MACHINE_VALUE': 'override', 'REPO_VALUE': 'kept'})
         self.assertEqual(old['run']['default'], 'wsl')
-        self.assertEqual(repos.load(old, second)['scripts']['test'], 'scripts/next.ps1')
+        self.assertEqual(repos.load(old, second)['scripts']['test'], '.drover/scripts/next.ps1')
 
     def test_changed_files_preserve_unicode_and_control_characters(self):
         import json
@@ -85,23 +85,23 @@ class VersionedRepoConfig(unittest.TestCase):
         self.fix.git('checkout', '-b', 'topic')
         for name in names:
             sha = self.fix.commit(name, 'changed')
-        prog = repos.load({**self.machine, 'scripts': {'test': 'scripts/check.ps1'}})
+        prog = repos.load({**self.machine, 'scripts': {'test': '.drover/scripts/check.ps1'}})
         pipe = pipeline.Pipeline(None, repos_map={'example': prog})
         platform = 'windows' if os.name == 'nt' else 'wsl'
         plan = pipe.ci.prepare(prog, self.fix.repo, sha, 'ci', platform=platform)
         self.assertCountEqual(json.loads(plan['spec']['run_config']['env']['DROVER_CHANGED_FILES']), names)
 
     def test_missing_repo_file_uses_the_same_machine_layer(self):
-        prog = repos.load({**self.machine, 'scripts': {'test': 'scripts/check.ps1'}})
+        prog = repos.load({**self.machine, 'scripts': {'test': '.drover/scripts/check.ps1'}})
         self.assertEqual(repos.script_argv(prog),
-                         ['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', 'scripts/check.ps1'])
+                         ['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', '.drover/scripts/check.ps1'])
 
     def test_missing_machine_repo_is_a_configuration_error(self):
         with self.assertRaisesRegex(repos.RepoError, 'repo is required'):
             repos.load({'name': 'example'})
 
     def test_exact_commit_config_refuses_an_unreachable_checkout(self):
-        sha = self.fix.commit('drover.toml', '[scripts]\ntest="scripts/check.ps1"\n')
+        sha = self.fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/check.ps1"\n')
         with self.assertRaises(repos.RepoError):
             repos.load(self.machine, sha, str(self.fix.root / 'missing'))
 
@@ -118,11 +118,11 @@ class VersionedRepoConfig(unittest.TestCase):
         import subprocess
         import sys
         from drover import ci, pipeline, runner
-        script = 'scripts/drover/check action.ps1'
+        script = '.drover/scripts/drover/check action.ps1'
         self.fix.commit(script, 'Write-Output "script:$env:MACHINE_VALUE"\n'
                         'Write-Output "kind:$env:DROVER_CI_KIND"\n'
                         'Write-Output "changed:$env:DROVER_CHANGED_FILES"\nexit 0\n')
-        self.fix.commit('drover.toml', f'[scripts]\ntest="{script}"\n[gate]\ndocs_only=false\n')
+        self.fix.commit('.drover/config.toml', f'schema_version=1\n[scripts]\ntest="{script}"\n[gate]\ndocs_only=false\n')
         self.fix.git('checkout', '-b', 'topic')
         sha = self.fix.commit('source.txt', 'a change\n')
         prog = repos.load(self.machine, sha)

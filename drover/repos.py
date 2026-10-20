@@ -1,4 +1,4 @@
-"""Load a repo's drover.toml at a commit, then apply machine overrides.
+"""Load a repo's .drover/config.toml at a commit, then apply machine overrides.
 
 Only this module reads repo configuration. Actions are relative PowerShell script paths;
 all platforms invoke them with the same argv and the checkout as cwd.
@@ -24,11 +24,19 @@ class RepoError(ValueError):
     pass
 
 
+class _ResolvedRepo(dict):
+    """In-process loader result; serialized dictionaries cannot confer this trust."""
+
+
 DOCS_ONLY_GLOBS = ("docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**")
 
 
-def normalize(raw, name=None):
+def normalize(raw, name=None, *, sources=None):
     """A validated repo dict with every default filled in."""
+    original = raw
+    seed = config._source_leaves(raw, "injected") if sources is not None else None
+    if seed is not None:
+        seed.update({key: sources[key] for key in seed if key in sources})
     name = str(raw.get("name") or name or "")
     if not name:
         raise RepoError("a repo needs a name")
@@ -37,13 +45,13 @@ def normalize(raw, name=None):
     raw = {**raw, "repo": os.path.expanduser(str(raw["repo"]))}
     raw["worktrees"] = os.path.expanduser(str(raw.get("worktrees") or worktrees_for(name, raw["repo"])))
     g = dict(raw.get("gate") or {})
-    platform = str(g.get("platform") or ((raw.get("run") or {}).get("platforms") or ["windows"])[0]).lower()
-    if platform not in GATE_PLATFORMS:
-        raise RepoError(f"{name}: gate.platform must be one of {GATE_PLATFORMS}")
     run = dict(raw.get("run") or {})
     plats = run.get("platforms", list(PLATFORMS))
     if not isinstance(plats, list) or not plats or not all(p in PLATFORMS for p in plats):
         raise RepoError(f"{name}: run.platforms must be a non-empty list drawn from {PLATFORMS}")
+    platform = str(g.get("platform") or ((raw.get("run") or {}).get("platforms") or ["windows"])[0]).lower()
+    if platform not in GATE_PLATFORMS:
+        raise RepoError(f"{name}: gate.platform must be one of {GATE_PLATFORMS}")
     plats = [p for p in PLATFORMS if p in plats]
     default = run.get("default") or ("windows" if "windows" in plats else plats[0])
     if default not in plats:
@@ -113,19 +121,84 @@ def normalize(raw, name=None):
         raise RepoError(f"{name}: review models must be non-empty strings")
     if rev.get("effort") is not None and (not isinstance(rev["effort"], str) or not rev["effort"].strip()):
         raise RepoError(f"{name}: review.effort must be a non-empty string")
-    return {"name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
+    for key, default_limit in (("timeout_s", 3600), ("idle_s", 1200)):
+        try:
+            g[key] = float(g.get(key) or default_limit)
+        except (TypeError, ValueError) as e:
+            raise RepoError(f"{name}: gate.{key} must be a number") from e
+    out = {"name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
             "default_branch": main,
             "remote": remote,
             "run": {"platforms": plats, "default": default, "env": dict(env), "sandbox_writable_roots": list(roots)},
             "scripts": dict(scripts), "brief": brief,
             "gate": {"platform": platform, "unknown": unknown,
-                     "timeout_s": float(g.get("timeout_s") or 3600), "idle_s": float(g.get("idle_s") or 1200),
+                     "timeout_s": g["timeout_s"], "idle_s": g["idle_s"],
                      "docs_only": docs_only, "docs_only_globs": docs_globs,
-                     "hint": "Add [scripts] test to drover.toml"},
+                     "hint": "Add [scripts] test to .drover/config.toml"},
             "review": {"backend": backend, "seat": rev.get("seat"), "model": model,
                        "effort": rev.get("effort"), "high_risk_model": high_model},
             "landing": {"mode": mode, "push": push, "remote": remote, "main": main},
             "land": {"policy": policy, "push": push}}
+
+    if sources is not None:
+        origins = config._source_leaves(out, "default")
+        origins.update({key: seed[key] for key in origins if key in seed})
+        if not original.get("name"):
+            origins["name"] = "injected"
+        def derive(key, *dependencies):
+            deps = {}
+            for dep in dependencies:
+                if dep.startswith("config."):
+                    label = config.source_of(dep[7:])
+                    if label.startswith("aggregate:"):
+                        deps.update({"config." + k: v for k, v in json.loads(label[10:]).items()})
+                    else:
+                        deps[dep] = label
+                else:
+                    terminals = config._source_leaves(config.dig(out, dep), "default",
+                                                       tuple(config._selector_parts(dep)))
+                    deps.update({k: origins[k] for k in terminals})
+            origins[key] = "derived:" + json.dumps(deps, sort_keys=True, separators=(",", ":"))
+        # Platform normalization orders and deduplicates the supplied platform list.
+        supplied_run = original.get("run") or {}
+        if "platforms" in supplied_run:
+            for i, platform_name in enumerate(plats):
+                j = supplied_run["platforms"].index(platform_name)
+                origins[f"run.platforms.{i}"] = seed.get(f"run.platforms.{j}", "injected")
+        if not original.get("worktrees"):
+            derive("worktrees", "name", "repo", "config.paths.worktrees")
+        if not supplied_run.get("default"):
+            derive("run.default", "run.platforms")
+        if not (original.get("gate") or {}).get("platform"):
+            if supplied_run.get("platforms"):
+                derive("gate.platform", "run.platforms")
+            else:
+                origins["gate.platform"] = "default"
+        derive("gate.unknown", "scripts")
+        origins["gate.hint"] = "default"
+        for target, alias in (("remote", "landing.remote"), ("default_branch", "landing.main")):
+            if alias in seed:
+                origins[target] = seed[alias]
+        origins["landing.remote"] = origins["remote"]
+        origins["landing.main"] = origins["default_branch"]
+        origins["landing.push"] = seed.get("landing.push", seed.get("land.push", "default"))
+        origins["land.push"] = origins["landing.push"]
+        if not rev.get("model"):
+            derive("review.model", "config.models.review")
+        if not rev.get("backend"):
+            if seat:
+                index = next(i for i, item in enumerate(config.get()["seats"]) if item["name"] == rev["seat"])
+                derive("review.backend", "review.seat", f"config.seats.{index}.backend")
+            else:
+                derive("review.backend", "review.model", "config.models.ladders")
+        if not rev.get("model") and models["review"] not in models["ladders"][backend]:
+            derive("review.model", "config.models.review", "review.backend", f"config.models.ladders.{backend}")
+        if not rev.get("high_risk_model"):
+            derive("review.high_risk_model", "review.backend",
+                   "config.models.director" if backend == "claude" else "review.model")
+        sources.clear()
+        sources.update(origins)
+    return out
 
 
 def repo_name(prog):
@@ -166,19 +239,31 @@ def landing_config(prog):
 def machine_defaults(raw, repo=""):
     """Saved setup defaults; raw machine files may omit runtime defaults."""
     raw = raw or {}
-    return {"repo": raw.get("repo", repo), "push": (raw.get("landing") or {}).get("push", False)}
+    return {"repo": raw.get("repo", repo),
+            "push": (raw.get("landing") or {}).get("push", (raw.get("land") or {}).get("push", False))}
 
 
-def machine_overrides(name, repo, trees, *, base=None, push=False):
-    """Build setup's machine file, retaining saved behavior and resolved mainline names."""
+def machine_overrides(name, repo, trees, *, base=None, push=None, adopted=False):
+    """Serialize machine facts after adoption, preserving complete policy during fallback."""
     base = base or {}
-    canonical = normalize({**base, "name": name, "repo": repo})
-    raw = {"name": name, "repo": repo, "worktrees": base.get("worktrees", trees),
+    canonical = base if "_machine" in base else normalize({**base, "name": name, "repo": repo})
+    saved = base.get("_machine", base)
+    if adopted and push is not None:
+        raise RepoError(f"{name}: push belongs in .drover/config.toml after adoption")
+    raw = {"name": name, "repo": repo, "worktrees": saved.get("worktrees", trees),
            "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
-    for key in ("scripts", "gate", "run"):
-        if key in base:
-            raw[key] = base[key]
-    raw["landing"] = {"push": push}
+    if adopted:
+        if "env" in saved.get("run", {}):
+            raw["run"] = {"env": dict(saved["run"]["env"])}
+    else:
+        for key in ("scripts", "gate", "run", "brief", "review"):
+            if key in saved:
+                raw[key] = saved[key]
+        if "policy" in saved.get("land", {}):
+            raw["land"] = {"policy": saved["land"]["policy"]}
+        raw["landing"] = {"push": canonical["landing"]["push"] if push is None else push}
+        if "mode" in saved.get("landing", {}):
+            raw["landing"]["mode"] = saved["landing"]["mode"]
     normalize(raw)
     return raw
 
@@ -221,19 +306,27 @@ def load_all(directory=None):
     out = {}
     for path in sorted(Path(directory or repos_dir()).glob("*.toml")):
         raw = read_machine(path)
-        prog = load({**raw, "name": raw.get("name") or path.stem})
+        prog = load({**raw, "name": raw.get("name") or path.stem}, machine_path=path)
         out[prog["name"].lower()] = prog
     return out
 
 
-def load(machine, revision="HEAD", checkout=None):
+def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=None):
     """Read versioned config at revision, including on reused task worktrees; never read a dirty file.
 
-    A missing drover.toml contributes an empty layer, so migration from machine files uses
+    A missing .drover/config.toml contributes an empty layer, so migration from machine files uses
     the same merge. An inaccessible machine checkout leaves its machine layer usable for
     startup, but an exact revision requires a reachable checkout.
     """
-    machine = machine.get("_machine", machine)
+    trusted = isinstance(machine, _ResolvedRepo)
+    answer = machine.get("_test_script") if trusted else None
+    machine_path = Path(machine_path or (machine.get("_machine_path") if trusted else None)
+                        or repos_dir() / f"{machine.get('name', 'repo')}.toml").resolve()
+    if trusted:
+        machine = machine["_machine"]
+    private = [key for key in machine if key.startswith("_")]
+    if private:
+        raise RepoError(f"{machine_path}: {private[0]} is internal metadata")
     if not machine.get("repo"):
         raise RepoError(f"{machine.get('name', 'repo')}: repo is required")
     repo = checkout or machine["repo"]
@@ -243,22 +336,102 @@ def load(machine, revision="HEAD", checkout=None):
         if result.returncode:
             raise RepoError(f"cannot resolve repo config commit {revision}: {result.stderr.strip()}")
         commit = result.stdout.strip()
-        listing = placement.git(repo, "ls-tree", commit, "--", "drover.toml", timeout=30)
+        entry = ".drover/config.toml"
+        listing = placement.git(repo, "ls-tree", commit, "--", entry, timeout=30)
         if listing.returncode:
-            raise RepoError(f"cannot inspect drover.toml at {commit}: {listing.stderr.strip()}")
+            raise RepoError(f"cannot inspect {entry} at {commit}: {listing.stderr.strip()}")
         if listing.stdout.strip():
-            result = placement.git(repo, "show", f"{commit}:drover.toml", timeout=30)
+            result = placement.git(repo, "show", f"{commit}:{entry}", timeout=30)
             if result.returncode:
-                raise RepoError(f"cannot read drover.toml at {commit}: {result.stderr.strip()}")
+                raise RepoError(f"cannot read {entry} at {commit}: {result.stderr.strip()}")
             try:
                 versioned = tomllib.loads(result.stdout)
             except tomllib.TOMLDecodeError as e:
-                raise RepoError(f"invalid drover.toml at {commit}: {e}") from e
+                raise RepoError(f"{entry}@{commit}: <syntax>: {e}") from e
+            allowed = {
+                "run": {"platforms", "default", "env", "sandbox_writable_roots"},
+                "gate": {"platform", "timeout_s", "idle_s", "docs_only", "docs_only_globs"},
+                "review": {"backend", "seat", "model", "effort", "high_risk_model"},
+                "landing": {"mode", "push"}, "land": {"policy", "push"}, "scripts": None,
+            }
+            def invalid(key, detail):
+                raise RepoError(f"{entry}@{commit}: {key}: {detail}")
+            if type(versioned.get("schema_version")) is not int or versioned["schema_version"] != 1:
+                invalid("schema_version", "must be integer 1")
+            for key, value in versioned.items():
+                if key in ("schema_version", "brief"):
+                    continue
+                if key not in allowed:
+                    invalid(key, "not a repository key")
+                if not isinstance(value, dict):
+                    invalid(key, "must be a table")
+                for subkey in value:
+                    if allowed[key] is not None and subkey not in allowed[key]:
+                        invalid(f"{key}.{subkey}", "not a repository key")
+            # Committed policy is strict; legacy machine fallback intentionally is not.
+            strings = {"brief", "run.default", "gate.platform", "review.backend", "review.seat",
+                       "review.model", "review.effort", "review.high_risk_model", "landing.mode", "land.policy"}
+            enums = {"run.default": PLATFORMS, "gate.platform": GATE_PLATFORMS,
+                     "review.backend": config.BACKENDS, "landing.mode": ("local",),
+                     "land.policy": ("batch", "single")}
+            for table, fields in versioned.items():
+                fields = fields.items() if isinstance(fields, dict) else [(None, fields)]
+                for field, value in fields:
+                    key = f"{table}.{field}" if field is not None else table
+                    if key in strings and (not isinstance(value, str) or (key != "brief" and not value.strip())):
+                        invalid(key, "must be a non-empty string" if key != "brief" else "must be a string")
+                    if key in enums and value not in enums[key]:
+                        invalid(key, f"must be one of {enums[key]}")
+                    if key in ("gate.timeout_s", "gate.idle_s") and type(value) not in (int, float):
+                        invalid(key, "must be a number (not a boolean)")
+                    if key in ("gate.docs_only", "landing.push", "land.push") and type(value) is not bool:
+                        invalid(key, "must be a boolean")
+            for action, path in versioned.get("scripts", {}).items():
+                if not isinstance(path, str) or not path.startswith(".drover/scripts/") or \
+                        "\\" in path or ":" in path or not path.endswith(".ps1") or \
+                        any(part in ("", ".", "..") for part in path.split("/")):
+                    invalid(f"scripts.{action}", "must be a canonical .drover/scripts/*.ps1 path")
+            try:
+                normalize(config._merge(versioned, {"name": machine.get("name"), "repo": machine["repo"]}))
+            except (RepoError, TypeError, ValueError, AttributeError) as e:
+                raise RepoError(f"{entry}@{commit}: {e}") from e
     elif revision != "HEAD":
         raise RepoError(f"cannot read repo config commit {revision}: checkout {repo} is unreachable")
+    if versioned:
+        for key, value in machine.items():
+            if key in ("name", "repo", "worktrees", "remote", "default_branch"):
+                continue
+            if key == "run" and isinstance(value, dict):
+                forbidden = [f"run.{k}" for k in value if k != "env"]
+                if not forbidden:
+                    continue
+            else:
+                forbidden = [f"{key}.{k}" for k in value] if isinstance(value, dict) and value else [key]
+            raise RepoError(f"{machine_path}: {', '.join(forbidden)} is not a machine fact; run "
+                            f"python -m drover.config migrate-machine {machine.get('name', machine_path.stem)}")
     merged = config._merge(versioned, machine)
-    out = normalize(merged)
+    if answer is not None and "test" not in versioned.get("scripts", {}):
+        merged = config._merge(merged, {"scripts": {"test": answer}})
+    origins = None
+    if sources is not None:
+        origins = config._source_leaves(versioned, f"repo:.drover/config.toml@{commit}") if versioned else {}
+        origins.update(config._source_leaves(machine, "machine:" + str(machine_path)))
+        if answer is not None and "test" not in versioned.get("scripts", {}):
+            origins["scripts.test"] = "answer:test_script"
+    out = _ResolvedRepo(normalize(merged, sources=origins))
+    out["_adopted"] = bool(versioned)
+    out["_committed_test"] = "test" in versioned.get("scripts", {})
+    if versioned:
+        out["schema_version"] = 1
+        if origins is not None:
+            origins["schema_version"] = f"repo:.drover/config.toml@{commit}"
     out["_machine"] = dict(machine)
+    out["_machine_path"] = str(machine_path)
+    if answer is not None:
+        out["_test_script"] = answer
+    if sources is not None:
+        sources.clear()
+        sources.update(origins)
     return out
 
 
@@ -266,7 +439,7 @@ def script_argv(prog, action="test", platform=None):
     """The complete action command. No platform variants, argument templates or inferred tools."""
     path = prog["scripts"].get(action)
     if path is None:
-        raise RepoError(f"{prog['name']}: no scripts.{action} in drover.toml")
+        raise RepoError(f"{prog['name']}: no scripts.{action} in .drover/config.toml")
     return [placement.executable("pwsh", platform), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", path]
 
 
@@ -282,15 +455,23 @@ def has_script(prog, action):
 
 def with_test_script(prog, path):
     """Apply an owner-provided script to the effective config and future reloads."""
-    return {**prog, "scripts": {**prog["scripts"], "test": path},
-            "gate": {**prog["gate"], "unknown": False},
-            "_machine": config._merge(prog.get("_machine", {}), {"scripts": {"test": path}})}
+    normalize({**prog, "scripts": {"test": path}})
+    if not isinstance(prog, _ResolvedRepo):
+        prog = load(prog)
+    committed = prog.get("_committed_test", False)
+    return _ResolvedRepo({**prog, "_test_script": path,
+            "scripts": dict(prog["scripts"]) if committed else {**prog["scripts"], "test": path},
+            "gate": {**prog["gate"], "unknown": False}})
 
 
 def read_machine(path):
     """Raw machine overrides, for the setup editor as well as runtime loading."""
     with open(path, "rb") as stream:
-        return tomllib.load(stream)
+        raw = tomllib.load(stream)
+    for key in raw:
+        if key.startswith("_"):
+            raise RepoError(f"{Path(path).resolve()}: {key} is internal metadata")
+    return raw
 
 
 def main(argv=None):
