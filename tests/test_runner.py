@@ -264,6 +264,43 @@ class RunTests(Base):
             rec = runner.parse_action_record(json.dumps({"status": "ready_to_commit", "commit_message": message}))
             self.assertEqual((rec["status"], rec["blocker"]["kind"]), ("blocked", "no-commit-message"))
 
+    def test_long_final_message_keeps_the_action_record(self):
+        record = json.dumps({'status': 'done', 'sha': 'abc1234', 'note': 'ok'})
+        for provider in ('claude', 'codex'):
+            for text in ('x' * 30000 + record, record + 'x' * 30000):
+                event = {'type': 'result', 'result': text} if provider == 'claude' else {
+                    'type': 'item.completed', 'item': {'type': 'agent_message', 'text': text}}
+                path = Path(self.runs) / 'long.log'
+                path.write_text(json.dumps(event) + '\n')
+                with self.subTest(provider=provider, record_at_start=text.startswith(record)):
+                    self.assertEqual((runner.scan_record(path) or {}).get('status'), 'done')
+
+    def test_large_single_line_output_does_not_stall_record_scanning(self):
+        path = Path(self.runs) / 'large-line.log'
+        path.write_bytes(b'x' * (16 * 1024 * 1024))
+        started = time.monotonic()
+        self.assertIsNone(runner.scan_record(path))
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_runner_persists_done_from_a_long_final_event(self):
+        code = ('import json; text="x"*30000+json.dumps({"status":"done","sha":"abc1234"}); '
+                'print(json.dumps({"type":"result","result":text}))')
+        result, status = self.run_runner('long-final', code)
+        self.assertEqual((result.returncode, status['exit_code']), (0, 0))
+        record = json.loads((Path(self.runs) / 'long-final' / 'record.json').read_text())
+        self.assertEqual((record['status'], record['sha']), ('done', 'abc1234'))
+
+    def test_long_tool_message_cannot_replace_final_assistant_authority(self):
+        path = Path(self.runs) / 'long-tool.log'
+        record = json.dumps({'status': 'done', 'sha': 'abc1234'})
+        events = [{'type': 'result', 'result': record},
+                  {'type': 'item.completed', 'item': {'type': 'command_execution', 'text': 'x' * 30000 + record}}]
+        path.write_text('\n'.join(json.dumps(event) for event in events))
+        self.assertEqual((runner.scan_record(path) or {}).get('status'), 'done')
+        events.append({'type': 'result', 'result': 'No delivery. ' + 'x' * 30000})
+        path.write_text('\n'.join(json.dumps(event) for event in events))
+        self.assertIsNone(runner.scan_record(path))
+
     def test_start_exit_status_and_record(self):
         code = ("import sys,json;print('hello');print('err',file=sys.stderr);"
                 "print(json.dumps({'type':'result','result':json.dumps({'status':'done','sha':'abc1234','note':'ok'})}))")

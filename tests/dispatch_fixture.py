@@ -1,7 +1,7 @@
 """Build dispatchers through the production collaborators, with isolated test state."""
 import time
 
-from drover import runner
+from drover import runner, ci, config
 
 from drover import dispatcher, repos, usage
 
@@ -9,13 +9,23 @@ WORKTREE = r'R:\repos\wt'
 GO = {'verdict': 'go', 'slots': 10, 'reasons': []}
 
 
+class FixtureCI(ci.CI):
+    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None):
+        out = runner.run_dir(self.runs_dir, run_id) / 'receipt.json'
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return {'kind': kind, 'diff_lines': 0, 'scope': None, 'files': [], 'sha': commit, 'receipt': str(out),
+                'spec': {'run_id': run_id, 'role': 'gate', 'backend': 'local', 'model': 'gate',
+                         'placement': platform, 'argv': ['fixture-ci', str(out), commit], 'cwd': checkout}}
+
+
 class FakePipeline:
     """A configured repo interface; its test runner supplies check receipts and review capacity is unavailable."""
     def __init__(self, port, runs_dir):
-        self.port, self.runs_dir = port, runs_dir
+        self.port, self.runs_dir = port, runs_dir or str(config.state_path("runs"))
         self.prog = repos.normalize({'name': 'p', 'repo': WORKTREE,
                                      'scripts': {'test': 'scripts/drover/test.ps1'}})
         self.prog['review'].update(backend='codex', model='gpt-6.1-sol', high_risk_model='gpt-6.1-sol', seat=None)
+        self.ci = FixtureCI(self.runs_dir)
         self.current_head = lambda: 'abc1234'
 
     def repo(self, task):
@@ -31,15 +41,6 @@ class FakePipeline:
 
     def head(self, task):
         return self.current_head()
-
-    def gate_plan(self, task, prog, sha, platform):
-        return {'kind': 'full', 'diff_lines': 0, 'scope': None, 'files': [], 'sha': sha,
-                'platform': platform, 'commands': [repos.script_argv(prog)]}
-
-    def gate_argv(self, plan, run_id, priority, prog, platform=None):
-        out = runner.run_dir(self.runs_dir, run_id) / 'receipt.json'
-        out.parent.mkdir(parents=True, exist_ok=True)
-        return ['fixture-ci', str(out), plan['sha']], out
 
     def base_ref(self, prog):
         return prog["default_branch"]

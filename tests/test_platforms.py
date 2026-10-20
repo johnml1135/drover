@@ -208,7 +208,7 @@ class GateBoth(Base):
             ev = next(e["data"] for e in ops.events(self.conn, kind="gate-started") if e["data"].get("gate_run") == spec["run_id"])
             ok = self.verdicts.get(ev["platform"], True)
             Path(ev["receipt"]).write_text(json.dumps({"passed": ok, "sha": ev["sha"], "status": "passed" if ok else "failed",
-                                                       "steps": []}))
+                                                       "exit_code": 0 if ok else 1, "steps": []}))
             h = test_pipeline.FakeHandle({"status": "done" if ok else "error", "record": None, "text": "", "handoff": None,
                                           "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0},
                                           "returncode": 0 if ok else 1, "timeout": None})
@@ -311,47 +311,6 @@ class WslTracker(test_dispatcher.Base):
         r = resources.check(fake={"platform": "windows", "ram_available_gb": 30, "wsl_up": False})
         self.assertEqual((r["verdict"], r["wsl"]["verdict"]), ("go", "queue"))
         self.assertEqual(r["wsl"]["reasons"], ["WSL is not running"])
-
-
-class LandingGateBoth(unittest.TestCase):
-
-    def gate(self, statuses):
-        calls = []
-
-        def one(status, name):
-            return lambda worktree, tip, tasks: calls.append(name) or {"status": status, "name": name}
-        runs = [one(s, n) for s, n in zip(statuses, ("windows", "wsl"))]
-        return calls, LandingService._both(runs, ["windows", "wsl"])
-
-    def test_green_on_both_is_green_and_runs_both(self):
-        calls, run = self.gate(["passed", "passed"])
-        r = run("wt", "tip", [])
-        self.assertEqual((calls, r["status"], r["platform"]), (["windows", "wsl"], "passed", "windows+wsl"))
-
-    def test_red_on_the_first_platform_skips_the_second(self):
-        calls, run = self.gate(["failed", "passed"])
-        r = run("wt", "tip", [])
-        self.assertEqual((calls, r["status"], r["platform"]), (["windows"], "failed", "windows"))
-
-    def test_red_on_the_second_platform_is_red_and_named(self):
-        calls, run = self.gate(["passed", "failed"])
-        r = run("wt", "tip", [])
-        self.assertEqual((calls, r["status"], r["platform"]), (["windows", "wsl"], "failed", "wsl"))
-
-    def test_gate_fn_builds_one_gate_per_platform_of_the_repo(self):
-        from tests.gitfix import Repo
-        fix = Repo()
-        self.addCleanup(fix.cleanup)
-        sha = fix.git('rev-parse', 'HEAD')
-        svc = LandingService.__new__(LandingService)
-        made = []
-        svc._gate_on = lambda platform, *a: made.append(platform) or (lambda wt, tip, tasks: {"status": "passed"})
-        for plat, want in (("windows", ["windows"]), ("wsl", ["wsl"]), ("both", ["windows", "wsl"])):
-            made.clear()
-            prog = repos.normalize({'name': 'p', 'repo': str(fix.repo), 'gate': {'platform': plat},
-                                    'scripts': {'test': 'scripts/drover/test.ps1'}})
-            svc.gate_fn(prog, "main", "out", None)(str(fix.repo), sha, [])
-            self.assertEqual(made, want)
 
 
 if __name__ == "__main__":

@@ -788,6 +788,35 @@ class MigrationTests(Base):
         self.conns.append(c2)
         self.assertEqual(c2.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], len(MIGRATIONS))
 
+    def test_ci_migration_preserves_existing_tables_and_rows(self):
+        from drover.ledger import ci as slots, landing as storage
+        conn = connect(Path(self.tmp.name) / 'pre-ci.db', migrate_db=False)
+        self.conns.append(conn)
+        migrate(conn, MIGRATIONS[:5])
+        conn.executescript("""
+        CREATE TABLE gate_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+          rank INTEGER NOT NULL, holder TEXT NOT NULL, slot INTEGER, requested REAL NOT NULL, heartbeat REAL NOT NULL);
+        CREATE TABLE landing_lock (id INTEGER PRIMARY KEY CHECK (id=1), holder TEXT NOT NULL, since REAL NOT NULL);
+        CREATE TABLE landing_batches (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, tasks TEXT NOT NULL,
+          outcome TEXT NOT NULL, tip TEXT, gates INTEGER NOT NULL, gate_s TEXT NOT NULL, red INTEGER NOT NULL,
+          bisect_gates INTEGER NOT NULL, decisions INTEGER NOT NULL, dropped TEXT NOT NULL);
+        CREATE TABLE base_gate (sha TEXT PRIMARY KEY, status TEXT NOT NULL, at TEXT NOT NULL);
+        CREATE TABLE task_landed (task_id TEXT PRIMARY KEY, land_sha TEXT NOT NULL, tip TEXT NOT NULL,
+          receipt TEXT, batch_id INTEGER, at TEXT NOT NULL);
+        INSERT INTO gate_tickets VALUES(3,'task',2,'runner',1,100,100);
+        INSERT INTO base_gate VALUES('abc','green','then');
+        INSERT INTO task_landed VALUES('task','abc','tip','result',4,'then');
+        """)
+        before = {name: [tuple(row) for row in conn.execute(f'PRAGMA table_info({name})')]
+                  for name in ('gate_tickets', 'landing_lock', 'landing_batches', 'base_gate', 'task_landed')}
+        migrate(conn)
+        for name, columns in before.items():
+            self.assertEqual([tuple(row) for row in conn.execute(f'PRAGMA table_info({name})')], columns)
+        self.assertEqual(slots.lease_queue(conn)[0]['holder'], 'runner')
+        self.assertEqual(storage.base_status(conn, 'abc'), 'green')
+        self.assertEqual(storage.land_sha(conn, 'task'), 'abc')
+        self.assertEqual(migrate(conn), MIGRATIONS[-1][0])
+
     def test_forward_only_extra_migration_applied_once_and_data_kept(self):
         t = self.task("keep")
         extra = MIGRATIONS + [(MIGRATIONS[-1][0] + 1, "ALTER TABLE tasks ADD COLUMN extra TEXT;")]

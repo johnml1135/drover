@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
-from drover import gate, landing, origin
+from drover import ci, landing, origin, repos
+from drover.ledger import landing as landing_storage
 from drover.ledger import db as ledger_db
 from drover.ledger import ops
 from tests.gitfix import Repo
@@ -47,8 +48,15 @@ class LandingCase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.script = self.r.root / 'gate.py'
         self.script.write_text(SCRIPT)
-        self.gate = landing.make_gate([sys.executable, self.script], 'origin/main', self.r.root / 'receipts',
-                                      available=False)
+        exe = sys.executable.replace("'", "''")
+        script = str(self.script).replace("'", "''")
+        self.r.commit('scripts/check.ps1', f"& '{exe}' '{script}'\nexit $LASTEXITCODE\n")
+        self.r.git('push', '-q', 'origin', 'HEAD:main')
+        self.r.git('fetch', '-q', 'origin')
+        self.prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo),
+                                     'scripts': {'test': 'scripts/check.ps1'}, 'gate': {'docs_only': False}})
+        self.ci = ci.CI(self.r.root / 'receipts')
+        self.gate = lambda checkout, commit, tasks: self.ci.run(self.prog, checkout, commit, base='origin/main')
         self.work = self.r.root / 'batch-wt'
 
     def task(self, name, files, priority='P2', review='LAND'):
@@ -73,59 +81,6 @@ class LandingCase(unittest.TestCase):
         return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kw)
 
 
-class DocsBatchTests(LandingCase):
-    def red_gate(self):
-        return landing.make_gate([sys.executable, '-c', 'raise SystemExit(1)'], 'origin/main', self.r.root / 'receipts',
-                                 available=False, docs_globs=['docs/**', '*.md'])
-
-    def test_a_docs_only_batch_regates_with_the_docs_gate(self):
-        self.gate = self.red_gate()
-        self.task('a', {'docs/a.md': 'a'})
-        res = self.land()
-        self.assertEqual(res['outcome'], 'landed')
-        kinds = [json.loads(p.read_text()).get('kind') for p in (self.r.root / 'receipts').glob('gate-*-1.json')]
-        self.assertEqual(kinds, ['docs'])
-
-    def test_a_mixed_batch_regates_with_the_full_command(self):
-        self.gate = self.red_gate()
-        self.task('a', {'docs/a.md': 'a'})
-        self.task('b', {'code.py': 'b'})
-        self.assertNotEqual(self.land()['outcome'], 'landed')
-
-
-class HubDocsGate(LandingCase):
-    """The hub's LandingService builds the batch gate from the repo config."""
-
-    def service_gate(self, **gate_cfg):
-        from types import SimpleNamespace
-        from drover import repos
-        from hub.dispatch import LandingService
-        self.r.commit('scripts/drover/test.ps1', 'exit 1\n')
-        self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
-        prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo),
-                                'scripts': {'test': 'scripts/drover/test.ps1'},
-                                'gate': {'platform': 'windows', **gate_cfg}})
-        svc = LandingService(SimpleNamespace(path=None), SimpleNamespace(), gate_kw={'available': False})
-        return svc.gate_fn(prog, 'origin/main', self.r.root / 'receipts', None)
-
-    def test_docs_only_batch_uses_the_docs_gate_and_a_mixed_batch_the_full_one(self):
-        self.gate = self.service_gate()
-        self.task('a', {'docs/a.md': 'a  \n'})
-        self.assertEqual(self.land()['outcome'], 'landed')
-
-    def test_mixed_batch_and_the_off_switch_use_the_full_command(self):
-        self.gate = self.service_gate()
-        self.task('a', {'docs/a.md': 'a'})
-        self.task('b', {'code.py': 'b'})
-        self.assertNotEqual(self.land()['outcome'], 'landed')
-
-    def test_docs_only_off_switch(self):
-        self.gate = self.service_gate(docs_only=False)
-        self.task('a', {'docs/a.md': 'a'})
-        self.assertNotEqual(self.land()['outcome'], 'landed')
-
-
 class WorktreeTests(LandingCase):
     def test_legacy_git_falls_back_only_for_native_landing_worktrees(self):
         real = landing.git
@@ -141,7 +96,7 @@ class WorktreeTests(LandingCase):
             return real(repo, *args, **kw)
 
         with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=False), patch.object(placement, 'routes_through_wsl', return_value=False):
-            with self.assertRaisesRegex(gate.GateError, 'both Windows and WSL: update git'):
+            with self.assertRaisesRegex(ci.CIError, 'both Windows and WSL: update git'):
                 landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 1)
         self.assertFalse(self.work.exists())
@@ -158,7 +113,7 @@ class WorktreeTests(LandingCase):
             return subprocess.CompletedProcess(args, 128, '', 'fatal: relative-paths metadata is corrupt')
 
         with patch.object(landing, 'git', side_effect=git) as run:
-            with self.assertRaisesRegex(gate.GateError, 'metadata is corrupt'):
+            with self.assertRaisesRegex(ci.CIError, 'metadata is corrupt'):
                 landing.build_tip(self.r.repo, self.work, 'a' * 40, [])
         self.assertEqual(run.call_count, 1)
 
@@ -272,7 +227,7 @@ class RunTests(LandingCase):
             return real(repo, *args, **kw)
 
         with patch.object(landing, 'git', side_effect=run):
-            with self.assertRaisesRegex(gate.GateError, 'local main moved; rebase and regate'):
+            with self.assertRaisesRegex(ci.CIError, 'local main moved; rebase and regate'):
                 landing.local_fast_forward(self.conn, self.r.repo, self.work, 'main', tip, receipt)
         self.assertEqual(self.r.git('rev-parse', 'main'), moved)
         self.assertEqual(self.r.git('status', '--porcelain'), '')
@@ -413,7 +368,7 @@ class RunTests(LandingCase):
 
     def test_owner_edit_during_gate_holds_landing(self):
         tid = self.task('feature', {'feature.txt': 'finished'})
-        self.gate = landing.make_gate([sys.executable, self.script], 'main', self.r.root / 'receipts', available=False)
+        self.gate = lambda checkout, commit, tasks: self.ci.run(self.prog, checkout, commit, base='main')
         real_gate = self.gate
 
         def owner_edits_during_gate(*args):
@@ -609,14 +564,24 @@ class RunTests(LandingCase):
         self.assertIn('a.txt', files)
         self.assertNotIn('late.txt', files)
 
+    def test_merge_group_replay_keeps_the_commit_being_checked_after_restart(self):
+        self.task('feature', {'feature.txt': 'change'})
+        tasks = landing.form_batch(self.conn, self.r.repo, 'main', 1)
+        base = self.r.git('rev-parse', 'main')
+        first = landing.build_tip(self.r.repo, self.work, base, tasks)
+        self.addCleanup(self.r.git, 'worktree', 'remove', '--force', str(self.work))
+        with patch.dict('os.environ', {'GIT_COMMITTER_DATE': '2001-01-01T00:00:00Z'}):
+            resumed = landing.build_tip(self.r.repo, self.work, base, tasks)
+        self.assertEqual(resumed, first)
+        self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=self.work), first[0])
+
     def test_lock_release_only_by_owner(self):
-        landing.ensure(self.conn)
-        landing.take_lock(self.conn, 'mine')
-        landing.drop_lock(self.conn, 'other')
-        with self.assertRaises(gate.GateError):
-            landing.take_lock(self.conn, 'third')
-        landing.drop_lock(self.conn, 'mine')
-        landing.take_lock(self.conn, 'third')
+        landing_storage.take_lock(self.conn, 'mine')
+        landing_storage.drop_lock(self.conn, 'other')
+        with self.assertRaises(landing_storage.LockHeld):
+            landing_storage.take_lock(self.conn, 'third')
+        landing_storage.drop_lock(self.conn, 'mine')
+        landing_storage.take_lock(self.conn, 'third')
 
     def test_owner_matching_is_path_component_aware(self):
         tasks = [{'id': 'A', 'files': ['util.py']}, {'id': 'B', 'files': ['lib/util.py']}]
@@ -641,8 +606,7 @@ class RunTests(LandingCase):
 
     def test_lock_held_refuses(self):
         self.task('a', {'a.txt': 'a'})
-        landing.ensure(self.conn)
-        landing.take_lock(self.conn, 'someone')
+        landing_storage.take_lock(self.conn, 'someone')
         res = self.land()
         self.assertEqual(res['outcome'], 'refused')
         self.assertIn('lock held', res['error'])

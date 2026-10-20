@@ -157,6 +157,11 @@ def gate_platforms(prog):
     return list(PLATFORMS) if plat == "both" else [plat]
 
 
+def ci_policy(prog):
+    """Validated CI planning and runner limits, owned by the repo loader."""
+    return {**prog["gate"], "base": prog["default_branch"]}
+
+
 def load_all(directory=None):
     """{lowercase name: repo} for every *.toml in the repos directory."""
     out = {}

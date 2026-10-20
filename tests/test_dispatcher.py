@@ -49,9 +49,9 @@ class FakeLauncher:
 
     def launch(self, spec):
         if spec.get('role') == 'gate':
-            from drover import gate
+            from drover import ci
             out, sha = Path(spec['argv'][1]), spec['argv'][2]
-            out.write_text(json.dumps({'version': gate.VERSION, 'sha': sha, 'passed': True, 'status': 'passed',
+            out.write_text(json.dumps({'version': ci.VERSION, 'sha': sha, 'passed': True, 'status': 'passed',
                                       'exit_code': 0, 'tree_unchanged': True, 'kind': 'full', 'log_tail': []}))
             return FakeHandle({'status': 'done', 'returncode': 0, 'record': None, 'text': '',
                                'usage': {'tokens_in': 0, 'tokens_out': 0, 'tokens_cached': 0, 'context': 0}})
@@ -142,39 +142,6 @@ class Admission(Base):
     def test_heartbeat(self):
         self.d.tick()
         self.assertIsNotNone(ops.get_setting(self.conn, "dispatcher_heartbeat"))
-
-
-class GateSlots(Base):
-    def test_defaults_then_settings_then_clamp(self):
-        self.assertEqual(self.d._gate_limits(), (5, 1))
-        ops.set_setting(self.conn, "gate_slots", "8")
-        ops.set_setting(self.conn, "gate_reserved", "2")
-        self.assertEqual(self.d._gate_limits(), (8, 2))
-        ops.set_setting(self.conn, "gate_slots", "100")
-        ops.set_setting(self.conn, "gate_reserved", "100")
-        self.assertEqual(self.d._gate_limits(), (32, 31))
-
-    def test_invalid_falls_back_and_logs_once(self):
-        ops.set_setting(self.conn, "gate_slots", "lots")
-        with mock.patch("sys.stderr", new=io.StringIO()) as err:
-            self.assertEqual(self.d._gate_limits(), (5, 1))
-            self.assertEqual(self.d._gate_limits(), (5, 1))
-        self.assertEqual(err.getvalue().count("gate_slots"), 1)
-
-    def test_lease_honours_slots_setting(self):
-        ops.set_setting(self.conn, "gate_slots", "8")
-        ops.set_setting(self.conn, "gate_reserved", "0")
-        tasks = [{"id": f"t{i}", "priority": "P2"} for i in range(9)]
-        got = [self.d._lease(t) for t in tasks]
-        self.assertEqual(sorted(got[:8]), list(range(8)))
-        self.assertIsNone(got[8])
-
-    def test_heartbeat_reports_gate_queue(self):
-        self.d._lease({"id": "t0", "priority": "P2"})
-        self.d.tick()
-        hb = json.loads(ops.get_setting(self.conn, "dispatcher_heartbeat"))
-        self.assertEqual(hb["gate_queue"]["slots"], 5)
-        self.assertEqual(hb["gate_queue"]["waiting"], 0)
 
 
 class Cap(Base):

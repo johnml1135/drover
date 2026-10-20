@@ -303,13 +303,13 @@ class ProcessFacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             conn = connect(Path(tmp) / 'old.db', migrate_db=False)
             try:
-                self.assertEqual(migrate(conn, MIGRATIONS[:-1]), 4)  # main's schema version (T-7 migration)
+                self.assertEqual(migrate(conn, MIGRATIONS[:4]), 4)  # main's schema version (T-7 migration)
                 conn.execute("INSERT INTO tasks(id,repo,title,rank,status,created,updated) VALUES(?,?,?,?,?,?,?)",
                              ('T-1', 'acme-lib', 'Legacy run', 1, 'proposed', stats.stamp(NOW), stats.stamp(NOW)))
                 for ended in (stats.stamp(NOW + 30), None):
                     conn.execute('INSERT INTO runs(task_id,role,backend,model,started,ended,tokens_in,tokens_out) '
                                  'VALUES(?,?,?,?,?,?,?,?)', ('T-1', 'worker', 'claude', 'sonnet-5.5', stats.stamp(NOW), ended, 10, 20))
-                self.assertEqual(migrate(conn), 5)
+                self.assertEqual(migrate(conn), MIGRATIONS[-1][0])
                 self.assertEqual(stats.query(conn)['runs'][0]['stats']['tokens_by_model']['sonnet-5.5']['tokens_out'], 20)
                 ops.finish_run(conn, 2, 'done', tokens_in=15, tokens_out=25)
                 self.assertEqual(stats.query(conn)['runs'][1]['stats']['tokens_by_model']['sonnet-5.5']['tokens_out'], 25)

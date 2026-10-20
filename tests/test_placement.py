@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from drover import gate, placement, task_access, tool_discovery
+from drover import ci, placement, repos, task_access, tool_discovery
 from drover.launch import RunnerLauncher
 from tests.gitfix import Repo
 
@@ -41,6 +41,12 @@ class PlacementTests(unittest.TestCase):
     def test_windows_gitdir_is_read_and_checks_make_it_portable(self):
         repo = Repo()
         self.addCleanup(repo.cleanup)
+        code = ('import os,subprocess,tempfile; '
+                'subprocess.run(["git", "rev-parse", "HEAD"], check=True); '
+                'assert "GIT_DIR" not in os.environ; '
+                'd=tempfile.mkdtemp(); subprocess.run(["git", "init", d], check=True)')
+        exe = sys.executable.replace("'", "''")
+        repo.commit('scripts/check.ps1', f"& '{exe}' -c '{code}'\nexit $LASTEXITCODE\n")
         wt = repo.root / 'wt'
         repo.git('worktree', 'add', '-q', '-b', 'topic', wt)
         admin = repo.git('-C', wt, 'rev-parse', '--absolute-git-dir')
@@ -49,14 +55,13 @@ class PlacementTests(unittest.TestCase):
         before = dotgit.read_bytes()
         real = placement.to_wsl_path
         with patch.object(placement, 'to_wsl_path', side_effect=lambda p: admin if p == 'H:/repo/.git/worktrees/wt' else real(p)):
-            self.assertEqual(gate.head(wt), repo.git('rev-parse', 'HEAD'))
-            self.assertEqual(gate.dirty(wt), '')
+            self.assertEqual(ci.head(wt), repo.git('rev-parse', 'HEAD'))
+            self.assertEqual(ci.dirty(wt), '')
             self.assertEqual(dotgit.read_bytes(), before)
-            command = [sys.executable, '-c', 'import os,subprocess,tempfile; '
-                       'subprocess.run(["git", "rev-parse", "HEAD"], check=True); '
-                       'assert "GIT_DIR" not in os.environ; '
-                       'd=tempfile.mkdtemp(); subprocess.run(["git", "init", d], check=True)']
-            receipt = gate.run_gate(wt, repo.root / 'receipt.json', command, available=False)
+            platform = 'wsl'
+            prog = repos.normalize({'name': 'p', 'repo': str(wt), 'scripts': {'test': 'scripts/check.ps1'},
+                                    'gate': {'platform': platform, 'docs_only': False}})
+            receipt = ci.CI(repo.root / 'runs').run(prog, wt, ci.head(wt))
             self.assertEqual(receipt['status'], 'passed')
         pointer = dotgit.read_text().strip().removeprefix("gitdir: ")
         self.assertFalse(Path(pointer).is_absolute())
@@ -88,10 +93,12 @@ class PlacementTests(unittest.TestCase):
         repo = Repo()
         self.addCleanup(repo.cleanup)
         (repo.repo / 'new-source').write_text('never added')
-        self.assertIn('new-source', gate.dirty(repo.repo))
-        with self.assertRaisesRegex(gate.GateError, 'uncommitted'):
-            gate.run_gate(repo.repo, repo.root / 'receipt.json',
-                          [sys.executable, '-c', 'raise AssertionError("must not run")'], available=False)
+        self.assertIn('new-source', ci.dirty(repo.repo))
+        platform = 'windows' if os.name == 'nt' else 'wsl'
+        prog = repos.normalize({'name': 'p', 'repo': str(repo.repo), 'scripts': {'test': 'scripts/check.ps1'},
+                                'gate': {'platform': platform, 'docs_only': False}})
+        with self.assertRaisesRegex(ci.CIError, 'uncommitted'):
+            ci.CI(repo.root / 'runs').run(prog, repo.repo, ci.head(repo.repo))
 
     def test_read_snapshots_preserve_history_and_independent_exact_commits(self):
         repo = Repo()

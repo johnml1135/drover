@@ -25,7 +25,7 @@ from . import placement
 from .placement import IS_WINDOWS, KILL_AFTER_S, ScanError
 
 POLL_S = 0.2
-WATCH_GLOBS = ("*.step*.log",)       # a gate run's per-step logs, which gatejob fills while out.log stays quiet
+WATCH_GLOBS = ("*.step*.log",)       # additional output files watched by existing worker runs
 SCAN_BYTES = 8192
 MAX_SCAN_TRIES = 20
 NOTE_MAX = 300
@@ -189,9 +189,8 @@ def _record_from(obj):
 
 
 def parse_action_record(text):
-    """The last valid action record in the last SCAN_BYTES of text, or None. Bounded: at most MAX_SCAN_TRIES
-    candidate objects, walking back from each "status" key."""
-    text = (text or "")[-SCAN_BYTES:]
+    """The last valid action record in the complete final message, or None."""
+    text = text or ""
     dec, tries, end = json.JSONDecoder(), 0, len(text)
     while tries < MAX_SCAN_TRIES:
         pos = text.rfind('"status"', 0, end)
@@ -233,30 +232,48 @@ def _message_text(ev):
     return None
 
 
+def _reverse_lines(path):
+    """Read complete lines backwards, including arbitrarily long stream JSON events."""
+    with open(path, 'rb') as stream:
+        stream.seek(0, 2)
+        end, fragments = stream.tell(), []
+        while end:
+            start = max(0, end - SCAN_BYTES)
+            stream.seek(start)
+            parts = stream.read(end - start).split(b'\n')
+            if len(parts) == 1:
+                fragments.append(parts[0])
+            else:
+                yield parts[-1] + b''.join(reversed(fragments))
+                yield from reversed(parts[1:-1])
+                fragments = [parts[0]]
+            end = start
+        if fragments:
+            yield b''.join(reversed(fragments))
+
+
 def scan_record(out_path):
-    """The action record in the last SCAN_BYTES of out.log, trusted only from the final assistant or result
-    message of a stream-json / codex stream. Anything else (a tool result the worker printed) can only yield a
-    blocked record, never done."""
+    """Trust only the final assistant/result message, even beyond the last 8 KB.
+
+    Unframed output may report a blocker, but never authorize delivery.
+    """
     try:
-        with open(out_path, "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - SCAN_BYTES))
-            tail = f.read().decode("utf-8", errors="replace")
+        tail = []
+        size = 0
+        for raw in _reverse_lines(out_path):
+            if size < SCAN_BYTES:
+                tail.append(raw[-SCAN_BYTES:])
+                size += len(raw)
+            try:
+                text = _message_text(json.loads(raw))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if text is not None:
+                return parse_action_record(text)
     except OSError:
         return None
-    last = None
-    for line in tail.splitlines():
-        try:
-            text = _message_text(json.loads(line))
-        except ValueError:
-            continue
-        if text is not None:
-            last = text
-    rec = parse_action_record(last) if last is not None else None
-    if rec:
-        return rec
-    # unframed output or a cut-off event: only a blocked record is believed
-    rec = parse_action_record(tail) or parse_action_record(tail.replace('\\"', '"'))
+    text = b'\n'.join(reversed(tail)).decode('utf-8', errors='replace')
+    rec = parse_action_record(text) or parse_action_record(text.replace('\\"', '"'))
     return rec if rec and rec["status"] == "blocked" else None
 
 
@@ -419,7 +436,7 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
         while proc.poll() is None:
             now = time.monotonic()
             if peaks.last is None or now - peaks.last[0] >= 1:
-                st.d["peaks"] = dict(peaks.sample())
+                st.set(peaks=dict(peaks.sample()), heartbeat=now_iso())
             watch.seek(0, 2)
             if watch.tell() != size:
                 size, last_change = watch.tell(), now

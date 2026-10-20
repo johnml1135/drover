@@ -6,7 +6,7 @@ gate on the same task, escalates the tier after 2 failures and asks for a replan
 decide.retry_or_escalate runs in shadow: logged, never acted on.
 
 The mandatory pipeline (drover.pipeline) makes checks and reviews runs too, followed like workers: a worker that reports
-done is finished as `done` and then gated by a `gate` run (gatejob under drover.runner, on the repo's gate
+done is finished as `done` and then gated by a `gate` run (repo script under drover.runner, on the repo's gate
 platform), a gated task is reviewed by a fresh `review` run, and LAND@sha moves it to reviewed. What is due is derived
 from the ledger on every tick (so a hub restart loses nothing). While `dispatch_enabled` is false the dispatcher
 claims and launches nothing, but still reaps, adopts and recovers.
@@ -26,7 +26,7 @@ from . import task_access
 from . import brief as brief_mod
 from . import config as config_mod
 from . import contract
-from . import gate as gate_mod
+from .ledger import ci as ci_slots
 from . import repos as repos_mod
 from . import runner as runner_mod
 from . import resources as resources_mod
@@ -55,7 +55,6 @@ IS_WINDOWS = os.name == "nt"   # the dispatcher lock is not cross-OS, so only Wi
 CHEAP_MODELS = ("haiku", "luna")
 MAX_ROTATIONS = 3
 EXCERPT_LINES = contract.EXCERPT_LINES
-LEASE_TTL_S = 600.0          # a gate ticket outlives one slow tick (a scan can take 90s)
 MAX_REVIEW_TRIES = 3         # reviews that produce no usable verdict in a row before the owner is asked
 MAX_GATE_LAUNCH_ERRORS = 3
 PENDING_KEY = "_pending_outcomes"
@@ -200,7 +199,7 @@ class Dispatcher:
         self.stats_resources_fn = lambda: self.resources_fn(new_workers=0, with_wsl_memory=True)
         self.usage_poller = usage or Poller(port.conn, now=self.now, launcher=self.launcher)
         self.route_fn, self.decide_fn = route, decide
-        self.tickets = {}                    # task_id -> gate lease ticket
+        self.ci_runners = ci_slots.Runners(port.conn, port.get_setting)
         self.scan_every_s, self.last_scan, self.scan_unknown = SCAN_EVERY_S, None, False
         self.recovered = False
         self.unavailable = {}                # (backend, placement) -> when its binary was found missing
@@ -495,54 +494,11 @@ class Dispatcher:
         self.port.append_event("worker-done", {"run": run_id, "sha": result["record"]["sha"]}, task_id)
         self.port.finish_run(run_id, "done", note=note, **usage)
 
-    def _gate_limits(self):
-        """(slots, reserved) from the hub settings, read on every lease attempt so a change applies on the next tick."""
-        return gate_mod.configured_limits(self.port.get_setting)
-
-    def _gate_queue(self):
-        """{waiting, oldest_s, slots}: gate tickets not yet holding a slot, the longest wait, and the slot count in force."""
-        try:
-            now = time.time()
-            wait = [now - t["requested"] for t in gate_mod.lease_queue(self.port.conn) if t["slot"] is None]
-            return {"waiting": len(wait), "oldest_s": int(max(wait, default=0)), "slots": self._gate_limits()[0]}
-        except Exception:
-            return None
-
-    def _lease(self, task):
-        """A gate slot for the task, or None while it waits. One ticket per task, kept across ticks."""
-        conn, tid = self.port.conn, task["id"]
-        for _ in range(2):
-            tk = self.tickets.get(tid)
-            if tk is None:
-                tk = self.tickets[tid] = gate_mod.lease_request(conn, tid, task["priority"], holder="dispatcher")
-            try:
-                return gate_mod.lease_acquire(conn, tk, *self._gate_limits(), ttl=LEASE_TTL_S)
-            except gate_mod.GateError:          # the ticket expired while the dispatcher was paused or busy
-                self.tickets.pop(tid, None)
-        return None
-
-    def _release(self, task_id):
-        tk = self.tickets.pop(task_id, None)
-        if tk is not None:
-            try:
-                gate_mod.lease_release(self.port.conn, tk)
-            except Exception:
-                pass
-
-    def _beat_leases(self):
-        gating = {tid for _, tid, sp in self.live.values() if sp.get("role") == "gate"}
-        for tid, tk in list(self.tickets.items()):
-            if tid in gating:
-                try:
-                    gate_mod.lease_heartbeat(self.port.conn, tk)
-                except Exception:
-                    pass
-
     def _start_gates(self, policy):
         """Start the gate run of every running task whose worker finished done. Derived from the ledger each tick."""
         p, started = self.port, []
         live_tasks = {tid for _, tid, _ in self.live.values()}
-        self._beat_leases()
+        self.ci_runners.heartbeat({tid for _, tid, spec in self.live.values() if spec.get("role") == "gate"})
         for t in p.list_tasks("running"):
             runs = p.list_runs(t["id"])
             if t["id"] in live_tasks or not self._awaiting_gate(runs):
@@ -552,7 +508,7 @@ class Dispatcher:
                     started.append(t["id"])
             except Exception as e:
                 self._safe_event("gate-error", {"error": repr(e)[:300]}, t["id"])
-                self._release(t["id"])
+                self.ci_runners.release(t["id"])
                 if p.get_task(t["id"])["status"] == "running":
                     p.set_status(t["id"], "needs-owner", reason=f"could not start the gate: {e!r}"[:300])
         return started
@@ -571,31 +527,29 @@ class Dispatcher:
                                             "commit the work and report that commit", 0, None)
             return False
         platform = self._next_gate_platform(task, prog, worker["id"], sha)
-        plan = pl.gate_plan(task, prog, sha, platform)
         if platform == "wsl" and not self.launcher.wsl_up():
             p.note_wsl_needed(tid)
             return False
         if platform == "wsl" and self._wsl_blocked():
             return False
-        if self._lease(task) is None:
+        if self.ci_runners.reserve(task) is None:
             return False                                     # waiting for a gate slot
         gate_run = p.start_run(tid, "gate", "local", "gate")
         if hasattr(p, "set_run_context"):
             p.set_run_context(gate_run, placement=platform)
-        argv, receipt = pl.gate_argv(plan, gate_run, task["priority"], prog, platform)
         nonce = uuid.uuid4().hex
-        spec = {"run_id": gate_run, "role": "gate", "backend": "local", "model": "gate", "effort": None, "argv": argv,
-                "cwd": task["worktree"], "placement": platform, "nonce": nonce, "task": task,
-                "wall_s": prog["gate"]["timeout_s"], "idle_s": prog["gate"]["idle_s"], "user_prompt": ""}
-        p.append_event("gate-started", {"run": worker["id"], "gate_run": gate_run, "sha": sha, "kind": plan["kind"],
-                                        "platform": platform, "receipt": str(receipt), "diff_lines": plan["diff_lines"],
-                                        "files": plan["files"][:200], "scope": plan["scope"]}, tid)
-        p.append_event("run-launching", {"run": gate_run, "placement": spec["placement"], "nonce": nonce}, tid)
         try:
+            plan = pl.ci.prepare(prog, task["worktree"], sha, gate_run, platform=platform)
+            receipt = plan["receipt"]
+            spec = {**plan["spec"], "nonce": nonce, "task": task}
+            p.append_event("gate-started", {"run": worker["id"], "gate_run": gate_run, "sha": sha, "kind": plan["kind"],
+                                            "platform": platform, "receipt": str(receipt), "diff_lines": plan["diff_lines"],
+                                            "files": plan["files"][:200], "scope": plan["scope"]}, tid)
+            p.append_event("run-launching", {"run": gate_run, "placement": spec["placement"], "nonce": nonce}, tid)
             handle = self.launcher.launch(spec)
         except Exception as e:
-            self._release(tid)
-            self._launch_error(task, gate_run, {"backend": "local"}, spec["placement"], e, nonce, role="gate")
+            self.ci_runners.release(tid)
+            self._launch_error(task, gate_run, {"backend": "local"}, platform, e, nonce, role="gate")
             return False
         self.live[gate_run] = (handle, tid, spec)
         p.append_event("run-process", {"run": gate_run, "runner_pid": getattr(handle, "pid", None),
@@ -623,16 +577,17 @@ class Dispatcher:
         worker_id, sha = info.get("run"), info.get("sha")
         task = p.get_task(task_id)
         worker = next(r for r in p.list_runs(task_id) if r["id"] == worker_id)
-        receipt = self._read_json(info.get("receipt"))
-        passed = bool(receipt and receipt.get("passed") and receipt.get("sha") == sha and result["status"] != "timeout")
+        evaluated = self.pipeline.ci.result(run_id, result)
+        receipt = evaluated["receipt"]
+        passed = evaluated["passed"] and receipt.get("sha") == sha
         excerpt = None
         if not passed:
-            excerpt = self._gate_excerpt(run_id, receipt, info, result)
-            infra = self._gate_infra(receipt, result)
-        row = p.finish_run(run_id, "passed" if passed else "failed",
+            excerpt = evaluated["excerpt"]
+            infra = evaluated["infra"]
+        row = p.finish_run(run_id, contract.CI_PASSED if passed else contract.CI_FAILED,
                            note=(None if passed else excerpt.splitlines()[0][:280]),
                            tokens_in=0, tokens_out=0, tokens_cached=0)
-        self._release(task_id)
+        self.ci_runners.release(task_id)
         if not passed and infra:
             return self._gate_infra_retry(task_id, worker_id, sha, run_id, excerpt)
         prog = self.pipeline.repo(task)
@@ -652,17 +607,6 @@ class Dispatcher:
             self._gate_passed(task, worker, sha, wall, info.get("diff_lines"), summary, run_id)
         else:
             self._gate_failed(task, worker, excerpt, wall, info.get("diff_lines"), summary, info.get("files") or [])
-
-    @staticmethod
-    def _gate_infra(receipt, result):
-        """True when a failed gate run says nothing about the code: it timed out, was refused or crashed without a
-        receipt (so its output names no test), or its failed step was killed rather than exiting nonzero. Such a run
-        is redone, never charged to the worker. A step that exited nonzero is the code's failure, parsed or not."""
-        if result["status"] == "timeout" or receipt is None or receipt.get("status") == "refused":
-            return True
-        step = next((s for s in receipt.get("steps") or [] if s.get("status") == "failed"), None)
-        code = (step or {}).get("exit_code")
-        return step is not None and not (isinstance(code, int) and code > 0)
 
     def _gate_infra_retry(self, task_id, worker_id, sha, gate_run, excerpt):
         """An infrastructure failure: the worker run stays `done`, so the next tick re-queues only the gate for the
@@ -713,29 +657,6 @@ class Dispatcher:
         except (OSError, ValueError, TypeError):
             return None
         return d if isinstance(d, dict) else None
-
-    def _gate_log(self, run_id, receipt):
-        log = Path(receipt["log"]) if receipt and receipt.get("log") else None
-        if log is None:
-            log = runner_mod.run_dir(self.pipeline.runs_dir, run_id) / runner_mod.OUT_FILE
-        try:
-            return log.read_text(errors="replace") if log else ""
-        except OSError:
-            return ""
-
-    def _gate_excerpt(self, run_id, receipt, info, result):
-        """The failure excerpt (at most EXCERPT_LINES): the end of the gate's log. A refusal
-        or crash has no receipt, so it is the end of the run's own output."""
-        text = self._gate_log(run_id, receipt)
-        lines = []
-        if result["status"] == "timeout":
-            lines.append(f"gate timed out ({result.get('timeout')})")
-        elif receipt is None:
-            lines.append(f"gate refused or crashed (exit {result.get('returncode')}):")
-        if receipt is not None and result["status"] != "timeout":
-            lines.append(f"CI command exited {receipt.get('exit_code', result.get('returncode'))}")
-        tail = text.strip().splitlines()[-(EXCERPT_LINES - len(lines)):]
-        return "\n".join(lines + tail)
 
     # ---- review ---------------------------------------------------------------------------------------
     def _start_reviews(self, policy, admitted, slots):
@@ -1121,7 +1042,7 @@ class Dispatcher:
         p = self.port
         p.finish_run(run_id, "orphaned", note="runner gone with no terminal status")
         if spec.get("role") in ("gate", "review"):
-            self._release(task_id)               # the gate or review is derived again from the ledger next tick
+            self.ci_runners.release(task_id)               # the gate or review is derived again from the ledger next tick
             return task_id
         if not any(r["ended"] is None for r in p.list_runs(task_id)) and p.get_task(task_id)["status"] in ("running", "claimed"):
             p.set_status(task_id, "ready", reason="orphaned run recovered")
@@ -1280,7 +1201,7 @@ class Dispatcher:
         p = self.port
         policy = p.get_policy()
         enabled = truthy(p.get_setting("dispatch_enabled", "false"))
-        p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self._gate_queue()})
+        p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self.ci_runners.snapshot()})
         out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
         if not self.recovered:

@@ -5,6 +5,8 @@ task_events kind 'gate' and decisions.outcome. Parsers accept the legacy shapes 
 """
 import json
 
+CI_PASSED, CI_FAILED, CI_REFUSED = "passed", "failed", "refused"
+
 OUTCOMES = ("gated", "gate-fail", "no-record", "error", "launch-error", "provider-error", "timeout", "rotated", "orphaned",
             "unverified", "blocked", "done", "passed", "failed", "land", "hold")
 # `done` is a worker run that finished and awaits its gate (amended to gated or gate-fail). Gate runs end `passed` or

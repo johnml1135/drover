@@ -8,7 +8,6 @@ the rest regated; ambiguous failures go to one `batch_culprit` decision; below t
 """
 import argparse
 import json
-import os
 import re
 import statistics
 import subprocess
@@ -17,10 +16,10 @@ import tempfile
 import time
 from pathlib import Path, PureWindowsPath
 
-from . import config, gate, placement, origin
+from . import config, ci, placement, origin
 from .port import DirectPort
-from .ledger import ops
-from .ledger.db import connect, default_path, tx
+from .ledger import ops, landing as storage
+from .ledger.db import connect, default_path
 
 MIN_SIZE, MAX_SIZE = 1, 5
 
@@ -36,27 +35,10 @@ def default_size():
     return config.get()['policy']['landing_batch_size']
 BATCHING_OFF_MEDIAN_S = 600          # plan section 12: batching turns off once the median gate is 10 minutes or less
 MIN_GATES_FOR_OFF = 5
-LOCK_TTL_S = 900
 VERDICT = re.compile(r'^LAND@([0-9a-fA-F]{7,40})$')
 HOLD_KEY, HOLD_QUESTION_KEY = 'landing_hold', 'landing_hold_question'
 RETRY, KEEP_HOLDING = 'Retry landing', 'Keep holding'
 PRIORITY_ORDER = ('P0', 'P1', 'P2', 'P3', 'P4')
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS landing_lock (id INTEGER PRIMARY KEY CHECK (id = 1), holder TEXT NOT NULL, since REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS landing_batches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, tasks TEXT NOT NULL, outcome TEXT NOT NULL, tip TEXT,
-  gates INTEGER NOT NULL, gate_s TEXT NOT NULL, red INTEGER NOT NULL, bisect_gates INTEGER NOT NULL,
-  decisions INTEGER NOT NULL, dropped TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS base_gate (sha TEXT PRIMARY KEY, status TEXT NOT NULL, at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS task_landed (
-  task_id TEXT PRIMARY KEY, land_sha TEXT NOT NULL, tip TEXT NOT NULL, receipt TEXT, batch_id INTEGER, at TEXT NOT NULL);
-"""
-
-
-def ensure(conn):
-    conn.executescript(SCHEMA)
-
 
 FETCH_TIMEOUT_S = 120
 
@@ -67,7 +49,7 @@ def git(repo, *args, check=True, timeout=None):
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {timeout}s')
     if check and r.returncode:
-        raise gate.GateError(f'git {" ".join(args)}: {r.stderr.strip()}')
+        raise ci.CIError(f'git {" ".join(args)}: {r.stderr.strip()}')
     return r
 
 
@@ -75,11 +57,9 @@ def git(repo, *args, check=True, timeout=None):
 
 def policy_batch_size(conn):
     """landing_batch_size from the current policy version, clamped to 1..5 (default 3)."""
-    ensure(conn)
     version = ops.current_policy(conn)
-    row = conn.execute("SELECT data FROM policy_versions WHERE version=?", (version,)).fetchone() if version else None
     try:
-        n = int(json.loads(row[0]).get('landing_batch_size', default_size())) if row else default_size()
+        n = int(storage.policy_data(conn, version).get('landing_batch_size', default_size()))
     except (ValueError, TypeError):
         n = default_size()
     return max(MIN_SIZE, min(MAX_SIZE, n))
@@ -87,8 +67,7 @@ def policy_batch_size(conn):
 
 def velocity(conn):
     """Summary of landed batches: gate durations, red rate, bisects, decisions, and whether batching is still worth it."""
-    ensure(conn)
-    rows = conn.execute("SELECT * FROM landing_batches ORDER BY id").fetchall()
+    rows = storage.batches(conn)
     gate_s = [s for r in rows for s in json.loads(r['gate_s'])]
     gates = sum(r['gates'] for r in rows)
     red = sum(r['red'] for r in rows)
@@ -176,9 +155,15 @@ def form_batch(conn, repo, base_ref, size=None, repo_name=None):
 def build_tip(repo, worktree, base_sha, tasks):
     """Replay each task's commits onto base_sha in `worktree`. -> (tip sha, applied tasks with last_sha, conflicted ids)."""
     worktree = Path(worktree)
+    checkpoint = worktree.parent / ('.' + worktree.name + '.merge-group.json')
+    identity = {'base': base_sha, 'tasks': [[t['id'], t.get('head') or branch_head(repo, t['branch'])] for t in tasks]}
+    saved = ci.read_result(checkpoint)
+    if saved and saved.get('identity') == identity and (worktree / '.git').exists():
+        if ci.head(worktree) == saved['tip']:
+            return saved['tip'], saved['applied'], saved['conflicts']
     if not (worktree / '.git').exists():
         from .pipeline import add_worktree
-        add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, run=git, error=gate.GateError)
+        add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, run=git, error=ci.CIError)
     else:
         pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
         if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():
@@ -203,36 +188,10 @@ def build_tip(repo, worktree, base_sha, tasks):
             applied.append({**t, 'last_sha': git(worktree, 'rev-parse', 'HEAD').stdout.strip()})
         else:
             conflicts.append(t['id'])
-    return git(worktree, 'rev-parse', 'HEAD').stdout.strip(), applied, conflicts
-
-
-def make_gate(command, base_ref, out_dir, *, priority='P1', db_path=None, docs_globs=None, docs_extra=None, **kw):
-    """gate_fn for run_batch: runs the full gate on the worktree's HEAD (under the ranked lease when db_path is set).
-    With docs_globs, a batch whose every changed path matches runs the docs gate instead; a mixed batch stays full."""
-    out_dir = Path(out_dir)
-
-    def run(worktree, tip, tasks):
-        def go(_slot=None):
-            child_kw = dict(kw)
-            child_kw["env"] = {**os.environ, **kw.get("env", {}),
-                               "DROVER_CHANGED_FILES": json.dumps(gate.changed_paths(worktree, base_ref, tip))}
-            out = out_dir / f'gate-{tip[:12]}-{len(tasks)}.json'
-            if docs_globs and gate.changed_docs_only(worktree, base_ref, tip, docs_globs):
-                child_kw["env"]["DROVER_CI_KIND"] = "docs"
-                r = None
-                for i, cmd in enumerate(gate.docs_commands(base_ref, tip, docs_extra)):
-                    r = gate.run_gate(worktree, out.with_name(f'{out.stem}.docs{i}.json'), cmd, base=base_ref,
-                                      priority=priority, **child_kw)
-                    if not r['passed']:
-                        break
-                r['kind'] = 'docs'
-                out.write_text(json.dumps(r, indent=2) + '\n')
-                return r
-            return gate.run_gate(worktree, out, command, base=base_ref, priority=priority, **child_kw)
-        if db_path:
-            return gate.run_leased(db_path, 'batch:' + ','.join(t['id'] for t in tasks), priority, go)
-        return go()
-    return run
+    tip = git(worktree, 'rev-parse', 'HEAD').stdout.strip()
+    from .runner import write_json_atomic
+    write_json_atomic(checkpoint, dict(identity=identity, tip=tip, applied=applied, conflicts=conflicts))
+    return tip, applied, conflicts
 
 
 # ---- red attribution ---------------------------------------------------------------------------------------
@@ -310,44 +269,32 @@ def requeue(conn, task_id, failures, why):
 
 # ---- landing ------------------------------------------------------------------------------------------------
 
-def take_lock(conn, holder, at=None):
-    at = time.time() if at is None else at
-    with tx(conn):
-        row = conn.execute("SELECT * FROM landing_lock WHERE id=1").fetchone()
-        if row and at - row['since'] < LOCK_TTL_S:
-            raise gate.GateError(f'refused: landing lock held by {row["holder"]}')
-        conn.execute("INSERT INTO landing_lock(id,holder,since) VALUES(1,?,?) "
-                     "ON CONFLICT(id) DO UPDATE SET holder=excluded.holder, since=excluded.since", (holder, at))
-
-
-def drop_lock(conn, holder):
-    """Release the lock only if `holder` still owns it."""
-    conn.execute("DELETE FROM landing_lock WHERE id=1 AND holder=?", (holder,))
-
-
 def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
     """Advance local main and its checkout, with a receipt and an explicit ancestry check."""
-    found = gate.problems(receipt, worktree, branch)
-    sha = gate.head(worktree)
+    found = ci.problems(receipt, worktree, branch)
+    sha = ci.head(worktree)
     if sha != tip or receipt.get('sha') != sha or not re.fullmatch(r'[0-9a-f]{40}', sha):
         found.append(f'tip {tip[:12]} is not the gated HEAD {sha[:12]}')
     if found:
-        raise gate.GateError('refused: ' + '; '.join(found))
+        raise ci.CIError('refused: ' + '; '.join(found))
     holder = f'landing {sha[:12]}'
-    take_lock(conn, holder)
+    try:
+        storage.take_lock(conn, holder)
+    except storage.LockHeld as error:
+        raise ci.CIError(str(error)) from error
     try:
         ref = f'refs/heads/{branch}'
         old = git(repo, 'rev-parse', ref).stdout.strip()
         if git(repo, 'merge-base', '--is-ancestor', old, sha, check=False).returncode:
-            raise gate.GateError('local main moved; rebase and regate')
+            raise ci.CIError('local main moved; rebase and regate')
         try:
             origin.fast_forward(repo, branch, sha, old, run=git)
         except origin.MainMoved as e:
-            raise gate.GateError('local main moved; rebase and regate') from e
+            raise ci.CIError('local main moved; rebase and regate') from e
         except origin.SyncError as e:
-            raise gate.GateError(str(e)) from e
+            raise ci.CIError(str(e)) from e
     finally:
-        drop_lock(conn, holder)
+        storage.drop_lock(conn, holder)
 
 
 def fast_forward(conn, worktree, remote, branch, tip, receipt):
@@ -378,7 +325,7 @@ def held(conn, base_sha):
     if qid:
         q = ops.get_question(conn, int(qid))
         if q['status'] == 'answered' and q['answer_choice'] == RETRY:
-            conn.execute("DELETE FROM base_gate WHERE sha=?", (base_sha,))
+            storage.forget_base(conn, base_sha)
             ops.set_setting(conn, HOLD_KEY, '')
             return False
     return True
@@ -386,13 +333,13 @@ def held(conn, base_sha):
 
 def base_status(conn, repo, work, gate_fn, base_sha, result):
     """'green' or 'red' for the base commit itself, gated at most once per base SHA."""
-    row = conn.execute("SELECT status FROM base_gate WHERE sha=?", (base_sha,)).fetchone()
-    if row:
-        return row['status']
+    known = storage.base_status(conn, base_sha)
+    if known:
+        return known
     tip, _, _ = build_tip(repo, work, base_sha, [])
     _, red = _gate(gate_fn, work, tip, [], result)
     status = 'red' if red else 'green'
-    conn.execute("INSERT OR REPLACE INTO base_gate(sha,status,at) VALUES(?,?,?)", (base_sha, status, ops.stamp()))
+    storage.record_base(conn, base_sha, status)
     return status
 
 
@@ -432,11 +379,10 @@ def sync_main(conn, repo, remote, branch, repo_name=None):
 
 def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None, repo_name=None, workdir=None,
               decider=None, actor='landing', push=False):
-    """Form, gate, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
+    """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
 
     push=False lands on the local branch only: the base is the local branch (so one batch builds on the last) and
     nothing is pushed. Fetch failure pauses the repo; divergent main needs owner intervention."""
-    ensure(conn)
     repo = Path(repo)
     result = {'outcome': 'empty', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
               'decisions': 0, 'gate_s': [], 'batch': []}
@@ -458,16 +404,17 @@ def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None,
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
     except BaseException as e:
         result['outcome'], result['error'] = 'error', repr(e)
-        _record(conn, result)
+        storage.record_batch(conn, result)
         raise
     finally:
         git(repo, 'worktree', 'remove', '--force', str(work), check=False)
+        (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
         if own_tmp:
             try:
                 work.parent.rmdir()
             except OSError:
                 pass
-    _record(conn, result)
+    storage.record_batch(conn, result)
     return result
 
 
@@ -483,11 +430,8 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
 
 
 def _failures(receipt, tasks):
-    try:
-        text = Path(config.native(receipt['log'])).read_text(errors='replace')
-    except OSError:
-        text = '\n'.join(receipt.get('log_tail') or [])
-    return [{'test': 'CI command', 'error': '\n'.join(text.splitlines()[-40:]), 'file': None, 'in_diff': False}]
+    return [{'test': 'CI command', 'error': '\n'.join(receipt.get('log_tail') or []),
+             'file': None, 'in_diff': False}]
 
 
 def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None):
@@ -540,15 +484,14 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
         return
     try:
         local_fast_forward(conn, repo, work, branch, tip, receipt)
-    except gate.GateError as e:
+    except ci.CIError as e:
         result['outcome'] = 'stale-base' if 'rebase and regate' in str(e) else 'refused'
         result['error'] = str(e)
         return
     for t in tasks:
         ops.set_status(conn, t['id'], 'landed', actor='system', reason='fast-forwarded',
                        data={'land_sha': t['last_sha'], 'tip': tip, 'receipt': receipt.get('log')})
-        conn.execute("INSERT OR REPLACE INTO task_landed(task_id,land_sha,tip,receipt,at) VALUES(?,?,?,?,?)",
-                     (t['id'], t['last_sha'], tip, receipt.get('log'), ops.stamp()))
+        storage.record_merged(conn, t, tip, receipt.get("log"))
         result['landed'].append(t['id'])
     result['outcome'] = 'landed'
     if push:
@@ -560,22 +503,8 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
                              options=[{'label': 'Acknowledged'}], actor='landing')
 
 
-def _record(conn, r):
-    with tx(conn):
-        cur = conn.execute(
-            "INSERT INTO landing_batches(at,tasks,outcome,tip,gates,gate_s,red,bisect_gates,decisions,dropped) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (ops.stamp(), json.dumps(r['batch']), r['outcome'], r['tip'], r['gates'], json.dumps(r['gate_s']),
-             r['red'], r['bisect_gates'], r['decisions'], json.dumps(r['dropped'])))
-        r['batch_id'] = cur.lastrowid
-        conn.execute("UPDATE task_landed SET batch_id=? WHERE task_id IN (%s)" % ','.join('?' * len(r['landed'])),
-                     (cur.lastrowid, *r['landed'])) if r['landed'] else None
-
-
 def land_sha(conn, task_id):
-    ensure(conn)
-    row = conn.execute("SELECT land_sha FROM task_landed WHERE task_id=?", (task_id,)).fetchone()
-    return row[0] if row else None
+    return storage.land_sha(conn, task_id)
 
 
 # ---- CLI -----------------------------------------------------------------------------------------------------
@@ -594,11 +523,6 @@ def main(argv=None):
         s.add_argument('--json', action='store_true')
         if name == 'run':
             s.add_argument('--out', required=True, help='directory for receipts')
-            s.add_argument('--priority', choices=gate.PRIORITIES, default='P1')
-            s.add_argument('--lease', action='store_true', help='take a ranked gate slot in the ledger')
-            s.add_argument('--docs-glob', action='append', default=[],
-                           help='docs-only glob; a batch whose every path matches runs git diff --check, not the command')
-            s.add_argument('command', nargs=argparse.REMAINDER)
     v = sub.add_parser('velocity')
     v.add_argument('--json', action='store_true')
     a = p.parse_args(argv)
@@ -613,13 +537,14 @@ def main(argv=None):
             batch = form_batch(conn, a.repo, a.branch, a.size, a.repo_name)
             print(json.dumps(batch) if a.json else '\n'.join(f"{t['id']}  {t['branch']}  {len(t['files'])} file(s)" for t in batch))
             return 0
-        command = a.command[1:] if a.command[:1] == ['--'] else a.command
-        fn = make_gate(command, a.branch, a.out, priority=a.priority, docs_globs=a.docs_glob or None,
-                       db_path=(a.db or default_path()) if a.lease else None)
+        from . import repos
+        prog = repos.load({'name': a.repo_name or Path(a.repo).name, 'repo': a.repo})
+        service = ci.CI(a.out)
+        fn = lambda worktree, commit, tasks: service.run(prog, worktree, commit, base=a.branch, conn=conn)
         r = run_batch(conn, a.repo, fn, remote=a.remote, branch=a.branch, size=a.size, repo_name=a.repo_name)
         print(json.dumps(r) if a.json else f"{r['outcome']}: landed {r['landed']} dropped {r['dropped']} gates {r['gates']}")
         return 0 if r['outcome'] in ('landed', 'empty') else 1
-    except (gate.GateError, origin.SyncError) as e:
+    except (ci.CIError, origin.SyncError) as e:
         print(f'drover.landing: {e}', file=sys.stderr)
         return 2
 

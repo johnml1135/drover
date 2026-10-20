@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 
-from drover import contract, dispatcher, gate
+from drover import contract, dispatcher
 from drover.ledger import connect, ops
 from drover.lock import FileLock, LockHeld
 from hub.dispatch import DispatcherService, HubPort, LandingService
@@ -34,67 +34,6 @@ class Base(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.settings = Settings(token="t", dispatcher_lock=Path(self.lock), dispatch_interval_s=0.02,
                                  runs_dir=Path(self.tmp.name) / "runs")
-
-
-class WslGate(Base):
-    @unittest.skipIf(__import__('os').name == 'nt', 'exercise WSL adapter using the local POSIX interpreter')
-    def test_composed_wsl_landing_plan_runs_scripts_with_docs_and_environment(self):
-        import os
-        import sys
-        from types import SimpleNamespace
-        from unittest.mock import patch
-        from drover import repos
-        from tests.gitfix import Repo
-        fix = Repo()
-        self.addCleanup(fix.cleanup)
-        script = 'scripts/drover/check action.ps1'
-        fix.commit(script, 'Write-Output "kind:$env:DROVER_CI_KIND"\n'
-                   'Write-Output "value:$env:LOCAL_VALUE"\n'
-                   'Write-Output "changed:$env:DROVER_CHANGED_FILES"\nexit 0\n')
-        fix.commit('drover.toml', f'[scripts]\ntest="{script}"\ndocs="{script}"\n'
-                   '[gate]\nplatform="wsl"\n[run]\nplatforms=["wsl"]\ndefault="wsl"\n')
-        fix.git('checkout', '-b', 'topic')
-        tip = fix.commit('docs/a.md', 'docs change\n')
-        calls = []
-
-        def remote(argv, **kw):
-            calls.append(argv)
-            command = argv[argv.index('--exec') + 1:]
-            return subprocess.run([sys.executable, *command[1:]],
-                                  cwd=argv[argv.index('--cd') + 1], **kw)
-
-        svc = LandingService(self.store, self.settings, run=remote)
-        machine = {'name': 'example', 'repo': str(fix.repo), 'run': {'env': {'LOCAL_VALUE': 'machine'}}}
-        check = svc.gate_fn(repos.load(machine), 'main', self.settings.runs_dir, None)
-        with patch('hub.dispatch.os', SimpleNamespace(name='nt', environ=os.environ)):
-            receipt = check(fix.repo, tip, [{'id': 'T-1'}])
-        self.assertTrue(receipt['passed'])
-        self.assertEqual(receipt['kind'], 'docs')
-        self.assertEqual(receipt['steps'][-1]['command'], repos.script_argv(repos.load(machine), 'docs'))
-        tail = '\n'.join(receipt['log_tail'])
-        self.assertIn('kind:docs', tail)
-        self.assertIn('value:machine', tail)
-        self.assertIn('docs/a.md', tail)
-        self.assertEqual(calls[0][0], 'wsl.exe')
-
-    def test_missing_receipt_reports_return_code_and_last_twenty_stderr_lines(self):
-        stderr = '\n'.join(['old diagnostic'] + [f'diagnostic {n}' for n in range(19)] + ['fatal: invalid gitdir'])
-
-        def run(argv, **kw):
-            return subprocess.CompletedProcess(argv, 2, '', stderr)
-
-        svc = LandingService(self.store, self.settings, run=run)
-        from tests.gitfix import Repo
-        fix = Repo()
-        self.addCleanup(fix.cleanup)
-        check = svc._wsl_gate(['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', 'scripts/drover/test.ps1'], 'main', self.settings.runs_dir)
-        with self.assertRaises(gate.GateError) as cm:
-            check(fix.repo, fix.git('rev-parse', 'HEAD'), [])
-        message = str(cm.exception)
-        self.assertIn('return code 2', message)
-        self.assertIn('fatal: invalid gitdir', message)
-        self.assertIn('diagnostic 0', message)
-        self.assertNotIn('old diagnostic', message)
 
 
 class FakeDispatcher:

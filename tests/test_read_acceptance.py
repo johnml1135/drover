@@ -42,7 +42,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(event['data']['reason'], 'Owner accepted read-only findings')
         # No landing metadata is created by acceptance.
         self.assertIsNone(self.s.conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='task_landed'").fetchone())
+            "SELECT task_id FROM task_landed WHERE task_id=?", (tid,)).fetchone())
 
     def test_only_owner_may_complete_successful_read_work(self):
         tid, _ = self.finished_read()

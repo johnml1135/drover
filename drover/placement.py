@@ -609,3 +609,35 @@ def detect_distros():
     except (OSError, subprocess.SubprocessError):
         return []
     return parse_distros(decode_output(r.stdout)) if r and r.returncode == 0 else []
+
+
+def ci_invocation(platform, script, plan_file, python=None):
+    """CI entrypoint argv and path mapping for the selected placement."""
+    convert = to_wsl_path if platform == "wsl" else native
+    interpreter = "python3" if platform == "wsl" else (python or sys.executable)
+    return [interpreter, convert(str(script)), "--plan", convert(str(plan_file))]
+
+
+def ci_path(platform, path):
+    return to_wsl_path(str(path)) if platform == "wsl" else str(native(path))
+
+
+def ci_runner_command(args, drover_dir, distro_name=None, env=None, windows=IS_WINDOWS):
+    """Start a WSL runner from Windows, or directly when already on Linux."""
+    args = list(args)
+    split = args.index('--') if '--' in args else len(args)
+    mapped = [to_wsl_path(str(arg)) for arg in args[:split]] + args[split:]
+    if windows:
+        return WSL(distro_name).command(['python3', '-m', 'drover.runner', *mapped], cd=drover_dir, env=env), None
+    child_env = {**os.environ, **(env or {})}
+    child_env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(drover_dir), os.environ.get('PYTHONPATH')]))
+    return [sys.executable, '-m', 'drover.runner', *mapped], child_env
+
+
+def native_runner_cwd(path, windows=IS_WINDOWS):
+    if not windows:
+        return str(path)
+    path = to_windows_path(path)
+    if is_linux_native(path):
+        raise ValueError(f"worktree {path} is not reachable from Windows")
+    return path

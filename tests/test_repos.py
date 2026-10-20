@@ -78,7 +78,7 @@ class VersionedRepoConfig(unittest.TestCase):
 
     def test_changed_files_preserve_unicode_and_control_characters(self):
         import json
-        from drover import pipeline
+        from drover import ci, pipeline
         names = ['src/space name.txt', 'src/café.txt']
         if os.name != 'nt':
             names.append('src/line\nbreak.txt')
@@ -88,8 +88,8 @@ class VersionedRepoConfig(unittest.TestCase):
         prog = repos.load({**self.machine, 'scripts': {'test': 'scripts/check.ps1'}})
         pipe = pipeline.Pipeline(None, repos_map={'example': prog})
         platform = 'windows' if os.name == 'nt' else 'wsl'
-        plan = pipe.gate_plan({'worktree': str(self.fix.repo)}, prog, sha, platform)
-        self.assertCountEqual(json.loads(plan['env']['DROVER_CHANGED_FILES']), names)
+        plan = pipe.ci.prepare(prog, self.fix.repo, sha, 'ci', platform=platform)
+        self.assertCountEqual(json.loads(plan['spec']['run_config']['env']['DROVER_CHANGED_FILES']), names)
 
     def test_missing_repo_file_uses_the_same_machine_layer(self):
         prog = repos.load({**self.machine, 'scripts': {'test': 'scripts/check.ps1'}})
@@ -117,7 +117,7 @@ class VersionedRepoConfig(unittest.TestCase):
         import json
         import subprocess
         import sys
-        from drover import gate, pipeline, runner
+        from drover import ci, pipeline, runner
         script = 'scripts/drover/check action.ps1'
         self.fix.commit(script, 'Write-Output "script:$env:MACHINE_VALUE"\n'
                         'Write-Output "kind:$env:DROVER_CI_KIND"\n'
@@ -128,10 +128,10 @@ class VersionedRepoConfig(unittest.TestCase):
         prog = repos.load(self.machine, sha)
         pipe = pipeline.Pipeline(None, repos_map={'example': prog}, runs_dir=self.fix.root / 'runs')
         platform = 'windows' if os.name == 'nt' else 'wsl'
-        plan = pipe.gate_plan({'worktree': str(self.fix.repo)}, prog, sha, platform)
-        argv, receipt = pipe.gate_argv(plan, 1, 'P2', prog, platform)
+        plan = pipe.ci.prepare(prog, self.fix.repo, sha, 'ci', platform=platform)
+        argv, receipt = plan['spec']['argv'], Path(plan['receipt'])
         result = subprocess.run([sys.executable, '-m', 'drover.runner', '--run-id', 'ci', '--runs-dir',
-                                 str(self.fix.root / 'runs'), '--cwd', str(self.fix.repo), '--', *argv],
+                                 str(self.fix.root / 'runs'), '--cwd', str(self.fix.repo), '--run-config', json.dumps(plan['spec']['run_config']), '--', *argv],
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         data = json.loads(receipt.read_text())
@@ -142,4 +142,4 @@ class VersionedRepoConfig(unittest.TestCase):
         self.assertIn('kind:checks', tail)
         self.assertIn('source.txt', tail)
         self.assertEqual(data['steps'][0]['command'], repos.script_argv(prog))
-        self.assertEqual(gate.problems(data, self.fix.repo, 'main'), [])
+        self.assertEqual(ci.problems(data, self.fix.repo, 'main'), [])

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, contract, dispatcher, gate, placement, landing, launch, pipeline, repos, runner
+from drover import config, contract, dispatcher, ci, placement, landing, launch, pipeline, repos, runner
 from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -67,7 +67,7 @@ class FakeHandle:
 
 
 class FakeLauncher:
-    """Workers and reviews wait for the test to finish them; the gate run really executes gatejob, as the runner would."""
+    """Workers and reviews wait for the test to finish them; CI runs execute through the real runner."""
 
     def __init__(self, runs_dir):
         self.specs, self.handles, self.runs_dir, self.gate_script = [], {}, runs_dir, []
@@ -81,9 +81,11 @@ class FakeLauncher:
                             "timeout": "no output for 600s" if status == "timeout" else None,
                             "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0}})
         elif spec.get("role") == "gate":
-            r = subprocess.run(spec["argv"], capture_output=True, text=True, cwd=spec["cwd"])
+            r = subprocess.run([sys.executable, '-m', 'drover.runner', '--run-id', str(spec['run_id']),
+                                '--runs-dir', str(self.runs_dir), '--cwd', str(spec['cwd']),
+                                '--run-config', json.dumps(spec.get('run_config', {})), '--', *spec['argv']],
+                               capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1])
             out = runner.run_dir(self.runs_dir, spec["run_id"]) / runner.OUT_FILE
-            out.write_text(r.stdout + r.stderr)
             h = FakeHandle({"status": "done" if r.returncode == 0 else "error", "record": None, "text": "", "handoff": None,
                             "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0},
                             "returncode": r.returncode, "timeout": None})
@@ -571,8 +573,8 @@ class Safety(Base):
         self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "main"))
         self.assertNotEqual(self.fix.git("rev-parse", "main"), self.fix.git("rev-parse", "origin/main"))
         sha = self.fix.commit("mine.txt", "mine\n", cwd=wt)
-        plan = self.pipe.gate_plan({**self.get(tid), "worktree": wt}, self.prog, sha)
-        self.assertEqual((plan["base"], plan["files"]), ("main", ["mine.txt"]))     # landed.txt is not in the diff
+        plan = self.pipe.ci.prepare(self.prog, wt, sha, "inspect")
+        self.assertEqual((self.pipe.base_ref(self.prog), plan["files"]), ("main", ["mine.txt"]))     # landed.txt is not in the diff
 
     def test_pushing_repos_also_branch_from_local_main(self):
         prog = prog_dict(self.fix.repo, Path(self.tmp.name) / "wts2", push=True)
@@ -612,92 +614,6 @@ class Safety(Base):
         self.d.tick()
         self.assertEqual(self.status(tid), "gated")
         self.assertFalse(landing.review_landed(self.conn, tid, sha))
-
-
-class GatePlatform(Base):
-    def test_a_wsl_gate_plan_maps_every_path_and_uses_python3(self):
-        prog = prog_dict("R:\\repos\\r", "R:\\repos\\r.worktrees")
-        prog["gate"]["platform"] = "wsl"
-        pipe = pipeline.Pipeline(self.port, repos_map={"p": prog}, runs_dir="C:\\drover\\runs")
-        plan = {"repo": "R:\\repos\\r.worktrees\\drover-T1", "base": "origin/main", "sha": "a" * 40,
-                "commands": [["python3", "-c", "pass"]], "scope": None}
-        with tempfile.TemporaryDirectory() as t:
-            pipe.runs_dir = t
-            argv, receipt = pipe.gate_argv(plan, 7, "P2", prog)
-            body = json.loads((Path(t) / "7" / "plan.json").read_text())
-        self.assertEqual(argv[0], "python3")
-        self.assertEqual(body["repo"], "/mnt/r/repos/r.worktrees/drover-T1")
-        self.assertTrue(argv[1].endswith("gatejob.py"))
-        self.assertEqual(body["commands"], [["python3", "-c", "pass"]])      # the gate command itself is never rewritten
-
-
-    def docs_plan(self, files, gate=None, docs_script=False):
-        raw = {"name": "p", "repo": str(self.fix.repo), "worktrees": str(Path(self.tmp.name) / "dw"),
-               "scripts": {"test": "scripts/drover/test.ps1", **({"docs": "scripts/drover/docs.ps1"} if docs_script else {})},
-               "gate": {"platform": "windows", **(gate or {})}}
-        prog = repos.normalize(raw)
-        tid = self.task()
-        pipe = pipeline.Pipeline(self.port, repos_map={"p": prog}, runs_dir=self.runs)
-        base = pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs).worktree(self.get(tid))
-        for name in files:
-            sha = self.fix.commit(name, "x\n", cwd=base)
-        return pipe, pipe.gate_plan({**self.get(tid), "worktree": base}, prog, sha), base, sha
-
-    def test_docs_only_diff_gets_the_docs_gate_and_a_mixed_diff_the_full_one(self):
-        _, plan, _, sha = self.docs_plan(["docs/x.md", "docs/deep/y.txt", "README.md"], docs_script=True)
-        self.assertEqual(plan["kind"], "docs")
-        self.assertEqual(plan["commands"], [["git", "-c", "core.whitespace=-blank-at-eol", "diff", "--check", f"main...{sha}"], repos.script_argv({"name": "p", "scripts": {"docs": "scripts/drover/docs.ps1"}}, "docs")])
-        _, plan, _, _ = self.docs_plan(["docs/x.md", "drover/a.py"])
-        self.assertEqual((plan["kind"], plan["commands"]), ("full", [repos.script_argv({"name": "p", "scripts": {"test": "scripts/drover/test.ps1"}})]))
-        _, plan, _, _ = self.docs_plan(["docsx/x.txt"])
-        self.assertEqual(plan["kind"], "full")
-
-    def test_docs_classification_is_strict(self):
-        for files in (["docs/conf.py"], [".github/workflows/x.md"], ["docs/x.md", "docs/build.sh"]):
-            self.assertEqual(self.docs_plan(files)[1]["kind"], "full", files)
-        self.assertEqual(self.docs_plan(["LICENSE", "GLOSSARY.md", "docs/a.rst"])[1]["kind"], "docs")
-
-    def test_a_symlink_named_like_docs_is_not_docs(self):
-        pipe, _, base, _ = self.docs_plan(["docs/x.md"])
-        link = Path(base) / "docs" / "link.md"
-        os.symlink("../drover/a.py", link)
-        self.fix.git("add", "-A", cwd=base)
-        self.fix.git("commit", "-q", "-m", "link", cwd=base)
-        sha = self.fix.git("rev-parse", "HEAD", cwd=base)
-        prog = repos.normalize({"name": "p", "repo": str(self.fix.repo), "scripts": {"test": "scripts/drover/test.ps1"}})
-        plan = pipe.gate_plan({**self.get(self.task()), "worktree": base}, prog, sha)
-        self.assertEqual(plan["kind"], "full")
-
-    def test_markdown_hard_breaks_pass_the_docs_gate(self):
-        from drover import gatejob
-        pipe, _, base, _ = self.docs_plan(["docs/x.md"])
-        sha = self.fix.commit("docs/hard.md", "line one  \nline two\n", cwd=base)
-        prog = repos.normalize({"name": "p", "repo": str(self.fix.repo), "scripts": {"test": "scripts/drover/test.ps1"}})
-        plan = pipe.gate_plan({**self.get(self.task()), "worktree": base}, prog, sha)
-        self.assertEqual(plan["kind"], "docs")
-        argv, _ = pipe.gate_argv(plan, 11, "P2", self.prog)
-        self.assertEqual(gatejob.main(["--plan", argv[-1]]), 0)
-
-    def test_docs_gate_has_an_off_switch_and_per_repo_globs(self):
-        self.assertEqual(self.docs_plan(["docs/x.md"], gate={"docs_only": False})[1]["kind"], "full")
-        self.assertEqual(self.docs_plan(["docs/x.md"], gate={"docs_only_globs": []})[1]["kind"], "full")
-        self.assertEqual(self.docs_plan(["notes/a.txt"], gate={"docs_only_globs": ["notes/**"]})[1]["kind"], "docs")
-        self.assertEqual(self.docs_plan(["docs/x.md"], gate={"docs_only_globs": ["notes/**"]})[1]["kind"], "full")
-
-    def test_docs_receipt_records_kind_and_exact_sha_and_licenses_landing(self):
-        from drover import gate, gatejob
-        pipe, plan, base, sha = self.docs_plan(["docs/x.md"])
-        argv, receipt = pipe.gate_argv(plan, 9, "P2", self.prog)
-        r = gatejob.main(["--plan", argv[-1]])
-        self.assertEqual(r, 0)
-        got = json.loads(receipt.read_text())
-        self.assertEqual((got["kind"], got["sha"], got["status"]), ("docs", sha, "passed"))
-        self.assertEqual(gate.problems(got, base, "main"), [])
-        bad = self.fix.commit("docs/bad.md", "<<<<<<< ours\n", cwd=base)
-        plan2 = pipe.gate_plan({**self.get(self.task()), "worktree": base}, repos.normalize({
-            "name": "p", "repo": str(self.fix.repo), "scripts": {"test": "scripts/drover/test.ps1"}}), bad)
-        argv, receipt = pipe.gate_argv(plan2, 10, "P2", self.prog)
-        self.assertEqual(gatejob.main(["--plan", argv[-1]]), 1)
 
 
 class ReadyToCommit(Base):
@@ -912,9 +828,9 @@ class CodexReview(Base):
                     d = runner.run_dir(runs, spec["run_id"])
                     body = json.loads((d / "plan.json").read_text())
                     assert body["repo"].startswith("/"), body["repo"]
-                    body.update(repo=spec["cwd"], out=str(d / "receipt.json"))
+                    body.update(repo=spec["cwd"], out=str(d / "receipt.json"), log=str(d / runner.OUT_FILE))
                     (d / "host-plan.json").write_text(json.dumps(body))
-                    spec = {**spec, "argv": [sys.executable, str(Path(pipeline.__file__).with_name("gatejob.py")),
+                    spec = {**spec, "argv": [sys.executable, str(Path(ci.__file__)),
                                              "--plan", str(d / "host-plan.json")]}
                     return super().launch(spec)
                 return super().launch(spec)
@@ -993,12 +909,24 @@ class CodexReview(Base):
         self.assertEqual(self.fl.of("review")[0]["effort"], "low")
 
 class GateAndReview(Base):
+    def test_ci_planning_failure_finishes_the_run_and_releases_capacity(self):
+        tid = self.task()
+        self.d.tick()
+        self.run_worker(tid, self.worker_commits(tid))
+        with patch.object(self.pipe.ci, 'prepare', side_effect=ci.CIError('invalid CI script config')):
+            self.d.tick()
+        checks = [r for r in ops.list_runs(self.conn, tid) if r['role'] == 'gate']
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]['outcome'], 'launch-error')
+        self.assertIsNotNone(checks[0]['ended'])
+        self.assertEqual(self.d.ci_runners.snapshot()['waiting'], 0)
+
     def test_review_brief_includes_the_passed_gate_receipt_summary(self):
         tid, sha = self.to_gated()
         g = ops.events(self.conn, task_id=tid, kind="gate-done")[-1]["data"]["g"]
         u = self.fl.of("review")[0]["user_prompt"]
         self.assertIn(f"exact SHA ({sha}) and passed", u)
-        self.assertIn("kind: full", u)
+        self.assertIn("kind: checks", u)
         self.assertIn("status: passed", u)
         self.assertIn(f"duration: {g['duration_s']:.3f} s", u)
 
@@ -1064,7 +992,7 @@ class GateAndReview(Base):
         self.assertEqual(self.status(tid), "gated")
 
     def test_a_refusal_with_no_receipt_and_unparsed_output_are_infrastructure(self):
-        tid, _ = self.infra_task([("error", 2, "usage: gatejob"), ("error", 1, "something odd happened\n")])
+        tid, _ = self.infra_task([("error", 2, "usage: CI"), ("error", 1, "something odd happened\n")])
         self.tick(5)
         runs = ops.list_runs(self.conn, tid)
         self.assertEqual(dispatcher.failures(runs), 0)
@@ -1311,6 +1239,57 @@ class Decisions(Base):
 
 
 class Landing(Base):
+    def test_restart_finishes_pending_ci_before_changed_queue_and_base_rebuild(self):
+        import threading
+        tid = self.task()
+        wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self.reviewed(tid, self.fix.commit('first.txt', 'first', cwd=wt))
+        count, release = Path(self.tmp.name) / 'ci-started', Path(self.tmp.name) / 'ci-release'
+        self.addCleanup(release.touch)
+        code = ('import pathlib,subprocess,time; '
+                'head=lambda: subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(); '
+                'before=head(); pathlib.Path(' + repr(str(count)) + ').write_text(before); '
+                '\nwhile not pathlib.Path(' + repr(str(release)) + ').exists(): time.sleep(.05)'
+                '\nassert head()==before, "checkout reset while CI was active"')
+        pdir = Path(self.tmp.name) / 'resume-repos'
+        pdir.mkdir()
+        (pdir / 'p.toml').write_text(
+            f'name="p"\nrepo={json.dumps(str(self.fix.repo))}\n'
+            f'worktrees={json.dumps(str(Path(self.tmp.name) / "wts"))}\n'
+            '[scripts]\ntest="scripts/drover/test.ps1"\n[gate]\nplatform="windows"\ndocs_only=false\n'
+            '[land]\npolicy="single"\n[run.env]\nDROVER_FIXTURE_CODE=' + json.dumps(code) + '\n')
+        db_path = Path(self.tmp.name) / 'l.db'
+        child_code = ('from hub.dispatch import LandingService; from hub.store import Store; '
+                      'from hub.settings import Settings; '
+                      f'LandingService(Store({str(db_path)!r}), Settings(runs_dir={str(self.runs)!r}), '
+                      f'repos_dir={str(pdir)!r}).tick()')
+        with open(Path(self.tmp.name) / 'landing-caller.log', 'w') as output:
+            caller = subprocess.Popen([sys.executable, '-c', child_code], stdout=output, stderr=output)
+            self.addCleanup(lambda: caller.poll() is None and caller.kill())
+            deadline = time.monotonic() + 30
+            while not count.exists() and caller.poll() is None and time.monotonic() < deadline:
+                time.sleep(.05)
+            self.assertTrue(count.exists(), (Path(self.tmp.name) / 'landing-caller.log').read_text())
+            original_status = next(self.runs.glob('ci-*/status.json'))
+            caller.terminate()
+            caller.wait(timeout=10)
+        urgent = self.task(priority='P0')
+        urgent_wt = repos.native(self.pipe.worktree(self.get(urgent)))
+        self.reviewed(urgent, self.fix.commit('urgent.txt', 'urgent', cwd=urgent_wt))
+        self.fix.commit('owner.txt', 'new main')
+        timer = threading.Timer(.5, release.touch)
+        timer.start()
+        self.addCleanup(timer.join)
+        store = Store(db_path)
+        self.addCleanup(store.close)
+        out = LandingService(store, Settings(runs_dir=self.runs), repos_dir=pdir).tick()
+        self.assertEqual(out['p']['outcome'], 'landed')
+        self.assertEqual(self.status(urgent), 'landed')
+        self.assertEqual(self.status(tid), 'reviewed')
+        original_result = json.loads(original_status.with_name('receipt.json').read_text())
+        self.assertTrue(original_result['passed'])
+        self.assertNotEqual(original_result['sha'], self.fix.git('rev-parse', 'main'))
+
     def test_the_loop_lands_a_reviewed_batch_on_local_main_and_does_not_push(self):
         self.fix.git("config", "user.name", "t")
         tid = self.task()
@@ -1324,7 +1303,7 @@ class Landing(Base):
             f'[gate]\nplatform = "windows"\n[scripts]\ntest = "scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
         store = Store(Path(self.tmp.name) / "l.db")
         self.addCleanup(store.close)
-        svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir, gate_kw={"available": False})
+        svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir)
         remote_before = self.fix.remote_head()
         ops.set_setting(self.conn, "dispatch_enabled", "false")
         self.assertEqual(svc.tick(), {})                                  # paused: nothing lands
@@ -1355,7 +1334,7 @@ class Landing(Base):
         (pdir / "p.toml").write_text(
             f'name = "p"\nrepo = {json.dumps(str(self.fix.repo))}\nworktrees = {json.dumps(str(Path(self.tmp.name) / "wts"))}\n'
             f'[gate]\nplatform = "windows"\n[scripts]\ntest = "scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
-        svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir, gate_kw={"available": False})
+        svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir)
         out = svc.tick()
         self.assertEqual(out["p"]["outcome"], "refused")
         self.assertIn("main checkout dirty", out["p"]["error"])

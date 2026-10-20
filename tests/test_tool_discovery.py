@@ -15,7 +15,7 @@ class ToolDiscovery(unittest.TestCase):
     def test_discovered_pwsh_runs_composed_ci_with_non_login_path(self):
         import json
         import sys
-        from drover import pipeline, placement, repos
+        from drover import ci, pipeline, placement, repos
         from hub.services import Services
         from hub.settings import Settings
         from hub.store import Store
@@ -28,6 +28,7 @@ class ToolDiscovery(unittest.TestCase):
         worker_tools = fix.root / 'worker-tools'
         worker_tools.mkdir()
         (worker_tools / 'git').symlink_to(shutil.which('git'))
+        (worker_tools / 'python3').symlink_to(sys.executable)
         pwsh = tools / 'pwsh'
         pwsh.write_text('#!/bin/sh\n'
                         '[ "$1" = -NoLogo ] && [ "$2" = -NoProfile ] && '
@@ -51,10 +52,9 @@ class ToolDiscovery(unittest.TestCase):
             previous = placement.bind_settings(store.get_settings)
             self.addCleanup(placement.bind_settings, previous)
             prog = repos.load({'name': 'example', 'repo': str(fix.repo)})
-            pipe = pipeline.Pipeline(None, repos_map={'example': prog}, runs_dir=fix.root / 'runs',
-                                     wsl_python=sys.executable)
-            plan = pipe.gate_plan({'worktree': str(fix.repo)}, prog, sha, 'wsl')
-            argv, receipt = pipe.gate_argv(plan, 1, 'P2', prog, 'wsl')
+            pipe = pipeline.Pipeline(None, repos_map={'example': prog}, runs_dir=fix.root / 'runs')
+            plan = pipe.ci.prepare(prog, fix.repo, sha, 'discovered', platform='wsl')
+            argv, receipt = plan['spec']['argv'], Path(plan['receipt'])
             result = subprocess.run([sys.executable, '-m', 'drover.runner', '--run-id', 'discovered',
                                      '--runs-dir', str(fix.root / 'runs'), '--cwd', str(fix.repo), '--', *argv],
                                     env={**os.environ, 'PATH': str(worker_tools)},

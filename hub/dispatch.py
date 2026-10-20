@@ -5,15 +5,13 @@ A file lock held for the thread's life keeps a second dispatcher (another hub, `
 from drover import placement
 import json
 import logging
-import os
-import subprocess
 import threading
 from pathlib import Path
 
-from drover import gate, landing, repos
+from drover import ci, landing, repos
 from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
-from drover.ledger import ops
+from drover.ledger import ops, landing as landing_storage
 from drover.lock import FileLock, LockHeld
 from drover.pipeline import Pipeline, truthy
 from drover.port import DirectPort
@@ -69,9 +67,10 @@ class LandingService:
     ({status, median, red_rate}) that the Landing page reads. A repo lands on its local default branch unless its
     config says landing.push = true. The thread has its own ledger connection (the store's per-thread one)."""
 
-    def __init__(self, store, settings, interval_s=LANDING_INTERVAL_S, repos_dir=None, gate_kw=None, run=subprocess.run):
+    def __init__(self, store, settings, interval_s=LANDING_INTERVAL_S, repos_dir=None):
         self.store, self.settings, self.interval_s = store, settings, interval_s
-        self.repos_dir, self.gate_kw, self.run = repos_dir, gate_kw or {}, run
+        self.repos_dir = repos_dir
+        self.ci = ci.CI(settings.runs_dir, RunnerLauncher(runs_dir=settings.runs_dir, distro=self._distro))
         self._stop, self._thread, self.error = threading.Event(), None, None
 
     def _distro(self):
@@ -98,71 +97,6 @@ class LandingService:
         if self._thread is not None:
             self._thread.join(timeout)
 
-    def gate_fn(self, prog, base_ref, out_dir, conn):
-        """The batch gate: each gate platform's effective full command. A WSL gate started from the Windows hub
-        runs `python3 -m drover.gate run` through wsl.exe with every path mapped to /mnt/<d>/."""
-        def run(worktree, tip, tasks):
-            current = repos.load(prog, tip, worktree)
-            platforms = repos.gate_platforms(current)
-            runs = [self._gate_on(x, repos.script_argv(current, platform=x), base_ref, out_dir, conn, current) for x in platforms]
-            return self._both(runs, platforms)(worktree, tip, tasks)
-        return run
-
-    def _gate_on(self, platform, command, base_ref, out_dir, conn, prog):
-        if platform == "wsl" and os.name == "nt":
-            return self._wsl_gate(command, base_ref, out_dir, float(prog["gate"]["timeout_s"]) + 120, repos.run_config(prog),
-                                  prog["gate"]["docs_only_globs"] if prog["gate"]["docs_only"] else None,
-                                  repos.script_argv(prog, "docs", platform) if repos.has_script(prog, "docs") else None)
-        g = prog["gate"]
-        docs = g.get("docs_only", True) and g.get("docs_only_globs")
-        return landing.make_gate(command, base_ref, out_dir, priority="P1", db_path=self.store.path,
-                                 max_seconds=int(g["timeout_s"]), docs_globs=list(docs) if docs else None,
-                                 docs_extra=repos.script_argv(prog, "docs", platform) if repos.has_script(prog, "docs") else None,
-                                 env={**os.environ, **repos.run_config(prog)["env"], "DROVER_CI_KIND": "full"}, writable_roots=repos.run_config(prog)["sandbox_writable_roots"], **self.gate_kw)
-
-    @staticmethod
-    def _both(runs, platforms):
-        """gate platform `both`: run the platforms in order and stop at the first red receipt (tagged with its
-        platform); green only when every platform's receipt is green."""
-        def run(worktree, tip, tasks):
-            receipt = None
-            for platform, one in zip(platforms, runs):
-                receipt = one(worktree, tip, tasks)
-                if receipt.get("status") == "failed":
-                    return {**receipt, "platform": platform}
-            return {**receipt, "platform": "+".join(platforms)}
-        return run
-
-    def _wsl_gate(self, command, base_ref, out_dir, timeout_s=3600.0, run_config=None, docs_globs=None, docs_extra=None):
-        drover_dir = placement.to_wsl_path(str(Path(__file__).resolve().parents[1]))
-
-        def run(worktree, tip, tasks):
-            out = Path(out_dir) / f"gate-{tip[:12]}-{len(tasks)}.json"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            plan_file = out.with_suffix(".plan.json")
-            kind = "docs" if docs_globs and gate.changed_docs_only(worktree, base_ref, tip, docs_globs) else "full"
-            commands = gate.docs_commands(base_ref, tip, docs_extra) if kind == "docs" else [command]
-            plan = {"repo": placement.to_wsl_path(str(worktree)), "out": placement.to_wsl_path(str(out)),
-                    "base": base_ref, "sha": tip, "commands": commands, "kind": kind, "priority": "P1",
-                    "env": {**(run_config or {}).get("env", {}), "DROVER_CI_KIND": kind,
-                            "DROVER_CHANGED_FILES": json.dumps(gate.changed_paths(worktree, base_ref, tip))},
-                    "sandbox_writable_roots": (run_config or {}).get("sandbox_writable_roots", [])}
-            plan_file.write_text(json.dumps(plan), encoding="utf-8")
-            script = Path(gate.__file__).with_name("gatejob.py")
-            argv = placement.WSL(self._distro).command(["python3", placement.to_wsl_path(str(script)),
-                    "--plan", placement.to_wsl_path(str(plan_file))], cd=drover_dir)
-            try:
-                proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s, **placement.NO_WINDOW)
-            except subprocess.TimeoutExpired:
-                raise gate.GateError(f"the WSL gate timed out after {timeout_s:g}s")
-            try:
-                return json.loads(out.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as e:
-                stderr = '\n'.join((proc.stderr or '').splitlines()[-20:])
-                raise gate.GateError(f"the WSL gate wrote no receipt (wsl.exe return code {proc.returncode}): {e}"
-                                     + (f"\nstderr:\n{stderr}" if stderr else '')) from e
-        return run
-
     def tick(self):
         """One pass over every repo that has reviewed tasks. Returns {repo: batch result}."""
         conn = self.store.conn
@@ -184,6 +118,7 @@ class LandingService:
         out_dir = Path(self.settings.runs_dir) / "landing"
         out_dir.mkdir(parents=True, exist_ok=True)
         work = Path(repos.native(prog["worktrees"])) / f"drover-landing-{name.lower()}"
+        self.ci.resume(prog, work, conn=conn)
         size = 1 if prog["land"]["policy"] == "single" else None
         hold = landing.sync_main(conn, repo, prog['remote'], prog['default_branch'], name)
         if hold:
@@ -195,7 +130,8 @@ class LandingService:
         tasks = [{"id": t["id"], "title": t["title"]} for t in batch]
         ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": tasks}))
         try:
-            r = landing.run_batch(conn, repo, self.gate_fn(prog, base_ref, out_dir, conn), remote=prog["remote"],
+            r = landing.run_batch(conn, repo, lambda checkout, commit, tasks: self.ci.run(
+                                      prog, checkout, commit, base=base_ref, conn=conn), remote=prog["remote"],
                                   branch=prog["default_branch"], size=size, repo_name=name, workdir=work, push=push)
         finally:
             ops.set_setting(conn, "landing_batch", "")
@@ -207,9 +143,9 @@ class LandingService:
     @staticmethod
     def _write_gate(conn):
         v = landing.velocity(conn)
-        last = conn.execute("SELECT outcome FROM landing_batches ORDER BY id DESC LIMIT 1").fetchone()
+        last = landing_storage.last_outcome(conn)
         ops.set_setting(conn, "gate", json.dumps({
-            "status": last[0] if last else "idle",
+            "status": last or "idle",
             "median": f"{v['median_gate_s']:.0f}s" if v["median_gate_s"] is not None else None,
             "red_rate": f"{v['red_rate']:.0%}" if v["red_rate"] is not None else None}))
 

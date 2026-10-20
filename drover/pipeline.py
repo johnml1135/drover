@@ -1,4 +1,4 @@
-"""The dispatcher's view of a repo: worktrees, the unknown-gate question, gate plans and review inputs.
+"""The dispatcher's view of a repo: worktrees, the unknown-gate question and review inputs.
 
 The dispatcher (drover.dispatcher) owns runs and the ledger transitions; this module owns git and the repo
 config. Git is always driven with an argv list, never a shell. Paths in the ledger stay in the repo config's form
@@ -7,11 +7,10 @@ config. Git is always driven with an argv list, never a shell. Paths in the ledg
 import json
 import re
 import subprocess
-import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, garden, gate, placement, origin, repos, runner
+from . import config, garden, ci, placement, origin, repos
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -71,12 +70,12 @@ def add_worktree(repo, dest, *tail, run=None, error=WorktreeRefused):
 
 
 class Pipeline:
-    def __init__(self, port, repos_map=None, repos_dir=None, runs_dir=None, python=None, wsl_python="python3"):
+    def __init__(self, port, repos_map=None, repos_dir=None, runs_dir=None):
         self.port = port
         self._repos = repos_map if repos_map is not None else None
         self.repos_dir = repos_dir
         self.runs_dir = str(runs_dir or config.state_path("runs"))
-        self.python, self.wsl_python = python or sys.executable, wsl_python
+        self.ci = ci.CI(self.runs_dir)
 
     def commit_ready(self, task, run_id, message):
         """Commit scoped work left by a sandboxed worker; refuse before touching the index on a scope violation."""
@@ -293,7 +292,7 @@ class Pipeline:
         """The first dirty line when `path` has uncommitted changes that are not this task's, else ''."""
         if self._owned(path, tid):
             return ""
-        return gate.dirty(path)
+        return ci.dirty(path)
 
     @staticmethod
     def _owned(path, tid):
@@ -353,7 +352,7 @@ class Pipeline:
         return prog["default_branch"]
 
     def head(self, task):
-        return gate.head(repos.native(task["worktree"]))
+        return ci.head(repos.native(task["worktree"]))
 
     def diff_lines(self, repo, base, sha):
         r = git(repo, "diff", "--numstat", "--no-renames", f"{base}...{sha}")
@@ -366,39 +365,3 @@ class Pipeline:
 
     def diff_text(self, repo, base, sha):
         return git(repo, "diff", "--no-renames", f"{base}...{sha}").stdout
-
-    def gate_plan(self, task, prog, sha, platform=None):
-        """Plan the repo script at this exact commit, with generic changed-file context."""
-        repo = repos.native(task["worktree"])
-        prog = repos.load(prog, sha, repo)
-        platform = platform or repos.gate_platforms(prog)[0]
-        base = self.base_ref(prog)
-        paths = gate.changed_paths(repo, base, sha)
-        kind = "full"
-        commands = [repos.script_argv(prog, platform=platform)]
-        g = prog["gate"]
-        if g["docs_only"] and gate.changed_docs_only(repo, base, sha, g["docs_only_globs"]):
-            kind = "docs"
-            commands = gate.docs_commands(base, sha, repos.script_argv(prog, "docs", platform) if repos.has_script(prog, "docs") else None)
-        env = {**repos.run_config(prog)["env"], "DROVER_CHANGED_FILES": json.dumps(paths), "DROVER_CI_KIND": "checks" if kind == "full" else kind}
-        return {"kind": kind, "commands": commands, "scope": None, "base": base, "repo": repo, "sha": sha,
-                "env": env, "sandbox_writable_roots": repos.run_config(prog)["sandbox_writable_roots"],
-                "diff_lines": self.diff_lines(repo, base, sha), "files": paths, "platform": platform}
-
-    def gate_argv(self, plan, gate_run, priority, prog, platform=None):
-        """(argv, receipt path) that runs the plan through gatejob on its selected gate platform.
-        The plan file is written into the gate run's directory; for WSL every path in it and
-        in argv is mapped to /mnt/<d>/."""
-        d = runner.run_dir(self.runs_dir, gate_run)
-        d.mkdir(parents=True, exist_ok=True)
-        wsl = (platform or plan.get("platform") or repos.gate_platforms(prog)[0]) == "wsl"
-        def m(p):
-            return placement.to_wsl_path(str(p)) if wsl else str(p)
-        out = d / "receipt.json"
-        body = {"repo": m(plan["repo"]), "base": plan["base"], "sha": plan["sha"], "commands": plan["commands"],
-                "scope": plan["scope"], "kind": plan.get("kind"), "out": m(out), "priority": priority,
-                "env": plan.get("env", {}), "sandbox_writable_roots": plan.get("sandbox_writable_roots", [])}
-        (d / "plan.json").write_text(json.dumps(body), encoding="utf-8")
-        script = Path(__file__).with_name("gatejob.py")
-        argv = [self.wsl_python if wsl else self.python, m(script), "--plan", m(d / "plan.json")]
-        return argv, out

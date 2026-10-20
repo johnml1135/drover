@@ -647,11 +647,12 @@ class RunnerLauncher(Launcher):
         cwd = os.path.expanduser(str(spec["cwd"]))
         if spec.get("placement") == "wsl":
             argv = self.wsl_exe(argv)
-            return self.runner_argv(self.runner_args(spec, d, argv, cwd), cd=self.drover_dir,
-                                   env=seat_env(spec)), None
-        cwd = placement_mod.to_windows_path(cwd)
-        if placement_mod.is_linux_native(cwd):
-            raise LaunchError(f"worktree {cwd} is not reachable from Windows")
+            return placement_mod.ci_runner_command(self.runner_args(spec, d, argv, cwd),
+                                                    self.drover_dir, self.distro, seat_env(spec), self.windows)
+        try:
+            cwd = placement_mod.native_runner_cwd(cwd, self.windows)
+        except ValueError as error:
+            raise LaunchError(str(error)) from error
         if self.windows:
             argv = [self.windows_exe(argv[0]), *argv[1:]]
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [self.drover_dir, os.environ.get("PYTHONPATH")])),
@@ -730,19 +731,23 @@ class RunnerLauncher(Launcher):
         return wsl_running(self.distro)
 
     # ---- finding runners ------------------------------------------------------------------------------
-    def scan(self, want_wsl=False):
-        """{run_id: placement} of live runners. Raises ScanError when any wanted list cannot be read: unknown is
-        never the same as none. WSL is only asked when want_wsl, since asking boots it."""
-        found = normalize_run_ids({r["run_id"]: "windows" for r in runner.find_runners()})
+    def runners(self, want_wsl=False):
+        """All runner markers, including CI runs that have no task-ledger run id."""
+        found = {str(row['run_id']): 'windows' for row in runner.find_runners()}
         if want_wsl:
-            for rid in normalize_run_ids(dict.fromkeys(self._wsl_runners(), "wsl")):
-                found.setdefault(rid, "wsl")
+            for rid in self._wsl_runners():
+                found.setdefault(str(rid), 'wsl')
         return found
 
+    def scan(self, want_wsl=False):
+        """Integer task-run markers for dispatcher recovery; CI keeps its own persisted context."""
+        return normalize_run_ids(self.runners(want_wsl))
+
     def _wsl_runners(self):
-        cmd = self.runner_argv(["find", "--json"], cd=self.drover_dir)
+        cmd, env = placement_mod.ci_runner_command(["find", "--json"], self.drover_dir, self.distro,
+                                                    windows=self.windows)
         try:
-            r = self.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, **placement_mod.NO_WINDOW)
+            r = self.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, env=env, **placement_mod.NO_WINDOW)
             rows = json.loads(r.stdout)
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             raise ScanError(f"cannot list WSL runners: {e!r}") from e
