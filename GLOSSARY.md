@@ -59,6 +59,22 @@ _Avoid_: Program, project, rig
 The single unit of tracked work: one ledger entry with acceptance criteria and a file scope; it writes to at most one repo, its home repo, and merges there as one squashed commit.
 _Avoid_: Slice, bead, ticket, issue
 
+**Build contract**:
+The agreement between planner and implementer on the work to be done, its boundaries and how completion will be verified; an oversized build contract is split across several tasks.
+_Avoid_: Plan, implementation plan (for this meaning), handoff (for this agreement)
+
+**Step**:
+One unit of work within a build contract; all steps belonging to a task merge together as that task's one squashed commit.
+_Avoid_: Task (for a unit within a build contract)
+
+**Contract check**:
+A check that the build contract is complete, consistent and ready for implementation, or that the work conforms to it.
+_Avoid_: Handoff check, contract gate
+
+**Track**:
+A named, configurable workflow selected for a task, with requirements suited to that kind of work rather than a position in an ordered scale.
+_Avoid_: Workflow level, level (of workflow)
+
 **Research task**:
 A task with no home repo, whose result is a report rather than a commit.
 _Avoid_: Spike, investigation
@@ -83,9 +99,9 @@ _Avoid_: Attempt, job
 One model conversation and its accumulated context, belonging to exactly one seat; it may be resumed, handed off to a fresh session, or named and returned to later.
 _Avoid_: Chat, thread, conversation
 
-**Handoff**:
+**Session handoff**:
 Ending a session and starting a fresh one that receives a written account of where the work stands.
-_Avoid_: Rotation, reset
+_Avoid_: Handoff (unqualified), rotation, reset
 
 **Director session**:
 A named session between the owner and a director, belonging to no task, that may draw on other sessions' transcripts.
@@ -194,7 +210,7 @@ A written account of one choice about how Drover is configured or tuned, who mad
 _Avoid_: ADR (outside the codebase), changelog, note
 
 **Tuning pass**:
-A scheduled review of logged outcomes that may publish a new policy version.
+A review of logged outcomes after a merged build contract and on schedule, proposing changes to tracks, briefs and checks; the owner approves changes before a new policy version is published.
 _Avoid_: Retro, optimisation run
 
 ## Cleanup
@@ -228,6 +244,8 @@ _Avoid_: Garden deletion
 
 | Old | New |
 |---|---|
+| workflow level, level (of workflow) | track |
+| plan, implementation plan (for this meaning) | build contract |
 | receipt, gate receipt | CI result |
 | gate (unqualified), test gate | checks, or full CI, whichever is meant |
 | gated (status) | checked |
