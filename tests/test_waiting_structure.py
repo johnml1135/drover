@@ -96,7 +96,7 @@ class Architecture(unittest.TestCase):
                                      {('os', 'name'), ('sys', 'platform')})
         from drover.dispatcher import Dispatcher
         self.assertEqual(list(inspect.signature(Dispatcher).parameters),
-                         ['port', 'pipeline', 'runtime', 'usage_poller', 'decide', 'route'])
+                         ['port', 'pipeline', 'runtime', 'usage', 'route', 'decide'])
         state_names = set(states.STATES)
         outcome_names = set(contract.OUTCOMES) | {'read-only-done'}
         for path in production():

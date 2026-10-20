@@ -820,23 +820,6 @@ def archive_task(conn, task_id, archived=True, actor="owner"):
         return get_task(conn, task_id)
 
 
-def _rehome_gate_questions(conn, task_id):
-    """Keep repo gate answers on a surviving task, or clear their settings when none remains."""
-    rows = conn.execute(
-        "SELECT q.id,s.key FROM questions q JOIN settings s ON s.value=CAST(q.id AS TEXT) "
-        "WHERE q.target_kind='task' AND q.target_id=? AND s.key GLOB '_gate_question_*'",
-        (task_id,)).fetchall()
-    for qid, key in rows:
-        repo = key.removeprefix("_gate_question_")
-        replacement = conn.execute(
-            "SELECT id FROM tasks WHERE lower(repo)=? AND id<>? ORDER BY archived,rank,id LIMIT 1",
-            (repo, task_id)).fetchone()
-        if replacement:
-            conn.execute("UPDATE questions SET target_id=? WHERE id=?", (replacement[0], qid))
-        else:
-            conn.execute("DELETE FROM settings WHERE key IN (?,?)", (key, "gate_cmd_" + repo))
-
-
 def delete_task(conn, task_id, confirm=False, actor="owner"):
     if actor != "owner":
         raise PermissionError("only the owner may delete tasks")
@@ -847,7 +830,8 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
         if t["status"] in ("claimed", "running", "gated", "reviewed") or conn.execute(
                 "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
             raise ValueError("finish or cancel active work before deleting")
-        _rehome_gate_questions(conn, task_id)
+        from .waiting import Waiting
+        Waiting(conn, actor).forget_task(task_id)
         # Landing metadata may reference a task; retain the audit batch but detach its membership.
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_landed'").fetchone():
             conn.execute("DELETE FROM task_landed WHERE task_id=?", (task_id,))
@@ -858,5 +842,4 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
             conn.execute(f"DELETE FROM {table} WHERE target_kind='task' AND target_id=?", (task_id,))
         conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         # Append-only events and anonymous hourly/daily aggregates are retained.
-        event(conn, "task.deleted", actor, {"id": task_id})
         return {"deleted": task_id}

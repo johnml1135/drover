@@ -315,15 +315,15 @@ class TestTunerScheduler(Base):
         self.assertEqual(self.store.list_events(kind="tuner.pass"), [])
 
     def test_tuner_questions_render_as_proposals_once(self):
-        tuner._propose(self.store.conn, "Promote retry_or_escalate?", "model 91% vs rules 80%",
-                       [("Promote to live", "acts above tau", True), ("Keep shadow", "", False)])
+        tuner.proposals(self.store.conn, {'retry_or_escalate': {
+            'version': 'v1', 'n': 100, 'model_acc': .91, 'rule_acc': .8}}, {})
         html = self.c.get("/inbox").text
         self.assertIn("Tuner proposals", html)
-        self.assertEqual(html.count("Promote retry_or_escalate?"), 1)
+        self.assertEqual(html.count("Promote retry_or_escalate (criteria v1) from shadow to live?"), 1)
         self.assertIn("Promote to live", html)
         qid = self.store.list_questions(open_only=True)[0]["id"]
         self.c.post(f"/questions/{qid}/answer", data={"option": "Keep shadow"}, headers=SAME)
-        self.assertNotIn("Promote retry_or_escalate?", self.c.get("/inbox").text)
+        self.assertNotIn("Promote retry_or_escalate (criteria v1) from shadow to live?", self.c.get("/inbox").text)
 
 
 class TestWslDiscovery(Base):

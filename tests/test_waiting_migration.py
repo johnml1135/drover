@@ -132,6 +132,18 @@ class HoldsMigration(MigrationCase):
         untouched = next(t for n, t in enumerate(followers) if n % 55 == 0 and n % 17 == 0)
         self.assertIn('manual', [row['kind'] for row in w.pending(('task', untouched))])
 
+    def test_owner_ready_boundary_retires_stale_replan_hold(self):
+        source = self.task()
+        target = self.task(status='blocked', blocker={'source': source, 'reason': 'replan', 'prev': 'ready'})
+        self.event('replan-request', {}, task=source)
+        self.event('status', {'from': 'blocked', 'to': 'ready'}, task=source, actor='owner')
+        report, w = self.migrate()
+        self.assertEqual(w.replans(), [])
+        self.assertEqual(w.pending(('task', target)), [])
+        self.assertEqual(ops.get_task(self.conn, source)['status'], 'ready')
+        self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
+        self.assertTrue(any(r['disposition'] == 'stale-replan-hold' for r in report['retired']))
+
     def test_legacy_shapes_and_diagnostics(self):
         self.converter()
         source = self.task()
@@ -259,6 +271,91 @@ class QuestionsMigration(MigrationCase):
         self.assertEqual(w.pending(('task', current))[0]['question_id'], qc)
         self.assertEqual(w.answer(self.key('borrow', answered, 'codex'))['choice'], 'Keep default seat')
 
+    def test_legacy_tuner_identity_and_acknowledged_dedup(self):
+        from drover import tuner
+        epic = self.epic()
+        self.setting('tuner_epic', epic)
+        for name, answer in [('route_open', None), ('route_answered', 'Leave as is')]:
+            self.question(epic, kind='epic', title=f'Review criteria text for {name} (criteria v1)?',
+                          options=['Run a Sonnet criteria review', 'Leave as is'], answer=answer)
+            self.conn.execute('INSERT INTO decisions(question_name,criteria_version,model,state_hash,answer,at) VALUES(?,?,?,?,?,?)',
+                              (name, 'v1', 'gpt-6-luna', 'fixture', '{}', STAMP))
+        report, w = self.migrate()
+        for name in ('route_open', 'route_answered'):
+            self.assertIsNotNone(w.state(self.key('tuner', 'criteria', name, 'v1')))
+            self.assertEqual(tuner.proposals(self.conn, {name: {'version': 'v1', 'n': 20, 'rule_acc': None, 'model_acc': .5}}, {}), [])
+        self.assertEqual(report['diagnostics'], [])
+
+    def test_tuner_partial_identity_suppresses_until_acknowledged(self):
+        from drover import tuner
+        epic = self.epic()
+        self.setting('tuner_epic', epic)
+        q = self.question(epic, kind='epic', title='Review criteria text for uncertain (criteria v9)?',
+                          options=['Run a Sonnet criteria review', 'Leave as is'])
+        report, w = self.migrate()
+        modern = self.key('tuner', 'criteria', 'uncertain', 'v9')
+        self.assertEqual(w.state(modern), 'open')
+        self.assertFalse(self.conn.execute('SELECT 1 FROM wait_causes WHERE cause=?', (modern,)).fetchone())
+        self.assertTrue(any(d['raw'].get('known_identity') == ['criteria', 'uncertain', 'v9'] for d in report['diagnostics']))
+        acc = {'uncertain': {'version': 'v9', 'n': 20, 'rule_acc': None, 'model_acc': .5}}
+        self.assertEqual(tuner.proposals(self.conn, acc, {}), [])
+        ops.answer_question(self.conn, q, choice='Leave as is')
+        self.assertIsNone(w.state(modern))
+        self.assertEqual(len(tuner.proposals(self.conn, acc, {})), 1)
+
+    def test_all_legacy_tuner_grammars_restore_identity(self):
+        epic = self.epic()
+        self.setting('tuner_epic', epic)
+        self.conn.execute('INSERT INTO decisions(question_name,criteria_version,model,state_hash,answer,at) VALUES(?,?,?,?,?,?)',
+                          ('sample', 'v2', 'gpt-6-luna', 'fixture', '{}', STAMP))
+        identities = [
+            (['validate', 'sample', 'v2'], 'Validate sample (criteria v2): no rule baseline', ['Start validation', 'Not now']),
+            (['promote', 'sample', 'v2'], 'Promote sample (criteria v2) from shadow to live?', ['Promote to live', 'Keep shadow']),
+            (['criteria', 'sample', 'v2'], 'Review criteria text for sample (criteria v2)?', ['Run a Sonnet criteria review', 'Leave as is']),
+            (['pin', 'worker:S', 'codex', 'gpt-6-luna'], 'Pin a rule: stop routing worker:S to gpt-6-luna?', ['Pin the rule', 'Keep routing']),
+            (['brief', 'worker:M', 'codex', 'gpt-6-luna'], 'Review the brief template for worker:M on gpt-6-luna?', ['Run a Sonnet brief review', 'Leave as is'])]
+        for _, title, options in identities:
+            self.question(epic, kind='epic', title=title, options=options, answer=options[-1])
+        report, w = self.migrate()
+        self.assertEqual(report['diagnostics'], [])
+        for identity, _, _ in identities:
+            self.assertEqual(w.state(self.key('tuner', *identity)), 'resolved')
+
+    def test_malformed_borrow_seat_is_diagnosed(self):
+        tid = self.task(status='needs-owner')
+        qid = self.question(tid, options=['Approve borrowing', 'Keep default seat'])
+        eid = self.event('director-borrow', {'seat': [], 'question': qid}, task=tid, actor='dispatcher')
+        report, w = self.migrate()
+        self.assertTrue(any(d['location'] == f'task_events/{eid}' and d['code'] == 'invalid-borrow' for d in report['diagnostics']))
+        self.assertTrue(w.pending(('task', tid)))
+
+    def test_script_pair_order_and_task_provenance(self):
+        tid = self.task(status='needs-owner')
+        q = self.question(tid, text='.drover/scripts/test.ps1')
+        self.setting('gate_cmd_p', {'cmd': '.drover/scripts/test.ps1', 'question': q, 'actor': 'owner'})
+        self.setting('_gate_question_p', str(q))
+        epic = self.epic('unrelated')
+        bad = self.question(epic, kind='epic', text='.drover/scripts/unrelated.ps1')
+        self.setting('_gate_question_other', str(bad))
+        self.setting('gate_cmd_other', {'cmd': '.drover/scripts/unrelated.ps1', 'question': bad, 'actor': 'owner'})
+        report, w = self.migrate()
+        self.assertEqual(w.pending(('task', tid)), [])
+        self.assertEqual(w.answer(self.key('script', 'p'))['text'], '.drover/scripts/test.ps1')
+        self.assertFalse(any(d['location'] in ('settings/gate_cmd_p', f'tasks/{tid}/blocker') for d in report['diagnostics']))
+        self.assertIsNone(w.answer(self.key('script', 'other')))
+        self.assertTrue(any(d['location'] == 'settings/_gate_question_other' for d in report['diagnostics']))
+
+    def test_later_base_resolution_is_not_reparked(self):
+        for repo, kind, sha in [('moved', 'base-observed', 'b' * 40), ('green', 'base-ci', 'a' * 40)]:
+            tid = self.task(status='reviewed', repo=repo)
+            q = self.question(tid, options=['Retry landing', 'Keep holding'])
+            self.event('base-red', {'sha': 'a' * 40, 'question': q, 'tasks': [tid]}, actor='landing')
+            self.event(kind, {'repo': repo, 'sha': sha, **({'status': 'green'} if kind == 'base-ci' else {})}, actor='landing')
+        _, w = self.migrate()
+        self.assertEqual(w.pending(('merge_queue', 'moved')), [])
+        self.assertEqual(w.pending(('merge_queue', 'green')), [])
+        self.assertEqual(ops.open_questions(self.conn), [])
+
     def test_migrated_question_release(self):
         self.converter()
         entries = self.seed_question_keys()
@@ -341,6 +438,38 @@ class CopyMigration(MigrationCase):
         w.resolve(event)
         self.assertEqual(logical(self.conn), after)
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
+
+    def test_resolve_standalone_transaction_and_replay(self):
+        source = self.task()
+        target = self.task(status='blocked', blocker={'source': source, 'reason': 'waiting', 'prev': 'ready'})
+        _, w = self.migrate()
+        with patch.object(type(w), 'resolve', return_value=[]):
+            ops.set_status(self.conn, source, 'cancelled', actor='owner')
+        event = ops.events(self.conn, task_id=source, kind='status')[-1]
+        before = logical(self.conn)
+        with patch.object(w, '_restore_subject', side_effect=RuntimeError('injected restoration')):
+            with self.assertRaisesRegex(RuntimeError, 'injected restoration'):
+                w.resolve(event)
+        self.assertEqual(logical(self.conn), before)
+        self.assertEqual(w.resolve(event), [('task', target)])
+        after = logical(self.conn)
+        self.assertEqual(w.resolve(event), [])
+        self.assertEqual(logical(self.conn), after)
+        self.assertFalse(self.conn.in_transaction)
+
+    def test_module_cli_reports_conversion_counts(self):
+        import os
+        import subprocess
+        self.task(status='blocked', blocker={'reason': 'manual', 'prev': 'ready'})
+        self.conn.close()
+        result = subprocess.run([os.sys.executable, '-m', 'drover.ledger.waiting_migration',
+                                 '--source', str(self.path), '--copy', str(Path(self.tmp.name) / 'cli.db'),
+                                 '--verify-copy'], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(len(report['migration']), 1)
+        self.assertEqual(report['migration'][0]['converted']['holds'], 1)
+        self.conn = connect(self.path, migrate_db=False)
 
     def test_atomic_rollback(self):
         converter = self.converter()

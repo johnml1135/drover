@@ -99,9 +99,17 @@ class Waiting:
         return result
 
     def state(self, cause) -> str | None:
-        _identity(cause)
+        parts = _identity(cause)
         row = self.conn.execute('SELECT state FROM wait_causes WHERE cause=?', (cause,)).fetchone()
-        return row[0] if row else None
+        if row:
+            return row[0]
+        if len(parts) > 1 and parts[0] == 'tuner' and parts[1] != 'legacy':
+            for legacy in self.conn.execute('SELECT state,data FROM wait_causes WHERE handler=? AND state=?', ('proposal', OPEN)):
+                subset = json.loads(legacy['data']).get('legacy_subset')
+                if subset and len(subset) == len(parts) - 1 and all(
+                        expected is None or expected == actual for expected, actual in zip(subset, parts[1:])):
+                    return legacy['state']
+        return None
 
     def pending(self, subject=None) -> list[dict]:
         sql = ('SELECT w.*,s.resume_state,c.state AS cause_state,c.question_id,c.handler '
@@ -403,57 +411,58 @@ class Waiting:
             return list(dict.fromkeys(released))
 
     def resolve(self, event) -> list[tuple[str, str]]:
-        kind, data = event['kind'], event['data']
-        if kind == 'waiting.release':
-            return self._release_cause(data['cause'], event['id'])
-        if kind == 'waiting.clear':
-            return self._clear_cause(data['cause'], event['id'])
-        if kind == 'replan-request':
-            self._request(event)
-        if kind == 'comment' and data.get('urgent'):
-            self._urgent(event)
-        if kind in ('base-observed', 'base-ci', 'origin-synced', 'origin-sync-failed', 'landing-clean', 'landing-dirty'):
-            return self._retry_event(event)
-        if kind == 'question-answered':
-            return self._answered(event)
-        released = []
-        if kind == 'capacity-available' and data['placement'] == 'wsl':
-            rows = [r for r in self.pending() if r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down']
-            return self._release_rows(rows, event['id'])
-        if kind in ('status', 'run-started') and event['task_id']:
-            subject = ('task', event['task_id'])
-            active = self.pending(subject)
-            rows = [r for r in active if r['kind'] == DEADLINE and
-                    ((kind == 'status' and data.get('to') != r['resume_state']) or
-                     (kind == 'run-started' and data.get('role') == r['data']['role']))]
-            if rows:
-                if all(r['data']['mode'] == 'preserve' for r in active):
-                    from . import ops
-                    self.conn.execute('UPDATE wait_subjects SET resume_state=? WHERE subject_kind=? AND subject_key=?',
-                                      (ops.get_task(self.conn, subject[1])['status'], *subject))
-                released += self._release_rows(rows, event['id'])
-        terminal = kind == 'status' and data.get('to') in states.TERMINAL
-        deleted = kind == 'task.deleted'
-        if terminal or deleted:
-            source = data.get('id') if deleted else event['task_id']
-            rows = [r for r in self.pending() if r['kind'] == TASK_TERMINAL and r['data']['source'] == source]
-            released += self._release_rows(rows, event['id'], reset=True)
-            for request in self.replans():
-                if request['task_id'] == source:
-                    released += self._request_done(request['id'], 'cancelled')['released']
-            urgent = cause_key('urgent', 'task', source)
-            urgent_rows = [r for r in self.pending() if r['cause'] == urgent]
-            released += self._release_rows(urgent_rows, event['id'], reset=True)
-            if self.state(urgent) is not None:
-                self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, urgent))
-            own = self.pending(('task', source))
-            released += self._release_rows(own, event['id'])
-        elif kind == 'run-finished' and event['task_id']:
-            for request in self.replans():
-                if request['task_id'] == event['task_id']:
-                    self._supersede_stage(request['id'])
-            self._park_subject(('task', event['task_id']))
-        return released
+        with tx(self.conn):
+            kind, data = event['kind'], event['data']
+            if kind == 'waiting.release':
+                return self._release_cause(data['cause'], event['id'])
+            if kind == 'waiting.clear':
+                return self._clear_cause(data['cause'], event['id'])
+            if kind == 'replan-request':
+                self._request(event)
+            if kind == 'comment' and data.get('urgent'):
+                self._urgent(event)
+            if kind in ('base-observed', 'base-ci', 'origin-synced', 'origin-sync-failed', 'landing-clean', 'landing-dirty'):
+                return self._retry_event(event)
+            if kind == 'question-answered':
+                return self._answered(event)
+            released = []
+            if kind == 'capacity-available' and data['placement'] == 'wsl':
+                rows = [r for r in self.pending() if r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down']
+                return self._release_rows(rows, event['id'])
+            if kind in ('status', 'run-started') and event['task_id']:
+                subject = ('task', event['task_id'])
+                active = self.pending(subject)
+                rows = [r for r in active if r['kind'] == DEADLINE and
+                        ((kind == 'status' and data.get('to') != r['resume_state']) or
+                         (kind == 'run-started' and data.get('role') == r['data']['role']))]
+                if rows:
+                    if all(r['data']['mode'] == 'preserve' for r in active):
+                        from . import ops
+                        self.conn.execute('UPDATE wait_subjects SET resume_state=? WHERE subject_kind=? AND subject_key=?',
+                                          (ops.get_task(self.conn, subject[1])['status'], *subject))
+                    released += self._release_rows(rows, event['id'])
+            terminal = kind == 'status' and data.get('to') in states.TERMINAL
+            deleted = kind == 'task.deleted'
+            if terminal or deleted:
+                source = data.get('id') if deleted else event['task_id']
+                rows = [r for r in self.pending() if r['kind'] == TASK_TERMINAL and r['data']['source'] == source]
+                released += self._release_rows(rows, event['id'], reset=True)
+                for request in self.replans():
+                    if request['task_id'] == source:
+                        released += self._request_done(request['id'], 'cancelled')['released']
+                urgent = cause_key('urgent', 'task', source)
+                urgent_rows = [r for r in self.pending() if r['cause'] == urgent]
+                released += self._release_rows(urgent_rows, event['id'], reset=True)
+                if self.state(urgent) is not None:
+                    self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, urgent))
+                own = self.pending(('task', source))
+                released += self._release_rows(own, event['id'])
+            elif kind == 'run-finished' and event['task_id']:
+                for request in self.replans():
+                    if request['task_id'] == event['task_id']:
+                        self._supersede_stage(request['id'])
+                self._park_subject(('task', event['task_id']))
+            return released
 
     def ask(self, cause, target_kind, target_id, title, body="", options=(), allow_text=True) -> int:
         from . import ops
@@ -911,7 +920,59 @@ class Waiting:
         if targets:
             self.ask(cause, target_kind, target_id, 'Resume work?', options=[{'label': 'Resume work'}, {'label': 'Keep holding'}], allow_text=False)
 
-    def questions(self, *, include_archived=False) -> list[dict]:
-        """Read-only canonical questions; lifecycle visibility is extended at T30."""
+    def forget_task(self, task_id) -> None:
+        """Detach a task and preserve shared decisions inside the deletion transaction."""
         from . import ops
-        return ops.open_questions(self.conn)
+        with tx(self.conn):
+            task = ops.get_task(self.conn, task_id)
+            managed = self.conn.execute(
+                "SELECT c.* FROM wait_causes c JOIN questions q ON q.id=c.question_id "
+                "WHERE q.target_kind='task' AND q.target_id=?", (task_id,)).fetchall()
+            for cause in managed:
+                family = _identity(cause['cause'])[0]
+                if family == 'script':
+                    remaining = [r for r in self.conn.execute(
+                        'SELECT id,repo FROM tasks WHERE id<>? ORDER BY archived,rank,id', (task_id,))
+                        if r['repo'] and repo_key(r['repo']) == json.loads(cause['data'])['repo']]
+                else:
+                    remaining = self.conn.execute(
+                        "SELECT DISTINCT t.id,t.archived,t.rank FROM waits w JOIN tasks t ON t.id=w.subject_key "
+                        "WHERE w.subject_kind='task' AND w.cause=? AND w.released_event IS NULL AND t.id<>? "
+                        "ORDER BY t.archived,t.rank,t.id", (cause['cause'], task_id)).fetchall()
+                if remaining:
+                    self.conn.execute('UPDATE questions SET target_id=? WHERE id=?',
+                                      (remaining[0]['id'], cause['question_id']))
+                elif self.conn.execute(
+                        "SELECT 1 FROM waits WHERE cause=? AND subject_kind='merge_queue' AND released_event IS NULL",
+                        (cause['cause'],)).fetchone():
+                    epic = ops.create_epic(self.conn, task['repo'], 'Waiting decisions', actor=self.actor)
+                    self.conn.execute("UPDATE questions SET target_kind='epic',target_id=? WHERE id=?",
+                                      (epic['id'], cause['question_id']))
+                else:
+                    # Teardown is allowed to supersede the last consumer's guarded question.
+                    self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, cause['cause']))
+                    self.clear(cause['cause'])
+            # Resolve source followers and requests before their task/run references disappear.
+            ops.event(self.conn, 'task.deleted', self.actor, {'id': task_id})
+            self.conn.execute("DELETE FROM wait_subjects WHERE subject_kind='task' AND subject_key=?", (task_id,))
+
+    def questions(self, *, include_archived=False) -> list[dict]:
+        """Open decisions and their surviving consumers, including unmanaged questions."""
+        from . import ops
+        result = []
+        for question in ops.open_questions(self.conn):
+            cause = self.conn.execute('SELECT cause,handler FROM wait_causes WHERE question_id=?',
+                                      (question['id'],)).fetchone()
+            subjects = []
+            if cause:
+                rows = [row for row in self.pending() if row['cause'] == cause['cause']]
+                subjects = list(dict.fromkeys((r['subject_kind'], r['subject_key']) for r in rows))
+            else:
+                subjects = [(question['target_kind'], question['target_id'])]
+            visible = include_archived or any(
+                kind != 'task' or self.conn.execute('SELECT 1 FROM tasks WHERE id=? AND archived=0', (key,)).fetchone()
+                for kind, key in subjects)
+            result.append({**question, 'cause': cause['cause'] if cause else None,
+                           'subjects': subjects, 'visible': bool(visible),
+                           'proposal': bool(cause and cause['handler'] == 'proposal')})
+        return result

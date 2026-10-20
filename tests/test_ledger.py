@@ -642,7 +642,7 @@ class BoardAndCliTests(Base):
         self.assertIn(f"{tid} claimed", out)
         self.assertEqual(self.run_cli("claim")[0], 3)
         self.assertEqual(self.run_cli("block", tid, "why")[0], 0)
-        self.assertIn("blocker: why", self.run_cli("show", tid)[1])
+        self.assertIn("Waiting on you: why", self.run_cli("show", tid)[1])
         self.assertIn("| blocked | 1 |", self.run_cli("board")[1])
         self.assertEqual(self.run_cli("show", "T-nope")[0], 2)
 

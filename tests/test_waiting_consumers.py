@@ -428,6 +428,19 @@ class Lifecycle(LedgerCase):
         self.assertEqual([row['kind'] for row in w.pending(('task', follower))], ['manual'])
         self.assertEqual(self.status(follower), 'blocked')
 
+    def test_delete_rehomes_canonical_unicode_repo_question(self):
+        w = self.waiting()
+        first, survivor = self.task(repo='Straße'), self.task(repo=' STRASSE ')
+        cause = self.key('script', 'strasse')
+        for tid in (first, survivor):
+            w.wait(('task', tid), 'owner-answer', self.key(cause), cause=cause, data={'mode': 'needs-owner'})
+        q = w.ask(cause, 'task', first, 'Script?')
+        ops.delete_task(self.conn, first, confirm=True)
+        self.assertEqual(ops.get_question(self.conn, q)['target_id'], survivor)
+        self.assertEqual(w.pending(('task', survivor))[0]['question_id'], q)
+        ops.answer_question(self.conn, q, text='.drover/scripts/test.ps1')
+        self.assertEqual(self.status(survivor), 'ready')
+
     def test_waiting_labels_and_board(self):
         w = self.waiting()
         source = self.task(title='<script>alert(1)</script>|owner')
@@ -455,7 +468,8 @@ class Lifecycle(LedgerCase):
         for tid in (follower, owner):
             context = view.task_detail(tid)
             card = templates.env.get_template('_task_card.html').render(t=context['task'])
-            page = templates.env.get_template('task.html').render(**context, partial=True, view='page')
+            page = templates.env.get_template('task.html').render(**context, partial=True, view='page',
+                                                                            dispatch={'enabled': False, 'label': 'Off'})
             for html in (card, page):
                 self.assertIn('Waiting on', html)
                 self.assertNotIn('<script>', html)

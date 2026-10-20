@@ -122,8 +122,9 @@ class StatsApi(unittest.TestCase):
         pipe = Pipeline(DirectPort(self.store.conn), repos_map={
             'acme-app': {'name': 'acme-app', 'repo': str(Path(self.tmp.name) / 'unavailable')}}, runs_dir=self.tmp.name)
         for tid in (self.tid, target):
-            self.assertFalse(pipe.gate_known(self.store.get_task(tid)))
-        qid = int(ops.get_setting(self.store.conn, '_gate_question_acme-app'))
+            self.assertFalse(pipe.prepare_dispatch(self.store.get_task(tid)))
+        from drover.ledger.waiting import cause_key
+        qid = next(q['id'] for q in pipe.port.waiting.questions() if q['cause'] == cause_key('script', 'acme-app'))
         question = ops.get_question(self.store.conn, qid)
         view = UiView(self.store)
         self.assertEqual(inbox_count(view), 4)  # Two questions and two tasks needing the owner.
@@ -134,11 +135,10 @@ class StatsApi(unittest.TestCase):
         self.assertNotIn(private['title'], page.text)
         self.assertEqual(inbox_count(view), 2)  # Shared question and the remaining task needing the owner.
         response = self.c.post(f'/questions/{qid}/answer', headers=self.owner,
-                               data={'text': 'scripts/test.ps1'})
+                               data={'text': '.drover/scripts/test.ps1'})
         self.assertEqual(response.status_code, 200, response.text)
-        pipe.sync_gates()
         self.assertEqual(self.store.get_task(target)['status'], 'ready')
-        self.assertEqual(pipe._owner_gate_cmd('acme-app'), 'scripts/test.ps1')
+        self.assertEqual(pipe.port.waiting.answer(cause_key('script', 'acme-app'))['text'], '.drover/scripts/test.ps1')
         self.assertEqual(inbox_count(view), 0)
 
     def test_owner_delete_removes_related_links_in_both_directions(self):

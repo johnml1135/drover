@@ -13,7 +13,7 @@
 <h2>{{ task.id }} · {{ task.title }}</h2>
 <p><span class="pill status status-{{ task.status }}">{{ task.status | label }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
 {% if task.reason %}<p class="task-reason">{{ task.reason }}</p>{% endif %}
-{% if task.blocker %}<p class="task-reason">Blocker: {{ task.blocker }}</p>{% endif %}
+{% for label in task.waiting_labels %}<p class="task-reason">{{ label }}</p>{% endfor %}
 <dl class="kv task-fields">
   <dt>Repo</dt><dd>{{ task.repo }} · {{ task.repo_config_path or 'unknown repo' }}{% if task.unknown_repo %} {{ badge('unknown repo', 'warn') }}{% endif %}</dd>
   <dt>Branch</dt><dd>{{ task.branch_name }} {{ badge(task.branch_state) }}{% if task.branch_state == 'exists' and task.worktree_state == 'planned' %} (existing branch){% endif %}{% if task.state_pending %} (checking disk…){% endif %}</dd>

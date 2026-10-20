@@ -39,11 +39,14 @@ def cmd_show(conn, a):
     t = ops.get_task(conn, a.id)
     t["deps"] = ops.deps_of(conn, a.id)
     t["runs"] = ops.list_runs(conn, a.id)
+    from .waiting import Waiting
+    t.pop("blocker", None)
+    t["waits"] = Waiting(conn).pending(("task", a.id))
+    t["waiting_labels"] = board.waiting_labels(conn, t["waits"])
     lines = [_task_text(t), f"  goal: {t['goal']}", f"  scope: {', '.join(t['scope_files'])}",
              f"  deps: {', '.join(d['depends_on'] + '(' + d['kind'] + ')' for d in t['deps']) or 'none'}",
              f"  attempts: {t['attempts']}  runs: {len(t['runs'])}"]
-    if t["blocker"]:
-        lines.append(f"  blocker: {t['blocker'].get('reason')}")
+    lines.extend("  " + label for label in t["waiting_labels"])
     _emit(a, t, "\n".join(lines))
 
 

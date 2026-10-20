@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from drover import pipeline
+from drover import pipeline, repos
+from drover.ledger.waiting import Waiting, cause_key
 from drover.ledger import connect, ops
 from drover.port import DirectPort
 from hub.store import Store, UiView
@@ -26,8 +27,8 @@ class DeleteRegressions(unittest.TestCase):
         return task['id']
 
     def gate_question(self, task_id):
-        self.assertFalse(self.pipe.gate_known(ops.get_task(self.conn, task_id)))
-        return int(ops.get_setting(self.conn, '_gate_question_acme-lib'))
+        self.assertFalse(self.pipe.prepare_dispatch(ops.get_task(self.conn, task_id)))
+        return next(q['id'] for q in Waiting(self.conn).questions() if q['cause'] == cause_key('script', 'acme-lib'))
 
     def inbox_questions(self):
         store = Store(Path(self.tmp.name) / 'ledger.db')
@@ -44,11 +45,10 @@ class DeleteRegressions(unittest.TestCase):
         ops.archive_task(self.conn, source)
         self.assertEqual([q['id'] for q in self.inbox_questions()], [str(qid)])
         self.assertEqual(ops.get_question(self.conn, private)['status'], 'open')
-        self.assertEqual(ops.get_setting(self.conn, '_gate_question_acme-lib'), str(qid))
+        self.assertEqual(Waiting(self.conn).pending(('task', target))[0]['question_id'], qid)
         ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
-        self.pipe.sync_gates()
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
-        self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
+        self.assertFalse(repos.ci_policy(self.pipe.repo({'repo': 'acme-lib'}))['unknown'])
         self.assertEqual(self.inbox_questions(), [])
 
     def test_shared_gate_visibility_tracks_remaining_tasks_in_same_repo(self):
@@ -82,37 +82,30 @@ class DeleteRegressions(unittest.TestCase):
         qid = self.gate_question(source)
         self.gate_question(target)
         ops.delete_task(self.conn, source, confirm=True)
-        self.assertEqual(self.pipe.sync_gates(), [])
         self.assertEqual(ops.get_question(self.conn, qid)['target_id'], target)
         with self.assertRaises(ops.NotFound):
             ops.get_question(self.conn, private)
         ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
-        self.pipe.sync_gates()
-        self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
+        self.assertFalse(repos.ci_policy(self.pipe.repo({'repo': 'acme-lib'}))['unknown'])
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
 
     def test_answered_gate_keeps_owner_provenance_and_command(self):
         source, target = self.task('Source'), self.task('Target')
         qid = self.gate_question(source)
         ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
-        self.pipe.sync_gates()
-        command = ops.get_setting(self.conn, 'gate_cmd_acme-lib')
+        command = Waiting(self.conn).answer(cause_key('script', 'acme-lib'))
         ops.archive_task(self.conn, target)
         ops.delete_task(self.conn, source, confirm=True)
-        self.assertEqual(self.pipe.sync_gates(), [])
         self.assertEqual(ops.get_question(self.conn, qid)['target_id'], target)
-        self.assertEqual(ops.get_setting(self.conn, 'gate_cmd_acme-lib'), command)
-        self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
+        self.assertEqual(Waiting(self.conn).answer(cause_key('script', 'acme-lib')), command)
+        self.assertFalse(repos.ci_policy(self.pipe.repo({'repo': 'acme-lib'}))['unknown'])
 
     def test_last_task_clears_gate_references_before_next_task(self):
         source = self.task('Source')
         qid = self.gate_question(source)
         ops.answer_question(self.conn, qid, text='.drover/scripts/test.ps1')
-        self.pipe.sync_gates()
         ops.delete_task(self.conn, source, confirm=True)
-        self.assertIsNone(ops.get_setting(self.conn, '_gate_question_acme-lib'))
-        self.assertIsNone(ops.get_setting(self.conn, 'gate_cmd_acme-lib'))
-        self.assertEqual(self.pipe.sync_gates(), [])
+        self.assertIsNone(Waiting(self.conn).answer(cause_key('script', 'acme-lib')))
         new_qid = self.gate_question(self.task('New work'))
         self.assertNotEqual(new_qid, qid)
 
@@ -133,7 +126,7 @@ class DeleteRegressions(unittest.TestCase):
         for target in targets:
             task = ops.get_task(self.conn, target)
             self.assertEqual(task['status'], 'ready')
-            self.assertIsNone(task['blocker'])
+            self.assertEqual(Waiting(self.conn).pending(('task', target)), [])
         self.assertEqual(ops.deps_of(self.conn, targets[0]), [])
         self.assertTrue(ops.get_task(self.conn, targets[-1])['archived'])
 

@@ -446,15 +446,9 @@ class UiView:
     def inbox_questions(self):
         out = []
         tuner = {p["id"] for p in self.tuner_proposals() if p.get("question")}
-        archived = {r[0] for r in self.c.execute("SELECT id FROM tasks WHERE archived=1")}
-        # Cached repo gate questions still serve unarchived tasks, even if their original target is hidden.
-        shared_gates = {r[0] for r in self.c.execute(
-            "SELECT DISTINCT s.value FROM settings s JOIN tasks t "
-            "ON s.key='_gate_question_' || lower(t.repo) WHERE t.archived=0")}
-        for q in self.s.list_questions(open_only=True):
-            if str(q["id"]) in tuner:
-                continue
-            if q["target_kind"] == "task" and q["target_id"] in archived and str(q["id"]) not in shared_gates:
+        from drover.ledger.waiting import Waiting
+        for q in Waiting(self.c, 'owner').questions():
+            if str(q["id"]) in tuner or q['proposal'] or not q['visible']:
                 continue
             opts = [{"id": o["label"], "label": o["label"], "recommended": o.get("recommended")}
                     for o in q["options"]]
@@ -466,15 +460,20 @@ class UiView:
         configured = repos.load_all() if configured is None else configured
         prog = configured.get(str(task.get("repo") or "").lower())
         tid = task["id"]
+        from drover.ledger.board import waiting_labels
+        from drover.ledger.waiting import Waiting
+        labels = waiting_labels(self.c, Waiting(self.c).pending(("task", tid)))
         deps = ops.deps_of(self.c, tid)
         incoming = [dict(task_id=r[0], kind=r[1]) for r in self.c.execute(
             "SELECT task_id, kind FROM task_deps WHERE depends_on=? ORDER BY task_id", (tid,))]
         related = ops.related_of(self.c, tid)
-        task = {**task, "state": task["status"], "reason": self._reason(task),
+        task = {**task, "state": task["status"], "waiting_labels": labels,
+                "reason": "" if labels else self._reason(task),
                 "can_accept_findings": ops.read_only_result(self.c, task) is not None,
                 "deps": deps, "dependents": incoming, "related": related,
                 "connected_count": len({d["depends_on"] for d in deps} |
                                        {d["task_id"] for d in incoming} | set(related))}
+        task.pop("blocker", None)
         task.update(derive(task, prog, self.repo_states.get(prog) if prog else None))
         return task
 
@@ -531,8 +530,8 @@ class UiView:
         out = []
         configured = repos.load_all()
         for t in self.s.list_tasks(status="failed,blocked"):
-            reason = (t["blocker"] or {}).get("reason") or self._reason(t)
-            out.append({**self._task_view(t, configured), "reason": reason})
+            task = self._task_view(t, configured)
+            out.append({**task, "reason": "; ".join(task["waiting_labels"]) or self._reason(t)})
         return out
 
     def stats(self, since=None, task=None):

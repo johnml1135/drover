@@ -11,6 +11,6 @@
     Worktree: {{ t.worktree_state or 'planned' }}{% if t.write is defined and not t.write %} · no task worktree for read-only work{% endif %}</p>
   <p>Connected tasks: {{ t.connected_count if t.connected_count else 'none' }}</p>
   {% if t.reason %}<p class="task-reason">{{ t.reason }}</p>{% endif %}
-  {% if t.blocker %}<p class="task-reason">{{ t.blocker.reason or t.blocker }}</p>{% endif %}
+  {% for label in t.waiting_labels %}<p class="task-reason">{{ label }}</p>{% endfor %}
   {% if t.first_paragraph %}<p class="description-preview">{{ t.first_paragraph }}</p>{% endif %}
 </article>
