@@ -667,3 +667,74 @@ def native_runner_cwd(path, windows=IS_WINDOWS):
     if is_linux_native(path):
         raise ValueError(f"worktree {path} is not reachable from Windows")
     return path
+
+
+def stop_ci_children(status):
+    """After confirmed runner loss, stop its POSIX group or await Windows job closure.
+
+    Return False when process ownership or termination cannot be confirmed. Zombies
+    cannot execute or touch the checkout and need no further signalling.
+    """
+    if not status.get('pid'):
+        return False  # no recorded child identity: termination remains unknown
+    deadline = time.monotonic() + 3
+    signalled = False
+    while True:
+        if IS_WINDOWS:
+            # KILL_ON_JOB_CLOSE ends all children when their runner dies. Include
+            # processes without readable command lines in the confirmation scan.
+            script = ('Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId | ConvertTo-Json')
+            result = subprocess.run([_powershell(), '-NoProfile', '-Command', script],
+                                    capture_output=True, text=True, timeout=60,
+                                    stdin=subprocess.DEVNULL, **NO_WINDOW)
+            if result.returncode:
+                raise ScanError('cannot confirm CI job closure')
+            rows = json.loads(result.stdout)
+            rows = [rows] if isinstance(rows, dict) else rows
+            if not isinstance(rows, list) or not rows:
+                raise ScanError('empty process scan while confirming CI job closure')
+            alive = any(row.get('ProcessId') == status.get('pid')
+                        or row.get('ParentProcessId') in (status.get('pid'), status.get('runner_pid'))
+                        for row in rows)
+        else:
+            members = []
+            for entry in Path('/proc').iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    fields = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+                    if fields[0] != 'Z' and int(fields[2]) == status.get('pid'):
+                        members.append(entry)
+                except FileNotFoundError:
+                    continue
+            alive = bool(members)
+            if alive and not signalled:
+                marker = ('DROVER_RUN_ID=' + str(status['run_id'])).encode()
+                # Never signal a reused group id lacking this execution's marker.
+                if not any(marker in (entry / 'environ').read_bytes().split(b'\0') for entry in members):
+                    return False
+                try:
+                    os.killpg(status['pid'], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                signalled = True
+        if not alive:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        # Resolver: the kernel finishes terminating the recorded process tree.
+        time.sleep(.05)
+
+
+def recover_ci_children(platform, status, drover_dir, distro_name=None):
+    """Confirm child termination on the execution's placement, including remote WSL."""
+    if IS_WINDOWS and platform == 'wsl':
+        code = ('import json,sys; from drover.placement import stop_ci_children; '
+                'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
+        command = WSL(distro_name).command(['python3', '-c', code, json.dumps(status)], cd=drover_dir)
+        result = subprocess.run(command, capture_output=True, timeout=90,
+                                stdin=subprocess.DEVNULL, **NO_WINDOW)
+        if result.returncode not in (0, 1):
+            raise ScanError('cannot confirm WSL CI child termination')
+        return result.returncode == 0
+    return stop_ci_children(status)

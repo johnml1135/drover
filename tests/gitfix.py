@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 
-def sh(*args, cwd=None, check=True, text=True):
+def sh(*args, cwd=None, check=True, text=True, input=None):
     command = [str(a) for a in args]
     env = os.environ.copy()
     env.update(GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never', GIT_ASKPASS='')
@@ -15,7 +15,8 @@ def sh(*args, cwd=None, check=True, text=True):
     for _ in range(attempts):
         try:
             run_env = {**env, **({'GIT_TRACE': '1'} if is_clone else {})}
-            r = subprocess.run(command, cwd=cwd, env=run_env, text=text, capture_output=True, timeout=60)
+            r = subprocess.run(command, cwd=cwd, env=run_env, text=text, capture_output=True, timeout=60,
+                               **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))
         except subprocess.TimeoutExpired as error:
             stdout, stderr = error.stdout or '', error.stderr or ''
             if isinstance(stdout, bytes):
@@ -53,8 +54,8 @@ class Repo:
     def cleanup(self):
         self.tmp.cleanup()
 
-    def git(self, *args, cwd=None):
-        return sh('git', '-C', cwd or self.repo, *args).stdout.strip()
+    def git(self, *args, cwd=None, input=None):
+        return sh('git', '-C', cwd or self.repo, *args, input=input).stdout.strip()
 
     def commit(self, name, text=None, cwd=None, msg=None):
         where = Path(cwd or self.repo)

@@ -739,6 +739,10 @@ class RunnerLauncher(Launcher):
                 found.setdefault(str(rid), 'wsl')
         return found
 
+    def recover_ci(self, spec, status):
+        """Confirm that a lost CI runner's children can no longer use its checkout."""
+        return placement_mod.recover_ci_children(spec['placement'], status, self.drover_dir, self.distro)
+
     def scan(self, want_wsl=False):
         """Integer task-run markers for dispatcher recovery; CI keeps its own persisted context."""
         return normalize_run_ids(self.runners(want_wsl))

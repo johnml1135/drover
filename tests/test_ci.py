@@ -131,7 +131,7 @@ class CITests(unittest.TestCase):
     def test_docs_symlink_addition_and_removal_require_checks(self):
         self.configure('raise SystemExit(99)', docs=True)
         # Git's index represents symlinks even on machines without symlink privileges.
-        blob = self.repo.git('hash-object', '-w', '--stdin')
+        blob = self.repo.git('hash-object', '-w', '--stdin', input='../base.txt\n')
         self.repo.git('update-index', '--add', '--cacheinfo', f'120000,{blob},docs/link.md')
         self.repo.git('commit', '-qm', 'add symlink')
         commit = self.repo.git('rev-parse', 'HEAD')
@@ -191,6 +191,59 @@ class CITests(unittest.TestCase):
         self.assertEqual(count.read_text(), 'start\n')
         self.assertEqual(slots.lease_queue(conn), [])
         self.assertFalse(list(self.runs.glob('ci-*.json')))
+
+    def test_dead_runner_is_finalized_on_resume_and_retry_finishes(self):
+        from drover.launch import RunnerLauncher
+        count, pulse = self.repo.root / 'count', self.repo.root / 'pulse'
+        code = ('import pathlib,time; p=pathlib.Path("' + str(count).replace('\\', '/') + '"); '
+                'n=int(p.read_text())+1 if p.exists() else 1; p.write_text(str(n)); '
+                'print("started",flush=True); '
+                '\nwhile n == 1: pathlib.Path("' + str(pulse).replace('\\', '/') + '").write_text(str(time.time())); time.sleep(.05)')
+        prog = self.configure(code)
+        commit = self.repo.commit('source.txt', 'changed')
+        conn = db.connect(self.repo.root / 'ledger.db')
+        self.addCleanup(conn.close)
+        launcher = RunnerLauncher(self.runs)
+        def interrupted(*args):
+            deadline = time.monotonic() + 20
+            while not pulse.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            self.assertTrue(pulse.exists())
+            raise sqlite3.OperationalError('database is locked')
+        with patch.object(slots, 'lease_heartbeat', side_effect=interrupted):
+            with self.assertRaises(ci.CIInterrupted):
+                ci.CI(self.runs, launcher).run(prog, self.repo.repo, commit, conn=conn)
+        status_file = next(self.runs.glob('ci-*/status.json'))
+        status = json.loads(status_file.read_text())
+        # Kill only the runner: POSIX children survive; Windows closes its job.
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/F', '/PID', str(status['runner_pid'])],
+                           check=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=20)
+        else:
+            import signal
+            os.kill(status['runner_pid'], signal.SIGKILL)
+        with patch.object(launcher, 'recover_ci', return_value=False):
+            with self.assertRaises(ci.CIInterrupted):
+                ci.CI(self.runs, launcher).resume(prog, self.repo.repo, conn=conn)
+        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
+        self.assertEqual(len(slots.lease_queue(conn)), 1)
+        resumed = ci.CI(self.runs, launcher)
+        with self.assertRaises(ci.CIError) as raised:
+            resumed.resume(prog, self.repo.repo, conn=conn)
+        self.assertNotIsInstance(raised.exception, ci.CIInterrupted)
+        last_pulse = pulse.read_text()
+        time.sleep(.2)
+        self.assertEqual(pulse.read_text(), last_pulse, 'orphan child is still executing')
+        final = json.loads(status_file.read_text())
+        self.assertEqual(final['state'], 'killed')
+        self.assertIsNotNone(final['ended'])
+        self.assertEqual(slots.lease_queue(conn), [])
+        self.assertFalse(list(self.runs.glob('ci-*.json')))
+        # A second resume must not adopt the dead runner again.
+        resumed.resume(prog, self.repo.repo, conn=conn)
+        self.assertTrue(resumed.run(prog, self.repo.repo, commit, conn=conn)['passed'])
+        self.assertEqual(count.read_text(), '2')
+        self.assertEqual(slots.lease_queue(conn), [])
 
     def test_docs_script_cannot_bypass_diff_check(self):
         self.configure('raise SystemExit(99)', docs=True)
@@ -335,7 +388,7 @@ class CITests(unittest.TestCase):
             'COUNT_FILE': str(count), 'RELEASE_FILE': str(release)}}}
         command = f'from drover.ci import CI; CI({str(self.runs)!r}).run({machine!r}, {str(self.repo.repo)!r}, {commit!r})'
         with open(self.repo.root / 'caller.log', 'w') as output:
-            caller = subprocess.Popen([sys.executable, '-c', command], stdout=output, stderr=output)
+            caller = subprocess.Popen([sys.executable, '-c', command], stdout=output, stderr=output, stdin=subprocess.DEVNULL)
             self.addCleanup(lambda: caller.poll() is None and caller.kill())
             deadline = time.monotonic() + 30
             while not count.exists() and caller.poll() is None and time.monotonic() < deadline:

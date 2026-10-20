@@ -349,6 +349,11 @@ class CI:
                                 next_scan = time.monotonic() + .25
                                 if missed >= 2:
                                     runner.request_stop(self.runs_dir, spec['run_id'], nonce=spec['nonce'])
+                                    if current.get('nonce') != spec['nonce'] or not self.launcher.recover_ci(spec, current):
+                                        raise CIInterrupted('CI runner lost; child termination is not confirmed')
+                                    runner.write_json_atomic(runner.run_dir(self.runs_dir, spec['run_id']) / runner.STATUS_FILE,
+                                                             {**current, 'state': 'killed', 'exit_code': None,
+                                                              'ended': now(), 'reason': 'runner disappeared'})
                                     handle.cancel()
                                     raise CIError('CI runner disappeared before writing its result; retry CI')
                     time.sleep(0.25)
