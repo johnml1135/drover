@@ -835,47 +835,49 @@ class Dispatcher:
         u = result["usage"]
         usage = dict(tokens_in=u["tokens_in"], tokens_out=u["tokens_out"], tokens_cached=u["tokens_cached"],
                      allowance_used=self._allowance_used(spec))
-        rec = contract.parse_review_record(result.get("text") or "") if result["status"] in ("done", "blocked", "no-record") else None
+        rec = contract.parse_review_record(result.get("text") or "") if result["status"] in (contract.DONE, contract.BLOCKED, contract.NO_RECORD) else None
         verdict = str((rec or {}).get("verdict") or "").strip()
+        landed = re.fullmatch(r"LAND@([0-9a-fA-F]{40})", verdict)  # a prefix is not a licence
+        if landed and sha and sha.lower() == landed.group(1).lower():
+            outcome = contract.LAND
+        elif verdict == 'HOLD' and rec['findings']:
+            outcome = contract.HOLD
+        elif result.get('provider_error') and result['status'] in (contract.ERROR, contract.NO_RECORD, contract.TIMEOUT):
+            outcome = contract.PROVIDER_ERROR
+        else:
+            outcome = result['status'] if result['status'] in (contract.TIMEOUT, contract.ERROR) else contract.NO_RECORD
         request = next((r for r in p.waiting.replans() if r['task_id'] == task_id), None)
         if request:
-            outcome = contract.PROVIDER_ERROR if result.get('provider_error') else (
-                contract.LAND if rec and rec.get('verdict') == f'LAND@{sha}' else
-                contract.HOLD if rec and rec.get('verdict') == 'HOLD' and rec.get('findings') else
-                contract.TIMEOUT if result['status'] == contract.TIMEOUT else
-                contract.ERROR if result['status'] == contract.ERROR else contract.NO_RECORD)
             p.finish_run(run_id, outcome, review_verdict=verdict or None, **usage)
             p.append_event('replan.stage-finished', {'request': request['id'], 'run': run_id,
                            'worker': worker_id, 'stage': 'review', 'receipt': rec}, task_id)
             return
-        landed = re.fullmatch(r"LAND@([0-9a-fA-F]{40})", verdict)       # the whole sha: a prefix is not a licence
-        if landed and sha and sha.lower() == landed.group(1).lower():
+        if outcome == contract.LAND:
             head = self.pipeline.head(p.get_task(task_id))
             if head != sha:
-                p.finish_run(run_id, "unverified", note="worktree moved during the review", **usage)
-                return p.set_status(task_id, "ready", reason="the worktree moved during the review")
-            p.finish_run(run_id, "land", review_verdict=f"LAND@{sha}", note=(rec.get("note") or None), **usage)
+                p.finish_run(run_id, contract.UNVERIFIED, note="worktree moved during the review", **usage)
+                return p.set_status(task_id, states.READY, reason="the worktree moved during the review")
+            p.finish_run(run_id, contract.LAND, review_verdict=f"LAND@{sha}", note=(rec.get("note") or None), **usage)
             p.append_event("review-done", {"run": run_id, "verdict": f"LAND@{sha}", "findings": rec["findings"]}, task_id)
-            return p.set_status(task_id, "reviewed", reason=f"review LAND@{sha[:12]}")
-        if verdict == "HOLD" and rec["findings"]:
+            return p.set_status(task_id, states.REVIEWED, reason=f"review LAND@{sha[:12]}")
+        if outcome == contract.HOLD:
             findings = "\n".join(f"- {f}" for f in rec["findings"])
             excerpt = "Review HOLD. Findings:\n" + findings
-            p.finish_run(run_id, "hold", review_verdict="HOLD", note=(rec.get("note") or None),
+            p.finish_run(run_id, contract.HOLD, review_verdict="HOLD", note=(rec.get("note") or None),
                          gate_receipt=contract.gate_receipt(False, excerpt=excerpt, review=True), **usage)
             p.append_event("review-done", {"run": run_id, "verdict": "HOLD", "findings": rec["findings"]}, task_id)
             return self._failed(task_id, worker_id, excerpt)
-        if result.get("provider_error") and result["status"] in ("error", "no-record", "timeout"):
-            p.finish_run(run_id, "provider-error", note=f"provider error: {result['provider_error']}"[:290], **usage)
+        if outcome == contract.PROVIDER_ERROR:
+            p.finish_run(run_id, contract.PROVIDER_ERROR, note=f"provider error: {result['provider_error']}"[:290], **usage)
             p.append_event("provider-error", {"run": run_id, "message": result["provider_error"][:300]}, task_id)
             if self._provider_streak(task_id, p.list_runs(task_id)) >= MAX_PROVIDER_ERRORS:
                 p.set_status(task_id, states.NEEDS_OWNER, reason=f"{MAX_PROVIDER_ERRORS} provider errors in a row")
             else:
                 p.waiting.delay(task_id, "review", "provider", self.now(), minutes=5)
             return
-        why = {"timeout": "timeout", "error": "error"}.get(result["status"], "no-record")
-        p.finish_run(run_id, why, note=(f"no usable verdict ({verdict or result['status']})")[:280], **usage)
+        p.finish_run(run_id, outcome, note=(f"no usable verdict ({verdict or result['status']})")[:280], **usage)
         if self._review_streak(p.list_runs(task_id)) >= MAX_REVIEW_TRIES:
-            p.set_status(task_id, "needs-owner", reason=f"{MAX_REVIEW_TRIES} reviews in a row gave no usable verdict")
+            p.set_status(task_id, states.NEEDS_OWNER, reason=f"{MAX_REVIEW_TRIES} reviews in a row gave no usable verdict")
 
     # ---- trigger 3 ----------------------------------------------------------------------------------
     def check_stale(self):

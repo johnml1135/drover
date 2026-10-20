@@ -1,5 +1,6 @@
 """Durable waits and their event-driven release, in the ledger transaction."""
 import json
+from graphlib import TopologicalSorter
 import math
 import re
 import time
@@ -455,6 +456,7 @@ class Waiting:
                 released += self._release_rows(urgent_rows, event['id'], reset=True)
                 if self.state(urgent) is not None:
                     self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, urgent))
+                    self._clear_cause(urgent, event['id'])
                 own = self.pending(('task', source))
                 released += self._release_rows(own, event['id'])
             elif kind == 'run-finished' and event['task_id']:
@@ -534,7 +536,8 @@ class Waiting:
             raise ValueError('invalid question event')
         q = ops.get_question(self.conn, data['question'])
         row = self.conn.execute('SELECT * FROM wait_causes WHERE question_id=?', (q['id'],)).fetchone()
-        if row is None:
+        if row is None or row['state'] == CLOSED or (
+                row['accepted_event'] is not None and event['id'] <= row['accepted_event']):
             return []
         answer = self._owner_answer(q['id'], q['answer_choice'], q['answer_text'], event['actor'])
         if q['status'] != 'answered' or data.get('choice') != q['answer_choice']:
@@ -647,7 +650,9 @@ class Waiting:
         for task in tasks:
             if task['status'] in states.TERMINAL:
                 continue
-            existing = self.conn.execute('SELECT id FROM replan_requests WHERE task_id=? AND state<>?', (task['id'], DONE)).fetchone()
+            existing = self.conn.execute(
+                'SELECT id FROM replan_requests WHERE task_id=? AND (requesting_event=? OR state<>?) ORDER BY id LIMIT 1',
+                (task['id'], event['id'], DONE)).fetchone()
             if existing:
                 result.append(dict(self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (existing[0],)).fetchone()))
                 continue
@@ -680,6 +685,11 @@ class Waiting:
             self.conn.execute('UPDATE replan_requests SET state=?,disposition=?,finished_event=? WHERE id=?', (DONE, disposition, eid, request_id))
             released = self._release_rows([r for r in self.pending() if r['cause'] in (cause, cause_key('replan-owner', request_id)) and r['kind'] in (REPLAN, OWNER_ANSWER)], eid, reset=disposition == 'owner-resolved')
             self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, cause))
+            if disposition == 'cancelled':
+                owner_cause = cause_key('replan-owner', request_id)
+                self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, owner_cause))
+                self._clear_cause(owner_cause, eid)
+                self._clear_cause(cause, eid)
             completed = {'disposition': disposition, 'released': released, 'children': [], **(result or {})}
             self.conn.execute('UPDATE replan_requests SET result=? WHERE id=?', (json.dumps(completed), request_id))
             return completed
@@ -802,8 +812,26 @@ class Waiting:
                 return None
             if self.conn.execute('SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL', (task['id'],)).fetchone():
                 return None
-            if any(r['kind'] != REPLAN or r['cause'] != cause_key('replan', request_id)
-                   for r in self.pending(('task', task['id']))):
+            from . import scope
+            sources = [r[0] for r in self.conn.execute(
+                'SELECT task_id FROM replan_requests WHERE state<>? ORDER BY task_id', (DONE,))]
+            followers = {source: set(ops.dependents_of(self.conn, source, transitive=True)) for source in sources}
+            order = {source: index for index, source in enumerate(TopologicalSorter({
+                source: [other for other in sources if source in followers[other]]
+                for source in sources}).static_order())}
+            for row in self.pending(('task', task['id'])):
+                if row['kind'] == REPLAN and row['cause'] == cause_key('replan', request_id):
+                    continue
+                # Keep follower waits for worker protection, but order overlapping
+                # queued planners by dependencies, then task id. Running planners win.
+                if row['kind'] == REPLAN and order.get(row['data']['source'], -1) > order[task['id']]:
+                    other = self.conn.execute('SELECT state FROM replan_requests WHERE id=?',
+                                              (row['data']['request'],)).fetchone()
+                    source = ops.get_task(self.conn, row['data']['source'])
+                    if (other and other['state'] == QUEUED and source['epic_id'] == task['epic_id']
+                            and task['epic_id'] and scope.any_overlap(source['scope_files'], task['scope_files'])
+                            and task['id'] not in followers[source['id']]):
+                        continue
                 return None
             raw_limit = ops.get_setting(self.conn, 'replan_limit', '2')
             if not isinstance(raw_limit, str) or not re.fullmatch(r'[0-9]+', raw_limit):

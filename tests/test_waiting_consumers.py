@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import ci, config, dispatcher, landing, origin, pipeline, repos, route, tuner
+from drover import ci, config, contract, dispatcher, landing, origin, pipeline, repos, route, tuner
 from drover.ledger import db, ops
 from drover.ledger import landing as base_cache
 from drover.ledger import ci as slots
@@ -475,3 +475,131 @@ class Lifecycle(LedgerCase):
                 self.assertNotIn('<script>', html)
                 self.assertNotIn('Blocker:', html)
 
+
+
+class FinalReviewRegressions(LedgerCase):
+    route = {'backend': 'codex', 'model': 'gpt-6.1-sol'}
+    revise = {'action': 'revise', 'goal': 'Revised', 'acceptance': ['works'], 'scope_files': ['src/*']}
+
+    def test_overlapping_sources_replan_in_turn(self):
+        w = self.waiting()
+        epic = ops.create_epic(self.conn, 'p', 'Overlap')['id']
+        sources = sorted(self.task(epic_id=epic, scope_files=['src/*']) for _ in range(2))
+        follower = self.task('proposed', epic_id=epic, scope_files=['src/a'])
+        # Only the two ready sources request replans; the proposed follower stays protected.
+        for tid in reversed(sources):
+            w.request_replan(tid, 'owner-request')
+        requests = {r['task_id']: r for r in w.replans()}
+        self.assertIsNone(w.start_replan(requests[sources[1]]['id'], self.route, {}))
+        for tid in sources:
+            started = w.start_replan(requests[tid]['id'], self.route, {})
+            self.assertIsNotNone(started, 'overlapping sources must have one runnable leader')
+            self.assertTrue(w.pending(('task', follower)))
+            w.finish_replan(requests[tid]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        self.assertEqual(w.replans(), [])
+        self.assertEqual(w.pending(('task', follower)), [])
+        self.assertEqual(self.status(follower), 'proposed')
+
+    def test_epic_overlapping_sources_replan_in_turn(self):
+        w = self.waiting()
+        epic = ops.create_epic(self.conn, 'p', 'Overlap')['id']
+        sources = sorted(self.task(epic_id=epic, scope_files=['src/*']) for _ in range(2))
+        ops.event(self.conn, 'replan-request', 'owner', {}, epic_id=epic)
+        requests = {r['task_id']: r for r in w.replans()}
+        self.assertIsNone(w.start_replan(requests[sources[1]]['id'], self.route, {}))
+        for tid in sources:
+            started = w.start_replan(requests[tid]['id'], self.route, {})
+            self.assertIsNotNone(started, 'epic sources must have one runnable leader')
+            w.finish_replan(requests[tid]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        self.assertEqual(w.replans(), [])
+        self.assertTrue(all(self.status(tid) == 'ready' for tid in sources))
+
+    def test_overlap_order_respects_dependency_and_follower_protection(self):
+        w = self.waiting()
+        epic = ops.create_epic(self.conn, 'p', 'Ordered overlap')['id']
+        first, second = sorted(self.task(epic_id=epic, scope_files=['src/*']) for _ in range(2))
+        ops.add_dep(self.conn, first, second)
+        ops.event(self.conn, 'replan-request', 'owner', {}, epic_id=epic)
+        requests = {r['task_id']: r for r in w.replans()}
+        self.assertIsNone(w.start_replan(requests[first]['id'], self.route, {}))
+        started = w.start_replan(requests[second]['id'], self.route, {})
+        self.assertIsNotNone(started, 'the prerequisite source leads regardless of task id')
+        self.assertIsNone(w.start_replan(requests[first]['id'], self.route, {}))
+        w.finish_replan(requests[second]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        self.assertTrue(w.pending(('task', second)), 'completed leader remains a protected follower')
+        self.assertIsNone(ops.claim_next(self.conn, {'actor': 'dispatcher'}))
+        started = w.start_replan(requests[first]['id'], self.route, {})
+        self.assertIsNotNone(started)
+        w.finish_replan(requests[first]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        self.assertEqual(w.replans(), [])
+        self.assertEqual(w.pending(), [])
+
+    def test_historical_answers_cannot_grant_retry(self):
+        w = self.waiting()
+        cause, qid, choice = self.retry(w, ('task', self.task()))
+        ops.answer_question(self.conn, qid, choice=choice)
+        first = ops.events(self.conn, kind='question-answered')[-1]
+        self.assertTrue(w.consume_retry(cause))
+        ops.event(self.conn, 'origin-sync-failed', 'dispatcher', {'repo': 'p', 'reason': 'offline'})
+        ops.answer_question(self.conn, qid, choice=choice)
+        second = ops.events(self.conn, kind='question-answered')[-1]
+        self.assertTrue(w.consume_retry(cause))
+        ops.event(self.conn, 'origin-synced', 'dispatcher', {'repo': 'p'})
+        before = logical(self.conn)
+        for event in (first, second):
+            w.resolve(event)
+            self.assertFalse(w.consume_retry(cause), 'historical answers must not manufacture retry grants')
+            self.assertEqual(logical(self.conn), before)
+        ops.event(self.conn, 'origin-sync-failed', 'dispatcher', {'repo': 'p', 'reason': 'offline'})
+        before = logical(self.conn)
+        w.resolve(second)
+        self.assertEqual(logical(self.conn), before)
+
+    def test_completed_request_replay_does_not_reblock(self):
+        w = self.waiting()
+        tid = self.task()
+        request = w.request_replan(tid, 'owner-request')
+        event = ops.events(self.conn, task_id=tid, kind='replan-request')[-1]
+        started = w.start_replan(request['id'], self.route, {})
+        w.finish_replan(request['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        before = logical(self.conn)
+        w.resolve(event)
+        self.assertEqual(w.replans(), [], 'completed request replay must not queue another replan')
+        self.assertEqual(w.pending(('task', tid)), [])
+        self.assertEqual(logical(self.conn), before)
+        self.assertNotEqual(w.request_replan(tid, 'new-request')['id'], request['id'])
+
+    def test_cancelled_replan_supersedes_owner_question(self):
+        w = self.waiting()
+        source, follower = self.task(), self.task()
+        ops.add_dep(self.conn, follower, source)
+        request = w.request_replan(source, 'owner-request')
+        started = w.start_replan(request['id'], self.route, {})
+        w.finish_replan(request['id'], started['run_id'], contract.DONE,
+                        {'action': 'needs-owner', 'question': 'Which API?'}, snapshot={})
+        question, = w.questions()
+        before = logical(self.conn)
+        with self.assertRaises(RuntimeError):
+            with db.tx(self.conn):
+                ops.set_status(self.conn, source, 'cancelled', actor='owner')
+                raise RuntimeError('rollback cancellation')
+        self.assertEqual(logical(self.conn), before)
+        ops.set_status(self.conn, source, 'cancelled', actor='owner')
+        self.assertEqual(ops.open_questions(self.conn), [])
+        self.assertEqual(w.state(question['cause']), 'closed')
+        self.assertEqual(w.pending(('task', follower)), [])
+        with self.assertRaises(ValueError):
+            ops.answer_question(self.conn, question['id'], text='late answer')
+
+    def test_terminal_urgent_supersedes_question(self):
+        w = self.waiting()
+        source, follower = self.task(), self.task()
+        ops.add_dep(self.conn, follower, source)
+        ops.add_comment(self.conn, 'task', source, 'owner', 'Pause', urgent=True)
+        question, = w.questions()
+        ops.set_status(self.conn, source, 'cancelled', actor='owner')
+        self.assertEqual(ops.open_questions(self.conn), [])
+        self.assertEqual(w.state(question['cause']), 'closed')
+        self.assertEqual(w.pending(('task', follower)), [])
+        with self.assertRaises(ValueError):
+            ops.answer_question(self.conn, question['id'], choice='Resume work')

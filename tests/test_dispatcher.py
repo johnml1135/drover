@@ -1154,3 +1154,47 @@ class Briefs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewClassification(Base):
+    def test_replan_land_uses_sha_case_insensitively(self):
+        self.check_audit('done', 'LAND@ABCDEF0123456789ABCDEF0123456789ABCDEF01', [], None, 'land')
+
+    def test_replan_land_precedes_provider_warning(self):
+        self.check_audit('done', 'LAND@abcdef0123456789abcdef0123456789abcdef01', [], 'warning', 'land')
+
+    def test_replan_hold_precedes_provider_warning(self):
+        self.check_audit('done', 'HOLD', ['Fix the race'], 'warning', 'hold')
+
+    def test_replan_provider_error_classification(self):
+        self.check_audit('error', '', [], 'capacity', 'provider-error')
+
+    def test_replan_timeout_classification(self):
+        self.check_audit('timeout', '', [], None, 'timeout')
+
+    def test_replan_empty_hold_classification(self):
+        self.check_audit('done', 'HOLD', [], None, 'no-record')
+
+    def check_audit(self, status, verdict, findings, provider_error, expected):
+        from drover import contract
+        sha = 'abcdef0123456789abcdef0123456789abcdef01'
+        self.pipe.current_head = lambda: sha
+        tid = self.task()
+        ops.update_task(self.conn, tid, worktree=WORKTREE)
+        ops.set_status(self.conn, tid, 'claimed')
+        worker = ops.start_run(self.conn, tid, 'worker', 'claude', 'sonnet-5.5')
+        ops.event(self.conn, 'worker-done', 'dispatcher', {'run': worker, 'sha': sha}, task_id=tid)
+        ops.finish_run(self.conn, worker, contract.GATED)
+        ops.set_status(self.conn, tid, 'gated')
+        self.d.tick()
+        spec, = [s for s in self.fl.specs if s['task']['id'] == tid and s['role'] == 'review']
+        self.port.waiting.request_replan(tid, 'owner-request')
+        text = json.dumps({'verdict': verdict, 'findings': findings, 'note': 'review'})
+        self.finish(self.fl.specs.index(spec), {**res(status, text), 'provider_error': provider_error})
+        self.d.tick()
+        review = next(r for r in ops.list_runs(self.conn, tid) if r['id'] == spec['run_id'])
+        self.assertEqual(review['outcome'], expected)
+        self.assertEqual(self.status(tid), 'blocked')
+        self.assertFalse(any(e['task_id'] == tid for e in self.events('review-done')))
+        audit, = [e for e in self.events('replan.stage-finished') if e['task_id'] == tid]
+        self.assertEqual(audit['data']['run'], spec['run_id'])
