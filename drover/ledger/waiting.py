@@ -45,6 +45,10 @@ def repo_key(name, checkout=None) -> str:
     return cause_key(*placement.path_parts(placement.config_path(checkout, checkout)))
 
 
+class InvalidSplit(ValueError):
+    """A proposed split graph is invalid before materialization."""
+
+
 class Waiting:
     def __init__(self, conn, actor="system"):
         self.conn, self.actor = conn, actor
@@ -319,10 +323,17 @@ class Waiting:
     def _validate_event(self, kind, data):
         required = {'base-ci': {'repo', 'sha', 'status'}, 'base-observed': {'repo', 'sha'},
                     'waiting.release': {'cause'}, 'waiting.clear': {'cause'},
-                    'replan-completed': {'request', 'disposition'}, 'capacity-available': {'placement'}}
+                    'replan-completed': {'request', 'disposition'}, 'capacity-available': {'placement'},
+                    'replan.superseded-stage': {'request', 'worker', 'stage'},
+                    'replan.stage-finished': {'request', 'run', 'worker', 'stage', 'receipt'}}
         if kind in required:
             if not isinstance(data, dict) or not required[kind] <= data.keys():
                 raise ValueError(f'malformed {kind}')
+            if kind in ('replan.superseded-stage', 'replan.stage-finished'):
+                if any(type(data[k]) is not int or data[k] < 1 for k in ('request', 'worker')) or data['stage'] not in ('gate', 'review'):
+                    raise ValueError('invalid replan stage audit')
+                if kind == 'replan.stage-finished' and (type(data['run']) is not int or data['run'] < 1):
+                    raise ValueError('invalid predecessor run')
             if kind.startswith('base-') and (not isinstance(data['repo'], str) or not re.fullmatch('[0-9a-fA-F]{40}', str(data['sha']))):
                 raise ValueError('invalid base event')
             if kind == 'base-ci' and data['status'] not in ('green', 'red'):
@@ -438,6 +449,9 @@ class Waiting:
             own = self.pending(('task', source))
             released += self._release_rows(own, event['id'])
         elif kind == 'run-finished' and event['task_id']:
+            for request in self.replans():
+                if request['task_id'] == event['task_id']:
+                    self._supersede_stage(request['id'])
             self._park_subject(('task', event['task_id']))
         return released
 
@@ -523,6 +537,8 @@ class Waiting:
             return []
         phase = AUTHORIZED if row['handler'] == 'retry' else RESOLVED
         self.conn.execute('UPDATE wait_causes SET state=?,probe_session=NULL,probe_started=NULL WHERE cause=?', (phase, row['cause']))
+        if _identity(row['cause'])[0] == 'replan-owner':
+            return self._request_done(_identity(row['cause'])[1], 'owner-resolved')['released']
         return self._release_rows([r for r in self.pending() if r['cause'] == row['cause']], event['id'], reset=True)
 
     def consume_retry(self, cause) -> bool:
@@ -632,6 +648,7 @@ class Waiting:
             for target in [task, *self._followers(task, overlap=True)]:
                 self.wait(('task', target['id']), REPLAN, cause_key(request_id), cause=cause,
                           data={'request': request_id, 'source': task['id'], 'mode': 'blocked'})
+            self._supersede_stage(request_id)
             result.append(dict(self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()))
         return result
 
@@ -645,13 +662,231 @@ class Waiting:
                 raise ops.NotFound(f'replan {request_id}')
             if request['state'] == DONE:
                 return json.loads(request['result'])
+            if disposition in ('revised', 'split'):
+                marker = self.conn.execute('SELECT COALESCE(MAX(id),0) FROM runs WHERE task_id=? AND role=? AND ended IS NOT NULL AND outcome<>?',
+                                           (request['task_id'], 'worker', contract.DONE)).fetchone()[0]
+                self.conn.execute('UPDATE tasks SET retry_after_run=? WHERE id=?', (marker, request['task_id']))
             cause = cause_key('replan', request_id)
             eid = ops.event(self.conn, 'replan-completed', self.actor, {'request': request_id, 'disposition': disposition}, task_id=request['task_id'])
             self.conn.execute('UPDATE replan_requests SET state=?,disposition=?,finished_event=? WHERE id=?', (DONE, disposition, eid, request_id))
-            released = self._release_rows([r for r in self.pending() if r['cause'] in (cause, cause_key('replan-owner', request_id))], eid, reset=disposition == 'owner-resolved')
+            released = self._release_rows([r for r in self.pending() if r['cause'] in (cause, cause_key('replan-owner', request_id)) and r['kind'] in (REPLAN, OWNER_ANSWER)], eid, reset=disposition == 'owner-resolved')
             self.conn.execute('UPDATE wait_causes SET state=? WHERE cause=?', (RESOLVED, cause))
             completed = {'disposition': disposition, 'released': released, 'children': [], **(result or {})}
             self.conn.execute('UPDATE replan_requests SET result=? WHERE id=?', (json.dumps(completed), request_id))
+            return completed
+
+    def _split(self, request_id, record) -> dict:
+        from . import ops
+        request = self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()
+        source = ops.get_task(self.conn, request['task_id'])
+        # Validate the final graph using virtual child ids before allocating any rows.
+        children = {t['key']: ('child', t['key']) for t in record['tasks']}
+        edges = {}
+        def edge(task, prerequisite, kind):
+            pair = (task, prerequisite)
+            edges[pair] = 'blocks' if kind == 'blocks' or edges.get(pair) == 'blocks' else 'waits-for'
+        incoming = [dict(r) for r in self.conn.execute('SELECT task_id,kind FROM task_deps WHERE depends_on=?', (source['id'],))]
+        for row in self.conn.execute('SELECT * FROM task_deps'):
+            if row['depends_on'] != source['id']:
+                edge(row['task_id'], row['depends_on'], row['kind'])
+        prerequisites = ops.deps_of(self.conn, source['id'])
+        for child in record['tasks']:
+            for dep in prerequisites:
+                edge(children[child['key']], dep['depends_on'], dep['kind'])
+            for dep in child['deps']:
+                edge(children[child['key']], children[dep], 'blocks')
+            for dep in incoming:
+                edge(dep['task_id'], children[child['key']], dep['kind'])
+        nodes = {t['id'] for t in ops.list_tasks(self.conn, include_archived=True)} | set(children.values())
+        graph = {node: [] for node in nodes}
+        for task, prerequisite in edges:
+            if task not in nodes or prerequisite not in nodes or task == prerequisite:
+                raise InvalidSplit('invalid split dependency')
+            graph[task].append(prerequisite)
+        visiting, visited = set(), set()
+        def visit(node):
+            if node in visiting:
+                raise InvalidSplit('split dependency cycle')
+            if node in visited:
+                return
+            visiting.add(node)
+            for dep in graph[node]:
+                visit(dep)
+            visiting.remove(node)
+            visited.add(node)
+        for node in graph:
+            visit(node)
+        ids = {}
+        inherit = {k: source[k] for k in ('repo', 'repo_path', 'epic_id', 'kind', 'write', 'read_access', 'priority', 'size', 'risk')}
+        for child in record['tasks']:
+            ids[children[child['key']]] = ops.create_task(self.conn, actor=self.actor, **inherit,
+                **{k: child[k] for k in ('title', 'goal', 'acceptance', 'scope_files')})['id']
+        self.conn.execute('DELETE FROM task_deps WHERE depends_on=?', (source['id'],))
+        for (task, prerequisite), kind in edges.items():
+            task, prerequisite = ids.get(task, task), ids.get(prerequisite, prerequisite)
+            existing = self.conn.execute('SELECT kind FROM task_deps WHERE task_id=? AND depends_on=?', (task, prerequisite)).fetchone()
+            if existing:
+                if kind == 'blocks' and existing['kind'] != 'blocks':
+                    self.conn.execute('UPDATE task_deps SET kind=? WHERE task_id=? AND depends_on=?', (kind, task, prerequisite))
+            else:
+                ops.add_dep(self.conn, task, prerequisite, kind=kind, actor=self.actor)
+        cause = cause_key('replan', request_id)
+        for row in [r for r in self.pending() if r['cause'] == cause and r['subject_key'] != source['id']]:
+            for child in ids.values():
+                self.wait((row['subject_kind'], row['subject_key']), TASK_TERMINAL, cause_key(child), cause=cause,
+                          data={'source': child, 'mode': 'blocked'})
+        completed = self._request_done(request_id, 'split', {'children': list(ids.values())})
+        ops.set_status(self.conn, source['id'], states.CANCELLED, actor=self.actor, reason='split into proposed tasks')
+        return completed
+
+    def _owner_replan(self, request_id, question) -> dict:
+        from . import ops
+        request = self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()
+        cause = cause_key('replan-owner', request_id)
+        rows = [r for r in self.pending() if r['cause'] == cause_key('replan', request_id)]
+        for row in rows:
+            self.wait((row['subject_kind'], row['subject_key']), OWNER_ANSWER, cause_key(cause), cause=cause,
+                      data={'mode': 'needs-owner' if row['subject_key'] == request['task_id'] else 'blocked'})
+        self.ask(cause, 'task', request['task_id'], question)
+        self.conn.execute('UPDATE replan_requests SET state=?,current_run=NULL WHERE id=?', (OWNER, request_id))
+        eid = ops.event(self.conn, 'replan-owner', self.actor, {'request': request_id}, task_id=request['task_id'])
+        self._release_rows(rows, eid)
+        return dict(disposition=OWNER, released=[], children=[])
+
+    def _supersede_stage(self, request_id) -> None:
+        from . import ops
+        request = self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()
+        if request is None or request['state'] == DONE:
+            return
+        runs = ops.list_runs(self.conn, request['task_id'])
+        if any(r['ended'] is None for r in runs):
+            return
+        worker = next((r for r in reversed(runs) if r['role'] == 'worker'), None)
+        if worker and worker['outcome'] in (contract.DONE, contract.GATED):
+            stage = 'gate' if worker['outcome'] == contract.DONE else 'review'
+            ops.amend_run(self.conn, worker['id'], outcome=contract.UNVERIFIED)
+            ops.event(self.conn, 'replan.superseded-stage', self.actor,
+                      dict(request=request_id, worker=worker['id'], stage=stage), task_id=request['task_id'])
+
+    def _snapshot(self, task_id, inputs) -> dict:
+        from . import ops
+        task = ops.get_task(self.conn, task_id)
+        fields = ('id', 'repo', 'repo_path', 'epic_id', 'title', 'goal', 'acceptance', 'scope_files',
+                  'kind', 'write', 'read_access', 'branch', 'worktree', 'approved_at', 'model_pin')
+        runs = [r for r in ops.list_runs(self.conn, task_id) if r['role'] != 'planner']
+        latest = runs[-1] if runs else None
+        return dict(task={k: task.get(k) for k in fields},
+                    deps=sorted(ops.deps_of(self.conn, task_id), key=lambda r: (r['depends_on'], r['kind'])),
+                    incoming=[dict(r) for r in self.conn.execute(
+                        'SELECT task_id,kind FROM task_deps WHERE depends_on=? ORDER BY task_id,kind', (task_id,))],
+                    latest_nonplanner_run={k: latest[k] for k in ('id', 'outcome', 'ended', 'gate_receipt', 'review_verdict')} if latest else None,
+                    inputs=json.loads(json.dumps(inputs)))
+
+    def start_replan(self, request_id, route, snapshot, effort=None, *, now=None) -> dict | None:
+        from . import ops
+        with tx(self.conn):
+            request = self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()
+            if request is None:
+                raise ops.NotFound(f'replan {request_id}')
+            task = ops.get_task(self.conn, request['task_id'])
+            if request['state'] != QUEUED or task['status'] in states.TERMINAL or task['archived']:
+                return None
+            if self.conn.execute('SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL', (task['id'],)).fetchone():
+                return None
+            if any(r['kind'] != REPLAN or r['cause'] != cause_key('replan', request_id)
+                   for r in self.pending(('task', task['id']))):
+                return None
+            raw_limit = ops.get_setting(self.conn, 'replan_limit', '2')
+            if not isinstance(raw_limit, str) or not re.fullmatch(r'[0-9]+', raw_limit):
+                raise ValueError('replan_limit must be a nonnegative decimal integer')
+            if task['replans_used'] >= int(raw_limit):
+                self._owner_replan(request_id, 'The planner limit was reached. How should work proceed?')
+                return None
+            saved = self._snapshot(task['id'], snapshot)
+            run = ops.start_run(self.conn, task['id'], 'planner', route['backend'], route['model'],
+                                effort or route.get('effort'), actor=self.actor)
+            self.conn.execute('UPDATE replan_requests SET state=?,current_run=?,snapshot=? WHERE id=?',
+                              (RUNNING, run, json.dumps(saved), request_id))
+            return dict(request_id=request_id, run_id=run, snapshot=saved)
+
+    def _neutral(self, request_id, run_id, outcome, usage, now) -> dict:
+        from . import ops
+        request = self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()
+        ops.finish_run(self.conn, run_id, outcome, actor=self.actor, **(usage or {}))
+        self.conn.execute('UPDATE replan_requests SET state=?,current_run=NULL WHERE id=?', (QUEUED, request_id))
+        streak = 1
+        for event in reversed(ops.events(self.conn, task_id=request['task_id'], kind='replan-attempt-finished')):
+            data = event['data']
+            if data.get('request') != request_id:
+                continue
+            if data.get('outcome') not in (contract.PROVIDER_ERROR, contract.LAUNCH_ERROR, contract.ORPHANED, contract.UNVERIFIED):
+                break
+            streak += 1
+        delay = min(1800, 60 * 2 ** min(streak - 1, 5))
+        self.delay(request['task_id'], 'planner', 'replan-neutral', now, minutes=math.ceil(delay / 60))
+        return dict(disposition='neutral', released=[], children=[])
+
+    def finish_replan(self, request_id, run_id, outcome, result=None, usage=None, *, snapshot=None, now=None) -> dict:
+        from . import ops
+        allowed = (contract.DONE, contract.NO_RECORD, contract.ERROR, contract.TIMEOUT,
+                   contract.PROVIDER_ERROR, contract.LAUNCH_ERROR, contract.ORPHANED, contract.UNVERIFIED)
+        if outcome not in allowed:
+            raise ValueError('invalid planner outcome')
+        now = time.time() if now is None else now
+        if type(now) not in (float, int) or not math.isfinite(now):
+            raise ValueError('invalid planner time')
+        with tx(self.conn):
+            request = self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()
+            if request is None:
+                raise ops.NotFound(f'replan {request_id}')
+            for event in ops.events(self.conn, task_id=request['task_id'], kind='replan-attempt-finished'):
+                if event['data'].get('request') == request_id and event['data'].get('run') == run_id:
+                    return event['data']['result']
+            run = self.conn.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+            if run is None or run['task_id'] != request['task_id'] or run['role'] != 'planner' or request['current_run'] != run_id or run['ended']:
+                raise ValueError('planner run is not attached to request')
+            task = ops.get_task(self.conn, request['task_id'])
+            if task['status'] in states.TERMINAL or task['archived'] or request['state'] == DONE:
+                ops.finish_run(self.conn, run_id, contract.UNVERIFIED, actor=self.actor, **(usage or {}))
+                completed = self._request_done(request_id, 'cancelled')
+                outcome = contract.UNVERIFIED
+            else:
+                if snapshot is None or self._snapshot(task['id'], snapshot) != json.loads(request['snapshot']):
+                    outcome = contract.UNVERIFIED
+                if outcome in (contract.PROVIDER_ERROR, contract.LAUNCH_ERROR, contract.ORPHANED, contract.UNVERIFIED):
+                    completed = self._neutral(request_id, run_id, outcome, usage, now)
+                else:
+                    record = contract.parse_replan_record(json.dumps(result)) if result is not None else None
+                    if record and record['action'] == 'revise' and any(task[field] and not record[field] for field in ('acceptance', 'scope_files')):
+                        record = None
+                    if record and record['action'] == 'split' and any(task[field] and not child[field]
+                            for child in record['tasks'] for field in ('acceptance', 'scope_files')):
+                        record = None
+                    if outcome == contract.DONE and record is None:
+                        outcome = contract.NO_RECORD
+                    self.conn.execute('UPDATE tasks SET replans_used=replans_used+1 WHERE id=?', (task['id'],))
+                    ops.finish_run(self.conn, run_id, outcome, actor=self.actor, **(usage or {}))
+                    self.conn.execute('UPDATE replan_requests SET state=?,current_run=NULL WHERE id=?', (QUEUED, request_id))
+                    if outcome == contract.DONE and record['action'] == 'split':
+                        try:
+                            with tx(self.conn):
+                                completed = self._split(request_id, record)
+                        except InvalidSplit:
+                            outcome = contract.NO_RECORD
+                            ops.amend_run(self.conn, run_id, outcome=outcome)
+                            completed = dict(disposition='retry', released=[], children=[])
+                    elif outcome == contract.DONE and record['action'] == 'revise':
+                        ops.update_task(self.conn, task['id'], actor=self.actor,
+                                        **{k: record[k] for k in ('goal', 'acceptance', 'scope_files')})
+                        completed = self._request_done(request_id, 'revised')
+                    elif outcome == contract.DONE and record['action'] == 'needs-owner':
+                        completed = self._owner_replan(request_id, record['question'])
+                    else:
+                        completed = dict(disposition='retry', released=[], children=[])
+
+            completed = json.loads(json.dumps(completed))
+            ops.event(self.conn, 'replan-attempt-finished', self.actor,
+                      dict(request=request_id, run=run_id, outcome=outcome, result=completed), task_id=task['id'])
             return completed
 
     def _urgent(self, event):

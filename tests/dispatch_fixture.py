@@ -36,6 +36,11 @@ class FakePipeline:
         task['worktree'] = WORKTREE
         return WORKTREE
 
+    def replan_inputs(self, task) -> dict:
+        return dict(repo=task.get('repo') or 'p', branch=task.get('branch') or 'main',
+                    head=self.current_head(), dirty_digest='0' * 64,
+                    checkout=task.get('worktree') or WORKTREE, read_checkouts=[])
+
     def prepare_dispatch(self, task) -> bool:
         return True
 

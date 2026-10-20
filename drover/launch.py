@@ -130,7 +130,7 @@ def build_argv(spec):
     m, e = config.model_id(spec["model"]), spec.get("effort") or EFFORT.get(spec["backend"])
     exe = spec.get("binary") or spec["backend"]
     if spec["backend"] == "claude":
-        readonly = spec.get("role") == "review" or spec.get("write") is not True
+        readonly = spec.get("role") in ("review", "planner") or spec.get("write") is not True
         placement = spec.get("placement", "windows")
         # Flags and settings verified against Claude Code 2.1.303. WSL requires
         # bubblewrap; Windows Bash runs unsandboxed under a Job Object (trade-off accepted by owner, Q5).
@@ -198,7 +198,7 @@ def build_argv(spec):
         argv.extend(["--settings", json.dumps(settings, separators=(",", ":"))])
     elif spec["backend"] == "codex":
         # codex exec has no system-prompt flag; developer_instructions is the config key for that layer
-        sandbox = "read-only" if (spec.get("role") == "review" or spec.get("write") is False) else spec.get("sandbox", "workspace-write")
+        sandbox = "read-only" if (spec.get("role") in ("review", "planner") or spec.get("write") is False) else spec.get("sandbox", "workspace-write")
         if sandbox not in ("read-only", "workspace-write"):
             raise ValueError(f"unsupported codex sandbox {sandbox!r}")
         cwd = placement_mod.to_wsl_path(spec["cwd"]) if spec.get("placement") == "wsl" else str(spec["cwd"])

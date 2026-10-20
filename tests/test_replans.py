@@ -1,6 +1,8 @@
 """Durable replan requests, bounded records, graph replacement and dispatch."""
 import copy
 import json
+import os
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -251,7 +253,8 @@ class Replans(LedgerCase):
     def test_replan_release_and_owner_replacement(self):
         for record in (REVISE, OWNER):
             w = self.waiting()
-            tid = self.task(goal='old', acceptance=['old'], scope_files=['src/*'], branch='topic', worktree=self.tmp.name)
+            tid = self.task(goal='old', acceptance=['old'], scope_files=['src/*'], branch='topic')
+            ops.update_task(self.conn, tid, worktree=self.tmp.name)
             pin = {'backend': 'codex', 'model': 'gpt-6-luna'}
             ops.update_task(self.conn, tid, model_pin=pin)
             follower = self.task()
@@ -311,7 +314,8 @@ class Replans(LedgerCase):
     def split_fixture(self):
         w = self.waiting()
         prerequisite = self.task('cancelled')
-        source = self.task(branch='topic', worktree=self.tmp.name)
+        source = self.task(branch='topic')
+        ops.update_task(self.conn, source, worktree=self.tmp.name)
         follower = self.task()
         ops.add_dep(self.conn, source, prerequisite, kind='waits-for')
         ops.add_dep(self.conn, follower, source, kind='blocks')
@@ -369,6 +373,10 @@ def sqlite_error():
 class PlannerDispatchCase(PipelineBase):
     def setUp(self):
         super().setUp()
+        # Publish the same configured repos to ledger access validation as to Pipeline.
+        self.repo_registry = patch('drover.repos.load_all', return_value=self.pipe.all_repos())
+        self.repo_registry.start()
+        self.addCleanup(self.repo_registry.stop)
         # Model the launcher's public adoption protocol with the same process handles.
         self.fl.adopt = lambda spec, started=None: self.fl.handles[spec['run_id']]
 
@@ -528,3 +536,120 @@ class Recovery(PlannerDispatchCase):
 
 def time_now(d):
     return d.now()
+
+class PlannerCommandExecution(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'executable stand-in runs on WSL')
+    def test_composed_planner_argv_runs_with_readonly_permissions(self):
+        import subprocess
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            executable = Path(root) / 'model-backend'
+            executable.write_text(f'#!{sys.executable}\n' +
+                                  'import json,sys\nprint(json.dumps({"argv":sys.argv[1:],"stdin":sys.stdin.read()}))\n')
+            executable.chmod(0o755)
+            for backend in ('claude', 'codex'):
+                spec = dict(role='planner', write=True, backend=backend, binary=str(executable),
+                            model='gpt-6.1-sol' if backend == 'codex' else 'opus-5.5', effort='high',
+                            cwd=root, placement='windows', system_append='planner policy', user_prompt='plan only')
+                argv, stdin = launch.build_argv(spec)
+                ran = subprocess.run(argv, input=stdin, capture_output=True, text=True, check=True, cwd=root)
+                observed = json.loads(ran.stdout)
+                self.assertEqual(observed['stdin'], 'plan only')
+                if backend == 'codex':
+                    self.assertEqual(observed['argv'][observed['argv'].index('-s') + 1], 'read-only')
+                else:
+                    permissions = json.loads(observed['argv'][observed['argv'].index('--settings') + 1])['permissions']
+                    self.assertTrue({'Edit', 'Write', 'Bash'} <= set(permissions['deny']))
+                    self.assertFalse({'Edit', 'Write', 'Bash'} & set(permissions['allow']))
+
+class PlannerRegressions(PlannerDispatchCase):
+    def test_cancelled_launch_stays_guarded_across_restart(self):
+        w = self.waiting()
+        tid = self.task()
+        w.request_replan(tid, 'owner-request')
+        original = self.fl.launch
+        def uncertain(spec):
+            original(spec)
+            raise launch.LaunchError('runner may still exist', cancel_requested=True)
+        self.fl.launch = uncertain
+        self.d.tick()
+        self.fl.launch = original
+        w.expire(self.d.now() + 1800)
+        restarted = self.make(scan_every_s=0)
+        restarted.tick()
+        self.assertEqual(len(self.planners()), 1)
+        self.fl.scan = lambda want_wsl=False: {}
+        restarted.tick()
+        self.assertEqual(len(self.planners()), 2)
+        latest = self.planners()[-1]
+        self.fl.handles[latest['run_id']].result = result('no-record', json.dumps(REVISE))
+        restarted.tick()
+        w.request_replan(tid, 'owner-request')
+        again = self.make(scan_every_s=0)
+        again.tick()
+        self.assertEqual(len(self.planners()), 3)
+
+    def test_same_commit_branch_switch_invalidates_inputs(self):
+        tid = self.task()
+        checkout = self.pipe.worktree(self.get(tid))
+        before = self.pipe.replan_inputs(self.get(tid))
+        self.fix.git('switch', '-c', 'different-branch', cwd=checkout)
+        after = self.pipe.replan_inputs(self.get(tid))
+        self.assertEqual(before['head'], after['head'])
+        self.assertNotEqual(before['branch'], after['branch'])
+
+
+class PlannerSplitBounds(LedgerCase):
+    inputs = Replans.inputs
+    request = Replans.request
+    start = Replans.start
+
+    def test_split_cannot_discard_required_acceptance_or_scope(self):
+        for field in ('acceptance', 'scope_files'):
+            w, tid, request = self.request()
+            started = self.start(w, request)
+            record = copy.deepcopy(SPLIT)
+            record['tasks'][0][field] = []
+            before = {t['id'] for t in ops.list_tasks(self.conn)}
+            w.finish_replan(request['id'], started['run_id'], contract.DONE, record, snapshot=self.inputs())
+            self.assertEqual({t['id'] for t in ops.list_tasks(self.conn)}, before)
+            self.assertNotEqual(self.status(tid), 'cancelled')
+
+class PlannerPredecessors(PlannerDispatchCase):
+    def test_worker_error_during_request_is_superseded_without_retry(self):
+        tid = self.task()
+        self.d.tick()
+        worker, = self.fl.of('worker')
+        self.waiting().request_replan(tid, 'owner-request')
+        self.fl.handles[worker['run_id']].result = result('no-record')
+        self.d.tick()
+        self.assertEqual(ops.list_runs(self.conn, tid)[0]['outcome'], 'unverified')
+        self.assertEqual(ops.events(self.conn, task_id=tid, kind='finish-error'), [])
+        self.assertEqual(len(self.planners()), 1)
+
+    def test_started_gate_and_review_finish_before_planner(self):
+        for stage in ('gate', 'review'):
+            with self.subTest(stage=stage):
+                tid = self.task()
+                self.d.tick()
+                sha = self.worker_commits(tid, stage + '.txt')
+                self.run_worker(tid, sha)
+                self.d.tick()
+                if stage == 'review':
+                    self.d.tick()
+                spec = next(s for s in reversed(self.fl.of(stage)) if s['task']['id'] == tid)
+                completed = self.fl.handles[spec['run_id']].result
+                self.fl.handles[spec['run_id']].result = None
+                request = self.waiting().request_replan(tid, 'owner-request')
+                self.d.tick()
+                self.assertFalse(any(s['task']['id'] == tid for s in self.planners()))
+                self.fl.handles[spec['run_id']].result = (result('no-record', json.dumps({
+                    'status': 'done', 'sha': sha, 'verdict': 'LAND@' + sha, 'findings': [], 'note': 'ok'}))
+                    if stage == 'review' else completed)
+                self.d.tick()
+                planner, = [s for s in self.planners() if s['task']['id'] == tid]
+                self.assertEqual(planner['request_id'], request['id'])
+                self.assertEqual(ops.list_runs(self.conn, tid)[0]['outcome'], 'unverified')
+                self.assertTrue(ops.events(self.conn, task_id=tid, kind='replan.stage-finished'))
+                self.assertEqual(self.status(tid), 'blocked')

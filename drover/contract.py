@@ -209,3 +209,64 @@ def parse_review_record(text):
                 return {"verdict": obj["verdict"], "findings": f[:20], "note": str(obj.get("note") or "")[:280],
                         "sha": str(obj.get("sha") or "")}
     return None
+
+
+def parse_replan_record(text) -> dict | None:
+    """Read one final planner object from a bounded UTF-8 tail, failing closed."""
+    import re
+    if not isinstance(text, str):
+        return None
+    tail = text.encode('utf-8')[-32768:].decode('utf-8', errors='replace').rstrip()
+    decoder = json.JSONDecoder()
+    objects = []
+    offset = 0
+    while offset < len(tail):
+        start = tail.find('{', offset)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(tail, start)
+        except ValueError:
+            # Do not mistake a nested object inside malformed JSON for a record.
+            return None
+        objects.append((obj, end))
+        offset = end
+    if len(objects) != 1 or objects[0][1] != len(tail):
+        return None
+    record = objects[0][0]
+
+    def string(value, limit):
+        return isinstance(value, str) and 0 < len(value) <= limit and bool(value.strip())
+
+    def spec(obj):
+        if not string(obj.get('goal'), 12000):
+            return False
+        acc, scope = obj.get('acceptance'), obj.get('scope_files')
+        if not isinstance(acc, list) or len(acc) > 30 or not all(string(a, 1000) for a in acc):
+            return False
+        if not isinstance(scope, list) or len(scope) > 100:
+            return False
+        return all(string(path, 240) and not path.startswith('/') and '\\' not in path
+                   and ':' not in path and all(part not in ('', '.', '..') for part in path.split('/'))
+                   for path in scope)
+
+    action = record.get('action')
+    if action == 'needs-owner':
+        valid = set(record) == {'action', 'question'} and string(record['question'], 2000)
+    elif action == 'revise':
+        valid = set(record) == {'action', 'goal', 'acceptance', 'scope_files'} and spec(record)
+    elif action == 'split':
+        children = record.get('tasks')
+        valid = set(record) == {'action', 'tasks'} and isinstance(children, list) and 2 <= len(children) <= 8
+        if valid:
+            valid = all(isinstance(t, dict) and set(t) == {'key', 'title', 'goal', 'acceptance', 'scope_files', 'deps'}
+                        and isinstance(t['key'], str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', t['key'])
+                        and string(t['title'], 200) and spec(t) and isinstance(t['deps'], list)
+                        and all(isinstance(d, str) for d in t['deps']) for t in children)
+        if valid:
+            keys = {t['key'] for t in children}
+            valid = len(keys) == len(children) and all(len(t['deps']) == len(set(t['deps']))
+                      and set(t['deps']) <= keys - {t['key']} for t in children)
+    else:
+        valid = False
+    return record if valid else None

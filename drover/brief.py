@@ -163,3 +163,32 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def assemble_replan(task, runs, findings, inputs, pinned=None) -> dict:
+    """A bounded director brief whose only output authority is a replan record."""
+    system = pinned if pinned is not None else pinned_text()
+    budget = BUDGET_TOKENS['M']
+    history = [{'id': r['id'], 'outcome': r.get('outcome'), 'note': (r.get('note') or '')[:NOTE_MAX],
+                'gate': _last_lines(str(r.get('gate_receipt') or ''), EXCERPT_LINES)} for r in runs[-20:]]
+    findings = [str(f)[:500] for f in findings[-20:]]
+    finish = ("Read-only planner: do not edit files, commit, or run commands needing write access. "
+              "End with exactly one final JSON object: "
+              '{"action":"revise","goal":"...","acceptance":["..."],"scope_files":["..."]}, '
+              '{"action":"split","tasks":[{"key":"a","title":"...","goal":"...",'
+              '"acceptance":["..."],"scope_files":["..."],"deps":[]}, ...]}, or '
+              '{"action":"needs-owner","question":"..."}. '
+              "Split into 2..8 children; dependencies name local keys. Preserve required acceptance and scope.")
+    def build():
+        return '\n\n'.join((_task_block({**task, 'write': False, 'description': task.get('goal')}), _scope_block(task.get('scope_files')),
+                              json.dumps(inputs, ensure_ascii=True), finish,
+                              _section('Recent runs', json.dumps(history)),
+                              _section('Findings', json.dumps(findings))))
+    user = build()
+    while estimate_tokens(system + user) > budget and (history or findings):
+        (history if history else findings).pop(0)
+        user = build()
+    tokens = estimate_tokens(system + user)
+    if tokens > budget:
+        raise BriefTooLarge(f"replan brief for {task['id']} exceeds {budget} tokens")
+    return dict(system_append=system, user_prompt=user, tokens=tokens, budget=budget)

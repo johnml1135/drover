@@ -146,6 +146,49 @@ class Pipeline:
     # ---- the unknown-gate question -------------------------------------------------------------------
 
 
+    def replan_inputs(self, task) -> dict:
+        """Inspect source and immutable context without creating a writable worktree."""
+        import hashlib
+        from . import task_access
+        prog = self.repo(task)
+        if prog is None:
+            raise WorktreeRefused('replan repo unavailable')
+        configured = self.all_repos()
+        entries = task.get('read_access') or [repos.repo_name(prog)]
+        reads = task_access.prepare(entries, configured=configured)
+        checkout = task.get('worktree')
+        branch = task.get('branch') or repos.default_branch(prog)
+        if not checkout or not placement.reachable(checkout):
+            own = task_access.prepare([f"{repos.repo_name(prog)}@{branch}"], configured=configured)
+            checkout = own[0]['path']
+            reads = own + [r for r in reads if r not in own]
+        task_access.verify(reads)
+        def inspect(*args):
+            return git(checkout, '--no-optional-locks', *args, check=True, timeout=60).stdout
+        head = inspect('rev-parse', 'HEAD').strip()
+        symbolic = git(checkout, '--no-optional-locks', 'symbolic-ref', '--quiet', 'HEAD', timeout=60)
+        if symbolic.returncode not in (0, 1):
+            raise WorktreeRefused('cannot inspect planner source branch')
+        branch = symbolic.stdout.strip() if symbolic.returncode == 0 else None
+        status = inspect('status', '--porcelain=v1', '-z', '--untracked-files=all')
+        # ls-files lists both index entries and untracked paths, without following links.
+        paths = inspect('ls-files', '-z', '--cached', '--others', '--exclude-standard').split('\0')
+        digest = hashlib.sha256()
+        digest.update(status.encode('utf-8'))
+        digest.update(inspect('ls-files', '--stage', '-z').encode('utf-8'))
+        root = Path(repos.native(checkout))
+        for name in sorted(set(paths) - {''}):
+            path = root / name
+            digest.update(name.encode('utf-8'))
+            if path.is_symlink():
+                digest.update(b'link:' + str(path.readlink()).encode('utf-8'))
+            elif path.is_file():
+                digest.update(b'file:' + hashlib.sha256(path.read_bytes()).digest())
+            else:
+                digest.update(b'missing')
+        return dict(repo=repos.repo_name(prog), branch=branch, head=head, dirty_digest=digest.hexdigest(),
+                    checkout=str(checkout), read_checkouts=reads)
+
     def prepare_dispatch(self, task) -> bool:
         """Require a known script and register one shared owner decision when absent."""
         from .ledger.waiting import OWNER_ANSWER, cause_key, repo_key

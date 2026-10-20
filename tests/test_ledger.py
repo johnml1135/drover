@@ -678,7 +678,7 @@ class MigrationTests(Base):
         self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name='gate_tickets'").fetchone())
         migrate(conn)
         slots.lease_request(conn, 'task', 'P1', holder='runner', at=100)
-        storage.record_base(conn, 'abc', 'green')
+        storage.record_base(conn, 'p', 'a' * 40, 'green')
         storage.record_merged(conn, {'id': 'task', 'last_sha': 'abc'}, 'tip', 'result')
         before = {name: [tuple(row) for row in conn.execute(f'PRAGMA table_info({name})')]
                   for name in ('gate_tickets', 'landing_lock', 'landing_batches', 'base_gate', 'task_landed')}
@@ -686,7 +686,7 @@ class MigrationTests(Base):
         for name, columns in before.items():
             self.assertEqual([tuple(row) for row in conn.execute(f'PRAGMA table_info({name})')], columns)
         self.assertEqual(slots.lease_queue(conn)[0]['holder'], 'runner')
-        self.assertEqual(storage.base_status(conn, 'abc'), 'green')
+        self.assertEqual(storage.base_status(conn, 'p', 'a' * 40), 'green')
         self.assertEqual(storage.land_sha(conn, 'task'), 'abc')
         self.assertEqual(migrate(conn), MIGRATIONS[-1][0])
 

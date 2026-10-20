@@ -260,6 +260,13 @@ class Dispatcher:
 
     def _give_up(self, run_id, task_id, exc):
         p = self.port
+        spec = self.live.get(run_id, (None, None, {}))[2]
+        if spec.get('role') == 'planner':
+            try:
+                p.waiting.finish_replan(spec['request_id'], run_id, contract.UNVERIFIED, now=self.now())
+            except Exception as error:
+                self._safe_event('replan-recovery-needed', {'run': run_id, 'error': repr(error)[:300]}, task_id)
+            return
         for fn in (lambda: p.finish_run(run_id, "error", note=f"finish failed: {exc!r}"[:300]),
                    lambda: p.set_status(task_id, "needs-owner", reason=f"could not finish run {run_id}: {exc!r}"[:300])):
             try:
@@ -281,10 +288,15 @@ class Dispatcher:
         if result.get("tail_error"):
             p.append_event("tail-error", {"run": run_id, "error": result["tail_error"]}, task_id)
         role = spec.get("role", "worker")
+        if role == "planner":
+            return self._finish_planner(run_id, task_id, spec, result)
         if role == "gate":
             return self._finish_gate(run_id, task_id, spec, result)
         if role == "review":
             return self._finish_review(run_id, task_id, spec, result)
+        if any(r['task_id'] == task_id for r in p.waiting.replans()) and st not in (contract.DONE, 'ready_to_commit'):
+            # A request supersedes this worker; its failure must not start another stage.
+            return p.finish_run(run_id, contract.UNVERIFIED, note=note, **usage)
         try:
             task_access.verify(spec.get("read_checkouts") or [])
             if (spec.get("adopted") and p.get_task(task_id).get("read_access")
@@ -495,7 +507,7 @@ class Dispatcher:
         self.ci_runners.heartbeat({tid for _, tid, spec in self.live.values() if spec.get("role") == "gate"})
         for t in p.list_tasks("running"):
             runs = p.list_runs(t["id"])
-            if t["id"] in live_tasks or not self._awaiting_gate(runs):
+            if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or not self._awaiting_gate(runs):
                 continue
             try:
                 if self._begin_gate(t, runs):
@@ -583,6 +595,11 @@ class Dispatcher:
                            note=(None if passed else excerpt.splitlines()[0][:280]),
                            tokens_in=0, tokens_out=0, tokens_cached=0)
         self.ci_runners.release(task_id)
+        request = next((r for r in p.waiting.replans() if r['task_id'] == task_id), None)
+        if request:
+            p.append_event('replan.stage-finished', {'request': request['id'], 'run': run_id,
+                           'worker': worker_id, 'stage': 'gate', 'receipt': receipt}, task_id)
+            return
         if not passed and infra:
             return self._gate_infra_retry(task_id, worker_id, sha, run_id, excerpt)
         prog = self.pipeline.repo(task)
@@ -654,6 +671,78 @@ class Dispatcher:
         return d if isinstance(d, dict) else None
 
     # ---- review ---------------------------------------------------------------------------------------
+    def _start_replans(self, policy, admitted, slots) -> list[int]:
+        from .ledger.waiting import REPLAN
+        p, started = self.port, []
+        for request in p.waiting.replans():
+            if len(started) >= slots:
+                break
+            tid, task = request['task_id'], request['task']
+            if request['state'] != 'queued' or request['active_run'] or task['archived'] or task['status'] in states.TERMINAL:
+                continue
+            if any(r['kind'] != REPLAN for r in request['pending']) or any(t == tid for _, t, _ in self.live.values()) or any(t == tid for t, _, _ in self.cancelling.values()):
+                continue
+            route = self._route({**task, 'role': 'planner', 'model_pin': None}, policy, admitted)
+            if route.get('backend') not in admitted:
+                continue
+            try:
+                inputs = self.pipeline.replan_inputs(task)
+                prog = self.pipeline.repo(task)
+                placement, why = place(task, route, inputs['checkout'], prog)
+                if placement is None or self._is_unavailable(route['backend'], placement):
+                    continue
+                if placement == 'wsl' and (not self.launcher.wsl_up() or self._wsl_blocked()):
+                    continue
+                b = brief_mod.assemble_replan(task, p.list_runs(tid), p.owner_notes(tid), inputs)
+            except (OSError, ValueError, WorktreeRefused) as exc:
+                p.waiting.delay(tid, 'planner', 'replan-inputs', self.now(), minutes=1)
+                p.append_event('replan-deferred', {'request': request['id'], 'reason': str(exc)[:300]}, tid)
+                continue
+            attached = p.waiting.start_replan(request['id'], route, inputs, now=self.now())
+            if attached is None:
+                continue
+            run_id = attached['run_id']
+            try:
+                fresh = self.pipeline.replan_inputs(p.get_task(tid))
+                if inputs != fresh:
+                    raise ValueError('planner inputs moved before launch')
+                task_access.verify(inputs['read_checkouts'])
+            except (ValueError, OSError, WorktreeRefused):
+                p.waiting.finish_replan(request['id'], run_id, contract.UNVERIFIED, now=self.now())
+                continue
+            launched = self._spawn({**task, 'write': False, 'read_checkouts': inputs['read_checkouts'],
+                                    'read_dirs': [r['path'] for r in inputs['read_checkouts']]},
+                                   route, policy, placement, inputs['checkout'], b, 'planner',
+                                   {'request_id': request['id'], 'snapshot': attached['snapshot'],
+                                    'wall_s': 600, 'idle_s': 120}, run_id=run_id)
+            if launched is not None:
+                started.append(launched)
+        return started
+
+    def _finish_planner(self, run_id, task_id, spec, result):
+        p, u = self.port, result['usage']
+        usage = {k: u[k] for k in ('tokens_in', 'tokens_out', 'tokens_cached')}
+        usage['allowance_used'] = self._allowance_used(spec)
+        record = None
+        if result.get('provider_error'):
+            outcome = contract.PROVIDER_ERROR
+        elif result['status'] == contract.TIMEOUT:
+            outcome = contract.TIMEOUT
+        elif result['status'] == contract.ERROR:
+            outcome = contract.ERROR
+        else:
+            record = contract.parse_replan_record(result.get('text') or '')
+            outcome = contract.DONE if record else contract.NO_RECORD
+        if spec.get('launch_cancelled'):
+            outcome = contract.UNVERIFIED
+        try:
+            task_access.verify(spec.get('read_checkouts') or [])
+            fresh = self.pipeline.replan_inputs(p.get_task(task_id))
+        except (ValueError, OSError, WorktreeRefused):
+            fresh, outcome = None, contract.UNVERIFIED
+        return p.waiting.finish_replan(spec['request_id'], run_id, outcome, record, usage,
+                                      snapshot=fresh, now=self.now())
+
     def _start_reviews(self, policy, admitted, slots):
         """Start a fresh review run for each gated task that has none. Derived from the ledger each tick."""
         p, started = self.port, []
@@ -662,7 +751,7 @@ class Dispatcher:
             if len(started) >= slots:
                 break
             runs = p.list_runs(t["id"])
-            if t["id"] in live_tasks or not self._awaiting_review(runs):
+            if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or not self._awaiting_review(runs):
                 continue
             try:
                 if self._begin_review(t, runs, policy, admitted):
@@ -748,6 +837,17 @@ class Dispatcher:
                      allowance_used=self._allowance_used(spec))
         rec = contract.parse_review_record(result.get("text") or "") if result["status"] in ("done", "blocked", "no-record") else None
         verdict = str((rec or {}).get("verdict") or "").strip()
+        request = next((r for r in p.waiting.replans() if r['task_id'] == task_id), None)
+        if request:
+            outcome = contract.PROVIDER_ERROR if result.get('provider_error') else (
+                contract.LAND if rec and rec.get('verdict') == f'LAND@{sha}' else
+                contract.HOLD if rec and rec.get('verdict') == 'HOLD' and rec.get('findings') else
+                contract.TIMEOUT if result['status'] == contract.TIMEOUT else
+                contract.ERROR if result['status'] == contract.ERROR else contract.NO_RECORD)
+            p.finish_run(run_id, outcome, review_verdict=verdict or None, **usage)
+            p.append_event('replan.stage-finished', {'request': request['id'], 'run': run_id,
+                           'worker': worker_id, 'stage': 'review', 'receipt': rec}, task_id)
+            return
         landed = re.fullmatch(r"LAND@([0-9a-fA-F]{40})", verdict)       # the whole sha: a prefix is not a licence
         if landed and sha and sha.lower() == landed.group(1).lower():
             head = self.pipeline.head(p.get_task(task_id))
@@ -816,12 +916,16 @@ class Dispatcher:
             return p.set_status(task["id"], "needs-owner", reason="task has no worktree")
         return self._spawn(task, route, policy, placement, cwd, b, "worker")
 
-    def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None):
+    def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
         """Start one run of `role` (worker or review) for the brief `b`; returns its run id, or None on a launch error."""
         p = self.port
         effort = route.get("effort") if role == "review" and route.get("effort") else effort_for(
             route["model"], route.get("effort"))
-        run_id = p.start_run(task["id"], role, route["backend"], route["model"], effort)
+        if run_id is None:
+            run_id = p.start_run(task["id"], role, route["backend"], route["model"], effort)
+        elif not any(r['id'] == run_id and r['role'] == role and r['ended'] is None
+                     for r in p.list_runs(task['id'])):
+            raise ValueError('preattached run mismatch')
         nonce = uuid.uuid4().hex
         seat = seat_of(route)
         if hasattr(p, "set_run_context"):
@@ -831,17 +935,19 @@ class Dispatcher:
         spec = {"run_config": repos.run_config(prog), "run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
                 "seat": seat["name"] if seat else None, "binary": seat["binary"] if seat else route["backend"],
                 "env": config_mod.seat_env(seat),
-                "write": task.get("write", True), "read_dirs": task.get("read_dirs", []),
+                "write": False if role == "planner" else task.get("write", True), "read_dirs": task.get("read_dirs", []),
                 "read_checkouts": task.get("read_checkouts", []),
-                "sandbox": "read-only" if role == "review" or task.get("write") is False else (seat or {}).get("sandbox", "workspace-write"),
+                "sandbox": "read-only" if role in ("review", "planner") or task.get("write") is False else (seat or {}).get("sandbox", "workspace-write"),
                 "cwd": cwd, "placement": placement, "nonce": nonce, "task": task, "wall_s": self._wall_s(task, policy),
                 "idle_s": self._idle_s(policy), "system_append": b["system_append"], "user_prompt": b["user_prompt"],
                 "allowance_before": contract.used_from_headroom(self._reading_for_route(route)), **(extra or {})}
+        if role == "planner":
+            spec.update(write=False, sandbox='read-only', wall_s=600, idle_s=120)
         if role == "review":
             p.append_event("review-started", {"run": run_id, "sha": extra["sha"], "worker_run": extra["worker_run"]},
                            task["id"])
         p.append_event("dispatch.access", {"run": run_id, "read_checkouts": spec["read_checkouts"],
-                                           "write": spec["write"]}, task["id"])
+                                           "write": spec["write"], **({k: spec[k] for k in ("request_id", "snapshot")} if role == "planner" else {})}, task["id"])
         p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce}, task["id"])  # before any start
         try:
             handle = self.launcher.launch(spec)
@@ -860,6 +966,16 @@ class Dispatcher:
         A gate or review launch error leaves the task where it is (the next tick derives the same work again)."""
         p, tid = self.port, task["id"]
         cancelled = getattr(exc, "cancel_requested", False)
+        if role == 'planner':
+            request = next(r for r in p.waiting.replans() if r['current_run'] == run_id)
+            if cancelled:
+                p.append_event('launch-cancel', {'run': run_id, 'placement': placement}, tid)
+                self.cancelling[run_id] = (tid, placement, nonce)
+            p.waiting.finish_replan(request['id'], run_id, contract.LAUNCH_ERROR,
+                                   snapshot=request['snapshot']['inputs'], now=self.now())
+            if getattr(exc, 'missing', False) or isinstance(exc, FileNotFoundError):
+                self.unavailable[(route['backend'], placement)] = self.now()
+            return None
         p.finish_run(run_id, "launch-error", note=(f"launch failed: {exc}"[:270] + (" cancel-requested" if cancelled else "")))
         if getattr(exc, "missing", False) or isinstance(exc, FileNotFoundError):
             self.unavailable[(route["backend"], placement)] = self.now()
@@ -909,6 +1025,22 @@ class Dispatcher:
             for t in self.port.list_tasks(status):
                 if t["id"] not in live_tasks:
                     out += [(t, r) for r in self.port.list_runs(t["id"]) if r["ended"] is None]
+        seen = {r['id'] for _, r in out}
+        # Planner sources are parked, and terminal sources can still have a run to reap.
+        access = {e['data']['run']: e['task_id'] for e in self.port.events('dispatch.access')
+                  if 'request_id' in e['data']}
+        for run_id, tid in access.items():
+            if run_id in seen or run_id in self.live:
+                continue
+            for run in self.port.list_runs(tid):
+                if run['id'] == run_id and run['ended'] is None:
+                    out.append((self.port.get_task(tid), run))
+                    seen.add(run_id)
+        for request in self.port.waiting.replans():
+            for run in self.port.list_runs(request['task_id']):
+                if run['ended'] is None and run['id'] not in seen and run['id'] not in self.live:
+                    out.append((request['task'], run))
+                    seen.add(run['id'])
         return out
 
     def _scan(self, want_wsl):
@@ -949,10 +1081,17 @@ class Dispatcher:
         Returns the requeued task ids."""
         p, policy = self.port, self.port.get_policy()
         places, nonces = self._placements(), self._nonces()
+        cleared = {e['data']['run'] for e in p.events('launch-cancel-cleared')}
+        planner_launches = {e['data']['run'] for e in p.events('dispatch.access') if 'request_id' in e['data']}
+        pending_sources = {r['task_id'] for r in p.waiting.replans()}
+        for event in p.events('launch-cancel'):
+            rid = event['data']['run']
+            if rid in planner_launches and rid not in cleared and event['task_id'] in pending_sources:
+                self.cancelling[rid] = (event['task_id'], places.get(rid, 'unknown'), nonces.get(rid))
         recovered, live_tasks = [], {tid for _, tid, _ in self.live.values()}
         for t in p.list_tasks("running"):
             runs = p.list_runs(t["id"])
-            if t["id"] in live_tasks or any(r["ended"] is None for r in runs):
+            if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or any(r["ended"] is None for r in runs):
                 continue
             last = runs[-1] if runs else None
             if last and last["outcome"] == "launch-error" and "cancel-requested" in (last["note"] or ""):
@@ -985,6 +1124,14 @@ class Dispatcher:
                       if e["data"].get("run") == run["id"]), {})
         if "read_checkouts" in saved:
             spec.update(read_checkouts=saved["read_checkouts"], write=saved.get("write", True))
+        if run['role'] == 'planner':
+            if 'request_id' not in saved:
+                request = next(r for r in self.port.waiting.replans() if r['current_run'] == run['id'])
+                saved = {**saved, 'request_id': request['id'], 'snapshot': request['snapshot']}
+            spec.update(request_id=saved['request_id'], snapshot=saved['snapshot'], write=False,
+                        launch_cancelled=run['id'] in self.cancelling,
+                        sandbox='read-only', wall_s=600, idle_s=120)
+            spec.setdefault('read_checkouts', saved['snapshot']['inputs']['read_checkouts'])
         if hasattr(self.port, "conn"):
             row = self.port.conn.execute('SELECT data FROM run_stats WHERE run_id=?', (run["id"],)).fetchone()
             if row:
@@ -1019,6 +1166,7 @@ class Dispatcher:
                 continue
             del self.cancelling[rid]
             p = self.port
+            p.append_event("launch-cancel-cleared", {"run": rid}, tid)
             if p.get_task(tid)["status"] == "running" and not any(r["ended"] is None for r in p.list_runs(tid)):
                 p.set_status(tid, "ready", reason="cancelled launch: no runner holds the run")
                 out.append(tid)
@@ -1038,6 +1186,10 @@ class Dispatcher:
         handle.cancel()
         self.missed.pop(run_id, None)
         p = self.port
+        if spec.get('role') == 'planner':
+            p.waiting.finish_replan(spec['request_id'], run_id, contract.ORPHANED,
+                                   snapshot=spec['snapshot']['inputs'], now=self.now())
+            return task_id
         p.finish_run(run_id, "orphaned", note="runner gone with no terminal status")
         if spec.get("role") in ("gate", "review"):
             self.ci_runners.release(task_id)               # the gate or review is derived again from the ledger next tick
@@ -1195,6 +1347,7 @@ class Dispatcher:
         policy = p.get_policy()
         enabled = truthy(p.get_setting("dispatch_enabled", "false"))
         p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self.ci_runners.snapshot()})
+        planner_tasks = {tid for _, tid, sp in self.live.values() if sp.get("role") == "planner"}
         out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
         if not self.recovered:
@@ -1228,7 +1381,11 @@ class Dispatcher:
         slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0))
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
         slots -= len(out["reviewed"])
+        out["planned"] = self._start_replans(policy, admitted, max(slots, 0))
+        slots -= len(out["planned"])
         skip = {row["subject_key"] for row in p.waiting.pending() if row["subject_kind"] == "task"}
+        skip.update(planner_tasks)
+        skip.update(tid for _, tid, _ in self.live.values())
         while slots > 0:
             task = p.claim_next({}, exclude=skip)
             if task is None:

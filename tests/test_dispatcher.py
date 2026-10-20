@@ -222,7 +222,7 @@ class RetryEscalate(Base):
         self.d.tick()
         for i in range(6):
             self.run_fail(i)
-        models = [sp["model"] for sp in self.fl.specs]
+        models = [sp["model"] for sp in self.fl.specs if sp.get("role") == "worker"]
         self.assertEqual(models, ["haiku-5.5", "haiku-5.5", "sonnet-5.5", "sonnet-5.5", "opus-5.5", "opus-5.5"])
         self.assertEqual(self.status(t), "blocked")
         ev = self.events("replan-request")
