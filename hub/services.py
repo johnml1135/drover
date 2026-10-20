@@ -42,20 +42,6 @@ def repo_path(name):
     return str(path)
 
 
-def remove_worktree_row(repo, row, base="origin/main"):
-    """Remove one approved row's worktree with garden.py's own checks (clean, not busy, no lock note, rescue tag
-    for unmerged commits). Returns garden's {ok, reason|record}."""
-    from drover import garden
-    wt = (row.get("worktree") or "").strip()
-    common, found = garden.entries(repo)
-    entry = next((e for e in found if garden.norm_path(e.path) == garden.norm_path(wt)), None)
-    if entry is None:
-        return {"ok": False, "reason": "no such linked worktree"}
-    if entry.side != garden.this_side():
-        return {"ok": False, "reason": "the other side's worktree"}
-    return garden.remove_worktree(common, entry, base, garden.Proc(), delete_branch=False)
-
-
 def real_disks():
     from drover import resources
     free = resources.read_disks(resources.is_windows())
@@ -226,16 +212,16 @@ class Services:
         self.store.add_event(f"garden.row.{kind}", "garden", {"batch": batch, "branch": row["branch"], **data})
 
     def default_remove(self, repo, row):
-        """One approved row: a worktree goes through garden.remove_worktree, a branch with no worktree through
-        garden.delete_branch (local only; snapshot/archive batches also get a bundle)."""
-        from drover import garden
+        """One approved row: explicit branch disposition; worktrees await the disk interface."""
+        from drover import cleanup
         path = repo_path(repo)
         if (row.get("worktree") or "").strip():
-            return remove_worktree_row(path, row)
+            return {"ok": False, "report_only": True, "reason_code": "worktree-cleanup-unavailable",
+                    "reason": "Worktree cleanup is report-only until the disk cleanup interface is available"}
 
         def log(step, **data):
             self.store.add_event(f"garden.branch.{step}", "garden", {"batch": self._current, **data})
-        return garden.delete_branch(path, row["branch"], row, log=log, rescue_root=self.rescue_root,
+        return cleanup.delete_branch(path, row["branch"], row, log=log, rescue_root=self.rescue_root,
                                     bundle=row.get("group") == "owner-review-snapshot")
 
     def run_garden(self, batch):

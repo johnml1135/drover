@@ -1,9 +1,9 @@
-"""garden.delete_branch: branch-only deletion with fresh checks, rescue refs and bundles, in temp repos."""
+"""cleanup.delete_branch: branch-only deletion with fresh checks, rescue refs and bundles, in temp repos."""
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import garden
+from drover import cleanup
 from tests.gitfix import Repo, sh
 
 NOW = 1_792_000_000  # a fixed day
@@ -22,7 +22,7 @@ class Base(unittest.TestCase):
         self.out = self.r.root / "rescue"
 
     def run_del(self, branch, approved=None, **kw):
-        return garden.delete_branch(self.r.repo, branch, approved if approved is not None else row(branch),
+        return cleanup.delete_branch(self.r.repo, branch, approved if approved is not None else row(branch),
                                     log=lambda step, **d: self.events.append((step, d)), now=NOW,
                                     rescue_root=self.out, **kw)
 
@@ -127,7 +127,7 @@ class TestFailClosed(Base):
         self.refused(self.run_del("feat/x"), "does not resolve")
 
     def test_cherry_error_is_not_merged(self):
-        real = garden.git
+        real = cleanup.git
 
         def fake(cwd, *args, **kw):
             if "cherry" in args:
@@ -135,11 +135,11 @@ class TestFailClosed(Base):
                 r.returncode, r.stdout = 128, ""
                 return r
             return real(cwd, *args, **kw)
-        with mock.patch.object(garden, "git", fake):
+        with mock.patch.object(cleanup, "git", fake):
             self.refused(self.run_del("feat/x", approved=row("feat/x", "land-task")), "not approved")
 
     def test_merge_base_error_refuses(self):
-        real = garden.git
+        real = cleanup.git
 
         def fake(cwd, *args, **kw):
             if "merge-base" in args:
@@ -147,18 +147,18 @@ class TestFailClosed(Base):
                 r.returncode = 128
                 return r
             return real(cwd, *args, **kw)
-        with mock.patch.object(garden, "git", fake):
+        with mock.patch.object(cleanup, "git", fake):
             self.refused(self.run_del("feat/x"), "git error")
 
     def test_worktree_list_error_refuses(self):
-        real = garden.git
+        real = cleanup.git
 
         def fake(cwd, *args, **kw):
             r = real(cwd, *args, **kw)
             if "worktree" in args:
                 r.returncode = 1
             return r
-        with mock.patch.object(garden, "git", fake):
+        with mock.patch.object(cleanup, "git", fake):
             self.refused(self.run_del("feat/x"), "git error")
 
     def test_hostile_branch_names(self):
@@ -179,7 +179,7 @@ class TestFailClosed(Base):
         self.assertEqual(self.r.git("rev-parse", taken), self.r.git("rev-parse", "origin/main"))
 
     def test_moved_branch_is_not_deleted(self):
-        real = garden.git
+        real = cleanup.git
         moved = []
 
         def fake(cwd, *args, **kw):
@@ -187,7 +187,7 @@ class TestFailClosed(Base):
                 moved.append(1)
                 real(cwd, "update-ref", "refs/heads/feat/x", real(cwd, "rev-parse", "origin/main").stdout.strip())
             return real(cwd, *args, **kw)
-        with mock.patch.object(garden, "git", fake):
+        with mock.patch.object(cleanup, "git", fake):
             res = self.run_del("feat/x")
         self.assertFalse(res["ok"])
         self.assertTrue(self.exists("feat/x"))

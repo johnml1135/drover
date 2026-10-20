@@ -7,10 +7,11 @@ config. Git is always driven with an argv list, never a shell. Paths in the ledg
 import json
 import re
 import subprocess
+import time
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, garden, ci, placement, origin, repos
+from . import config, ownership, ci, placement, origin, repos
 from .ledger import states
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -178,8 +179,8 @@ class Pipeline:
     # ---- worktrees -----------------------------------------------------------------------------------
     def worktree(self, task):
         """The task's worktree path (config form), created on first use. Idempotent: a persisted worktree is reused.
-        An existing worktree is used only when it is clean or the task owns it (garden tag owner drover:<id>);
-        otherwise WorktreeRefused. Syncs local main first, branches from it, tags for garden."""
+        An existing worktree is used only when it is clean or the task owns it (ownership tag owner drover:<id>);
+        otherwise WorktreeRefused. Syncs local main first, branches from it, renews ownership."""
         tid = task["id"]
         if not TASK_ID_RE.match(str(tid)):
             raise WorktreeRefused(f"task id {tid!r} is not safe in a path")
@@ -213,6 +214,10 @@ class Pipeline:
                 why = f"worktree {reuse} has a gitdir pointer that could not be made relative; left untouched"
             elif not dirty:
                 reuse_cfg = placement.config_path(path, repos.repo_path(prog))
+                try:
+                    ownership.tag(path, repos.repo_name(prog), OWNER_PREFIX + tid, time.time() + 86400)
+                except (ValueError, OSError, subprocess.SubprocessError) as e:
+                    raise WorktreeRefused(f"could not record ownership of {path}: {e}") from e
                 if reuse_cfg != t.get("worktree") or branch != t.get("branch"):
                     self._persist(tid, branch, reuse_cfg)
                 return reuse_cfg
@@ -253,11 +258,7 @@ class Pipeline:
 
     @staticmethod
     def _owned(path, tid):
-        try:
-            tag = garden.read_tag(garden.admin_dir_of(path)) or {}
-        except (ValueError, OSError):
-            return False
-        return tag.get("owner") == OWNER_PREFIX + tid
+        return ownership.owned_by(path, OWNER_PREFIX + tid)
 
     def _create(self, t, prog, repo, branch, source=None):
         tid, remote, default = t["id"], repos.remote_name(prog), repos.default_branch(prog)
@@ -295,11 +296,10 @@ class Pipeline:
         else:
             Path(dest).parent.mkdir(parents=True, exist_ok=True)
             self._add(repo, dest, branch, base, remote)
-            try:
-                garden.tag_worktree(dest, repos.repo_name(prog), "slice", owner=OWNER_PREFIX + tid, purpose=str(t["title"])[:120],
-                                    base=base)
-            except (ValueError, OSError) as e:
-                raise WorktreeRefused(f"created {dest} but could not tag it for garden: {e}")
+        try:
+            ownership.tag(dest, repos.repo_name(prog), OWNER_PREFIX + tid, time.time() + 86400)
+        except (ValueError, OSError, subprocess.SubprocessError) as e:
+            raise WorktreeRefused(f"created {dest} but could not record ownership: {e}") from e
         self._persist(tid, branch, dest_cfg)
         return dest_cfg
 

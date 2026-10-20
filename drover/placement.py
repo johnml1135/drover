@@ -738,3 +738,189 @@ def recover_ci_children(platform, status, drover_dir, distro_name=None):
             raise ScanError('cannot confirm WSL CI child termination')
         return result.returncode == 0
     return stop_ci_children(status)
+
+
+# ---- cleanup placement facts -----------------------------------------------------------------------------
+
+def worktree_side(path: str, lock: str | None = None) -> str | None:
+    """Owning side from explicit marker or unambiguous raw administrative path."""
+    if lock in ('windows', 'wsl'):
+        return lock
+    if lock:
+        return None
+    text = str(path)
+    if WIN_RE.match(text.removeprefix('\\\\?\\')):
+        return 'windows'
+    if text.startswith('/') and not text.startswith('//') and not MNT_RE.match(text):
+        return 'wsl'
+    return None
+
+
+def physical_disk_path(path: str) -> str | None:
+    """Native physical root; Linux contents in WSL are charged to their VHDX host drive."""
+    letter = drive(path)
+    if letter:
+        return native(letter + ':/')
+    if not is_linux_native(path):
+        return None
+    if IS_WINDOWS:
+        host = detect_vhdx_drives().get(distro())
+        letter = drive(host + '/') if host else None
+        return native(letter + ':/') if letter else None
+    if os.environ.get('WSL_DISTRO_NAME'):
+        host = vhdx_dir()
+        letter = drive(host) if host else None
+        return native(letter + ':/') if letter else None
+    return '/'
+
+
+def _cleanup_path(path, windows):
+    text = str(path).strip().strip('"\'')
+    if windows:
+        import ntpath
+        return ntpath.normpath(text).replace('\\', '/').rstrip('/').casefold()
+    return str(Path(text).resolve()).rstrip('/') or '/'
+
+
+def cleanup_processes(*, proc_root=None, cim=None, windows=None):
+    """Snapshot once; unknown process visibility always retains candidates."""
+    return _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows)
+
+
+def _cim_rows():
+    """(cwd, command line) for every process via CIM; raises on failure or timeout. CIM exposes no cwd."""
+    out = subprocess.run(
+        ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+         'Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress'],
+        capture_output=True, text=True, timeout=30, errors='replace', **NO_WINDOW)
+    if out.returncode or not out.stdout.strip():
+        raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
+    data = json.loads(out.stdout)
+    data = [data] if isinstance(data, dict) else data
+    return [(None, ' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')]))) for d in data
+            if d.get('ProcessId') != os.getpid()]
+
+
+class _CleanupProcesses:
+    """One snapshot of running processes per run. A worktree is busy when any process has its cwd there or names its
+    path on its command line. If the snapshot cannot be taken (no /proc, CIM failed or timed out) everything is
+    busy: unknown fails safe, and keeps the worktree.
+
+    `windows` forces the CIM path (tests inject `cim`); the default follows os.name.
+    """
+
+    def __init__(self, proc_root=None, windows=None, cim=None):
+        self.rows, self.unknown = [], False
+        windows = IS_WINDOWS if windows is None else windows
+        self.windows = windows
+        if windows:
+            try:
+                self.rows = (cim or _cim_rows)()
+            except (OSError, ValueError, subprocess.SubprocessError):
+                self.unknown = True
+            return
+        self.root = Path(proc_root if proc_root is not None else '/proc')
+        if not self.root.is_dir():
+            self.unknown = True
+            return
+        try:
+            entries = list(self.root.iterdir())
+        except OSError:
+            self.unknown = True
+            return
+        for entry in entries:
+            if not entry.name.isdigit() or int(entry.name) == os.getpid():
+                continue
+            try:
+                cmd = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+            except FileNotFoundError:
+                if entry.exists():
+                    self.unknown = True
+                continue
+            except OSError:
+                self.unknown = True
+                cmd = None
+            try:
+                cwd = str((entry / 'cwd').resolve(strict=True))
+            except FileNotFoundError:
+                # Kernel threads have neither userspace argv nor cwd; live userspace
+                # processes with invisible cwd do not provide an idle proof.
+                if cmd and entry.exists():
+                    self.unknown = True
+                continue
+            except OSError:
+                self.unknown = True
+                cwd = None
+            self.rows.append((cwd, cmd))
+
+    def busy(self, worktree):
+        if self.unknown:
+            return True
+        worktree = _cleanup_path(worktree, self.windows)
+        for cwd, cmd in self.rows:
+            if cwd is not None and (_cleanup_path(cwd, self.windows) == worktree or _cleanup_path(cwd, self.windows).startswith(worktree + '/')):
+                return True
+            if cmd is None and cwd is None:
+                return True  # cannot prove safety
+            if cmd:
+                text = cmd.replace('\\', '/')
+                text = text.casefold() if self.windows else text
+                target = worktree.casefold() if self.windows else worktree
+                if re.search(r"(?:^|[\s\"'=])" + re.escape(target) + r'(?=$|[/\s"\'])', text):
+                    return True
+        return False
+
+
+
+_METADATA_IO = r'''
+import json, os, sys, tempfile
+from pathlib import Path
+path = Path(sys.argv[1]) / sys.argv[2]
+content = json.load(sys.stdin)
+if content is None:
+    try:
+        print(path.read_text(encoding='utf-8'), end='')
+    except FileNotFoundError:
+        pass
+else:
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', delete=False) as stream:
+            name = stream.name
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        name = None
+        print(content, end='')
+    finally:
+        if name is not None:
+            os.unlink(name)
+'''
+
+
+def worktree_metadata(worktree: str, filename: str, content: str | None = None) -> str | None:
+    """Read/write a linked worktree's admin file on its owning host, replacing atomically."""
+    if not filename or filename in ('.', '..') or any(c in filename for c in '/\\\0:'):
+        raise ValueError('metadata filename must be a basename')
+    try:
+        admin = git(worktree, 'rev-parse', '--absolute-git-dir', timeout=30)
+        common = git(worktree, 'rev-parse', '--path-format=absolute', '--git-common-dir', timeout=30)
+        if admin.returncode or common.returncode or not admin.stdout.strip() or \
+                admin.stdout.strip() == common.stdout.strip():
+            raise OSError('cannot resolve linked worktree admin directory')
+        remote = routes_through_wsl(worktree)
+        directory = admin.stdout.strip() if remote else native(admin.stdout.strip())
+        argv = ['python3' if remote else sys.executable, '-c', _METADATA_IO, directory, filename]
+        if remote:
+            argv = WSL().command(argv)
+        result = subprocess.run(argv, input=json.dumps(content), text=True, encoding='utf-8',
+                                capture_output=True, timeout=30, **NO_WINDOW)
+        if result.returncode:
+            raise OSError(result.stderr.strip() or 'worktree metadata IO failed')
+        return result.stdout or None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        if content is not None:
+            raise
+        return None

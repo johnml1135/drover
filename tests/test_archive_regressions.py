@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from drover import garden
 from drover.ledger import ops
 from hub.store import Store
 
@@ -77,15 +76,3 @@ class ArchiveRegressions(unittest.TestCase):
                 self.assertEqual([t['id'] for t in self.store.list_tasks(include_archived=True)], [task_id])
         self.store.archive_task(task_id, False)
         self.assertEqual([t['id'] for t in self.store.list_tasks()], [task_id])
-
-    def test_branch_discovery_deduplicates_archived_tasks(self):
-        repo = Path(self.tmp.name) / 'acme-lib'
-        items = [{'branch': 'feature/update', 'reason': 'Useful work'}]
-        task_id, = garden.make_tasks_for_valuable(self.conn, repo, items)
-        ops.archive_task(self.conn, task_id)
-        self.assertEqual(garden.make_tasks_for_valuable(self.conn, repo, items), [])
-        self.assertEqual(ops.list_tasks(self.conn), [])
-        self.assertEqual([t['id'] for t in ops.list_tasks(self.conn, include_archived=True)], [task_id])
-        task = ops.archive_task(self.conn, task_id, False)
-        self.assertEqual(task['branch'], 'feature/update')
-        self.assertEqual([t['id'] for t in ops.list_tasks(self.conn)], [task_id])

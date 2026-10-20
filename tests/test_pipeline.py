@@ -369,7 +369,7 @@ class Worktrees(Base):
         t = self.get(tid)
         self.assertEqual((t["branch"], t["worktree"]), (f"drover/{tid}", wt))
         self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "origin/main"))
-        tag = pipeline.garden.read_tag(pipeline.garden.admin_dir_of(wt))
+        tag = pipeline.ownership.read(wt)
         self.assertEqual((tag["owner"], tag["repo"]), (pipeline.OWNER_PREFIX + tid, "p"))
         self.assertEqual(self.pipe.worktree(self.get(tid)), wt)             # idempotent
 

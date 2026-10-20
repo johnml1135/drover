@@ -73,3 +73,50 @@ class Ownership(unittest.TestCase):
             self.assertEqual(pipe.worktree(task), acquired)
         self.assertEqual(ownership.read(acquired)['lease_until'], NOW + 86500)
         self.assertEqual((Path(acquired) / 'base.txt').read_text(), 'unfinished task work\n')
+
+    def test_metadata_io_crosses_placement_and_preserves_literal_content(self):
+        from drover import ownership, placement
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        tree = fix.root / 'trees with spaces' / 'metadata'
+        fix.git('worktree', 'add', '-q', '-b', 'metadata', tree)
+        # Exercise the composed remote worker locally; no WSL process is started.
+        # Only the side transport is replaced, so argv, stdin and atomic IO run.
+        calls = []
+        def local_transport(adapter, argv, **kwargs):
+            calls.append(list(argv))
+            return argv
+        with patch.object(placement, 'routes_through_wsl', return_value=True), \
+                patch.object(placement.WSL, 'command', new=local_transport):
+            record = ownership.tag(str(tree), 'alpha', 'session: "quote"\n雪', NOW + 1, now=NOW)
+            self.assertEqual(ownership.read(str(tree)), record)
+        workers = [call for call in calls if call[0] != 'git']
+        self.assertEqual(len(workers), 3)
+        self.assertTrue(all(call[0:2] == ['python3', '-c'] for call in workers))
+        self.assertEqual(fix.git('status', '--porcelain', cwd=tree), '')
+        self.assertIsNone(ownership.read(str(fix.repo)))
+        with self.assertRaises(OSError):
+            ownership.tag(str(fix.repo), 'alpha', 'session:x', NOW + 1, now=NOW)
+        self.assertFalse((fix.repo / '.git' / 'drover-tag.json').exists())
+
+    def test_clean_existing_worktree_acquisition_records_task_lease(self):
+        from drover import ownership
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        self.addCleanup(config.reset)
+        config.use(config.validate({'paths': {'state_dir': str(fix.root / 'state')}}))
+        tree = fix.root / 'existing tree'
+        fix.git('worktree', 'add', '-q', '-b', 'existing', tree)
+        task = {'id': 't-adopt', 'repo': 'alpha', 'title': 'adopt clean worktree',
+                'branch': 'existing', 'worktree': str(tree)}
+        port = SimpleNamespace(get_task=lambda tid: dict(task),
+                               waiting=SimpleNamespace(answer=lambda cause: None),
+                               update_task=lambda tid, **values: task.update(values),
+                               append_event=lambda *args, **kwargs: None)
+        prog = repos.load({'name': 'alpha', 'repo': str(fix.repo), 'worktrees': str(fix.root / 'task trees')})
+        pipe = pipeline.Pipeline(port, repos_map={'alpha': prog}, runs_dir=fix.root / 'state' / 'runs')
+        with patch.object(time, 'time', return_value=NOW):
+            self.assertEqual(pipe.worktree(task), str(tree))
+        self.assertEqual(ownership.read(str(tree)),
+                         {'v': 2, 'repo': 'alpha', 'owner': 'drover:t-adopt',
+                          'created': NOW, 'lease_until': NOW + 86400})

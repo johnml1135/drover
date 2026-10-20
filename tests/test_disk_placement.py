@@ -52,3 +52,17 @@ class Facts(unittest.TestCase):
                 patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Ubuntu'):
             self.assertEqual(placement.drive(placement.physical_disk_path('/home/user/topic')), 'H')
             self.assertEqual(placement.drive(placement.physical_disk_path('C:/repo')), 'C')
+
+    def test_process_with_unavailable_cwd_cannot_prove_idle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory) / 'proc'
+            process = proc / '123456789'
+            process.mkdir(parents=True)
+            (process / 'cmdline').write_bytes(b'python\0worker\0')
+            self.assertTrue(placement.cleanup_processes(proc_root=proc, windows=False).busy('/candidate'))
+
+    def test_native_windows_vhdx_host_is_a_physical_root(self):
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, 'distro', return_value='Fixture'), \
+                patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}):
+            self.assertEqual(placement.physical_disk_path('/home/user/topic'), 'H:/')
