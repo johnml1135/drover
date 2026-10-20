@@ -108,6 +108,21 @@ class DirectorReserve(unittest.TestCase):
 
 
 class Platforms(unittest.TestCase):
+    def test_explicit_windows_task_skips_higher_priority_wsl_seat(self):
+        seats = [{**CLAUDE, 'name': 'linux-first', 'placement': 'wsl', 'priority': 0,
+                  'director': False, 'director_reserve_pct': 0.0}, CLAUDE]
+        cfg = config.validate({'seats': seats})
+        config.use(cfg)
+        self.addCleanup(config.reset)
+        for explicit in ({'platform': 'windows'}, {'tags': ['platform:windows']},
+                         {'title': 'Work platform: windows'}):
+            with self.subTest(explicit=explicit):
+                task = {**WORKER, **explicit}
+                chosen = route.choose(task, {}, seats=cfg['seats'], platforms=['windows', 'wsl'],
+                                      seat_headroom={s['name']: LOTS for s in seats}, seed=1)
+                self.assertEqual(chosen['seat'], 'claude')
+                self.assertEqual(dispatcher.place(task, chosen, r'R:\repo', None), ('windows', None))
+
 
 
     def test_seats_that_cannot_run_on_the_repos_platforms_are_not_drawn(self):

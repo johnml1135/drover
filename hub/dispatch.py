@@ -104,7 +104,7 @@ class LandingService:
         def run(worktree, tip, tasks):
             current = repos.load(prog, tip, worktree)
             platforms = repos.gate_platforms(current)
-            runs = [self._gate_on(x, repos.script_argv(current), base_ref, out_dir, conn, current) for x in platforms]
+            runs = [self._gate_on(x, repos.script_argv(current, platform=x), base_ref, out_dir, conn, current) for x in platforms]
             return self._both(runs, platforms)(worktree, tip, tasks)
         return run
 
@@ -112,12 +112,12 @@ class LandingService:
         if platform == "wsl" and os.name == "nt":
             return self._wsl_gate(command, base_ref, out_dir, float(prog["gate"]["timeout_s"]) + 120, repos.run_config(prog),
                                   prog["gate"]["docs_only_globs"] if prog["gate"]["docs_only"] else None,
-                                  repos.script_argv(prog, "docs") if repos.has_script(prog, "docs") else None)
+                                  repos.script_argv(prog, "docs", platform) if repos.has_script(prog, "docs") else None)
         g = prog["gate"]
         docs = g.get("docs_only", True) and g.get("docs_only_globs")
         return landing.make_gate(command, base_ref, out_dir, priority="P1", db_path=self.store.path,
                                  max_seconds=int(g["timeout_s"]), docs_globs=list(docs) if docs else None,
-                                 docs_extra=repos.script_argv(prog, "docs") if repos.has_script(prog, "docs") else None,
+                                 docs_extra=repos.script_argv(prog, "docs", platform) if repos.has_script(prog, "docs") else None,
                                  env={**os.environ, **repos.run_config(prog)["env"], "DROVER_CI_KIND": "full"}, writable_roots=repos.run_config(prog)["sandbox_writable_roots"], **self.gate_kw)
 
     @staticmethod

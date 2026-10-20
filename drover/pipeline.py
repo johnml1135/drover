@@ -131,8 +131,11 @@ class Pipeline:
         prog = self.all_repos().get(str(task.get("repo") or "").lower())
         if prog is None:
             return None
+        checkout = task.get("worktree")
+        if checkout and not placement.reachable(checkout):
+            checkout = None      # recover stale worktrees using the reachable machine checkout's config
         try:
-            prog = repos.load(prog, checkout=task.get("worktree"))
+            prog = repos.load(prog, checkout=checkout)
         except repos.RepoError:
             return None
         override = self._owner_gate_cmd(prog["name"].lower()) if prog["gate"]["unknown"] else None
@@ -372,11 +375,11 @@ class Pipeline:
         base = self.base_ref(prog)
         paths = gate.changed_paths(repo, base, sha)
         kind = "full"
-        commands = [repos.script_argv(prog)]
+        commands = [repos.script_argv(prog, platform=platform)]
         g = prog["gate"]
         if g["docs_only"] and gate.changed_docs_only(repo, base, sha, g["docs_only_globs"]):
             kind = "docs"
-            commands = gate.docs_commands(base, sha, repos.script_argv(prog, "docs") if repos.has_script(prog, "docs") else None)
+            commands = gate.docs_commands(base, sha, repos.script_argv(prog, "docs", platform) if repos.has_script(prog, "docs") else None)
         env = {**repos.run_config(prog)["env"], "DROVER_CHANGED_FILES": json.dumps(paths), "DROVER_CI_KIND": "checks" if kind == "full" else kind}
         return {"kind": kind, "commands": commands, "scope": None, "base": base, "repo": repo, "sha": sha,
                 "env": env, "sandbox_writable_roots": repos.run_config(prog)["sandbox_writable_roots"],

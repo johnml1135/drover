@@ -171,7 +171,8 @@ def load(machine, revision="HEAD", checkout=None):
     """Read versioned config at revision, including on reused task worktrees; never read a dirty file.
 
     A missing drover.toml contributes an empty layer, so migration from machine files uses
-    the same merge. An inaccessible machine checkout also leaves its machine layer usable.
+    the same merge. An inaccessible machine checkout leaves its machine layer usable for
+    startup, but an exact revision requires a reachable checkout.
     """
     machine = machine.get("_machine", machine)
     if not machine.get("repo"):
@@ -194,18 +195,20 @@ def load(machine, revision="HEAD", checkout=None):
                 versioned = tomllib.loads(result.stdout)
             except tomllib.TOMLDecodeError as e:
                 raise RepoError(f"invalid drover.toml at {commit}: {e}") from e
+    elif revision != "HEAD":
+        raise RepoError(f"cannot read repo config commit {revision}: checkout {repo} is unreachable")
     merged = config._merge(versioned, machine)
     out = normalize(merged)
     out["_machine"] = dict(machine)
     return out
 
 
-def script_argv(prog, action="test"):
+def script_argv(prog, action="test", platform=None):
     """The complete action command. No platform variants, argument templates or inferred tools."""
     path = prog["scripts"].get(action)
     if path is None:
         raise RepoError(f"{prog['name']}: no scripts.{action} in drover.toml")
-    return ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", path]
+    return [placement.executable("pwsh", platform), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", path]
 
 
 def run_config(prog):

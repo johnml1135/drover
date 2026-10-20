@@ -5,6 +5,7 @@ UCB1 over cost per landed task within the chosen seat.
 """
 import math
 import random
+import re
 
 from . import config as config_mod
 
@@ -12,6 +13,7 @@ MIN_FIRST_PASS = 0.5
 MIN_GATE_N = 5
 EXPLOIT = 0.8
 DIRECTOR_ROLES = ("director", "planner")
+PLATFORM_RE = re.compile(r"(?<![\w-])platform:\s*(linux|windows)\b", re.I)
 PRIOR_FIRST_PASS = 0.5
 PRIOR_MTOK = 0.5  # assumed Mtok per run when pricing an untried candidate
 
@@ -122,6 +124,19 @@ def pick_candidate(cands, rng, min_first_pass=MIN_FIRST_PASS):
     return cands[[i for i, s in enumerate(scores) if s == top][0]]
 
 
+def task_platform(task):
+    """Explicit platform from the task field, tags, or title/goal annotation."""
+    plat = str(task.get("platform") or "").lower()
+    tags = [str(t).lower().replace(" ", "") for t in task.get("tags") or ()]
+    for tag in tags:
+        if tag.startswith("platform:"):
+            plat = plat or tag[9:]
+    if not plat:
+        match = PLATFORM_RE.search(f"{task.get('title', '')} {task.get('goal', '')}")
+        plat = match.group(1).lower() if match else ""
+    return plat if plat in ("linux", "windows") else None
+
+
 def seat_placements(seat):
     """Where a seat's workers may run: Codex only where its seat is; Claude on its seat's side or, for a Windows
     seat, also in WSL (the old rule: a linux task tag moves a Claude worker there)."""
@@ -218,7 +233,14 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
 
 def choose(task, policy, *, seed=None, rng=None, seats=None, seat_load=None, platforms=None,
            seat_headroom=None, seat_order=None, director_borrow_approved=False):
-    """Choose one seat using its observed allowance and the repo's supported placements."""
+    """Choose one seat using its observed allowance and task/repo platform compatibility."""
+    explicit = task_platform(task)
+    if explicit:
+        required = "wsl" if explicit == "linux" else explicit
+        if platforms is not None and required not in platforms:
+            return {**no_seat_route([], [required]),
+                    "reason": f"needs {required} but repo runs only on {', '.join(platforms)}"}
+        platforms = [required]
     return _observed_choice(task, policy, seats if seats is not None else config_mod.get()["seats"],
                             seat_load, platforms, seat_headroom or {}, seat_order,
                             rng or random.Random(seed), director_borrow_approved)

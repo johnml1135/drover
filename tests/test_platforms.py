@@ -339,14 +339,18 @@ class LandingGateBoth(unittest.TestCase):
         self.assertEqual((calls, r["status"], r["platform"]), (["windows", "wsl"], "failed", "wsl"))
 
     def test_gate_fn_builds_one_gate_per_platform_of_the_repo(self):
+        from tests.gitfix import Repo
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        sha = fix.git('rev-parse', 'HEAD')
         svc = LandingService.__new__(LandingService)
         made = []
         svc._gate_on = lambda platform, *a: made.append(platform) or (lambda wt, tip, tasks: {"status": "passed"})
         for plat, want in (("windows", ["windows"]), ("wsl", ["wsl"]), ("both", ["windows", "wsl"])):
             made.clear()
-            prog = repo("R:\\r", "R:\\w", gate_platform=plat)
-            prog["scripts"] = {"test": "scripts/drover/test.ps1"}
-            svc.gate_fn(prog, "main", "out", None)("unreachable-fixture", "a" * 40, [])
+            prog = repos.normalize({'name': 'p', 'repo': str(fix.repo), 'gate': {'platform': plat},
+                                    'scripts': {'test': 'scripts/drover/test.ps1'}})
+            svc.gate_fn(prog, "main", "out", None)(str(fix.repo), sha, [])
             self.assertEqual(made, want)
 
 

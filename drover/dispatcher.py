@@ -52,7 +52,6 @@ BACKOFF_MAX_MIN = 30
 UNAVAILABLE_S = 600          # a missing binary is re-probed (tried again) after this
 MAX_FINISH_TRIES = 3
 IS_WINDOWS = os.name == "nt"   # the dispatcher lock is not cross-OS, so only Windows may run a dispatcher
-PLATFORM_RE = re.compile(r"(?<![\w-])platform:\s*(linux|windows)\b", re.I)
 CHEAP_MODELS = ("haiku", "luna")
 MAX_ROTATIONS = 3
 EXCERPT_LINES = contract.EXCERPT_LINES
@@ -88,26 +87,13 @@ def seat_of(route):
     return seat
 
 
-def _platform_tag(task):
-    """'linux' or 'windows' from the task's platform field, a `platform:linux` tag, or the same text in title/goal."""
-    plat = str(task.get("platform") or "").lower()
-    tags = [str(t).lower().replace(" ", "") for t in task.get("tags") or ()]
-    for t in tags:
-        if t.startswith("platform:"):
-            plat = plat or t[9:]
-    if not plat:
-        m = PLATFORM_RE.search(f"{task.get('title', '')} {task.get('goal', '')}")
-        plat = m.group(1).lower() if m else ""
-    return plat if plat in ("linux", "windows") else None
-
-
 def placement_for(task, route, worktree=None, platforms=None):
     """'wsl' or 'windows'. A Codex seat runs where its seat is (WSL; config refuses Windows); a WSL Claude seat runs in
     WSL; a linux platform tag (or the router's platform) means WSL; the repo supplies its default and
     the repo allows, else WSL (owner rule: windows + claude, or wsl + claude or codex); Claude otherwise runs on
     Windows (unless the worktree is Linux-only)."""
     seat = seat_of(route)
-    plat = str(route.get("platform") or "").lower() or _platform_tag(task)
+    plat = str(route.get("platform") or "").lower() or route_mod.task_platform(task)
     if route.get("backend") == "codex":
         return seat["placement"] if seat else "wsl"
     if plat == "linux":
@@ -125,7 +111,7 @@ def place(task, route, worktree, prog):
     want = placement_for(task, route, worktree, plats)
     seat = seat_of(route)
     allowed = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
-    hard = bool(_platform_tag(task) or route.get("platform") ) \
+    hard = bool(route_mod.task_platform(task) or route.get("platform") ) \
         or route.get("backend") == "codex" or bool(worktree and placement.is_linux_native(worktree))
     default = repos.run_config(prog)["default"]
     if not hard and default in plats and default in allowed:

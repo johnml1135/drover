@@ -12,6 +12,59 @@ from drover.tool_discovery import DISCOVERY_SCRIPT, INVALID_PATH_REASON, parse_d
 
 @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
 class ToolDiscovery(unittest.TestCase):
+    def test_discovered_pwsh_runs_composed_ci_with_non_login_path(self):
+        import json
+        import sys
+        from drover import pipeline, placement, repos
+        from hub.services import Services
+        from hub.settings import Settings
+        from hub.store import Store
+        from tests.gitfix import Repo
+
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        tools = fix.root / 'login-tools'
+        tools.mkdir()
+        worker_tools = fix.root / 'worker-tools'
+        worker_tools.mkdir()
+        (worker_tools / 'git').symlink_to(shutil.which('git'))
+        pwsh = tools / 'pwsh'
+        pwsh.write_text('#!/bin/sh\n'
+                        '[ "$1" = -NoLogo ] && [ "$2" = -NoProfile ] && '
+                        '[ "$3" = -NonInteractive ] && [ "$4" = -File ] || exit 91\n'
+                        'exec /bin/sh "$5"\n')
+        pwsh.chmod(0o755)
+        fix.commit('scripts/check action.ps1', 'printf "discovered-script-ran\\n"\n')
+        sha = fix.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\n'
+                         '[gate]\ndocs_only=false\n')
+        with closing(Store(fix.root / 'ledger.db')) as store:
+            def probe(argv, timeout):
+                result = subprocess.run(argv[argv.index('--exec') + 1:],
+                                        env={'PATH': str(tools), 'DROVER_WORKER_PATH': '/usr/bin:/bin'},
+                                        capture_output=True, text=True, check=True, timeout=timeout,
+                                        executable='/bin/bash')
+                return result.returncode, result.stdout
+
+            service = Services(store, Settings(runs_dir=fix.root / 'runs'), wsl=probe)
+            self.assertEqual(service.discover_tools()['pwsh'], str(pwsh))
+            self.assertEqual(store.get_settings()['wsl_bin_pwsh'], str(pwsh))
+            previous = placement.bind_settings(store.get_settings)
+            self.addCleanup(placement.bind_settings, previous)
+            prog = repos.load({'name': 'example', 'repo': str(fix.repo)})
+            pipe = pipeline.Pipeline(None, repos_map={'example': prog}, runs_dir=fix.root / 'runs',
+                                     wsl_python=sys.executable)
+            plan = pipe.gate_plan({'worktree': str(fix.repo)}, prog, sha, 'wsl')
+            argv, receipt = pipe.gate_argv(plan, 1, 'P2', prog, 'wsl')
+            result = subprocess.run([sys.executable, '-m', 'drover.runner', '--run-id', 'discovered',
+                                     '--runs-dir', str(fix.root / 'runs'), '--cwd', str(fix.repo), '--', *argv],
+                                    env={**os.environ, 'PATH': str(worker_tools)},
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            data = json.loads(receipt.read_text())
+            self.assertTrue(data['passed'])
+            self.assertEqual(data['steps'][0]['command'][0], str(pwsh))
+            self.assertIn('discovered-script-ran', '\n'.join(data['log_tail']))
+
     def test_executable_entry_points_are_reported_without_execution(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

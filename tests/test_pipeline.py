@@ -249,6 +249,19 @@ class Repos(unittest.TestCase):
 
 
 class UnknownGate(Base):
+    def test_missing_task_checkout_keeps_versioned_gate_config_before_recovery(self):
+        self.fix.commit('drover.toml', '[scripts]\ntest="scripts/drover/test.ps1"\n')
+        self.fix.git('push', 'origin', 'HEAD:main')
+        machine = {'name': 'p', 'repo': str(self.fix.repo), 'worktrees': str(Path(self.tmp.name) / 'wts')}
+        pipe = pipeline.Pipeline(self.port, repos_map={'p': repos.load(machine)})
+        tid = self.task()
+        ops.update_task(self.conn, tid, worktree=str(Path(self.tmp.name) / 'missing'))
+        self.assertTrue(pipe.gate_known(self.get(tid)))
+        self.assertEqual(ops.open_questions(self.conn), [])
+        recovered = pipe.worktree(self.get(tid))
+        self.assertTrue(placement.reachable(recovered))
+        self.assertEqual(pipe.repo(self.get(tid))['scripts']['test'], 'scripts/drover/test.ps1')
+
     def test_missing_repo_path_goes_to_owner_without_crashing(self):
         self.pipe._repos = {'p': {'name': 'p', 'gate': {'unknown': True}}}
         tid = self.task(repo='p')

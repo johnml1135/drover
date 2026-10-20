@@ -45,6 +45,16 @@ def distro(default=None, settings=None):
     return values.get("wsl_distro") or (default if default is not None else config.get()["paths"]["wsl_distro"])
 
 
+def executable(name, platform=None):
+    """Resolve nested commands before crossing platforms; WSL's worker PATH lacks login tools."""
+    platform = platform or ("windows" if IS_WINDOWS else "wsl")
+    if platform == "wsl":
+        path = _settings().get(f"wsl_bin_{name}")
+        if path and is_linux_native(path):
+            return path
+    return name
+
+
 def to_wsl_path(arg):
     arg = str(arg)
     m = WIN_RE.match(arg.removeprefix("\\\\?\\"))

@@ -100,6 +100,11 @@ class VersionedRepoConfig(unittest.TestCase):
         with self.assertRaisesRegex(repos.RepoError, 'repo is required'):
             repos.load({'name': 'example'})
 
+    def test_exact_commit_config_refuses_an_unreachable_checkout(self):
+        sha = self.fix.commit('drover.toml', '[scripts]\ntest="scripts/check.ps1"\n')
+        with self.assertRaises(repos.RepoError):
+            repos.load(self.machine, sha, str(self.fix.root / 'missing'))
+
     def test_script_and_environment_contract_is_validated(self):
         for script in ('../escape.ps1', '/absolute.ps1', 'C:/check.ps1', 'check.sh', 'check.ps1 -Flag'):
             with self.subTest(script=script), self.assertRaises(repos.RepoError):
