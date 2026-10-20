@@ -1,6 +1,7 @@
 from drover import placement
 """Runner tests: real subprocesses running small python child scripts on the current OS."""
 import ctypes
+import re
 import importlib.util
 import json
 import os
@@ -654,7 +655,7 @@ def default_distro(exe):
     except (OSError, subprocess.SubprocessError):
         return None
     names = r.stdout.decode("utf-16-le", errors="replace").replace("\x00", "").split()
-    return next((n for n in names if not n.startswith("docker-desktop") and runner.DISTRO_RE.fullmatch(n)), None)
+    return next((n for n in names if not n.startswith("docker-desktop") and re.fullmatch(r"[A-Za-z0-9._-]+", n)), None)
 
 
 class WslTests(unittest.TestCase):

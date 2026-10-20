@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from hub.dispatch import DispatcherService, LandingService
 from hub.settings import Settings
 from hub.store import Store
 from tests.gitfix import Repo
+from tests.dispatch_fixture import Observations, make_dispatcher
 
 GO = {"verdict": "go", "slots": 10, "reasons": []}
 
@@ -83,6 +85,11 @@ class FakeLauncher:
         self.handles[spec["run_id"]] = h
         return h
 
+    scan = None
+
+    def wsl_up(self):
+        return True
+
     def of(self, role):
         return [s for s in self.specs if s.get("role") == role]
 
@@ -107,11 +114,13 @@ class Base(unittest.TestCase):
         self.d = self.make()
 
     def make(self, **kw):
-        args = dict(launcher=self.fl, pipeline=self.pipe, resources_fn=lambda new_workers=1: GO,
-                    admit_fn=lambda plan, role, pct: {"allow": True}, decide_fn=self.decide, state=self.tmp.name,
-                    headroom_fn=lambda plan: {"remaining_pct": 90.0, "hours_to_reset": 100.0})
+        now = kw.pop("now", time.time)
+        allow = kw.pop("allow", lambda backend: True)
+        observed = Observations(self.conn, now, lambda backend: {"remaining_pct": 90.0}, allow)
+        args = dict(launcher=self.fl, pipeline=self.pipe, resources=lambda **kw: GO,
+                    decide=self.decide, now=now, usage_poller=observed)
         args.update(kw)
-        return dispatcher.Dispatcher(self.port, **args)
+        return make_dispatcher(self.port, **args)
 
     def decide(self, name, state, rule_answer=None):
         self.decisions.append(name)
@@ -912,7 +921,7 @@ class CodexReview(Base):
                     return super().launch(spec)
                 return super().launch(spec)
         self.fl = HostRunsWslGate(self.runs)
-        self.d = self.make(admit_fn=lambda plan, role, pct: {"allow": plan == "codex"}, wsl_up_fn=lambda: True,
+        self.d = self.make(allow=lambda backend: backend == "codex", wsl_up=lambda: True,
                            launcher=self.fl)
         tid = self.task(scope_files=["src/App.cs"])
         self.assertEqual(self.d.tick()["launched"], [tid])
@@ -1193,13 +1202,88 @@ class GateAndReview(Base):
     def test_a_review_in_flight_is_adopted_after_a_restart_not_requeued(self):
         tid, sha = self.to_gated()
         d2 = self.make()                                                  # a new dispatcher: the hub restarted
-        d2.scan_fn = lambda want: {self.fl.of("review")[0]["run_id"]: "windows"}
         d2.launcher = type("L", (), {"adopt": lambda s, spec, started: FakeHandle(), "launch": self.fl.launch,
-                                     "scan": None})()
+                                     "scan": lambda s, want: {self.fl.of("review")[0]["run_id"]: "windows"}})()
         d2.recover_orphans()
         self.assertEqual(self.status(tid), "gated")
         self.assertEqual(len(d2.live), 1)
         self.assertEqual(list(d2.live.values())[0][2]["role"], "review")
+
+
+class DispatcherContract(Base):
+    """The mandatory pipeline writes the contract consumed by the tuner."""
+    def setUp(self):
+        super().setUp()
+        self.used = [10.0, 40.0]
+        self.prog['review']['seat'] = 'review-unavailable'
+        self.d.usage_poller = Observations(
+            self.conn, self.d.now,
+            lambda backend: {'windows': {
+                'seven_day': {'remaining_pct': 100 - self.used[0]},
+                'five_hour': {'remaining_pct': 100 - self.used[1]}}},
+            lambda backend: backend == 'claude')
+
+    def finish_worker(self, tid):
+        self.run_worker(tid, self.worker_commits(tid))
+        self.d.tick()                    # derive the gate from the finished worker
+        self.d.tick()                    # ingest the real gate result
+
+    def test_allowance_used_is_the_delta_and_the_tuner_reads_it(self):
+        from drover import tuner
+        tid = self.task()
+        self.d.tick()
+        self.used = [10.75, 41.5]
+        self.finish_worker(tid)
+        run = self.port.list_runs(tid)[0]
+        self.assertEqual(run['allowance_used'], {'seven_day_pct': 0.75, 'five_hour_pct': 1.5})
+        self.assertEqual(list(tuner._runs(self.conn))[0]['pct'], 0.75)
+        self.assertEqual(contract.format_allowance(run['allowance_used']), '0.75% week, 1.5% 5h')
+
+    def test_gate_receipt_event_and_first_pass_are_what_the_tuner_wants(self):
+        from drover import tuner
+        tid = self.task()
+        self.d.tick()
+        self.finish_worker(tid)
+        row = list(tuner._runs(self.conn))[0]
+        receipt = contract.parse_gate_receipt(row['gate_receipt'])
+        self.assertTrue(receipt['ok'])
+        self.assertGreater(tuner._diff_lines(row), 0)
+        event = ops.events(self.conn, task_id=tid, kind=contract.GATE_EVENT)[0]['data']
+        self.assertEqual(event['run'], row['id'])
+        self.assertFalse(event['red'])
+        self.assertGreaterEqual(event['duration_s'], 0)
+        routes = tuner.route_stats([row], {})
+        self.assertEqual(routes['worker:M'][(row['backend'], row['model'])]['first_pass_ok'], 1)
+
+    def test_failed_gate_keeps_excerpt_for_retry_and_diff_lines_for_audit(self):
+        from drover import tuner
+        self.prog['gate']['commands']['full'] = [sys.executable, '-c', "print('FAIL a\\nFAIL b'); raise SystemExit(1)"]
+        tid = self.task()
+        self.d.tick()
+        self.finish_worker(tid)
+        run = self.port.list_runs(tid)[0]
+        self.assertEqual(run['outcome'], 'gate-fail')
+        self.assertIn('FAIL b', contract.receipt_excerpt(run['gate_receipt']))
+        self.assertIn('FAIL b', self.fl.of('worker')[-1]['user_prompt'])
+        self.assertTrue(ops.events(self.conn, task_id=tid, kind=contract.GATE_EVENT)[0]['data']['red'])
+        self.assertGreater(tuner._diff_lines(run), 0)
+
+    def test_tune_batch_reads_dispatcher_gate_events(self):
+        from drover import tuner
+        for _ in range(5):
+            tid = self.task()
+            self.d.tick()
+            self.finish_worker(tid)
+        self.assertEqual(len(ops.events(self.conn, kind=contract.GATE_EVENT)), 5)
+        self.assertEqual(tuner.tune_batch(self.conn, tuner.BATCH_DEFAULT), tuner.BATCH_RANGE[0])
+
+    def test_pipeline_outcomes_are_in_the_contract_vocabulary(self):
+        tid = self.task()
+        self.d.tick()
+        self.finish_worker(tid)
+        outcomes = {r['outcome'] for r in self.port.list_runs(tid) if r['ended']}
+        self.assertEqual(outcomes, {'gated', 'passed'})
+        self.assertLessEqual(outcomes | set(dispatcher.FAIL_OUTCOMES), set(contract.OUTCOMES))
 
 
 class Decisions(Base):

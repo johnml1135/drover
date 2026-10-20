@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from drover import gate, landing, repos, runner
-from drover.dispatcher import Dispatcher
+from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
 from drover.ledger import ops
 from drover.lock import FileLock, LockHeld
@@ -231,7 +231,7 @@ class DispatcherService:
 
     def _default_dispatcher(self, port):
         launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins)
-        return Dispatcher(port, launcher=launcher, pipeline=Pipeline(port, runs_dir=self.settings.runs_dir))
+        return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), DispatchRuntime(launcher))
 
     @property
     def running(self):

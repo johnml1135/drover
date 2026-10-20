@@ -82,7 +82,7 @@ class FakeRepoPipeline(Base):
         self.prog.update(repo(self.prog["repo"], self.prog["worktrees"], platforms, gate_platform))
 
     def tick_with_wsl(self):
-        self.d = self.make(wsl_up_fn=lambda: True, worktree_fn=lambda t: "R:\\repos\\wt")
+        self.d = self.make(wsl_up=lambda: True, worktree=lambda t: "R:\\repos\\wt")
         return self.d.tick()
 
     def reason(self, tid):
@@ -101,8 +101,8 @@ class FakeRepoPipeline(Base):
         ops.finish_run(self.conn, rid, "error")
         ops.set_status(self.conn, tid, "ready")
         # A current Codex route is overridden by the retry's Claude backend.
-        self.d = self.make(route_fn=lambda t, p, h: {"backend": "codex", "model": "gpt-6.1-sol"},
-                           worktree_fn=lambda t: "R:\\repos\\wt")
+        self.d = self.make(route=lambda t, p, h, **kw: {"backend": "codex", "model": "gpt-6.1-sol"},
+                           worktree=lambda t: "R:\\repos\\wt")
         self.assertEqual(self.d.tick()["launched"], [tid])
         self.assertEqual(self.fl.of("worker")[0]["seat"], "claude-win")
 
@@ -117,7 +117,7 @@ class FakeRepoPipeline(Base):
         self.assertIn("windows", self.reason(tid))
         self.assertNotIn(tid, self.port.get_backoffs())
 
-    def test_retry_with_permanently_incompatible_backend_goes_to_owner(self):
+    def test_retry_without_a_measured_compatible_seat_waits(self):
         self.repo(["windows"])
         tid = self.task()
         ops.set_status(self.conn, tid, "claimed")
@@ -125,9 +125,8 @@ class FakeRepoPipeline(Base):
         ops.finish_run(self.conn, rid, "error")
         ops.set_status(self.conn, tid, "ready")
         self.assertEqual(self.tick_with_wsl()["launched"], [])
-        self.assertEqual(self.status(tid), "needs-owner")
-        self.assertIn("no platform-compatible seat", self.reason(tid))
-        self.assertNotIn(tid, self.port.get_backoffs())
+        self.assertEqual(self.status(tid), "ready")
+        self.assertIn(tid, self.port.get_backoffs())
 
     def test_unconstrained_claude_launch_honours_the_repo_default(self):
         self.prog["run"]["default"] = "wsl"
@@ -179,26 +178,17 @@ class FakeRepoPipeline(Base):
         texts = [{"title": "t", "scope_files": ["src/App.cs"]}, {"title": "upgrade dotnet sdk"},
                  {"title": "fix the msbuild target"}]
         ids = [self.task(**kw) for kw in texts]
-        self.d = self.make(wsl_up_fn=lambda: True, worktree_fn=lambda t: "R:\\repos\\wt",
-                           admit_fn=lambda plan, role, pct: {"allow": plan == "codex"})
+        self.d = self.make(wsl_up=lambda: True, worktree=lambda t: "R:\\repos\\wt",
+                           allow=lambda backend: backend == "codex")
         self.assertEqual(sorted(self.d.tick()["launched"]), sorted(ids))
         for spec in self.fl.of("worker"):
             self.assertEqual((spec["backend"], spec["placement"]), ("codex", "wsl"))
 
-    def test_rule_fallback_puts_dotnet_on_codex_wsl_for_a_wsl_only_repo(self):
-        self.repo(["wsl"], "wsl")
-        tid = self.task(title="t", scope_files=["src/App.cs"])
-        with patch.object(dispatcher, "_route_module", lambda: None):
-            self.d = self.make(wsl_up_fn=lambda: True, worktree_fn=lambda t: "R:\\repos\\wt",
-                               admit_fn=lambda plan, role, pct: {"allow": plan == "codex"})
-        self.assertEqual(self.d.tick()["launched"], [tid])
-        spec = self.fl.of("worker")[0]
-        self.assertEqual((spec["backend"], spec["placement"]), ("codex", "wsl"))
 
     def test_windows_repo_runs_dotnet_on_claude_windows_never_codex(self):
         self.repo(["windows"], "windows")
         tid = self.task(title="t", scope_files=["src/App.cs"])
-        self.d = self.make(worktree_fn=lambda t: "R:\\repos\\wt")
+        self.d = self.make(worktree=lambda t: "R:\\repos\\wt")
         self.assertEqual(self.d.tick()["launched"], [tid])
         spec = self.fl.of("worker")[0]
         self.assertEqual((spec["backend"], spec["placement"]), ("claude", "windows"))
@@ -285,7 +275,7 @@ class GateBoth(Base):
         return h
 
     def drive(self, ticks=6):
-        self.d = self.make(wsl_up_fn=lambda: True)
+        self.d = self.make(wsl_up=lambda: True)
         tid = self.task()
         self.d.tick()
         sha = self.worker_commits(tid)
@@ -338,7 +328,7 @@ class GateBoth(Base):
 
     def test_wsl_down_waits_for_the_wsl_half_and_tells_the_watchdog(self):
         up = {"v": True}
-        self.d = self.make(wsl_up_fn=lambda: up["v"])
+        self.d = self.make(wsl_up=lambda: up["v"])
         tid = self.task()
         self.d.tick()
         self.run_worker(tid, self.worker_commits(tid))
@@ -385,7 +375,7 @@ class PlatformCommands(unittest.TestCase):
         d._event_for = Mock(return_value={'sha': self.sha})
         d._last_nongate = Mock(return_value={'id': 1})
         d._next_gate_platform = Mock(side_effect=['windows', 'wsl'])
-        d.wsl_up_fn, d._wsl_blocked, d._lease = lambda: True, lambda: False, lambda task: True
+        d.launcher.wsl_up, d._wsl_blocked, d._lease = lambda: True, lambda: False, lambda task: True
         d.port.start_run.side_effect = [2, 3]
         with tempfile.TemporaryDirectory() as tmp:
             self.pipe.runs_dir = tmp
@@ -429,7 +419,7 @@ class WslTracker(test_dispatcher.Base):
         wsl_task = self.task(size="S", goal="platform: linux")
         win_task = self.task(size="S", priority="P4")
         self.verdict = {**test_dispatcher.GO, "wsl": {"verdict": "queue", "reasons": ["WSL memory 90% of its 16.0 GB cap > 85%"]}}
-        self.d = self.make(wsl_up_fn=lambda: True)
+        self.d = self.make(wsl_up=lambda: True)
         out = self.d.tick()
         self.assertIn(win_task, out["launched"])
         self.assertEqual(self.status(wsl_task), "ready")

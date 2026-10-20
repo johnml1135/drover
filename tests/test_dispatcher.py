@@ -13,6 +13,7 @@ from unittest import mock
 from pathlib import Path
 
 from drover import brief, dispatcher, launch
+from tests.dispatch_fixture import FakePipeline, Observations, make_dispatcher
 from drover.ledger import connect, ops
 from drover.port import DirectPort, HttpPort
 from drover.runner import ScanError
@@ -43,6 +44,11 @@ class FakeLauncher:
     def __init__(self):
         self.specs, self.handles = [], []
 
+    scan = None
+
+    def wsl_up(self):
+        return True
+
     def launch(self, spec):
         self.specs.append(spec)
         h = FakeHandle()
@@ -64,16 +70,18 @@ class Base(unittest.TestCase):
         ops.set_setting(self.conn, "dispatch_enabled", "true")      # the switch defaults to off
         self.port, self.fl = DirectPort(self.conn), FakeLauncher()
         self.verdict, self.allow, self.gate_ok, self.decisions = GO, {"claude": True, "codex": True}, True, []
+        self.pipe = FakePipeline(self.port, Path(self.tmp.name) / "runs")
+        self.pipe.current_head = lambda: "abc1234" if self.gate_ok else "FAIL x"
         self.d = self.make()
 
     def make(self, **kw):
-        args = dict(launcher=self.fl, resources_fn=lambda new_workers=1: self.verdict,
-                    admit_fn=lambda plan, role, pct: {"allow": self.allow[plan]},
-                    decide_fn=self.decide, gate_fn=lambda t, r: {"ok": self.gate_ok, "excerpt": "FAIL x\n" * 3},
-                    worktree_fn=lambda t: WORKTREE, state=self.tmp.name,
-                    headroom_fn=lambda plan: {"remaining_pct": 90.0, "hours_to_reset": 100.0})
+        now = kw.pop("now", time.time)
+        headroom = kw.pop("headroom", lambda backend: {"remaining_pct": 90.0})
+        observed = Observations(self.conn, now, headroom, lambda backend: self.allow[backend])
+        args = dict(launcher=self.fl, pipeline=self.pipe, resources=lambda **kw: self.verdict,
+                    decide=self.decide, now=now, usage_poller=observed)
         args.update(kw)
-        return dispatcher.Dispatcher(self.port, **args)
+        return make_dispatcher(self.port, **args)
 
     def decide(self, name, state, rule_answer=None):
         self.decisions.append(name)
@@ -81,7 +89,7 @@ class Base(unittest.TestCase):
                 "criteria_version": "1", "model": "nimble-v3", "state_hash": "h", "probabilities": None}
 
     def task(self, ready=True, **kw):
-        t = ops.create_task(self.conn, kw.pop("title", "t"), "p", repo_path=kw.pop("repo_path", None), **kw)
+        t = ops.create_task(self.conn, kw.pop("title", "t"), "p", read_access=[], repo_path=kw.pop("repo_path", None), **kw)
         if ready:
             ops.approve(self.conn, t["id"])
         return t["id"]
@@ -201,41 +209,39 @@ class Routing(Base):
         self.assertIn((by["M"]["backend"], by["M"]["model"]), {("claude", "sonnet-5.5"), ("codex", "gpt-6.1-sol")})
         self.assertEqual(by["S"]["effort"], "xhigh")          # Haiku and Luna always xhigh
 
-    def test_router_gets_policy_data_and_headroom_of_admitted_plans_only(self):
+    def test_router_gets_policy_platforms_load_and_measured_seat_readings(self):
         seen = []
 
-        def fake(task, policy, headroom):
-            seen.append((task["id"], policy, headroom))
+        def fake(task, policy, headroom, *, seat_load, platforms, seat_headroom, seat_order):
+            seen.append((task["id"], policy, headroom, seat_load, platforms, seat_headroom, seat_order))
             return {"backend": "claude", "model": "sonnet-5.5", "effort": "max", "harness": "default"}
         ops.add_policy_version(self.conn, "v1", {"routes": {"x": []}})
         self.allow["codex"] = False
-        self.d = self.make(route_fn=fake)
+        self.d = self.make(route=fake)
         self.task(size="M")
         self.d.tick()
         self.assertEqual(seen[0][1], {"routes": {"x": []}})
-        self.assertEqual(list(seen[0][2]), ["claude"])
+        self.assertEqual(seen[0][2]["codex"]["remaining_pct"], 0)
+        self.assertGreater(seen[0][2]["claude"]["remaining_pct"], 0)
+        self.assertEqual(seen[0][3], {})
+        self.assertEqual(seen[0][4], self.pipe.prog["run"]["platforms"])
+        self.assertEqual(seen[0][5]["codex"]["remaining_pct"], 0)
+        self.assertEqual({row["seat"] for row in seen[0][6]}, {"claude", "codex"})
         self.assertEqual(self.fl.specs[0]["effort"], "max")   # non-cheap models keep the router's effort
 
     def test_router_with_no_backend_unclaims(self):
         t = self.task()
-        self.d = self.make(route_fn=lambda t, p, h: {"backend": None, "reason": "no allowance"})
+        self.d = self.make(route=lambda t, p, h, **kw: {"backend": None, "reason": "no allowance"})
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(t), "ready")
 
     def test_dotnet_reaches_router_as_a_stack_not_a_platform(self):
         seen = []
-        self.d = self.make(route_fn=lambda t, p, h: seen.append(t) or {"backend": "claude", "model": "sonnet-5.5"})
+        self.d = self.make(route=lambda t, p, h, **kw: seen.append(t) or {"backend": "claude", "model": "sonnet-5.5"})
         self.task(scope_files=["a/b.csproj"])
         self.d.tick()
         self.assertEqual((seen[0].get("platform"), seen[0]["stack"]), (None, "dotnet"))
 
-    def test_rule_fallback_only_when_route_missing(self):
-        with unittest.mock.patch.object(dispatcher, "_route_module", lambda: None):
-            d = self.make()
-        self.allow["codex"] = False
-        self.task(size="S")
-        d.tick()
-        self.assertEqual(self.fl.specs[0]["model"], "haiku-5.5")
 
     def test_model_ids_mapped_for_cli(self):
         argv, _ = launch.build_argv({"backend": "claude", "model": "haiku-5.5", "effort": "xhigh",
@@ -311,7 +317,7 @@ class Replan(Base):
             if name == "plan_wrong":
                 r.update(acted=True, answer=True)
             return r
-        self.d = self.make(decide_fn=yes)
+        self.d = self.make(decide=yes)
         t = self.task(size="S")
         self.d.tick()
         self.gate_ok = False
@@ -323,7 +329,7 @@ class Replan(Base):
     def test_stale_brief_trigger(self):
         a = self.task()
         b = self.task(deps=[a])
-        self.d = self.make(decide_fn=lambda n, s, rule_answer=None: {**self.decide(n, s, rule_answer), "acted": True, "answer": True})
+        self.d = self.make(decide=lambda n, s, rule_answer=None: {**self.decide(n, s, rule_answer), "acted": True, "answer": True})
         self.verdict = {"verdict": "queue", "slots": 0, "reasons": []}
         self.d.tick()                                   # sets the cursor
         ops.set_status(self.conn, a, "claimed", "x")
@@ -383,8 +389,8 @@ class StaleClaims(Base):
 
     def test_old_claim_with_no_run_requeued_every_tick(self):
         t = self.claim()
-        self.assertEqual(self.make(now_fn=lambda: time.time() + 299).requeue_stale_claims(), [])
-        d = self.make(now_fn=lambda: time.time() + 301)
+        self.assertEqual(self.make(now=lambda: time.time() + 299).requeue_stale_claims(), [])
+        d = self.make(now=lambda: time.time() + 301)
         self.assertEqual(d.requeue_stale_claims(), [t])
         self.assertEqual(self.status(t), "ready")
         self.assertEqual(self.events("claim-expired")[0]["task_id"], t)
@@ -395,10 +401,10 @@ class StaleClaims(Base):
 
     def test_fresh_claim_and_claim_with_open_run_untouched(self):
         t = self.claim()
-        self.assertEqual(self.make(now_fn=lambda: time.time() + 200).requeue_stale_claims(), [])
+        self.assertEqual(self.make(now=lambda: time.time() + 200).requeue_stale_claims(), [])
         self.assertEqual(self.status(t), "claimed")
         ops.start_run(self.conn, t, "worker", "claude", "m", "e")
-        self.assertEqual(self.make(now_fn=lambda: time.time() + 400).requeue_stale_claims(), [])
+        self.assertEqual(self.make(now=lambda: time.time() + 400).requeue_stale_claims(), [])
 
 
 class LaunchErrors(Base):
@@ -444,7 +450,6 @@ class LaunchErrors(Base):
         self.assertTrue(c.exception.missing)
 
 
-
 class TailError(Base):
     def test_dispatcher_logs_tail_error_event(self):
         t = self.task()
@@ -455,15 +460,14 @@ class TailError(Base):
 
 
 class FailClosed(Base):
-    def test_no_gate_means_needs_owner(self):
-        d = self.make(gate_fn=None)
-        t = self.task()
-        d.tick()
-        self.finish(0, res("done", DONE))
-        d.tick()
-        self.assertEqual(self.status(t), "needs-owner")
+    def test_pipeline_is_required(self):
+        with self.assertRaises(TypeError):
+            dispatcher.Dispatcher(self.port)
+        with self.assertRaisesRegex(TypeError, "requires a Pipeline"):
+            dispatcher.Dispatcher(self.port, None)
 
-    def test_main_wires_the_pipeline_without_the_flag_and_stays_paused(self):
+
+    def test_main_wires_the_pipeline_and_stays_paused(self):
         import contextlib
         import io
         lock = str(Path(self.tmp.name) / "d.lock")       # never the real C:\\drover lock
@@ -484,7 +488,7 @@ class FailClosed(Base):
         self.addCleanup(setattr, dispatcher, "IS_WINDOWS", orig)
         err = io.StringIO()
         with redirect_stderr(err):
-            rc = dispatcher.main(["--db", str(Path(self.tmp.name) / "m.db"), "--once", "--no-gate-dry-run",
+            rc = dispatcher.main(["--db", str(Path(self.tmp.name) / "m.db"), "--once",
                                   "--lock", str(Path(self.tmp.name) / "d.lock")])
         self.assertEqual(rc, 2)
         self.assertIn("only inside the Windows hub", err.getvalue())
@@ -647,30 +651,11 @@ class Placement(Base):
         self.assertEqual(pf(plain, claude, "/home/u/wt"), "wsl")                    # only WSL can reach it
         self.assertEqual(pf(plain, claude, "/mnt/r/repos/wt"), "windows")
 
-    def test_rule_route_dotnet_follows_the_owner_rule(self):
-        rr = dispatcher.rule_route
-        cs = {"title": "t", "goal": "g", "scope_files": ["a/x.cs"], "size": "M"}
-        self.assertEqual(rr(cs, ["claude", "codex"], {"claude": 3}, ["windows"])["backend"], "claude")
-        self.assertEqual(rr(cs, ["codex"], None, ["windows"])["backend"], "claude")       # never Codex on Windows
-        self.assertEqual(rr(cs, ["codex"], None, ["wsl"])["backend"], "codex")
-        self.assertEqual(rr({**cs, "scope_files": [], "title": "fix msbuild"}, ["codex"], None, ["wsl"])["backend"],
-                         "codex")
-        self.assertEqual(rr(cs, ["claude", "codex"], {"claude": 3}, ["windows", "wsl"])["backend"], "codex")
-
-    def test_rule_route_honours_an_explicit_platform_tag_for_dotnet(self):
-        rr = dispatcher.rule_route
-        cs = {"title": "t", "goal": "g", "scope_files": ["a/x.cs"], "size": "M"}
-        both = ["windows", "wsl"]
-        self.assertEqual(rr({**cs, "goal": "platform: windows"}, ["codex", "claude"], {"claude": 5}, both)["backend"],
-                         "claude")          # Windows tag: Claude only, never Codex
-        self.assertEqual(rr({**cs, "platform": "windows"}, ["codex"], None, both)["backend"], "claude")
-        self.assertEqual(rr({**cs, "goal": "platform: linux"}, ["codex", "claude"], {"claude": 5}, both)["backend"],
-                         "codex")
 
     def test_dispatch_records_placement_on_spec_and_event(self):
         self.allow["codex"] = False
         self.task(size="S", goal="platform: linux")
-        self.d = self.make(wsl_up_fn=lambda: True)
+        self.d = self.make(wsl_up=lambda: True)
         self.d.tick()
         self.assertEqual(self.fl.specs[0]["placement"], "wsl")
         self.assertEqual(self.events("run-process")[0]["data"]["placement"], "wsl")
@@ -679,7 +664,7 @@ class Placement(Base):
         self.allow["codex"] = False
         t = self.task(size="S", goal="platform: linux")
         w = self.task(size="S", priority="P4")
-        self.d = self.make(wsl_up_fn=lambda: False)
+        self.d = self.make(wsl_up=lambda: False)
         out = self.d.tick()
         self.assertEqual(self.status(t), "ready")
         self.assertIn(w, out["launched"])                        # the Windows task behind it is not blocked
@@ -690,7 +675,7 @@ class Placement(Base):
     def test_windows_task_never_asks_for_wsl(self):
         self.allow["codex"] = False
         self.task(size="S")
-        self.d = self.make(wsl_up_fn=lambda: self.fail("WSL must not be probed"))
+        self.d = self.make(wsl_up=lambda: self.fail("WSL must not be probed"))
         self.d.tick()
         self.assertIsNone(ops.get_setting(self.conn, "_wsl_needed"))
 
@@ -732,7 +717,7 @@ class Recovery(Base):
             if isinstance(self.found, Exception):
                 raise self.found
             return self.found
-        return self.make(launcher=self.fl, scan_fn=scan, scan_every_s=0, **kw)
+        return self.make(launcher=self.fl, scan=scan, scan_every_s=0, **kw)
 
     def start(self, **kw):
         t = self.task(size="S", **kw)
@@ -898,14 +883,14 @@ class Recovery(Base):
     def test_no_scan_function_means_no_orphan_decisions(self):
         t, rid = self.start()
         d = self.make(launcher=FakeLauncher(), scan_every_s=0)
-        d.scan_fn = None
+        d.launcher.scan = None
         self.assertEqual(d.watch_runs(), [])
         self.assertEqual(d.recover_orphans(), [])
         self.assertEqual(self.status(t), "running")
 
     def test_wsl_is_scanned_only_when_a_wsl_run_is_open(self):
         self.allow["codex"] = False
-        self.d = self.restart(wsl_up_fn=lambda: True)
+        self.d = self.restart(wsl_up=lambda: True)
         t, rid = self.start(goal="platform: linux")
         self.scans.clear()
         d2 = self.restart()
@@ -936,11 +921,11 @@ class HeadOfLine(Base):
         self.no_route = set()
         self.allow["codex"] = False
 
-        def route(task, policy, heads):
+        def route(task, policy, heads, **kw):
             if task["id"] in self.no_route:
                 return {"backend": None, "reason": "no allowance above reserve"}
             return {"backend": "claude", "model": "haiku-5.5", "effort": "xhigh", "harness": "default"}
-        self.d = self.make(route_fn=route, now_fn=lambda: self.t)
+        self.d = self.make(route=route, now=lambda: self.t)
 
     def test_task_with_no_backend_is_skipped_so_the_next_one_launches_and_is_not_retried_this_tick(self):
         a = self.task(title="a", priority="P0")
@@ -994,116 +979,9 @@ class HeadOfLine(Base):
         self.d.unavailable[("claude", "wsl")] = self.d.now()
         a = self.task(title="a", goal="platform: linux", priority="P0")
         b = self.task(title="b", priority="P1")
-        self.d.wsl_up_fn = lambda: True
+        self.d.launcher.wsl_up = lambda: True
         self.assertEqual(self.d.tick()["launched"], [b])
         self.assertIn(a, self.port.get_backoffs())
-
-
-class ContractRoundTrip(Base):
-    """What the dispatcher writes is what the tuner parses."""
-
-    def setUp(self):
-        super().setUp()
-        self.allow["codex"] = False
-        self.used = [10.0, 40.0]          # seven_day, five_hour used-% (moved by the test)
-        self.gate = {"ok": True, "diff_lines": 12, "duration_s": 700}
-        self.d = self.make(headroom_fn=self.headroom, gate_fn=lambda t, r: self.gate,
-                           resources_fn=lambda new_workers=1: {"verdict": "go", "slots": 1, "reasons": []})
-
-    def headroom(self, plan):
-        return {"windows": {"seven_day": {"remaining_pct": 100 - self.used[0]},
-                            "five_hour": {"remaining_pct": 100 - self.used[1]}}}
-
-    def one(self, result, **kw):
-        t = self.task(priority="P0", **kw)
-        self.d.tick()
-        h = next(h for h, tid, _ in self.d.live.values() if tid == t)
-        h.result = result
-        self.verdict = {"verdict": "hold", "slots": 0, "reasons": []}
-        self.d.resources_fn = lambda new_workers=1: self.verdict
-        self.d.tick()
-        self.d.resources_fn = lambda new_workers=1: GO
-        return t
-
-    def test_allowance_used_is_the_delta_and_the_tuner_reads_it(self):
-        from drover import contract, tuner
-        t = self.task()
-        self.d.tick()
-        self.used = [10.75, 41.5]
-        self.finish(0, res("done", DONE))
-        self.d.tick()
-        run = ops.list_runs(self.conn, t)[0]
-        self.assertEqual(run["allowance_used"], {"seven_day_pct": 0.75, "five_hour_pct": 1.5})
-        row = [r for r in tuner._runs(self.conn)][0]
-        self.assertEqual(row["pct"], 0.75)
-        self.assertEqual(contract.format_allowance(self.conn.execute("select allowance_used from runs").fetchone()[0]),
-                         "0.75% week, 1.5% 5h")
-
-    def test_gate_receipt_event_and_first_pass_are_what_the_tuner_wants(self):
-        from drover import contract, tuner
-        t = self.task()
-        self.d.tick()
-        self.finish(0, res("done", DONE))
-        self.d.tick()
-        row = [r for r in tuner._runs(self.conn)][0]
-        self.assertEqual(tuner._diff_lines(row), 12)
-        self.assertEqual(contract.parse_gate_receipt(row["gate_receipt"])["ok"], True)
-        ev = self.events("gate")
-        self.assertEqual(ev[0]["data"], {"duration_s": 700, "red": False, "run": row["id"]})
-        stats = tuner.route_stats([row], {})
-        self.assertEqual(stats["worker:M"][(row["backend"], row["model"])]["first_pass_ok"], 1)
-
-    def test_failed_gate_keeps_the_excerpt_for_the_retry_and_diff_lines_for_the_audit(self):
-        from drover import contract, tuner
-        self.gate = {"ok": False, "diff_lines": 8, "excerpt": "FAIL a\nFAIL b", "duration_s": 5}
-        t = self.task()
-        self.d.tick()
-        self.finish(0, res("done", DONE))
-        self.d.tick()
-        run = ops.list_runs(self.conn, t)[0]
-        self.assertEqual((run["outcome"], contract.receipt_diff_lines(run["gate_receipt"])), ("gate-fail", 8))
-        self.assertEqual(contract.receipt_excerpt(run["gate_receipt"]), "FAIL a\nFAIL b")
-        self.assertIn("FAIL b", self.fl.specs[1]["user_prompt"])           # the retry brief carries it
-        self.assertEqual(self.events("gate")[0]["data"]["red"], True)
-        self.assertEqual(tuner._diff_lines({"gate_receipt": run["gate_receipt"]}), 8)
-
-    def test_tune_batch_reads_the_dispatchers_gate_events(self):
-        from drover import tuner
-        for _ in range(5):
-            self.gate = {"ok": True, "duration_s": 700}
-            self.one(res("done", DONE))
-        self.assertEqual(len(self.events("gate")), 5)
-        self.assertEqual(tuner.tune_batch(self.conn, 1), tuner.BATCH_DEFAULT)
-
-    def test_every_outcome_the_dispatcher_writes_is_in_the_vocabulary_and_all_of_it_is_used(self):
-        from drover import contract
-        outcomes = set()
-        scen = [res("done", DONE), res("done", DONE), res("no-record", "x"), res("error", "boom"),
-                {**res("timeout"), "timeout": "wall"}, res("rotate"), res("blocked", BLOCKED), res("done", DONE),
-                {**res("error"), "provider_error": "429 rate limit"}]
-        gates = [{"ok": True}, {"ok": False, "excerpt": "x"}, None, None, None, None, None, {"needs_owner": "why"}, None]
-        for result, gate in zip(scen, gates):
-            self.gate = gate or {"ok": True}
-            t = self.one(result)
-            ops.set_status(self.conn, t, "cancelled", "owner")
-        t = self.task(priority="P0")
-        self.d.launcher = type("L", (), {"launch": lambda s, sp: (_ for _ in ()).throw(OSError("x"))})()
-        self.d.tick()
-        ops.set_status(self.conn, t, "cancelled", "owner")
-        t, rid = self.task(priority="P0"), None
-        self.d.launcher = self.fl
-        self.d.tick()
-        rid = ops.list_runs(self.conn, t)[0]["id"]
-        self.d.live.pop(rid)
-        self.d.scan_fn, self.d.scan_every_s, self.d.last_scan = (lambda w: {}), 0, None
-        self.d.live[rid] = (FakeHandle(), t, {"placement": "windows", "backend": "claude"})
-        self.d.watch_runs()
-        self.d.watch_runs()
-        for r in self.conn.execute("select outcome from runs where ended is not null"):
-            outcomes.add(r[0])
-        self.assertEqual(outcomes, set(contract.OUTCOMES) - set(contract.PIPELINE_OUTCOMES))
-        self.assertTrue(set(contract.FAIL_OUTCOMES) < set(contract.OUTCOMES))
-        self.assertEqual(set(dispatcher.FAIL_OUTCOMES), set(contract.FAIL_OUTCOMES))
 
 
 class HardeningFixtures(Base):
@@ -1121,7 +999,7 @@ class LaunchPersistence(HardeningFixtures):
             def launch(s, spec):
                 seen.append([e["data"] for e in ops.events(self.conn, kind="run-launching")])
                 return super().launch(spec)
-        self.d = self.make(launcher=L(), wsl_up_fn=lambda: True)
+        self.d = self.make(launcher=L(), wsl_up=lambda: True)
         self.task(size="S", goal="platform: linux")
         self.d.tick()
         data = seen[0][0]
@@ -1134,7 +1012,7 @@ class LaunchPersistence(HardeningFixtures):
         ops.claim_next(self.conn, {})
         rid = ops.start_run(self.conn, t, "worker", "claude", "sonnet-5.5", "high")      # no launching event: a crash
         fl, scans = AdoptLauncher(), []
-        d2 = self.make(launcher=fl, scan_every_s=0, scan_fn=lambda w: scans.append(w) or {rid: "wsl"})
+        d2 = self.make(launcher=fl, scan_every_s=0, scan=lambda w: scans.append(w) or {rid: "wsl"})
         d2.tick()
         self.assertEqual(scans[0], True)
         self.assertEqual(fl.adopted[0][0]["placement"], "wsl")
@@ -1147,7 +1025,7 @@ class LaunchPersistence(HardeningFixtures):
         ops.claim_next(self.conn, {})
         rid = ops.start_run(self.conn, t, "worker", "claude", "sonnet-5.5", "high")
         scans = []
-        d2 = self.make(launcher=AdoptLauncher(), scan_every_s=0, scan_fn=lambda w: scans.append(w) or {})
+        d2 = self.make(launcher=AdoptLauncher(), scan_every_s=0, scan=lambda w: scans.append(w) or {})
         d2.tick()
         d2.tick()
         self.assertEqual(scans[:2], [True, True])
@@ -1169,8 +1047,8 @@ class LaunchCancel(HardeningFixtures):
                 s.stops.append((rid, nonce))
         self.fl = L()
         self.found = {}
-        self.d = self.make(launcher=self.fl, now_fn=lambda: self.t, scan_every_s=0,
-                           scan_fn=lambda w: self._scan())
+        self.d = self.make(launcher=self.fl, now=lambda: self.t, scan_every_s=0,
+                           scan=lambda w: self._scan())
 
     def _scan(self):
         if isinstance(self.found, Exception):
@@ -1195,6 +1073,7 @@ class LaunchCancel(HardeningFixtures):
         self.found = {}
         self.d.fl = None
         self.d.launcher = FakeLauncher()
+        self.d.launcher.scan = lambda want: self._scan()
         self.d.tick()
         self.assertEqual(len([e for e in self.events("status") if e["task_id"] == t
                               and e["data"].get("reason", "").startswith("cancelled launch")]), 1)
@@ -1205,7 +1084,7 @@ class LaunchCancel(HardeningFixtures):
         self.d.tick()
         rid = ops.list_runs(self.conn, t)[0]["id"]
         self.found = {rid: "windows"}
-        d2 = self.make(launcher=FakeLauncher(), now_fn=lambda: self.t, scan_every_s=0, scan_fn=lambda w: self._scan())
+        d2 = self.make(launcher=FakeLauncher(), now=lambda: self.t, scan_every_s=0, scan=lambda w: self._scan())
         d2.tick()
         self.assertEqual(self.status(t), "running")
         self.assertIn(rid, d2.cancelling)
@@ -1216,44 +1095,7 @@ class LaunchCancel(HardeningFixtures):
 
 
 class FinishRetry(HardeningFixtures):
-    def test_failing_gate_keeps_the_run_live_and_never_runs_the_gate_twice(self):
-        calls = []
 
-        def gate(task, result):
-            calls.append(1)
-            raise RuntimeError("gate bug")
-        d = self.make(gate_fn=gate)
-        t = self.task()
-        d.tick()
-        d.launcher.handles[0].result = res("done", DONE)
-        d.tick()
-        self.assertEqual(len(d.live), 1)                            # still followed
-        self.assertEqual(self.events("finish-error")[0]["data"]["try"], 1)
-        d.tick()
-        self.assertEqual(calls, [1])                                # not run again
-        self.assertEqual(ops.list_runs(self.conn, t)[0]["outcome"], "unverified")
-        self.assertEqual(self.status(t), "needs-owner")
-        self.assertEqual(d.live, {})
-
-    def test_gate_done_is_reused_when_a_later_step_fails(self):
-        calls = []
-        d = self.make(gate_fn=lambda t, r: calls.append(1) or {"ok": True})
-        t = self.task()
-        d.tick()
-        d.launcher.handles[0].result = res("done", DONE)
-        orig = self.port.set_status
-        boom = [True]
-
-        def flaky(*a, **k):
-            if k.get("reason") == "gate passed" and boom[0]:
-                boom[0] = False
-                raise RuntimeError("db busy")
-            return orig(*a, **k)
-        self.port.set_status = flaky
-        d.tick()
-        self.assertEqual(len(d.live), 1)
-        d.tick()
-        self.assertEqual(calls, [1])
 
     def test_three_failures_send_the_task_to_the_owner_with_the_error(self):
         d = self.make()
@@ -1279,7 +1121,7 @@ class Polish(HardeningFixtures):
         self.assertEqual(pf({"title": "(platform: linux)", "goal": ""}, c), "wsl")
 
     def test_unavailable_expires_after_ten_minutes(self):
-        d = self.make(now_fn=lambda: self.t)
+        d = self.make(now=lambda: self.t)
         d.unavailable[("claude", "windows")] = self.t
         self.assertTrue(d._backend_down("claude"))
         self.t += dispatcher.UNAVAILABLE_S + 1
@@ -1287,7 +1129,7 @@ class Polish(HardeningFixtures):
         self.assertEqual(d.unavailable, {})
 
     def test_backoff_entries_of_non_ready_tasks_are_pruned(self):
-        d = self.make(now_fn=lambda: self.t)
+        d = self.make(now=lambda: self.t)
         a = self.task(title="a")
         self.port.set_backoff(a, self.t + 999, 4)
         ops.set_status(self.conn, a, "cancelled", "owner")
@@ -1296,7 +1138,7 @@ class Polish(HardeningFixtures):
 
     def test_wsl_is_rechecked_next_tick_after_a_boot_not_after_the_backoff(self):
         up = [False]
-        d = self.make(now_fn=lambda: self.t, wsl_up_fn=lambda: up[0])
+        d = self.make(now=lambda: self.t, wsl_up=lambda: up[0])
         t = self.task(size="S", goal="platform: linux")
         d.tick()
         self.assertIn(t, self.port.get_backoffs())

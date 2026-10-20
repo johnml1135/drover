@@ -110,7 +110,6 @@ class WorkerAccessTests(Base):
     def test_read_task_has_no_task_worktree_and_does_not_commit_or_gate(self):
         tid = self.task(kind='research')
         with patch.object(self.pipe, 'worktree', side_effect=AssertionError('must not create worktree')):
-            self.d.worktree_fn = self.pipe.worktree
             self.assertIn(tid, self.d.tick()['launched'])
         spec = self.fl.of('worker')[-1]
         self.assertFalse(spec['write'])

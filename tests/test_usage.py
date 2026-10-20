@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.dispatch_fixture import make_dispatcher
 from drover import config, usage
 from drover.ledger import connect
 
@@ -166,10 +167,9 @@ class MeasuredRouting(unittest.TestCase):
 
 class DispatcherSeats(unittest.TestCase):
     def make_dispatcher(self, seats=None, slots=1):
-        from drover import dispatcher
         from drover.port import DirectPort
         from drover.ledger import ops
-        from tests.test_dispatcher import FakeLauncher, WORKTREE
+        from tests.test_dispatcher import FakeLauncher
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         conn = connect(Path(tmp.name) / 'ledger.db')
@@ -179,9 +179,9 @@ class DispatcherSeats(unittest.TestCase):
         self.addCleanup(config.reset)
         ops.set_setting(conn, 'dispatch_enabled', 'true')
         clock, calls, launcher = [NOW], [], FakeLauncher()
-        d = dispatcher.Dispatcher(DirectPort(conn), launcher=launcher,
-                                  resources_fn=lambda **k: {'verdict': 'go', 'slots': slots},
-                                  worktree_fn=lambda t: WORKTREE, now_fn=lambda: clock[0])
+        d = make_dispatcher(DirectPort(conn), launcher=launcher,
+                            resources=lambda **k: {'verdict': 'go', 'slots': slots},
+                            now=lambda: clock[0])
         def run(*a, **k):
             calls.append(clock[0])
             return subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
@@ -200,7 +200,7 @@ class DispatcherSeats(unittest.TestCase):
                     probes.append(kw['env'].get('CLAUDE_CONFIG_DIR'))
                     return subprocess.CompletedProcess(argv, 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
                 d.usage_poller.run = run
-                tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', goal=f'platform: {platform}')['id']
+                tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], goal=f'platform: {platform}')['id']
                 ops.approve(conn, tid)
                 windows_os = SimpleNamespace(name='nt', path=ntpath, environ=os.environ)
                 with patch.object(config, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
@@ -224,7 +224,7 @@ class DispatcherSeats(unittest.TestCase):
             {'name': 'acme-linux', 'backend': 'claude', 'placement': 'wsl', 'priority': 1},
             {'name': 'acme-windows', 'backend': 'claude', 'placement': 'windows', 'priority': 2,
              'director': True}])
-        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', scope_files=['src/acme.csproj'])['id']
+        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=['src/acme.csproj'])['id']
         ops.approve(conn, tid)
         self.assertEqual(d.tick()['launched'], [tid])
         self.assertEqual(launcher.specs[0]['seat'], 'acme-linux')       # owner rule: wsl + claude is allowed
@@ -236,7 +236,7 @@ class DispatcherSeats(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 conn, d, _, clock, calls = self.make_dispatcher(slots=0 if scenario == 'no-slots' else 1)
                 if scenario != 'idle':
-                    tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib')['id']
+                    tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
                     ops.approve(conn, tid)
                     if scenario == 'backoff':
                         ops.set_backoff(conn, tid, NOW + 1000, 1)
@@ -251,7 +251,7 @@ class DispatcherSeats(unittest.TestCase):
         conn, d, launcher, clock, calls = self.make_dispatcher()
         ops.add_policy_version(conn, 'one-worker', {'parallel_cap': 1})
         for _ in range(2):
-            tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib')['id']
+            tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
             ops.approve(conn, tid)
         d.tick()
         self.assertEqual(calls, [NOW])
@@ -263,15 +263,16 @@ class DispatcherSeats(unittest.TestCase):
         self.assertEqual(d.tick()['launched'], [tid])
         self.assertEqual(calls, [NOW, NOW + 300, NOW + 361])
 
-    def test_completion_without_pending_work_does_not_probe(self):
+    def test_paused_completion_does_not_probe(self):
         from drover.ledger import ops
         from tests.test_dispatcher import res, DONE
         conn, d, launcher, clock, calls = self.make_dispatcher()
-        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib')['id']
+        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
         ops.approve(conn, tid)
         d.tick()
         clock[0] += 61
         launcher.handles[0].result = res('done', DONE)
+        ops.set_setting(conn, 'dispatch_enabled', 'false')
         self.assertEqual(d.tick()['reaped'], [launcher.specs[0]['run_id']])
         self.assertEqual(calls, [NOW])
 
@@ -279,7 +280,7 @@ class DispatcherSeats(unittest.TestCase):
         from drover.ledger import ops
         conn, d, launcher, _, _ = self.make_dispatcher([
             {'name': 'acme-seat', 'backend': 'claude', 'director': True, 'reserve_pct': 25}])
-        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib')['id']
+        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
         ops.approve(conn, tid)
         d.usage_poller.run = lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT}))
         self.assertEqual(d.tick()['launched'], [])
@@ -287,22 +288,22 @@ class DispatcherSeats(unittest.TestCase):
         self.assertEqual(launcher.specs, [])
 
     def test_assignment_records_account_environment_and_stats(self):
-        from drover import dispatcher, stats
+        from drover import stats
         from drover.port import DirectPort
         from drover.ledger import ops
-        from tests.test_dispatcher import FakeLauncher, WORKTREE
+        from tests.test_dispatcher import FakeLauncher
         with tempfile.TemporaryDirectory() as tmp, closing(connect(Path(tmp) / 'ledger.db')) as conn:
             cfg = config.validate({'seats': [{'name': 'acme-seat', 'backend': 'claude', 'director': True,
                                              'config_dir': str(Path(tmp) / 'account'), 'reserve_pct': 25}]})
             config.use(cfg)
             self.addCleanup(config.reset)
             ops.set_setting(conn, 'dispatch_enabled', 'true')
-            tid = ops.create_task(conn, 'Work on acme-lib', 'acme-lib')['id']
+            tid = ops.create_task(conn, 'Work on acme-lib', 'acme-lib', read_access=[])['id']
             ops.approve(conn, tid)
             launcher = FakeLauncher()
-            d = dispatcher.Dispatcher(DirectPort(conn), launcher=launcher,
-                                      resources_fn=lambda **k: {'verdict': 'go', 'slots': 1},
-                                      worktree_fn=lambda t: WORKTREE, now_fn=lambda: NOW)
+            d = make_dispatcher(DirectPort(conn), launcher=launcher,
+                                resources=lambda **k: {'verdict': 'go', 'slots': 1},
+                                now=lambda: NOW)
             d.usage_poller.run = lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
             result = d.tick()
             self.assertEqual(result['launched'], [tid])
@@ -312,7 +313,6 @@ class DispatcherSeats(unittest.TestCase):
             self.assertEqual(stats.query(conn, task=tid)['runs'][0]['stats']['seat'], 'acme-seat')
 
     def test_director_falls_back_to_the_next_claude_seat_without_asking(self):
-        from drover import dispatcher
         from drover.port import DirectPort
         from drover.ledger import ops
         from tests.test_dispatcher import FakeLauncher
@@ -321,11 +321,11 @@ class DispatcherSeats(unittest.TestCase):
                                              {'name': 'alternate', 'backend': 'claude'}]})
             config.use(cfg)
             self.addCleanup(config.reset)
-            tid = ops.create_task(conn, 'Plan acme-lib', 'acme-lib')['id']
+            tid = ops.create_task(conn, 'Plan acme-lib', 'acme-lib', read_access=[])['id']
             ops.approve(conn, tid)
             usage.manual(conn, 'director', 'seven_day', 100, NOW + 3600, now=NOW)
             usage.manual(conn, 'alternate', 'seven_day', 20, NOW + 3600, now=NOW)
-            d = dispatcher.Dispatcher(DirectPort(conn), launcher=FakeLauncher(), now_fn=lambda: NOW)
+            d = make_dispatcher(DirectPort(conn), launcher=FakeLauncher(), now=lambda: NOW)
             task, policy = {**ops.get_task(conn, tid), 'role': 'director'}, {'data': {}, 'version': None}
             result = d._route(task, policy, ['claude'])
             self.assertEqual(result['seat'], 'alternate')
@@ -393,11 +393,11 @@ class ObservationEdges(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM task_events WHERE kind='usage.alert'").fetchone()[0], 2)
 
     def test_wsl_claude_probe_uses_worker_executable_and_distro(self):
-        from drover import dispatcher, launch
+        from drover import launch
         from drover.port import DirectPort
         launcher = launch.RunnerLauncher(runs_dir=self.tmp.name, distro='Acme', windows=True,
                                          wsl_bins=lambda: {'claude': '/opt/acme/bin/claude'})
-        d = dispatcher.Dispatcher(DirectPort(self.conn), launcher=launcher, now_fn=lambda: NOW)
+        d = make_dispatcher(DirectPort(self.conn), launcher=launcher, now=lambda: NOW)
         d.usage_poller.windows = True
         calls = []
         def run(argv, **kw):

@@ -87,7 +87,7 @@ class Lock(Base):
         self.addCleanup(held.release)
         err = io.StringIO()
         with redirect_stderr(err):
-            rc = dispatcher.main(["--db", db, "--once", "--no-gate-dry-run", "--lock", self.lock])
+            rc = dispatcher.main(["--db", db, "--once", "--lock", self.lock])
         self.assertEqual(rc, 2)
         self.assertIn("refusing to start", err.getvalue())
         self.assertFalse(Path(db).exists())          # it never opened the ledger
@@ -98,11 +98,11 @@ class Lock(Base):
         import contextlib
         sub = type("S", (), {})
         orig = dispatcher.Dispatcher
-        dispatcher.Dispatcher = lambda port, gate_fn=None: type(
+        dispatcher.Dispatcher = lambda port, pipeline: type(
             "D", (), {"tick": lambda s: {"verdict": "go", "launched": [], "reaped": []}})()
         self.addCleanup(setattr, dispatcher, "Dispatcher", orig)
         with contextlib.redirect_stdout(out):
-            rc = dispatcher.main(["--db", db, "--once", "--no-gate-dry-run", "--lock", self.lock])
+            rc = dispatcher.main(["--db", db, "--once", "--lock", self.lock])
         self.assertEqual(rc, 0)
         FileLock(self.lock).acquire().release()
 
@@ -172,6 +172,8 @@ class Service(Base):
         self.assertEqual((d.launcher.distro, d.launcher.runs_dir), ("Other", str(self.settings.runs_dir)))
         self.store.update_settings({"wsl_distro": "New-choice"})
         self.assertEqual(d.launcher.distro, "New-choice")
+        self.assertEqual(d.pipeline.runs_dir, str(self.settings.runs_dir))
+        self.assertEqual(d.usage_poller.conn, self.store.conn)
 
 
 @unittest.skipUnless(create_app, "fastapi is not installed")

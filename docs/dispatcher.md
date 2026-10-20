@@ -22,6 +22,16 @@ Default db: `$DROVER_LEDGER`, else `<state dir>\ledger.db` on Windows (the state
 The dispatcher runs as a thread inside the Windows hub (`hub/dispatch.py`, `DirectPort`, one ledger connection per
 thread) and starts every worker through `drover.runner --detach`: Windows placement runs the hub's python directly,
 WSL placement goes through `wsl.exe --exec` (`runner.wsl_argv`, `--cd` to this directory so `drover` imports).
+Every dispatcher requires a `Pipeline`; workers finish into checks, then review, before the merge queue. The unused
+`--no-gate-dry-run` CLI flag and synchronous `gate_fn` mode have been removed. To observe recovery without admitting
+work, keep `dispatch_enabled` false; paused dispatch still reaps and adopts runs.
+
+`Dispatcher(port, pipeline, runtime=None, usage=None, route=route.choose, decide=...)` takes the ledger and pipeline,
+an execution environment (`DispatchRuntime`: launcher, resource checker, clock), the measured per-seat usage poller,
+the router and the decider. Worktree operations belong to the pipeline; scans and WSL readiness belong to the launcher.
+The router always receives seat load, repo platforms, measured seat headroom and seat ordering. Seat routing and
+allowance accounting both use `drover.usage`; legacy allowance-file admission is no longer a dispatcher path.
+
 Placement rules:
 - Codex always runs in WSL.
 - `platform: linux` (task field, `platform:linux` tag, or that text in title/goal) means WSL.
@@ -42,9 +52,9 @@ Run files live in `<state dir>\runs\<id>\`.
   find --json` (WSL only when a WSL run is open, or a run's placement, recorded in a `run-launching` event before the
   launch, is unknown, in which case both sides are scanned). The dispatcher picks the launch nonce, records it in the `run-launching` event and passes it as `runner --nonce`, so a
   stop-request can be written before status.json exists and a late runner honours it. A launch that timed out gets one and its task is
-  requeued only after a scan shows no runner for that run id. A finish that raises is retried (3 tries) and the checks run
-  at most once per run (`gate-started`/`gate-done` events). A failed scan is unknown and requeues nothing; an open run with no
-  runner and no terminal `status.json` is orphaned after 2 consecutive clean scans.
+  requeued only after a scan shows no runner for that run id. A finish that raises is retried (3 tries). Checks and
+  reviews are derived from ledger runs after recovery; infrastructure failures rerun checks on the same commit. A failed
+  scan is unknown and requeues nothing; an open run with no runner and no terminal `status.json` is orphaned after 2 consecutive clean scans.
 - A task with no eligible backend or no placement is skipped for the tick and backed off 1, 2, 4 ... 30 minutes
   (hidden setting `_dispatch_backoff`); `ops.claim_next(..., exclude=ids)` keeps it from blocking the queue.
 - `drover/contract.py` is the one definition of the run outcomes and of the shapes the dispatcher writes and the

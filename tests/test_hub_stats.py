@@ -80,11 +80,11 @@ class StatsApi(unittest.TestCase):
         self.assertEqual(self.c.get(url, headers=self.token).status_code, 404)
 
     def test_maintenance_rolls_samples_and_keeps_aggregates_on_delete(self):
-        from drover.dispatcher import Dispatcher
+        from tests.dispatch_fixture import make_dispatcher
         from drover.port import DirectPort
         from tests.test_dispatcher import FakeLauncher
-        d = Dispatcher(DirectPort(self.store.conn), launcher=FakeLauncher(),
-                       resources_fn=lambda **kw: {'facts': {'ram_available_gb': 12}})
+        d = make_dispatcher(DirectPort(self.store.conn), launcher=FakeLauncher(),
+                            resources=lambda **kw: {'facts': {'ram_available_gb': 12}})
         d._seat_tick()
         self.assertEqual(len(stats.query(self.store.conn)['hourly']), 1)
         rid = ops.start_run(self.store.conn, self.tid, 'worker', 'codex', 'gpt-6-luna')

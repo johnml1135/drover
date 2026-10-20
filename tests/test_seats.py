@@ -201,12 +201,8 @@ class Dispatching(test_dispatcher.Base):
         self.addCleanup(config.reset)
 
     def test_claude_only_config_admits_with_real_allowance(self):
-        from drover import allowance
         self.use(seats=[CLAUDE])
-        reading = {"source": "manual", "observed_at": 1000,
-                   "windows": {"seven_day": {"used_pct": 5, "resets_at": None, "window_hours": 168}}}
-        self.d = self.make(admit_fn=lambda plan, role, pct: allowance.admit(
-            plan, role, pct, state=self.tmp.name, reading=reading))
+        self.d = self.make(headroom=lambda backend: {"remaining_pct": 95})
         tid = self.task()
         out = self.d.tick()
         self.assertEqual(out["admitted"], ["claude"])
@@ -246,7 +242,7 @@ class Dispatching(test_dispatcher.Base):
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(tid), "ready")
         self.assertEqual(len(self.fl.specs), 1)
-        self.assertIn("max_workers", self.events("backoff")[-1]["data"]["why"])
+        self.assertIn(tid, self.port.get_backoffs())
         self.finish(0, test_dispatcher.res("done", test_dispatcher.DONE))
         now = self.d.now()
         self.d.now = lambda: now + 61
@@ -277,7 +273,7 @@ class Dispatching(test_dispatcher.Base):
         self.use(seats=[{**CLAUDE, "priority": 2}, {**CODEX, "priority": 1}])
         for _ in range(4):
             self.task(size="S")
-        self.d = self.make(wsl_up_fn=lambda: True)
+        self.d = self.make(wsl_up=lambda: True)
         self.d.tick()
         self.assertEqual({s["backend"] for s in self.fl.specs}, {"codex"})
 

@@ -5,7 +5,7 @@ It claims only `ready` tasks (the ledger enforces it), never compacts (rotation 
 gate on the same task, escalates the tier after 2 failures and asks for a replan on the four section-12 triggers.
 decide.retry_or_escalate runs in shadow: logged, never acted on.
 
-With a pipeline (drover.pipeline) the gate and the review are runs too, followed like workers: a worker that reports
+The mandatory pipeline (drover.pipeline) makes checks and reviews runs too, followed like workers: a worker that reports
 done is finished as `done` and then gated by a `gate` run (gatejob under drover.runner, on the repo's gate
 platform), a gated task is reviewed by a fresh `review` run, and LAND@sha moves it to reviewed. What is due is derived
 from the ledger on every tick (so a hub restart loses nothing). While `dispatch_enabled` is false the dispatcher
@@ -20,10 +20,9 @@ import time
 import uuid
 from pathlib import Path
 
-import inspect
+from dataclasses import dataclass, field
 
 from . import task_access
-from . import allowance as allowance_mod
 from . import brief as brief_mod
 from . import config as config_mod
 from . import contract
@@ -39,7 +38,6 @@ from .launch import RunnerLauncher
 from .pipeline import WorktreeRefused, truthy
 from .runner import ScanError
 
-PREDICTED_PCT = {"S": 0.5, "M": 1.5, "L": 3.0}
 DEFAULT_INFRA_RETRIES = 2                 # gate reruns on the same commit before the owner is asked; setting gate_infra_retries
 FAIL_OUTCOMES = contract.FAIL_OUTCOMES   # worker failures; launch-error/orphaned never count
 WALL_MIN = {"S": 30, "M": 60, "L": 120}
@@ -96,20 +94,6 @@ def is_dotnet(task):
     text = f"{task.get('title', '')} {task.get('goal', '')}".lower()
     return any(f.lower().endswith(DOTNET_EXT) for f in task.get("scope_files") or []) \
         or "dotnet" in text or "msbuild" in text
-
-
-def rule_route(task, backends, load=None, platforms=None):
-    """{'backend','model','effort'}: S -> cheap tier, M/L -> mid tier; else the lighter backend. dotnet takes Claude
-    (Windows or WSL) or, only where the repo allows WSL, Codex; never Codex on Windows."""
-    pool = backends or ["claude"]
-    if is_dotnet(task):
-        tag = _platform_tag(task)
-        ok = route_mod.dotnet_backends(route_mod.dotnet_placements({**task, "platform": tag} if tag else task, platforms))
-        pool = [b for b in pool if b in ok] or ["claude"]
-    load = load or {}
-    backend = min(pool, key=lambda b: (load.get(b, 0), b != "claude"))
-    ladder = ladders()[backend]
-    return {"backend": backend, "model": ladder[min(start_idx()[task.get("size", "M")], len(ladder) - 1)]}
 
 
 def _platform_tag(task):
@@ -169,14 +153,6 @@ def place(task, route, worktree, prog):
     return None, f"needs {want} but {name} runs only on {', '.join(plats)}"[:300]
 
 
-def _route_module():
-    try:
-        from . import route
-    except ImportError:
-        return None
-    return route.choose
-
-
 def effort_for(model, effort=None):
     """Cheap-rung models (Haiku, Luna) always run at the cheap tier's effort; others take the router's effort, else
     their tier's (config models.efforts)."""
@@ -233,40 +209,32 @@ def _real_decide(*a, **kw):
 ENV_BLOCK_KINDS = ("verification_environment", "missing_windows_worker")
 
 
+@dataclass
+class DispatchRuntime:
+    """The execution environment shared by worker launch, resource checks and recovery."""
+    launcher: object = field(default_factory=RunnerLauncher)
+    resources: object = resources_mod.check
+    now: object = time.time
+
+
 class Dispatcher:
-    def __init__(self, port, launcher=None, resources_fn=None, admit_fn=None, decide_fn=None, gate_fn=None,
-                 worktree_fn=None, state=None, headroom_fn=None, route_fn=None, now_fn=time.time, scan_fn=None,
-                 wsl_up_fn=None, scan_every_s=SCAN_EVERY_S, pipeline=None, enabled_fn=None):
-        self.port = port
-        self.pipeline = pipeline             # drover.pipeline.Pipeline: worktrees, gate plans, reviews; None = legacy gate_fn
-        self.enabled_fn = enabled_fn or (lambda: truthy(self.port.get_setting("dispatch_enabled", "false")))
+    def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide):
+        if pipeline is None:
+            raise TypeError("Dispatcher requires a Pipeline")
+        from .usage import Poller
+        self.port, self.pipeline = port, pipeline
+        runtime = runtime or DispatchRuntime()
+        self.launcher, self.resources_fn, self.now = runtime.launcher, runtime.resources, runtime.now
+        self.stats_resources_fn = lambda: self.resources_fn(new_workers=0, with_wsl_memory=True)
+        self.usage_poller = usage or Poller(port.conn, now=self.now, launcher=self.launcher)
+        self.route_fn, self.decide_fn = route, decide
         self.tickets = {}                    # task_id -> gate lease ticket
-        self.launcher = launcher or RunnerLauncher()
-        self.resources_fn = resources_fn or resources_mod.check
-        self.stats_resources_fn = (lambda: resources_fn(new_workers=0)) if resources_fn else (
-            lambda: resources_mod.check(new_workers=0, with_wsl_memory=True))
-        self.admit_fn = admit_fn or (lambda plan, role, pct: allowance_mod.admit(plan, role, pct, state=state))
-        self.decide_fn = decide_fn or _real_decide
-        self.gate_fn = gate_fn               # (task, result) -> {ok, receipt, excerpt, diff_lines}; None fails closed
-        self.route_fn = route_fn or _route_module()
-        self.usage_poller = None
-        if headroom_fn is None and hasattr(port, "conn"):
-            from .usage import Poller
-            self.usage_poller = Poller(port.conn, now=now_fn, launcher=self.launcher)
-        self.headroom_fn = headroom_fn or (self._seat_headroom if self.usage_poller else
-                                          lambda plan: allowance_mod.headroom(plan, state=state))
-        if admit_fn is None and self.usage_poller:
-            # Measured allowance is checked by the seat router when work can actually be assigned.
-            self.admit_fn = lambda plan, role, pct: {"allow": True}
-        self.scan_fn = scan_fn or getattr(self.launcher, "scan", None)    # (want_wsl) -> {run_id: placement}
-        self.wsl_up_fn = wsl_up_fn or getattr(self.launcher, "wsl_up", None) or (lambda: True)
-        self.scan_every_s, self.last_scan, self.scan_unknown = scan_every_s, None, False
-        self.recovered, self.now = False, now_fn
+        self.scan_every_s, self.last_scan, self.scan_unknown = SCAN_EVERY_S, None, False
+        self.recovered = False
         self.unavailable = {}                # (backend, placement) -> when its binary was found missing
-        self.wsl_waiting = set()             # tasks deferred because WSL was down: re-checked next tick, not after backoff
-        self.cancelling = {}                 # run_id -> (task_id, placement): launch cancelled, runner may still exist
+        self.wsl_waiting = set()             # re-checked next tick when the watchdog brings WSL up
+        self.cancelling = {}                 # run_id -> (task_id, placement): cancelled runner may still exist
         self.finish_tries = {}
-        self.worktree_fn = worktree_fn or (pipeline.worktree if pipeline else (lambda t: t.get("worktree")))
         self.live = {}                       # run_id -> (handle, task_id, spec)
         self.missed = {}                     # run_id -> consecutive clean scans that did not find its runner
         self.cursor = None                   # last event id seen by the stale-brief check
@@ -360,7 +328,7 @@ class Dispatcher:
             return self._finish_review(run_id, task_id, spec, result)
         try:
             task_access.verify(spec.get("read_checkouts") or [])
-            if (spec.get("adopted") and self.pipeline and p.get_task(task_id).get("read_access")
+            if (spec.get("adopted") and p.get_task(task_id).get("read_access")
                     and "read_checkouts" not in spec):
                 raise ValueError("read access verification unavailable after dispatcher restart")
         except (ValueError, OSError) as e:
@@ -390,8 +358,6 @@ class Dispatcher:
             self._replan(task_id, "blocker", blocker=rec["blocker"])
         elif st == "ready_to_commit":
             try:
-                if self.pipeline is None:
-                    raise WorktreeRefused("ready_to_commit requires a repo pipeline")
                 sha = self.pipeline.commit_ready(p.get_task(task_id), run_id, rec["commit_message"])
             except (WorktreeRefused, OSError) as e:
                 p.finish_run(run_id, "blocked", note=str(e)[:300], **usage)
@@ -402,10 +368,7 @@ class Dispatcher:
             result = {**result, "record": {**rec, "status": "done", "sha": sha}}
             self._after_done(task_id, result, run_id, usage, note)
         elif st == "done":
-            if self.pipeline:
-                self._after_done(task_id, result, run_id, usage, note)
-            else:
-                self._gate(task_id, result, run_id, usage, note)
+            self._after_done(task_id, result, run_id, usage, note)
         else:
             p.finish_run(run_id, st, note=(result.get("text") or "")[-250:] or None, **usage)
             self._failed(task_id, run_id, "no action-state record" if st == "no-record" else "worker error")
@@ -440,7 +403,7 @@ class Dispatcher:
         """A worker blocked only by the sandbox (the Drover gate runs the full suites) with work in its worktree is
         committed and sent to the gate; no replan. False when it does not apply or the commit is refused."""
         kind = str((rec.get("blocker") or {}).get("kind") or "").lower().replace("-", "_")
-        if kind not in ENV_BLOCK_KINDS or self.pipeline is None:
+        if kind not in ENV_BLOCK_KINDS:
             return False
         p, task = self.port, self.port.get_task(task_id)
         if task.get("write", True) is False:
@@ -461,46 +424,6 @@ class Dispatcher:
         if not before:
             return None
         return contract.used_delta(before, contract.used_from_headroom(self._reading_for_route(spec)))
-
-    def _gate_result(self, task, result, run_id):
-        """The gate's answer for this run, from a gate-done event when it already ran. The gate runs at most once per
-        run: a gate-started with no gate-done (it crashed or raised mid-way) is not re-run, it goes to the owner."""
-        p, tid = self.port, task["id"]
-        done = next((e for e in p.events("gate-done") if e["data"].get("run") == run_id), None)
-        if done:
-            return done["data"]["g"], False
-        if any(e["data"].get("run") == run_id for e in p.events("gate-started")):
-            return {"needs_owner": "the gate was interrupted and is not re-run"}, False
-        if not self.gate_fn:
-            return {"ok": False, "needs_owner": "no gate wired (dry run)"}, False
-        p.append_event("gate-started", {"run": run_id}, tid)
-        t0 = time.monotonic()
-        g = dict(self.gate_fn(task, result))
-        if not isinstance(g.get("duration_s"), (int, float)):
-            g["duration_s"] = time.monotonic() - t0
-        p.append_event("gate-done", {"run": run_id, "g": json.loads(json.dumps(g, default=str))}, tid)
-        return g, True
-
-    def _gate(self, task_id, result, run_id, usage, note):
-        p, task = self.port, self.port.get_task(task_id)
-        g, fresh = self._gate_result(task, result, run_id)
-        if g.get("needs_owner"):
-            p.finish_run(run_id, "unverified", note=str(g["needs_owner"])[:300], **usage)
-            p.set_status(task_id, "needs-owner", reason=f"done but not gated: {g['needs_owner']}")
-            return
-        ok = bool(g.get("ok"))
-        if fresh:
-            p.append_event(contract.GATE_EVENT, contract.gate_event(g["duration_s"], not ok, run_id), task_id)
-        if ok:
-            receipt = contract.gate_receipt(True, g.get("diff_lines"), receipt=g.get("receipt"))
-            p.finish_run(run_id, "gated", gate_receipt=receipt, note=note, **usage)
-            p.append_event("run-done", {"sha": result["record"]["sha"], "run": run_id}, task_id)
-            p.set_status(task_id, "gated", reason="gate passed")
-            return
-        excerpt = "\n".join(str(g.get("excerpt") or "gate failed").splitlines()[-EXCERPT_LINES:])
-        p.finish_run(run_id, "gate-fail", gate_receipt=contract.gate_receipt(False, g.get("diff_lines"), excerpt),
-                     note=note, **usage)
-        self._failed(task_id, run_id, excerpt)
 
     def _failed(self, task_id, run_id, excerpt):
         """A failure of the worker run `run_id` (a gate-fail, a worker error, or a review HOLD of that run)."""
@@ -682,7 +605,7 @@ class Dispatcher:
             self._gate_passed(task, worker, sha, 0.0, plan["diff_lines"], {"sha": sha, "scope": plan["scope"],
                                                                          "status": "passed", "kind": "none"}, None)
             return True
-        if platform == "wsl" and not self.wsl_up_fn():
+        if platform == "wsl" and not self.launcher.wsl_up():
             p.note_wsl_needed(tid)
             return False
         if platform == "wsl" and self._wsl_blocked():
@@ -923,16 +846,13 @@ class Dispatcher:
         if not route or not route.get("backend"):
             p.append_event("review-hold", {"reason": (route or {}).get("reason") or "no eligible review route"}, tid)
             return False
-        if not self.admit_fn(route["backend"], "review", PREDICTED_PCT["S"]).get("allow"):
-            p.append_event("review-hold", {"reason": f"{route['backend']} allowance not admitted for review"}, tid)
-            return False
         placement, why = place(task, route, task["worktree"], prog)
         if placement is None:
             p.set_status(tid, "needs-owner", reason=why)
             return False
         if self._is_unavailable(route["backend"], placement):
             return False
-        if placement == "wsl" and not self.wsl_up_fn():
+        if placement == "wsl" and not self.launcher.wsl_up():
             p.note_wsl_needed(tid)
             return False
         if placement == "wsl" and self._wsl_blocked():
@@ -965,7 +885,7 @@ class Dispatcher:
         verdict = str((rec or {}).get("verdict") or "").strip()
         landed = re.fullmatch(r"LAND@([0-9a-fA-F]{40})", verdict)       # the whole sha: a prefix is not a licence
         if landed and sha and sha.lower() == landed.group(1).lower():
-            head = self.pipeline.head(p.get_task(task_id)) if self.pipeline else sha
+            head = self.pipeline.head(p.get_task(task_id))
             if head != sha:
                 p.finish_run(run_id, "unverified", note="worktree moved during the review", **usage)
                 return p.set_status(task_id, "ready", reason="the worktree moved during the review")
@@ -1021,7 +941,7 @@ class Dispatcher:
                                    notes=p.owner_notes(task["id"]))
         except brief_mod.BriefTooLarge as e:
             return p.set_status(task["id"], "needs-owner", reason=str(e))
-        cwd = cwd if cwd is not None else self.worktree_fn(task)
+        cwd = cwd if cwd is not None else self.pipeline.worktree(task)
         if not cwd:
             return p.set_status(task["id"], "needs-owner", reason="task has no worktree")
         return self._spawn(task, route, policy, placement, cwd, b, "worker")
@@ -1122,10 +1042,10 @@ class Dispatcher:
 
     def _scan(self, want_wsl):
         """{run_id: placement}, or None when the process list could not be read (unknown, never "none")."""
-        if self.scan_fn is None:
+        if self.launcher.scan is None:
             return None
         try:
-            found = launch_mod.normalize_run_ids(self.scan_fn(want_wsl))
+            found = launch_mod.normalize_run_ids(self.launcher.scan(want_wsl))
         except ScanError as e:
             if not self.scan_unknown:
                 self.port.append_event("scan-unknown", {"error": str(e)[:300]})
@@ -1169,7 +1089,7 @@ class Dispatcher:
             if last and last["outcome"] == "launch-error" and "cancel-requested" in (last["note"] or ""):
                 self.cancelling[last["id"]] = (t["id"], places.get(last["id"], "unknown"), nonces.get(last["id"]))
                 continue
-            if self.pipeline and self._awaiting_gate(runs):
+            if self._awaiting_gate(runs):
                 continue                                    # done and waiting for its gate: _start_gates derives it
             p.append_event("running-no-run", {}, t["id"])
             p.set_status(t["id"], "ready", reason="running with no open run")
@@ -1211,7 +1131,7 @@ class Dispatcher:
         failed scan is unknown: it requeues nothing and restarts the count. Runs this dispatcher launched fall back
         to their own handle's status when the scan is unavailable. Returns requeued task ids."""
         pending = {rid: v for rid, v in self.live.items() if v[0].poll() is None and v[0].terminal() is None}
-        if (not pending and not self.cancelling) or self.scan_fn is None:
+        if (not pending and not self.cancelling) or self.launcher.scan is None:
             return []
         if self.last_scan is not None and self.now() - self.last_scan < self.scan_every_s:
             return []
@@ -1281,45 +1201,26 @@ class Dispatcher:
             load[name] = load.get(name, 0) + 1
         return load
 
-    def _repo(self, task):
-        return self.pipeline.repo(task) if self.pipeline else None
-
-    def _route_kw(self, choose, task, admitted=None):
-        """Seat load and the repo's platforms, for a router that takes them (the real one; test fakes do not)."""
-        try:
-            params = inspect.signature(choose).parameters
-        except (TypeError, ValueError):
-            return {}
-        if "seat_load" not in params and not any(q.kind == q.VAR_KEYWORD for q in params.values()):
-            return {}
-        prog = self._repo(task)
-        kw = {"seat_load": self._seat_load(), "platforms": prog["run"]["platforms"] if prog else None}
-        if "seat_headroom" in params:
-            kw.update(self._seat_route_kw())
-            if admitted is not None and "seat_headroom" in kw:
-                kw["seat_headroom"] = {name: h for name, h in kw["seat_headroom"].items()
-                                       if config_mod.seat_by_name(name)["backend"] in admitted}
+    def _route_inputs(self, task, admitted):
+        """One router call shape: seat load, repo platforms and measured per-seat allowance."""
+        prog = self.pipeline.repo(task)
+        kw = {"seat_load": self._seat_load(), "platforms": prog["run"]["platforms"] if prog else None,
+              **self._seat_route_kw()}
+        kw["seat_headroom"] = {name: h for name, h in kw["seat_headroom"].items()
+                               if config_mod.seat_by_name(name)["backend"] in admitted}
         return kw
 
     def _route(self, task, policy, admitted):
         t = {**task, "stack": "dotnet"} if is_dotnet(task) else task    # placement: owner rule in route.py
         if is_dotnet(task) and _platform_tag(task):
             t["platform"] = _platform_tag(task)                         # an explicit tag narrows the router too
-        load = {}
-        for _, _, spec in self.live.values():
-            load[spec["backend"]] = load.get(spec["backend"], 0) + 1
-        choose = self.route_fn
-        if choose is None:                       # drover.route not present: fixed rule
-            prog_ = self._repo(task)
-            base = rule_route(task, admitted, load, prog_["run"]["platforms"] if prog_ else None)
-        else:
-            heads = {b: self._headroom(b) for b in admitted}      # not-admitted plans stay out of the draw
-            base = choose(t, policy["data"], heads, **self._route_kw(choose, task, admitted))
+        heads = {b: self._headroom(b) for b in admitted}
+        base = self.route_fn(t, policy["data"], heads, **self._route_inputs(task, admitted))
         if base.get("borrow_seat"):
             seat = base["borrow_seat"]
             if self._director_borrow_approved(task["id"], seat):
                 base = route_mod.choose({**t, "director_seat": seat}, policy["data"],
-                                        **self._route_kw(route_mod.choose, task, admitted), director_borrow_approved=True)
+                                        **self._route_inputs(task, admitted), director_borrow_approved=True)
             else:
                 return base
         if not base.get("backend"):
@@ -1329,22 +1230,10 @@ class Dispatcher:
         route = next_tier(self.port.list_runs(task["id"]), base)
         if route["model"] != base["model"]:
             route = {**route, "effort": None}   # the router's effort was picked for the cheaper model
-        prog = self._repo(task)
-        if self.usage_poller:
-            role_key = route_mod.route_key(task.get("role", "worker"), task.get("size"))
-            data = {**policy["data"], "routes": {**policy["data"].get("routes", {}), role_key: [route]}}
-            return route_mod.choose(t, data, seats=config_mod.get()["seats"],
-                                    **self._route_kw(route_mod.choose, task, admitted))
-        seats = [s for s in route_mod.eligible_seats(
-            config_mod.get()["seats"], self._seat_load(), prog["run"]["platforms"] if prog else None,
-            task.get("role", "worker") in route_mod.DIRECTOR_ROLES) if s["backend"] == route["backend"]]
-        if not seats:
-            return route_mod.no_seat_route(config_mod.seats_for(route["backend"]),
-                                           prog["run"]["platforms"] if prog else None,
-                                           task.get("role", "worker") in route_mod.DIRECTOR_ROLES)
-        seat = next((s for s in seats if s["name"] == base.get("seat")), None)
-        seat = seat or route_mod.pick_seat(seats, route["backend"], self._seat_load())
-        return {**route, "seat": seat["name"]}
+        role_key = route_mod.route_key(task.get("role", "worker"), task.get("size"))
+        data = {**policy["data"], "routes": {**policy["data"].get("routes", {}), role_key: [route]}}
+        return route_mod.choose(t, data, seats=config_mod.get()["seats"],
+                                **self._route_inputs(task, admitted))
 
     def _director_borrow_approved(self, task_id, seat):
         for ev in reversed(self.port.events("director-borrow")):
@@ -1359,8 +1248,6 @@ class Dispatcher:
         return False
 
     def _seat_tick(self):
-        if not self.usage_poller:
-            return
         from . import stats
         self.usage_poller.poll(config_mod.get()["seats"], self._seat_load())
         current = stats.hour(self.now())
@@ -1375,8 +1262,6 @@ class Dispatcher:
         return max((h for h in heads if h), key=lambda h: h["remaining_pct"], default=None)
 
     def _seat_route_kw(self):
-        if not self.usage_poller:
-            return {}
         from . import usage
         seats = config_mod.get()["seats"]
         heads = {s["name"]: self.usage_poller.refresh(s) for s in seats}
@@ -1384,7 +1269,7 @@ class Dispatcher:
                 "seat_order": usage.order(self.usage_poller.conn, seats, now=self.now(), seat_load=self._seat_load())}
 
     def _reading_for_route(self, route):
-        if self.usage_poller and route.get("seat"):
+        if route.get("seat"):
             from . import usage
             seat = config_mod.seat_by_name(route["seat"])
             return usage.headroom(self.usage_poller.conn, seat["name"], self.now()) if seat else None
@@ -1397,7 +1282,7 @@ class Dispatcher:
 
     def _headroom(self, plan):
         try:
-            return self.headroom_fn(plan)
+            return self._seat_headroom(plan)
         except Exception:
             return None
 
@@ -1415,7 +1300,7 @@ class Dispatcher:
     def _worktree(self, task):
         """The task's worktree path, or False when it could not have one (it is then needs-owner with the reason)."""
         try:
-            if task.get("read_access") and self.pipeline:
+            if task.get("read_access"):
                 task["read_checkouts"] = task_access.prepare(
                     task["read_access"], self.pipeline.all_repos(),
                     Path(self.pipeline.runs_dir).parent / "read-checkouts")
@@ -1424,7 +1309,7 @@ class Dispatcher:
                 if not task.get("read_dirs"):
                     raise WorktreeRefused("read-only task needs at least one read repository")
                 return task["read_dirs"][0]
-            return self.worktree_fn(task)
+            return self.pipeline.worktree(task)
         except WorktreeRefused as e:
             self.port.set_status(task["id"], "needs-owner", reason=str(e)[:300])
         except Exception as e:                       # a git failure must not end the tick
@@ -1447,7 +1332,7 @@ class Dispatcher:
         self._seat_tick()
         p = self.port
         policy = p.get_policy()
-        enabled = self.enabled_fn()
+        enabled = truthy(p.get_setting("dispatch_enabled", "false"))
         p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self._gate_queue()})
         out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
@@ -1460,33 +1345,27 @@ class Dispatcher:
         self._release_stale_holds()
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
             return out
-        if self.pipeline:
-            out["recovered"] += self.pipeline.sync_gates()
+        out["recovered"] += self.pipeline.sync_gates()
         res = self.resources_fn(new_workers=1)
         self.last_resources = res
         out["verdict"] = res["verdict"]
         if res["verdict"] != self.last_verdict:
             p.append_event("resources", {"verdict": res["verdict"], "reasons": res.get("reasons", [])})
             self.last_verdict = res["verdict"]
-        if self.pipeline and res["verdict"] != "hold":
+        if res["verdict"] != "hold":
             out["gated"] = self._start_gates(policy)     # a gate is CPU work the lease paces, not new worker load
         if res["verdict"] != "go":                   # queue: no new claims; hold: nothing starts either
             return out
-        admitted = []
-        for plan in dict.fromkeys(s["backend"] for s in config_mod.get()["seats"]
-                                  if not self._backend_down(s["backend"])):
-            a = self.admit_fn(plan, "worker", PREDICTED_PCT["M"])
-            if a.get("allow"):
-                admitted.append(plan)
+        admitted = list(dict.fromkeys(s["backend"] for s in config_mod.get()["seats"]
+                                     if not self._backend_down(s["backend"])))
         out["admitted"] = admitted
         if not admitted:
             return out
         in_use = sum(1 for _, _, sp in self.live.values() if sp.get("role") != "gate")
         slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0))
-        if self.pipeline:
-            out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
-            slots -= len(out["reviewed"])
-        if self.wsl_waiting and self.wsl_up_fn():       # WSL came up (the watchdog booted it): do not wait out the backoff
+        out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
+        slots -= len(out["reviewed"])
+        if self.wsl_waiting and self.launcher.wsl_up():       # WSL came up (the watchdog booted it): do not wait out the backoff
             for tid in self.wsl_waiting:
                 p.set_backoff(tid, None, 0)
             self.wsl_waiting.clear()
@@ -1498,7 +1377,7 @@ class Dispatcher:
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            if self.pipeline and task.get("write", True) and not self.pipeline.gate_known(task):
+            if task.get("write", True) and not self.pipeline.gate_known(task):
                 continue                             # no known gate for the repo: the owner was asked
             route = self._route(task, policy, admitted)
             if route.get("needs_owner"):
@@ -1510,14 +1389,14 @@ class Dispatcher:
             wt = self._worktree(task)
             if wt is False:
                 continue                             # refused: the task went to the owner
-            placement, why = place(task, route, wt, self._repo(task))
+            placement, why = place(task, route, wt, self.pipeline.repo(task))
             if placement is None:
                 p.set_status(task["id"], "needs-owner", reason=why)
                 continue
             if self._is_unavailable(route["backend"], placement):
                 self._defer(task, f"{route['backend']} is not installed on {placement}")
                 continue
-            if placement == "wsl" and not self.wsl_up_fn():
+            if placement == "wsl" and not self.launcher.wsl_up():
                 p.note_wsl_needed(task["id"])
                 self._defer(task, "WSL is not running")
                 self.wsl_waiting.add(task["id"])
@@ -1551,8 +1430,6 @@ def main(argv=None):
     ap.add_argument("--interval", type=int, default=30)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--lock", help="single-instance lock file (default: the hub's <state dir>\\dispatcher.lock)")
-    ap.add_argument("--no-gate-dry-run", action="store_true",
-                    help="run without the pipeline: every finished task goes to needs-owner instead of gated")
     a = ap.parse_args(argv)
     if not IS_WINDOWS:
         print("drover.dispatcher: refusing to start: the dispatcher runs only inside the Windows hub "
@@ -1566,11 +1443,8 @@ def main(argv=None):
         return 2
     try:
         port = DirectPort(connect(a.db or default_path()))
-        if a.no_gate_dry_run:
-            d = Dispatcher(port, gate_fn=None)
-        else:
-            from .pipeline import Pipeline
-            d = Dispatcher(port, launcher=RunnerLauncher(), pipeline=Pipeline(port))
+        from .pipeline import Pipeline
+        d = Dispatcher(port, Pipeline(port))
         if a.once:
             out = d.tick()
             print(json.dumps(out) if a.json else f"{out['verdict']}: launched {out['launched']}, reaped {out['reaped']}")
