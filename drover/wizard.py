@@ -106,34 +106,6 @@ def repo_candidates():
     return list(dict.fromkeys(cands))
 
 
-def detect_vhdx_drives():
-    """{distro: 'R:'} for the drive holding each distro's ext4.vhdx, from the Lxss registry key."""
-    out = {}
-    if is_windows():
-        try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Lxss")
-            for i in range(winreg.QueryInfoKey(key)[0]):
-                with winreg.OpenKey(key, winreg.EnumKey(key, i)) as sub:
-                    try:
-                        name = winreg.QueryValueEx(sub, "DistributionName")[0]
-                        base = winreg.QueryValueEx(sub, "BasePath")[0]
-                    except OSError:
-                        continue
-                    m = re.match(r"^(?:\\\\\?\\)?([A-Za-z]):", base)
-                    if m:
-                        out[name] = m.group(1).upper() + ":"
-        except OSError:
-            pass
-        return out
-    from . import resources
-    host = resources.vhdx_dir()
-    letter = placement.drive(host or "")
-    if letter and os.environ.get("WSL_DISTRO_NAME"):
-        out[os.environ["WSL_DISTRO_NAME"]] = letter + ":"
-    return out
-
-
 def detect_nvidia():
     """{'name', 'used_mb', 'total_mb'} from nvidia-smi, or None."""
     for exe in (["nvidia-smi.exe"] if is_windows() else ["nvidia-smi", "nvidia-smi.exe"]):
@@ -225,13 +197,13 @@ def detect_tools(distro=None):
         out[t]["windows"], probed["windows"] = _windows_exe(t)
     if not on_windows:
         probed["wsl"] = True
-        r = _run(["bash", "-lc", DISCOVERY_SCRIPT], 30)
+        r = _run(["bash", "-c", DISCOVERY_SCRIPT], 30)
         found = parse_discovery(placement.decode_output(r.stdout)) if r and r.returncode == 0 else {}
         for t in out:
             out[t]["wsl"] = found.get(t)
-    elif distro and any(d["name"] == distro and d["state"] == "Running" for d in detect_distros()):
+    elif distro and any(d["name"] == distro and d["state"] == "Running" for d in placement.detect_distros()):
         probed["wsl"] = True
-        r = _run(placement.WSL(distro).command(["bash", "-lc", DISCOVERY_SCRIPT]), 30)
+        r = _run(placement.WSL(distro).command(["bash", "-c", DISCOVERY_SCRIPT]), 30)
         found = parse_discovery(placement.decode_output(r.stdout)) if r and r.returncode == 0 else {}
         for t in out:
             out[t]["wsl"] = found.get(t)
@@ -287,24 +259,6 @@ def detect_wslconfig_cap():
         return None
 
 
-def parse_distros(text):
-    """[{'name', 'state', 'version', 'default'}] from `wsl -l -v` output."""
-    out = []
-    for line in text.replace("\x00", "").splitlines()[1:]:
-        m = re.match(r"^\s*(\*)?\s*(\S.*?)\s{2,}(\w+)\s+(\d)\s*$", line)
-        if m:
-            out.append({"name": m.group(2), "state": m.group(3), "version": int(m.group(4)), "default": bool(m.group(1))})
-    return out
-
-
-def detect_distros():
-    if not is_windows():
-        name = os.environ.get("WSL_DISTRO_NAME")
-        return [{"name": name, "state": "Running", "version": 2, "default": True}] if name else []
-    r = _run(placement.wsl_control(["-l", "-v"]), 20)
-    return parse_distros(placement.decode_output(r.stdout)) if r and r.returncode == 0 else []
-
-
 def detect_tailscale():
     """{'up': bool, 'login': str|None}."""
     for exe in ("tailscale", r"C:\Program Files\Tailscale\tailscale.exe"):
@@ -323,11 +277,11 @@ def real_detect():
     from . import decide
     return {"windows": is_windows, "home": Path.home, "drives": detect_drives, "free_gb": _free_gb,
             "repo_candidates": repo_candidates, "repos": detect_repos, "worktree_roots": detect_worktree_roots,
-            "vhdx_drives": detect_vhdx_drives, "nvidia": detect_nvidia, "ollama": detect_ollama,
+            "vhdx_drives": placement.detect_vhdx_drives, "nvidia": detect_nvidia, "ollama": detect_ollama,
             "bench": bench_decider, "ensure_cpu_models": decide.ensure_cpu_models, "tools": detect_tools,
             "config_dirs": detect_config_dirs,
             "ram_gb": detect_ram_gb, "cores": lambda: os.cpu_count() or 1, "wslconfig_cap_gb": detect_wslconfig_cap,
-            "distros": detect_distros, "tailscale": detect_tailscale, "exists": lambda p: Path(config.native(p)).exists()}
+            "distros": placement.detect_distros, "tailscale": detect_tailscale, "exists": lambda p: Path(config.native(p)).exists()}
 
 
 # ---- asking ---------------------------------------------------------------------------------------------------

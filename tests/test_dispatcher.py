@@ -209,8 +209,8 @@ class Routing(Base):
     def test_router_gets_policy_platforms_load_and_measured_seat_readings(self):
         seen = []
 
-        def fake(task, policy, headroom, *, seat_load, platforms, seat_headroom, seat_order):
-            seen.append((task["id"], policy, headroom, seat_load, platforms, seat_headroom, seat_order))
+        def fake(task, policy, *, seat_load, platforms, seat_headroom, seat_order):
+            seen.append((task["id"], policy, seat_load, platforms, seat_headroom, seat_order))
             return {"backend": "claude", "model": "sonnet-5.5", "effort": "max", "harness": "default"}
         ops.add_policy_version(self.conn, "v1", {"routes": {"x": []}})
         self.allow["codex"] = False
@@ -218,17 +218,16 @@ class Routing(Base):
         self.task(size="M")
         self.d.tick()
         self.assertEqual(seen[0][1], {"routes": {"x": []}})
-        self.assertEqual(seen[0][2]["codex"]["remaining_pct"], 0)
-        self.assertGreater(seen[0][2]["claude"]["remaining_pct"], 0)
-        self.assertEqual(seen[0][3], {})
-        self.assertEqual(seen[0][4], self.pipe.prog["run"]["platforms"])
-        self.assertEqual(seen[0][5]["codex"]["remaining_pct"], 0)
-        self.assertEqual({row["seat"] for row in seen[0][6]}, {"claude", "codex"})
+        self.assertEqual(seen[0][2], {})
+        self.assertEqual(seen[0][3], self.pipe.prog["run"]["platforms"])
+        self.assertEqual(seen[0][4]["codex"]["remaining_pct"], 0)
+        self.assertGreater(seen[0][4]["claude"]["remaining_pct"], 0)
+        self.assertEqual({row["seat"] for row in seen[0][5]}, {"claude", "codex"})
         self.assertEqual(self.fl.specs[0]["effort"], "max")   # non-cheap models keep the router's effort
 
     def test_router_with_no_backend_unclaims(self):
         t = self.task()
-        self.d = self.make(route=lambda t, p, h, **kw: {"backend": None, "reason": "no allowance"})
+        self.d = self.make(route=lambda t, p, **kw: {"backend": None, "reason": "no allowance"})
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(t), "ready")
 
@@ -900,7 +899,7 @@ class HeadOfLine(Base):
         self.no_route = set()
         self.allow["codex"] = False
 
-        def route(task, policy, heads, **kw):
+        def route(task, policy, **kw):
             if task["id"] in self.no_route:
                 return {"backend": None, "reason": "no allowance above reserve"}
             return {"backend": "claude", "model": "haiku-5.5", "effort": "xhigh", "harness": "default"}

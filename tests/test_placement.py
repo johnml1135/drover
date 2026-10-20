@@ -122,7 +122,7 @@ class PlacementTests(unittest.TestCase):
                 executable.write_text('#!/bin/sh\nexit 0\n')
                 executable.chmod(0o755)
             result = subprocess.run(['/bin/bash', '-c', tool_discovery.DISCOVERY_SCRIPT],
-                                    env={'PATH': tmp}, capture_output=True, text=True, check=True)
+                                    env={'PATH': tmp, 'DROVER_WORKER_PATH': '/usr/bin:/bin'}, capture_output=True, text=True, check=True)
             found, reasons = tool_discovery.parse_discovery_result(result.stdout)
             self.assertEqual(found, {name: str(Path(tmp) / name) for name in ('claude', 'codex', 'pwsh')})
             self.assertEqual(reasons, {})

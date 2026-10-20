@@ -120,7 +120,7 @@ def now():
 # ---- changed paths and documentation guards ---------------------------------------------------------------
 
 def changed_paths(repo, base, tip='HEAD'):
-    return [p for p in git(repo, 'diff', '--name-only', '--no-renames', '-z', f'{base}...{tip}').stdout.split('\0') if p]
+    return [p for p in git(repo, '-c', 'core.quotepath=false', 'diff', '--name-only', '--no-renames', '-z', f'{base}...{tip}').stdout.split('\0') if p]
 
 
 def _norm(path):

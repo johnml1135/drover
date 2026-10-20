@@ -63,7 +63,7 @@ class ClaudeWorkerAccessTests(unittest.TestCase):
             "/home/acme/work", "/tmp/drover-scratch/7-0123456789abcdef",
         ])
         self.assertCountEqual(sandbox["filesystem"]["denyWrite"], [
-            "/home/acme/reads/snapshot", "/tmp/claude", "/private/tmp/claude", "~/.npm/_logs", "~/.claude/debug",
+            "/home/acme/reads/snapshot", "/tmp/claude", "/private/tmp/claude", "~/.claude/debug",
         ])
         self.assertEqual(settings["permissions"]["deny"], ["Edit(//home/acme/reads/snapshot/**)"])
         self.assertEqual(settings["permissions"]["allow"], [

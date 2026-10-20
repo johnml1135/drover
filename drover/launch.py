@@ -174,7 +174,7 @@ def build_argv(spec):
         external_git = [worker_path(path) for path in external_git_dirs(workspace)]
         permissions["deny"].extend(_claude_edit_rule(path) for path in external_git)
         if placement == "wsl":
-            defaults = ["/tmp/claude", "/private/tmp/claude", "~/.npm/_logs", "~/.claude/debug"]
+            defaults = ["/tmp/claude", "/private/tmp/claude", "~/.claude/debug"]
             filesystem = {}
             if readonly:
                 # "/" alone does not stop Bash writing to cwd (shown on 2.1.303):

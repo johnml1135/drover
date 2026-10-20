@@ -249,6 +249,14 @@ class Repos(unittest.TestCase):
 
 
 class UnknownGate(Base):
+    def test_missing_repo_path_goes_to_owner_without_crashing(self):
+        self.pipe._repos = {'p': {'name': 'p', 'gate': {'unknown': True}}}
+        tid = self.task(repo='p')
+        self.assertFalse(self.pipe.gate_known(self.get(tid)))
+        self.assertEqual(self.get(tid)['status'], 'needs-owner')
+        self.assertIsNone(self.pipe.repo(self.get(tid)))
+
+
     def setUp(self):
         super().setUp()
         self.prog = prog_dict(self.fix.repo, Path(self.tmp.name) / "wts", unknown=True)

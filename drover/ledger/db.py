@@ -5,7 +5,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from .. import config
+from .. import config, placement
 from .schema import MIGRATIONS
 
 
@@ -25,7 +25,7 @@ def default_path(env=None):
 
 def connect(path, migrate_db=True):
     path = Path(path)
-    if os.name != "nt" and str(path.resolve()).startswith("/mnt/"):
+    if placement.is_drvfs(path):
         raise HubRequired("WAL does not work on DrvFs (/mnt/*); the ledger must live on a local filesystem")
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=10)

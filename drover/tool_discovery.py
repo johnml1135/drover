@@ -8,13 +8,31 @@ TOOLS = ("claude", "codex", "pwsh")
 INVALID_PATH_REASON = "resolver returned an invalid absolute path"
 ABS_POSIX = re.compile(r"^/[A-Za-z0-9._+@:=,/-]+$")
 
-# Machine installations provide executable entry points on PATH.
-DISCOVERY_SCRIPT = r'''set +e
+# Capture the non-login worker PATH before looking in the user's login PATH.
+DISCOVERY_SCRIPT = r'''if [ -z "${DROVER_WORKER_PATH+x}" ]; then
+    export DROVER_WORKER_PATH="$PATH"
+    exec /bin/bash -lc "$BASH_EXECUTION_STRING"
+fi
+set +e
 for tool in claude codex pwsh; do
     path="$(command -v "$tool" 2>/dev/null || true)"
-    if [ -f "$path" ] && [ -x "$path" ]; then
-        printf 'DROVER_TOOL|%s|%s\n' "$tool" "$path"
+    [ -f "$path" ] && [ -x "$path" ] || continue
+    IFS= read -r -N 2 magic < "$path"
+    if [ "$magic" = '#!' ]; then
+        IFS= read -r line < "$path"
+        read -r interpreter argument <<< "${line#\#!}"
+        [ -f "$interpreter" ] && [ -x "$interpreter" ] || continue
+        if [ "$interpreter" = /usr/bin/env ] || [ "$interpreter" = /bin/env ]; then
+            # Accept a single interpreter name; complex env expressions need an explicit machine path.
+            case "$argument" in ''|-*|*[[:space:]]*) continue ;; esac
+            resolved="$(PATH="$DROVER_WORKER_PATH" command -v -- "$argument")"
+            [ -f "$resolved" ] && [ -x "$resolved" ] || continue
+        fi
+    else
+        IFS= read -r -N 4 magic < "$path"
+        [ "$magic" = $'\177ELF' ] || continue
     fi
+    printf 'DROVER_TOOL|%s|%s\n' "$tool" "$path"
 done
 '''
 

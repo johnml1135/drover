@@ -85,6 +85,23 @@ class AccessTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 task_access.verify(reads)
 
+    def test_remote_tracking_only_read_keeps_history(self):
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        repo.git('checkout', '-b', 'remote-only')
+        previous = repo.commit('history.txt', 'previous')
+        sha = repo.commit('history.txt', 'current')
+        repo.git('update-ref', 'refs/remotes/origin/remote-only', sha)
+        repo.git('checkout', 'main')
+        repo.git('branch', '-D', 'remote-only')
+        with tempfile.TemporaryDirectory() as tmp:
+            reads = task_access.prepare(['p@remote-only'],
+                                        {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}, tmp)
+            repo.repo.rename(repo.repo.with_name('offline'))
+            self.assertEqual(reads[0]['sha'], sha)
+            self.assertEqual(repo.git('show', previous + ':history.txt', cwd=reads[0]['path']), 'previous')
+            task_access.verify(reads)
+
     def test_history_is_available_without_fetching_into_the_read_snapshot(self):
         repo = Repo()
         self.addCleanup(repo.cleanup)

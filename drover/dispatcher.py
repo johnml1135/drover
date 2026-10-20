@@ -11,7 +11,7 @@ platform), a gated task is reviewed by a fresh `review` run, and LAND@sha moves 
 from the ledger on every tick (so a hub restart loses nothing). While `dispatch_enabled` is false the dispatcher
 claims and launches nothing, but still reaps, adopts and recovers.
 """
-from . import placement
+from . import placement, repos
 import json
 import os
 import re
@@ -121,13 +121,13 @@ def placement_for(task, route, worktree=None, platforms=None):
 
 def place(task, route, worktree, prog):
     """(placement, None), or (None, reason) for incompatible task, seat and repo platforms."""
-    plats = ((prog or {}).get("run") or {}).get("platforms") or list(config_mod.PLACEMENTS)
+    plats = repos.run_config(prog)["platforms"]
     want = placement_for(task, route, worktree, plats)
     seat = seat_of(route)
     allowed = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
     hard = bool(_platform_tag(task) or route.get("platform") ) \
         or route.get("backend") == "codex" or bool(worktree and placement.is_linux_native(worktree))
-    default = ((prog or {}).get("run") or {}).get("default")
+    default = repos.run_config(prog)["default"]
     if not hard and default in plats and default in allowed:
         return default, None
     if want in plats and want in allowed:
@@ -730,7 +730,7 @@ class Dispatcher:
 
     def _gate_log(self, run_id, receipt):
         log = Path(receipt["log"]) if receipt and receipt.get("log") else None
-        if log is None and getattr(self.pipeline, "runs_dir", None):
+        if log is None:
             log = runner_mod.run_dir(self.pipeline.runs_dir, run_id) / runner_mod.OUT_FILE
         try:
             return log.read_text(errors="replace") if log else ""
@@ -780,8 +780,8 @@ class Dispatcher:
                  and (not rev.get("seat") or s["name"] == rev["seat"])]
         data = {**policy["data"], "routes": {**policy["data"].get("routes", {}), "review": [candidate]}}
         base = route_mod.choose({**task, "role": "review"}, data,
-                                {b: self._headroom(b) for b in admitted}, seats=seats,
-                                seat_load=self._seat_load(), platforms=prog["run"]["platforms"],
+                                seats=seats,
+                                seat_load=self._seat_load(), platforms=repos.run_config(prog)["platforms"],
                                 **self._seat_route_kw())
         if base.get("backend") and base["backend"] not in admitted:
             return {**base, "backend": None, "reason": f"{base['backend']} not admitted for review"}
@@ -923,7 +923,7 @@ class Dispatcher:
             p.set_run_context(run_id, seat=seat["name"] if seat else None, placement=placement,
                               policy_version=policy.get("version"))
         prog = self.pipeline.repo(task)
-        spec = {"run_config": (prog or {}).get("run", {}), "run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
+        spec = {"run_config": repos.run_config(prog), "run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
                 "seat": seat["name"] if seat else None, "binary": seat["binary"] if seat else route["backend"],
                 "env": config_mod.seat_env(seat),
                 "write": task.get("write", True), "read_dirs": task.get("read_dirs", []),
@@ -1168,7 +1168,7 @@ class Dispatcher:
     def _route_inputs(self, task, admitted):
         """One router call shape: seat load, repo platforms and measured per-seat allowance."""
         prog = self.pipeline.repo(task)
-        kw = {"seat_load": self._seat_load(), "platforms": prog["run"]["platforms"] if prog else None,
+        kw = {"seat_load": self._seat_load(), "platforms": repos.run_config(prog)["platforms"] if prog else None,
               **self._seat_route_kw()}
         kw["seat_headroom"] = {name: h for name, h in kw["seat_headroom"].items()
                                if config_mod.seat_by_name(name)["backend"] in admitted}
@@ -1176,8 +1176,7 @@ class Dispatcher:
 
     def _route(self, task, policy, admitted):
         t = task
-        heads = {b: self._headroom(b) for b in admitted}
-        base = self.route_fn(t, policy["data"], heads, **self._route_inputs(task, admitted))
+        base = self.route_fn(t, policy["data"], **self._route_inputs(task, admitted))
         if base.get("borrow_seat"):
             seat = base["borrow_seat"]
             if self._director_borrow_approved(task["id"], seat):

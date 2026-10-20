@@ -97,7 +97,7 @@ class FakeRepoPipeline(Base):
         ops.finish_run(self.conn, rid, "error")
         ops.set_status(self.conn, tid, "ready")
         # A current Codex route is overridden by the retry's Claude backend.
-        self.d = self.make(route=lambda t, p, h, **kw: {"backend": "codex", "model": "gpt-6.1-sol"},
+        self.d = self.make(route=lambda t, p, **kw: {"backend": "codex", "model": "gpt-6.1-sol"},
                            worktree=lambda t: "R:\\repos\\wt")
         self.assertEqual(self.d.tick()["launched"], [tid])
         self.assertEqual(self.fl.of("worker")[0]["seat"], "claude-win")

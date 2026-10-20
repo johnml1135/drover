@@ -346,7 +346,7 @@ class TestWslDiscovery(Base):
 
     def test_discover_runs_the_fixed_command_and_stores_settings(self):
         found = self.svc.discover_tools()
-        self.assertEqual(self.wsl.calls[-1], ["-d", "Ubuntu", "--exec", "bash", "-lc", DISCOVERY_SCRIPT])
+        self.assertEqual(self.wsl.calls[-1], ["-d", "Ubuntu", "--exec", "bash", "-c", DISCOVERY_SCRIPT])
         s = self.store.get_settings()
         self.assertEqual((s["wsl_bin_claude"], s["wsl_bin_codex"]), ("/home/u/.local/bin/claude", "/usr/bin/codex"))
         self.assertEqual(found, {"claude": s["wsl_bin_claude"], "codex": s["wsl_bin_codex"]})

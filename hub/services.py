@@ -144,14 +144,13 @@ class Services:
         return rc == 0 and self.distro().lower() in names
 
     def discover_tools(self) -> dict:
-        """Run the fixed discovery command, validate, store `wsl_bin_claude` / `wsl_bin_codex`. Returns what was
-        stored. A missing or invalid tool keeps its previous setting."""
+        """Return validated discoveries and fill unset machine tool paths; preserve explicit choices."""
         self._tried = self.clock()
-        rc, out = self.wsl(placement.WSL(self.distro()).command(["bash", "-lc", DISCOVERY_SCRIPT])[1:],
+        rc, out = self.wsl(placement.WSL(self.distro()).command(["bash", "-c", DISCOVERY_SCRIPT])[1:],
                            self.settings.wsl_timeout_s)
         found, reasons = parse_discovery_result(out) if rc == 0 else ({}, {})
         have = self.store.get_settings()
-        patch = {f"wsl_bin_{t}": p for t, p in found.items() if have.get(f"wsl_bin_{t}") != p}
+        patch = {f"wsl_bin_{t}": p for t, p in found.items() if not have.get(f"wsl_bin_{t}")}
         if patch:
             self.store.update_settings(patch, author="wizard")
         missing = [t for t in TOOLS if t not in found]

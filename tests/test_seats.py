@@ -17,13 +17,13 @@ def heads(claude=LOTS, codex=LOTS):
 
 
 def pick(seats, task=WORKER, h=None, seeds=range(60), **kw):
-    return [route.choose(task, {}, h or heads(), seed=s, seats=seats, **kw) for s in seeds]
+    return [route.choose(task, {}, seat_headroom={s["name"]: (h or heads()).get(s["backend"]) for s in seats}, seed=s, seats=seats, **kw) for s in seeds]
 
 
 class Priority(unittest.TestCase):
-    def test_equal_priority_keeps_the_old_headroom_split(self):
+    def test_equal_priority_uses_the_seat_order(self):
         picks = {r["backend"] for r in pick([CLAUDE, CODEX])}
-        self.assertEqual(picks, {"claude", "codex"})
+        self.assertEqual(picks, {"claude"})
 
     def test_lower_priority_number_is_tried_first(self):
         for r in pick([CLAUDE, {**CODEX, "priority": 2}]):
@@ -35,16 +35,16 @@ class Priority(unittest.TestCase):
         spent = {"remaining_pct": 5.0, "hours_to_reset": 10.0}
         for r in pick([CLAUDE, {**CODEX, "priority": 2}], h=heads(claude=spent)):
             self.assertEqual(r["backend"], "codex")
-        self.assertIsNone(route.choose(WORKER, {}, heads(claude=spent, codex=spent), seed=1,
+        self.assertIsNone(route.choose(WORKER, {}, seat_headroom=heads(claude=spent, codex=spent), seed=1,
                                        seats=[CLAUDE, {**CODEX, "priority": 2}])["backend"])
 
     def test_same_backend_seats_pick_by_priority_then_load(self):
         a, b = {**CLAUDE, "name": "a", "priority": 2}, {**CLAUDE, "name": "b", "director": False, "priority": 1,
                                                        "director_reserve_pct": 0.0}
-        self.assertEqual(route.choose(WORKER, {}, heads(), seed=1, seats=[a, b])["seat"], "b")
+        self.assertEqual(route.choose(WORKER, {}, seat_headroom={"a": LOTS, "b": LOTS}, seed=1, seats=[a, b])["seat"], "b")
         tie = [{**a, "priority": 1}, b]
-        self.assertEqual(route.choose(WORKER, {}, heads(), seed=1, seats=tie, seat_load={"b": 2, "a": 1})["seat"], "a")
-        self.assertEqual(route.choose(WORKER, {}, heads(), seed=1, seats=tie, seat_load={"a": 2, "b": 1})["seat"], "b")
+        self.assertEqual(route.choose(WORKER, {}, seat_headroom={"a": LOTS, "b": LOTS}, seed=1, seats=tie, seat_load={"b": 2, "a": 1})["seat"], "a")
+        self.assertEqual(route.choose(WORKER, {}, seat_headroom={"a": LOTS, "b": LOTS}, seed=1, seats=tie, seat_load={"a": 2, "b": 1})["seat"], "b")
 
 
 class MaxWorkers(unittest.TestCase):
@@ -53,42 +53,26 @@ class MaxWorkers(unittest.TestCase):
         picks = {r["backend"] for r in pick(seats, seat_load={"claude": 2})}
         self.assertEqual(picks, {"codex"})
         picks = {r["backend"] for r in pick(seats, seat_load={"claude": 1})}
-        self.assertEqual(picks, {"claude", "codex"})
+        self.assertEqual(picks, {"codex"})
 
     def test_all_seats_full_gives_a_reason(self):
         seats = [{**CLAUDE, "max_workers": 1}, {**CODEX, "max_workers": 1}]
-        r = route.choose(WORKER, {}, heads(), seed=1, seats=seats, seat_load={"claude": 1, "codex": 1})
+        r = route.choose(WORKER, {}, seat_headroom=heads(), seed=1, seats=seats, seat_load={"claude": 1, "codex": 1})
         self.assertIsNone(r["backend"])
         self.assertIn("max_workers", r["reason"])
 
     def test_zero_means_no_limit(self):
-        r = route.choose(WORKER, {}, heads(), seed=1, seats=[CLAUDE], seat_load={"claude": 50})
+        r = route.choose(WORKER, {}, seat_headroom=heads(), seed=1, seats=[CLAUDE], seat_load={"claude": 50})
         self.assertEqual(r["backend"], "claude")
 
 
 class DirectorReserve(unittest.TestCase):
-    def test_workers_leave_the_directors_reserve_but_the_director_may_use_it(self):
-        near = {"remaining_pct": 34.0, "hours_to_reset": 10.0}          # reserve 10 + director reserve 25 = 35
-        self.assertIsNone(route.choose(WORKER, {}, heads(claude=near, codex=None), seed=1, seats=[CLAUDE, CODEX])["backend"])
-        d = route.choose({"role": "director"}, {}, heads(claude=near, codex=None), seed=1, seats=[CLAUDE, CODEX])
-        self.assertEqual((d["backend"], d["model"]), ("claude", "opus-5.5"))
-        ok = {"remaining_pct": 40.0, "hours_to_reset": 10.0}
-        self.assertEqual(route.choose(WORKER, {}, heads(claude=ok, codex=None), seed=1, seats=[CLAUDE, CODEX])["backend"],
-                         "claude")
-
-    def test_the_reserve_follows_the_seats(self):
-        big = {**CLAUDE, "director_reserve_pct": 50.0, "reserve_pct": 5.0}
-        h = heads(claude={"remaining_pct": 54.0, "hours_to_reset": 10.0}, codex=None)
-        self.assertIsNone(route.choose(WORKER, {}, h, seed=1, seats=[big, CODEX])["backend"])
-        h = heads(claude={"remaining_pct": 57.0, "hours_to_reset": 10.0}, codex=None)
-        self.assertEqual(route.choose(WORKER, {}, h, seed=1, seats=[big, CODEX])["backend"], "claude")
-
     def test_director_and_planner_run_only_on_the_director_seat(self):
         other = {**CLAUDE, "name": "second", "director": False, "director_reserve_pct": 0.0, "priority": 0}
         for role in ("director", "planner"):
-            r = route.choose({"role": role}, {}, heads(), seed=1, seats=[other, CLAUDE, CODEX])
+            r = route.choose({"role": role}, {}, seat_headroom=heads(), seed=1, seats=[other, CLAUDE, CODEX])
             self.assertEqual(r["seat"], "claude")
-        self.assertEqual(route.choose(WORKER, {}, heads(), seed=1, seats=[other, CLAUDE])["seat"], "second")
+        self.assertEqual(route.choose(WORKER, {}, seat_headroom={"second": LOTS, **heads()}, seed=1, seats=[other, CLAUDE])["seat"], "second")
 
     def test_director_work_falls_back_claude_then_personal_then_codex(self):
         cfg = config.validate({"seats": [
@@ -131,13 +115,13 @@ class Platforms(unittest.TestCase):
             self.assertEqual(r["backend"], "claude")                    # a codex seat is WSL only
         for r in pick([CLAUDE, CODEX], platforms=["wsl"]):
             self.assertIn(r["backend"], ("claude", "codex"))            # a Windows Claude seat may also run in WSL
-        self.assertEqual({r["backend"] for r in pick([CLAUDE, CODEX], platforms=["wsl"])}, {"claude", "codex"})
+        self.assertEqual({r["backend"] for r in pick([CLAUDE, CODEX], platforms=["wsl"])}, {"claude"})
 
     def test_a_wsl_claude_seat_is_wsl_only(self):
         self.assertEqual(route.seat_placements({**CLAUDE, "placement": "wsl"}), ("wsl",))
         self.assertEqual(route.seat_placements(CLAUDE), ("windows", "wsl"))
         self.assertEqual(route.seat_placements(CODEX), ("wsl",))
-        r = route.choose(WORKER, {}, heads(codex=None), seed=1, seats=[{**CLAUDE, "placement": "wsl"}], platforms=["windows"])
+        r = route.choose(WORKER, {}, seat_headroom=heads(codex=None), seed=1, seats=[{**CLAUDE, "placement": "wsl"}], platforms=["windows"])
         self.assertIsNone(r["backend"])
 
 

@@ -27,9 +27,9 @@ def next_reset(text, zone, now=None):
         tz = ZoneInfo(zone)
     except ZoneInfoNotFoundError:
         # Windows does not ship IANA tzdata with Python. Reuse the configured WSL distro's database.
-        if os.name != 'nt' or any(p in ('', '.', '..') for p in zone.split('/')) or '\\' in zone:
+        source = placement.wsl_zoneinfo_path(zone)
+        if source is None:
             raise ValueError('timezone data unavailable') from None
-        source = Path('//wsl.localhost') / placement.distro() / 'usr/share/zoneinfo' / zone
         try:
             with source.open('rb') as f:
                 tz = ZoneInfo.from_file(f, key=zone)

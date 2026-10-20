@@ -131,12 +131,13 @@ class Pipeline:
         prog = self.all_repos().get(str(task.get("repo") or "").lower())
         if prog is None:
             return None
-        prog = repos.load(prog, checkout=task.get("worktree") or prog["repo"])
+        try:
+            prog = repos.load(prog, checkout=task.get("worktree"))
+        except repos.RepoError:
+            return None
         override = self._owner_gate_cmd(prog["name"].lower()) if prog["gate"]["unknown"] else None
         if override:
-            prog = {**prog, "scripts": {**prog["scripts"], "test": override},
-                    "gate": {**prog["gate"], "unknown": False},
-                    "_machine": config._merge(prog.get("_machine", {}), {"scripts": {"test": override}})}
+            prog = repos.with_test_script(prog, override)
         return prog
 
     def _owner_gate_cmd(self, name):
@@ -375,10 +376,10 @@ class Pipeline:
         g = prog["gate"]
         if g["docs_only"] and gate.changed_docs_only(repo, base, sha, g["docs_only_globs"]):
             kind = "docs"
-            commands = gate.docs_commands(base, sha, repos.script_argv(prog, "docs") if "docs" in prog["scripts"] else None)
-        env = {**prog["run"]["env"], "DROVER_CHANGED_FILES": json.dumps(paths), "DROVER_CI_KIND": "checks" if kind == "full" else kind}
+            commands = gate.docs_commands(base, sha, repos.script_argv(prog, "docs") if repos.has_script(prog, "docs") else None)
+        env = {**repos.run_config(prog)["env"], "DROVER_CHANGED_FILES": json.dumps(paths), "DROVER_CI_KIND": "checks" if kind == "full" else kind}
         return {"kind": kind, "commands": commands, "scope": None, "base": base, "repo": repo, "sha": sha,
-                "env": env, "sandbox_writable_roots": prog["run"]["sandbox_writable_roots"],
+                "env": env, "sandbox_writable_roots": repos.run_config(prog)["sandbox_writable_roots"],
                 "diff_lines": self.diff_lines(repo, base, sha), "files": paths, "platform": platform}
 
     def gate_argv(self, plan, gate_run, priority, prog, platform=None):

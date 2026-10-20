@@ -27,8 +27,6 @@ from . import config as config_mod
 
 GB = 1024 ** 3
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
-LXSS = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss'
-REG = placement.native(r'C:\Windows\System32\reg.exe')
 VHDX_WARNING = 'cannot locate VHDX host drive; set DROVER_VHDX_DIR'
 LEGACY_FILE = 'resources.toml'
 LEGACY_DISKS = {'h': 'h', 'wsl': 'wsl', 'c': 'c'}
@@ -140,38 +138,12 @@ def _free_gb(path):
         return None
 
 
-def vhdx_dir():
-    """WSL path of the directory holding this distro's ext4.vhdx, or None."""
-    override = os.environ.get('DROVER_VHDX_DIR')
-    if override:
-        return override
-    distro = os.environ.get('WSL_DISTRO_NAME')
-    if not distro or not os.path.exists(REG):
-        return None
-    try:
-        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10, **placement.NO_WINDOW).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    name = base = None
-    for line in out.replace('\r', '').splitlines():
-        if line.startswith('HKEY_'):
-            name = base = None
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0] == 'DistributionName':
-            name = parts[2]
-        elif len(parts) == 3 and parts[0] == 'BasePath':
-            base = parts[2]
-        if name == distro and base:
-            return placement.to_wsl_path(base) if placement.drive(base) else None
-    return None
-
-
 def disk_path(tracker, windows):
     """Where to measure a disk tracker: a path, or None when this side cannot see it."""
     if windows:
         return config_mod.native(tracker['path']) if tracker['wsl_source'] != 'home' and tracker['path'] else None
     if tracker['wsl_source'] == 'vhdx':
-        host = vhdx_dir()
+        host = placement.vhdx_dir()
         return host if host and os.path.exists(host) else None
     if tracker['wsl_source'] == 'home':
         return str(Path.home())

@@ -235,7 +235,7 @@ def git(repo, *args, timeout=None, env=None, runner=None):
         argv, extra = _git_command(repo, args)
         if extra:
             env = {**(os.environ if env is None else env), **extra}
-        return (runner or subprocess.run)(argv, text=True, capture_output=True, errors="replace",
+        return (runner or subprocess.run)(argv, text=True, capture_output=True, encoding="utf-8", errors="replace",
                                            timeout=timeout, env=env, **NO_WINDOW)
     except FileNotFoundError as e:
         return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {e}")
@@ -509,3 +509,93 @@ def decode_output(raw):
     if isinstance(raw, str):
         return raw
     return raw.decode("utf-16-le" if b"\x00" in raw[:4] else "utf-8", "ignore").replace("\x00", "")
+
+
+def is_drvfs(path):
+    """Whether a resolved local path crosses the WSL DrvFs boundary."""
+    return not IS_WINDOWS and str(Path(path).resolve()).startswith("/mnt/")
+
+
+def wsl_zoneinfo_path(zone):
+    """The configured distro's timezone file visible to Windows, or None."""
+    if not IS_WINDOWS or any(p in ('', '.', '..') for p in zone.split('/')) or '\\' in zone:
+        return None
+    return Path('//wsl.localhost') / distro() / 'usr/share/zoneinfo' / zone
+
+
+LXSS = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss'
+REG = native(r'C:\Windows\System32\reg.exe')
+
+
+def vhdx_dir():
+    """WSL path of the directory holding this distro's ext4.vhdx, or None."""
+    override = os.environ.get('DROVER_VHDX_DIR')
+    if override:
+        return override
+    distro = os.environ.get('WSL_DISTRO_NAME')
+    if not distro or not os.path.exists(REG):
+        return None
+    try:
+        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10, **NO_WINDOW).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    name = base = None
+    for line in out.replace('\r', '').splitlines():
+        if line.startswith('HKEY_'):
+            name = base = None
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0] == 'DistributionName':
+            name = parts[2]
+        elif len(parts) == 3 and parts[0] == 'BasePath':
+            base = parts[2]
+        if name == distro and base:
+            return to_wsl_path(base) if drive(base) else None
+    return None
+
+
+def detect_vhdx_drives():
+    """{distro: 'R:'} for the drive holding each distro's ext4.vhdx, from the Lxss registry key."""
+    out = {}
+    if IS_WINDOWS:
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Lxss")
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                with winreg.OpenKey(key, winreg.EnumKey(key, i)) as sub:
+                    try:
+                        name = winreg.QueryValueEx(sub, "DistributionName")[0]
+                        base = winreg.QueryValueEx(sub, "BasePath")[0]
+                    except OSError:
+                        continue
+                    m = re.match(r"^(?:\\\\\?\\)?([A-Za-z]):", base)
+                    if m:
+                        out[name] = m.group(1).upper() + ":"
+        except OSError:
+            pass
+        return out
+    host = vhdx_dir()
+    letter = drive(host or "")
+    if letter and os.environ.get("WSL_DISTRO_NAME"):
+        out[os.environ["WSL_DISTRO_NAME"]] = letter + ":"
+    return out
+
+
+def parse_distros(text):
+    """[{'name', 'state', 'version', 'default'}] from `wsl -l -v` output."""
+    out = []
+    for line in text.replace("\x00", "").splitlines()[1:]:
+        m = re.match(r"^\s*(\*)?\s*(\S.*?)\s{2,}(\w+)\s+(\d)\s*$", line)
+        if m:
+            out.append({"name": m.group(2), "state": m.group(3), "version": int(m.group(4)), "default": bool(m.group(1))})
+    return out
+
+
+def detect_distros():
+    if not IS_WINDOWS:
+        name = os.environ.get("WSL_DISTRO_NAME")
+        return [{"name": name, "state": "Running", "version": 2, "default": True}] if name else []
+    try:
+        r = subprocess.run(wsl_control(["-l", "-v"]), capture_output=True, timeout=20, **NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_distros(decode_output(r.stdout)) if r and r.returncode == 0 else []

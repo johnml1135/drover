@@ -1,6 +1,8 @@
-"""Pick seat, backend, model, effort and harness for a task: seats by priority then headroom, UCB1 over cost per
-landed task, allowance-aware. Seats, ladders, efforts and reserves come from drover.config; the defaults are the old
-built-in values (two seats of equal priority, so the old headroom-biased split between Claude and Codex applies)."""
+"""Pick seat, backend, model, effort and harness from per-seat allowance observations.
+
+Seats, ladders, efforts and reserves come from drover.config; model policy uses
+UCB1 over cost per landed task within the chosen seat.
+"""
 import math
 import random
 
@@ -9,7 +11,6 @@ from . import config as config_mod
 MIN_FIRST_PASS = 0.5
 MIN_GATE_N = 5
 EXPLOIT = 0.8
-BIAS_CLAMP = (0.2, 0.8)
 DIRECTOR_ROLES = ("director", "planner")
 PRIOR_FIRST_PASS = 0.5
 PRIOR_MTOK = 0.5  # assumed Mtok per run when pricing an untried candidate
@@ -87,32 +88,6 @@ def reserves(seats):
     return out
 
 
-def _norm_headroom(h, backend=None, seats=None):
-    """Accept {remaining_pct, hours_to_reset, ...} or an observed allowance reading; None means unconstrained."""
-    if h is None:
-        return None
-    if "windows" in h:
-        w = h["windows"].get("seven_day") or next(iter(h["windows"].values()), None)
-        if w is None:
-            return None
-        h = {"remaining_pct": w["remaining_pct"], "hours_to_reset": w.get("hours_to_reset"), **h}
-    reserve, director = reserves(seats or config_mod.get()["seats"]).get(backend, (10.0, 0.0))
-    return {"remaining_pct": float(h.get("remaining_pct", 100.0)), "hours_to_reset": h.get("hours_to_reset"),
-            "reserve_pct": float(h.get("reserve_pct", reserve)),
-            "director_reserve_pct": h.get("director_reserve_pct", director)}
-
-
-def _floor(backend, h, privileged):
-    return h["reserve_pct"] + (0.0 if privileged else float(h["director_reserve_pct"] or 0.0))
-
-
-def _est_run_pct(c):
-    n = c.get("n", 0)
-    if n and c.get("cost_pct") is not None:
-        return c["cost_pct"] / n
-    return prior_rate(c["backend"], c["model"]) * PRIOR_MTOK
-
-
 def est_cost_per_landed(c):
     n, landed = c.get("n", 0), c.get("landed", 0)
     if not n:
@@ -147,23 +122,6 @@ def pick_candidate(cands, rng, min_first_pass=MIN_FIRST_PASS):
     return cands[[i for i, s in enumerate(scores) if s == top][0]]
 
 
-def _p_claude(heads, privileged):
-    """Share of workers sent to Claude: 50/50, biased by usable headroom per hour to reset."""
-    slack = {}
-    for b in ("claude", "codex"):
-        h = heads.get(b)
-        if h is None:
-            return 0.5
-        hrs = h["hours_to_reset"]
-        usable = max(0.0, h["remaining_pct"] - _floor(b, h, privileged))
-        slack[b] = usable / max(float(hrs), 1.0) if hrs is not None else usable
-    tot = slack["claude"] + slack["codex"]
-    if tot <= 0:
-        return 0.5
-    lo, hi = BIAS_CLAMP
-    return min(hi, max(lo, slack["claude"] / tot))
-
-
 def seat_placements(seat):
     """Where a seat's workers may run: Codex only where its seat is; Claude on its seat's side or, for a Windows
     seat, also in WSL (the old rule: a linux task tag moves a Claude worker there)."""
@@ -193,23 +151,6 @@ def no_seat_route(seats, platforms=None, privileged=False, seat_load=None):
               "no platform-compatible seat for " + ", ".join(platforms or config_mod.PLACEMENTS))
     return {"backend": None, "model": None, "effort": None, "harness": None, "seat": None,
             "reason": reason, "needs_owner": not compatible}
-
-
-def pick_seat(seats, backend, seat_load=None):
-    """The best seat of a backend: lowest priority number, then fewest live workers, then name."""
-    load = seat_load or {}
-    return min((s for s in seats if s["backend"] == backend), key=lambda s: (s["priority"], load.get(s["name"], 0),
-                                                                             s["name"]))
-
-
-def _backends_by_priority(allowed, seats):
-    """The backends of `allowed` whose best seat has the lowest priority number among them."""
-    best = {}
-    for c in allowed:
-        pr = min(s["priority"] for s in seats if s["backend"] == c["backend"])
-        best[c["backend"]] = pr
-    low = min(best.values())
-    return sorted(b for b, pr in best.items() if pr == low)
 
 
 def _seat_admits(seat, h, protected):
@@ -275,57 +216,9 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
     return {"backend": None, "seat": None, "reason": "no allowance above reserve"}
 
 
-def choose(task, policy, allowance_headroom=None, seed=None, rng=None, seats=None, seat_load=None, platforms=None,
+def choose(task, policy, *, seed=None, rng=None, seats=None, seat_load=None, platforms=None,
            seat_headroom=None, seat_order=None, director_borrow_approved=False):
-    """Return {seat, backend, model, effort, harness}; backend is None (with a reason) when no seat can take the run.
-    seats default to the config's; seat_load is {seat name: live workers}; platforms is the repo's run platforms."""
-    rng = rng or random.Random(seed)
-    cfg = config_mod.get()
-    all_seats = seats if seats is not None else cfg["seats"]
-    if seat_headroom is not None:
-        return _observed_choice(task, policy, all_seats, seat_load, platforms, seat_headroom, seat_order, rng,
-                                director_borrow_approved)
-    role = task.get("role", "worker")
-    key = route_key(role, task.get("size"))
-    privileged = role in DIRECTOR_ROLES
-    seats = eligible_seats(all_seats, seat_load, platforms, privileged)
-    if not seats:
-        return no_seat_route(all_seats, platforms, privileged, seat_load)
-    routes = (policy or {}).get("routes", {})
-    cands = [dict(c) for c in routes.get(key, [])] or default_candidates(key)
-    if key == "director":
-        family = cfg["models"]["director"].split("-")[0]
-        cands = [c for c in cands if c["model"].startswith(family)] or default_candidates("director")
-    have = {s["backend"] for s in seats}
-    if privileged:   # codex is the last resort for director work
-        cands += [c for c in default_candidates("worker:M") if c["backend"] != "claude"]
-    cands = [c for c in cands if c["backend"] in have]
-    heads = {b: _norm_headroom((allowance_headroom or {}).get(b), b, all_seats) for b in ("claude", "codex")}
-    allowed = []
-    for c in cands:
-        h = heads.get(c["backend"])
-        if h is None:
-            if privileged:
-                allowed.append(c)  # directors may probe without an observation, as in the allowance module
-            continue
-        if h["remaining_pct"] - _est_run_pct(c) < _floor(c["backend"], h, privileged):
-            continue
-        allowed.append(c)
-    if not allowed:
-        return {"backend": None, "model": None, "effort": None, "harness": None, "seat": None,
-                "reason": "no allowance above reserve"}
-    backends = _backends_by_priority(allowed, seats)
-    if privileged:
-        backend = "claude" if any(c["backend"] == "claude" for c in allowed) else allowed[0]["backend"]
-    elif len(backends) == 2:
-        backend = "claude" if rng.random() < _p_claude(heads, privileged) else "codex"
-    else:
-        backend = backends[0]
-    pool = [c for c in allowed if c["backend"] == backend]
-    c = pick_candidate(pool, rng, (policy or {}).get("min_first_pass", MIN_FIRST_PASS))
-    effort = c.get("effort") or (top_effort(cfg)[c["backend"]] if key == "worker:S"
-                                 else cfg["models"]["efforts"]["mid"])
-    seat = (next(x for x in config_mod.director_seats({"seats": seats}) if x["backend"] == backend) if privileged
-            else pick_seat(seats, backend, seat_load))
-    return {"seat": seat["name"], "backend": c["backend"], "model": c["model"], "effort": effort,
-            "harness": c.get("harness", "default")}
+    """Choose one seat using its observed allowance and the repo's supported placements."""
+    return _observed_choice(task, policy, seats if seats is not None else config_mod.get()["seats"],
+                            seat_load, platforms, seat_headroom or {}, seat_order,
+                            rng or random.Random(seed), director_borrow_approved)

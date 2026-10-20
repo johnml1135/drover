@@ -120,7 +120,7 @@ class StatsApi(unittest.TestCase):
             self.store.approve(tid)
         private = self.store.ask_question('task', self.tid, 'Task-specific choice?')
         pipe = Pipeline(DirectPort(self.store.conn), repos_map={
-            'acme-app': {'name': 'acme-app', 'gate': {'unknown': True}}}, runs_dir=self.tmp.name)
+            'acme-app': {'name': 'acme-app', 'repo': str(Path(self.tmp.name) / 'unavailable')}}, runs_dir=self.tmp.name)
         for tid in (self.tid, target):
             self.assertFalse(pipe.gate_known(self.store.get_task(tid)))
         qid = int(ops.get_setting(self.store.conn, '_gate_question_acme-app'))
@@ -134,11 +134,11 @@ class StatsApi(unittest.TestCase):
         self.assertNotIn(private['title'], page.text)
         self.assertEqual(inbox_count(view), 2)  # Shared question and the remaining task needing the owner.
         response = self.c.post(f'/questions/{qid}/answer', headers=self.owner,
-                               data={'text': 'python3 -m unittest'})
+                               data={'text': 'scripts/test.ps1'})
         self.assertEqual(response.status_code, 200, response.text)
         pipe.sync_gates()
         self.assertEqual(self.store.get_task(target)['status'], 'ready')
-        self.assertEqual(pipe._owner_gate_cmd('acme-app'), 'python3 -m unittest')
+        self.assertEqual(pipe._owner_gate_cmd('acme-app'), 'scripts/test.ps1')
         self.assertEqual(inbox_count(view), 0)
 
     def test_owner_delete_removes_related_links_in_both_directions(self):

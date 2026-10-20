@@ -96,6 +96,10 @@ class VersionedRepoConfig(unittest.TestCase):
         self.assertEqual(repos.script_argv(prog),
                          ['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', 'scripts/check.ps1'])
 
+    def test_missing_machine_repo_is_a_configuration_error(self):
+        with self.assertRaisesRegex(repos.RepoError, 'repo is required'):
+            repos.load({'name': 'example'})
+
     def test_script_and_environment_contract_is_validated(self):
         for script in ('../escape.ps1', '/absolute.ps1', 'C:/check.ps1', 'check.sh', 'check.ps1 -Flag'):
             with self.subTest(script=script), self.assertRaises(repos.RepoError):

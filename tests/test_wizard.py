@@ -292,7 +292,7 @@ class Writing(Base):
 class Detections(Base):
     def test_wsl_list_output_is_parsed_from_utf16(self):
         raw = "  NAME      STATE           VERSION\r\n* Ubuntu    Running         2\r\n  Debian    Stopped         2\r\n"
-        got = wizard.parse_distros(raw.encode("utf-16-le").decode("utf-16-le"))
+        got = wizard.placement.parse_distros(raw.encode("utf-16-le").decode("utf-16-le"))
         self.assertEqual([(d["name"], d["state"], d["default"], d["version"]) for d in got],
                          [("Ubuntu", "Running", True, 2), ("Debian", "Stopped", False, 2)])
         self.assertEqual(placement.decode_output(raw.encode("utf-16-le")).splitlines()[1].split()[1], "Ubuntu")
@@ -406,7 +406,7 @@ class Tools(Base):
         done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\nDROVER_TOOL|claude|{claude}\n".encode(), returncode=0)
         with mock.patch.object(wizard, "is_windows", return_value=True), \
                 mock.patch.object(wizard, "_windows_exe", return_value=(None, True)), \
-                mock.patch.object(wizard, "detect_distros", return_value=[
+                mock.patch.object(wizard.placement, "detect_distros", return_value=[
                     {"name": "Ubuntu", "state": "Running", "version": 2, "default": True}
                 ]), \
                 mock.patch.object(wizard, "_run", return_value=done) as run:
@@ -414,7 +414,7 @@ class Tools(Base):
         self.assertEqual(found["codex"]["wsl"], native)
         self.assertEqual(found["claude"]["wsl"], claude)
         self.assertEqual(run.call_args.args[0],
-                         ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-lc", DISCOVERY_SCRIPT])
+                         ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-c", DISCOVERY_SCRIPT])
 
 
 class Benchmark(Base):

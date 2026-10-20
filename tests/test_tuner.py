@@ -121,10 +121,10 @@ class Routing(Base):
 
     def test_deterministic_for_seed(self):
         t = {"role": "implementer", "size": "S"}
-        a = [route.choose(t, self.pol(), OK_H, seed=7) for _ in range(5)]
-        self.assertEqual(a, [route.choose(t, self.pol(), OK_H, seed=7) for _ in range(5)])
-        r1 = [route.choose(t, self.pol(), OK_H, rng=random.Random(3)) for _ in range(1)]
-        self.assertEqual(r1, [route.choose(t, self.pol(), OK_H, rng=random.Random(3))])
+        a = [route.choose(t, self.pol(), seat_headroom=OK_H, seed=7) for _ in range(5)]
+        self.assertEqual(a, [route.choose(t, self.pol(), seat_headroom=OK_H, seed=7) for _ in range(5)])
+        r1 = [route.choose(t, self.pol(), seat_headroom=OK_H, rng=random.Random(3)) for _ in range(1)]
+        self.assertEqual(r1, [route.choose(t, self.pol(), seat_headroom=OK_H, rng=random.Random(3))])
 
     def test_exploit_mostly_picks_cheaper(self):
         rng = random.Random(1)
@@ -141,38 +141,20 @@ class Routing(Base):
         self.assertEqual({route.pick_candidate(pool, rng)["model"] for _ in range(100)}, {"gpt-6-luna"})
 
     def test_defaults_and_effort(self):
-        r = route.choose({"role": "implementer", "size": "S"}, {}, OK_H, seed=1)
+        r = route.choose({"role": "implementer", "size": "S"}, {}, seat_headroom=OK_H, seed=1)
         self.assertIn(r["model"], ("haiku-5.5", "gpt-6-luna"))
         self.assertEqual(r["effort"], route.TOP_EFFORT[r["backend"]])
-        self.assertEqual(route.choose({"role": "review"}, {}, OK_H, seed=1)["model"], "sonnet-5.5")
-        self.assertEqual(route.choose({"role": "director"}, {}, OK_H, seed=1)["model"], "opus-5.5")
-        self.assertEqual(route.choose({"role": "implementer", "size": "M"}, {}, OK_H, seed=2)["model"] in
+        self.assertEqual(route.choose({"role": "review"}, {}, seat_headroom=OK_H, seed=1)["model"], "sonnet-5.5")
+        self.assertEqual(route.choose({"role": "director"}, {}, seat_headroom=OK_H, seed=1)["model"], "opus-5.5")
+        self.assertEqual(route.choose({"role": "implementer", "size": "M"}, {}, seat_headroom=OK_H, seed=2)["model"] in
                          ("sonnet-5.5", "gpt-6.1-sol"), True)
 
-    def test_bias_toward_headroom(self):
+    def test_unknown_allowance_requires_an_observation(self):
         t = {"role": "implementer", "size": "M"}
-        h = {"claude": {"remaining_pct": 90, "hours_to_reset": 100}, "codex": {"remaining_pct": 90, "hours_to_reset": 5}}
-        picks = [route.choose(t, {}, h, seed=s)["backend"] for s in range(200)]
-        self.assertGreater(picks.count("codex"), 120)
-        even = [route.choose(t, {}, OK_H, seed=s)["backend"] for s in range(400)]
-        self.assertTrue(150 < even.count("claude") < 250)
-
-    def test_director_reserve_protected(self):
-        t = {"role": "implementer", "size": "M"}
-        h = {"claude": {"remaining_pct": 30, "hours_to_reset": 50, "director_reserve_pct": 25},
-             "codex": {"remaining_pct": 80, "hours_to_reset": 50}}
-        self.assertEqual({route.choose(t, {}, h, seed=s)["backend"] for s in range(50)}, {"codex"})
-        h["codex"]["remaining_pct"] = 5
-        self.assertIsNone(route.choose(t, {}, h, seed=1)["backend"])
-        d = route.choose({"role": "director"}, {}, h, seed=1)
-        self.assertEqual((d["backend"], d["model"]), ("claude", "opus-5.5"))
-
-    def test_unknown_allowance_denies_workers_not_directors(self):
-        t = {"role": "implementer", "size": "M"}
-        self.assertIsNone(route.choose(t, {}, None, seed=1)["backend"])
-        self.assertEqual(route.choose(t, {}, {"codex": OK_H["codex"]}, seed=1)["backend"], "codex")
-        self.assertIsNone(route.choose({"role": "review"}, {}, {"codex": OK_H["codex"]}, seed=1)["backend"])
-        self.assertEqual(route.choose({"role": "director"}, {}, None, seed=1)["model"], "opus-5.5")
+        self.assertIsNone(route.choose(t, {}, seat_headroom=None, seed=1)["backend"])
+        self.assertEqual(route.choose(t, {}, seat_headroom={"codex": OK_H["codex"]}, seed=1)["backend"], "codex")
+        self.assertIsNone(route.choose({"role": "review"}, {}, seat_headroom={"codex": OK_H["codex"]}, seed=1)["backend"])
+        self.assertIsNone(route.choose({"role": "director"}, {}, seat_headroom=None, seed=1)["backend"])
 
 
     def test_update_routes_fills_stats(self):

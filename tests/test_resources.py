@@ -250,7 +250,7 @@ class Vhdx(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch('os.path.exists', return_value=True), \
                 mock.patch('subprocess.run', return_value=done):
-            return resources.vhdx_dir()
+            return resources.placement.vhdx_dir()
 
     def test_registry_parsing_multi_distro_any_order(self):
         self.assertEqual(self.vhdx('Ubuntu'), '/mnt/r/WSL/Ubuntu')
@@ -270,7 +270,7 @@ class Vhdx(unittest.TestCase):
         self.assertNotIn('warnings', verdict(wsl()))
 
     def test_read_disks_host_unknown(self):
-        with mock.patch.object(resources, 'vhdx_dir', return_value=None):
+        with mock.patch.object(resources.placement, 'vhdx_dir', return_value=None):
             self.assertIsNone(resources.read_disks(False)['h'])
 
 

@@ -1,44 +1,13 @@
 """Exercise the shipped refresh script without a browser or third-party packages."""
-import ctypes
-import ctypes.util
 from pathlib import Path
-import shutil
 import subprocess
 import unittest
 
 
-NODE = shutil.which('node') or shutil.which('nodejs')
-DUKTAPE = ctypes.util.find_library('duktape')
-
-
 def javascript(source):
-    if NODE:
-        subprocess.run([NODE, '-e', source], check=True, capture_output=True, text=True)
-        return
-    # Some WSL hosts have the system JS library but no node executable.
-    lib = ctypes.CDLL(DUKTAPE)
-    lib.duk_create_heap.argtypes = [ctypes.c_void_p] * 5
-    lib.duk_create_heap.restype = ctypes.c_void_p
-    lib.duk_destroy_heap.argtypes = [ctypes.c_void_p]
-    lib.duk_get_global_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.duk_push_lstring.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
-    lib.duk_pcall.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    lib.duk_safe_to_lstring.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-    lib.duk_safe_to_lstring.restype = ctypes.c_char_p
-    ctx = lib.duk_create_heap(None, None, None, None, None)
-    if not ctx:
-        raise RuntimeError('Cannot create JavaScript heap')
-    try:
-        lib.duk_get_global_string(ctx, b'eval')
-        data = source.encode()
-        lib.duk_push_lstring(ctx, data, len(data))
-        if lib.duk_pcall(ctx, 1):
-            raise AssertionError(lib.duk_safe_to_lstring(ctx, -1, None).decode())
-    finally:
-        lib.duk_destroy_heap(ctx)
+    subprocess.run(['node', '-e', source], check=True, capture_output=True, text=True)
 
 
-@unittest.skipUnless(NODE or DUKTAPE, 'No system JavaScript runtime')
 class RefreshTests(unittest.TestCase):
     def test_prefilled_edit_form_refreshes_until_values_are_changed(self):
         app = (Path(__file__).resolve().parents[1] / 'hub/static/app.js').read_text()

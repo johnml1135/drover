@@ -71,6 +71,10 @@ def prepare(entries, configured=None, root=None):
                     url = (PurePosixPath(source).as_uri() if via_wsl else Path(source).resolve().as_uri())
                     clone_dest = placement.to_wsl_path(temp) if via_wsl else str(temp)
                     _git(source, 'clone', '--no-checkout', '--', url, clone_dest)
+                    if via_wsl:
+                        _git(source, '-C', clone_dest, 'fetch', '--no-tags', '--', url, sha)
+                    else:
+                        _git(temp, 'fetch', '--no-tags', '--', url, sha)
                     _git(temp, 'config', 'core.filemode', 'false')
                     _git(temp, '-c', 'core.autocrlf=false', 'checkout', '--detach', sha)
                     temp.rename(dest)

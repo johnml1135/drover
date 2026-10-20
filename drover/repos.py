@@ -174,6 +174,8 @@ def load(machine, revision="HEAD", checkout=None):
     the same merge. An inaccessible machine checkout also leaves its machine layer usable.
     """
     machine = machine.get("_machine", machine)
+    if not machine.get("repo"):
+        raise RepoError(f"{machine.get('name', 'repo')}: repo is required")
     repo = checkout or machine["repo"]
     versioned = {}
     if placement.reachable(repo):
@@ -204,6 +206,23 @@ def script_argv(prog, action="test"):
     if path is None:
         raise RepoError(f"{prog['name']}: no scripts.{action} in drover.toml")
     return ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", path]
+
+
+def run_config(prog):
+    """Execution settings, also usable before a task has a home repo."""
+    return {"platforms": list(PLATFORMS), "default": None, "env": {}, "sandbox_writable_roots": [],
+            **((prog or {}).get("run") or {})}
+
+
+def has_script(prog, action):
+    return action in prog["scripts"]
+
+
+def with_test_script(prog, path):
+    """Apply an owner-provided script to the effective config and future reloads."""
+    return {**prog, "scripts": {**prog["scripts"], "test": path},
+            "gate": {**prog["gate"], "unknown": False},
+            "_machine": config._merge(prog.get("_machine", {}), {"scripts": {"test": path}})}
 
 
 def read_machine(path):
