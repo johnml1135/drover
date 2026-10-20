@@ -11,6 +11,7 @@ Tests inject facts through the DROVER_RESOURCES_FAKE env var or the `fake` argum
   wsl_up bool, wsl_mem {used_gb, cap_gb}.
 CLI exit codes: 0 go, 4 queue, 5 hold.
 """
+from drover import placement
 import argparse
 import json
 import math
@@ -23,7 +24,6 @@ import tomllib
 from pathlib import Path
 
 from . import config as config_mod
-from .winproc import NO_WINDOW
 
 GB = 1024 ** 3
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
@@ -141,10 +141,7 @@ def _free_gb(path):
 
 
 def _windows_to_wsl(path):
-    match = re.match(r'^(?:\\\\\?\\)?([A-Za-z]):\\?(.*)$', path)
-    if not match:
-        return None
-    return '/mnt/%s/%s' % (match.group(1).lower(), match.group(2).replace('\\', '/'))
+    return placement.to_wsl_path(path) if placement.WIN_RE.match(path.removeprefix("\\\\?\\")) else None
 
 
 def vhdx_dir():
@@ -156,7 +153,7 @@ def vhdx_dir():
     if not distro or not os.path.exists(REG):
         return None
     try:
-        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10, **NO_WINDOW).stdout
+        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10, **placement.NO_WINDOW).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
     name = base = None
@@ -200,7 +197,7 @@ def read_vram():
     cmd = ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
     for exe in (['nvidia-smi.exe'] if is_windows() else ['nvidia-smi', 'nvidia-smi.exe']):
         try:
-            out = subprocess.run([exe, *cmd], text=True, capture_output=True, timeout=10, **NO_WINDOW)
+            out = subprocess.run([exe, *cmd], text=True, capture_output=True, timeout=10, **placement.NO_WINDOW)
             used, total = (float(x) for x in out.stdout.splitlines()[0].split(','))
             return [used, total] if total > 0 else None
         except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
@@ -266,13 +263,12 @@ def wslconfig_path():
 def read_wsl(distro, windows, mem_wanted):
     """(wsl_up, {'used_gb','cap_gb'} or None). Memory is read only when a threshold asks for it and WSL is already up."""
     if windows:
-        from .launch import wsl_running
-        up = wsl_running(distro)
+        up = placement.wsl_running(distro)
         text = None
         if up and mem_wanted:
             try:
-                text = subprocess.run(['wsl.exe', '-d', distro, '--exec', 'cat', '/proc/meminfo'], text=True,
-                                      capture_output=True, timeout=20, **NO_WINDOW).stdout
+                text = subprocess.run(placement.WSL(distro).command(['cat', '/proc/meminfo']), text=True,
+                                      capture_output=True, timeout=20, **placement.NO_WINDOW).stdout
             except (OSError, subprocess.SubprocessError):
                 text = None
     else:
@@ -323,7 +319,7 @@ def gather(fake=None, trackers=None, with_wsl_memory=False):
              'vram': read_vram(), 'read_only': None if windows else read_only_mount(),
              'wsl_up': True, 'wsl_mem': None}
     if wsl_t:
-        distro = wsl_t['distro'] or config_mod.get()['paths']['wsl_distro']
+        distro = placement.distro(wsl_t['distro'] or None)
         facts['wsl_up'], facts['wsl_mem'] = read_wsl(
             distro, windows, with_wsl_memory or bool(wsl_t['queue_mem_pct'] or wsl_t['hold_mem_pct']))
     return facts

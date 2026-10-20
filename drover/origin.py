@@ -3,7 +3,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from . import hostgit
+from . import placement
 
 FETCH_TIMEOUT_S = 120
 PAUSE_KEY = '_origin_pause_'
@@ -23,7 +23,7 @@ class MainMoved(SyncError):
 
 def git(repo, *args, check=True, timeout=None):
     try:
-        r = hostgit.run(repo, *args, timeout=timeout)
+        r = placement.git(repo, *args, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
         r = subprocess.CompletedProcess(args, 124, '', '')
     if check and r.returncode:

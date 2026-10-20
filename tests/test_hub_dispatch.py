@@ -170,6 +170,8 @@ class Service(Base):
         self.store.update_settings({"wsl_distro": "Other"})
         d = svc._default_dispatcher(HubPort(self.store))
         self.assertEqual((d.launcher.distro, d.launcher.runs_dir), ("Other", str(self.settings.runs_dir)))
+        self.store.update_settings({"wsl_distro": "New-choice"})
+        self.assertEqual(d.launcher.distro, "New-choice")
 
 
 @unittest.skipUnless(create_app, "fastapi is not installed")

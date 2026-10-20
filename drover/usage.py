@@ -1,4 +1,5 @@
 """Per-seat allowance observations, polling and use-it-or-lose-it ordering."""
+from drover import placement
 import argparse
 import json
 import math
@@ -13,7 +14,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import config
 from .ledger import ops, tx
-from .winproc import NO_WINDOW
 
 WINDOWS = {300: 'five_hour', 10080: 'seven_day'}
 HOURS = {'five_hour': 5, 'seven_day': 168}
@@ -29,7 +29,7 @@ def next_reset(text, zone, now=None):
         # Windows does not ship IANA tzdata with Python. Reuse the configured WSL distro's database.
         if os.name != 'nt' or any(p in ('', '.', '..') for p in zone.split('/')) or '\\' in zone:
             raise ValueError('timezone data unavailable') from None
-        source = Path('//wsl.localhost') / config.get()['paths']['wsl_distro'] / 'usr/share/zoneinfo' / zone
+        source = Path('//wsl.localhost') / placement.distro() / 'usr/share/zoneinfo' / zone
         try:
             with source.open('rb') as f:
                 tz = ZoneInfo.from_file(f, key=zone)
@@ -249,7 +249,7 @@ class Poller:
         self.windows = os.name == 'nt' if windows is None else windows
         launcher = launcher or RunnerLauncher(windows=self.windows)
         self.wsl_exe = getattr(launcher, 'wsl_exe', lambda argv: argv)
-        self.distro = getattr(launcher, 'distro', config.get()['paths']['wsl_distro'])
+        self.distro = lambda: getattr(launcher, 'distro', None)
         self.checked = {}
 
     def refresh(self, seat, cache_s=CACHE_S):
@@ -268,15 +268,14 @@ class Poller:
                 argv = [seat['binary'], '-p', '/usage', '--output-format', 'json']
                 env = {**os.environ, **{k: config.native(v) for k, v in config.seat_env(seat).items()}}
                 if self.windows and seat['placement'] == 'wsl':
-                    from .runner import to_wsl_path
                     argv = self.wsl_exe(argv)
-                    account = {k: to_wsl_path(v) for k, v in config.seat_env(seat).items()}
+                    account = {k: placement.to_wsl_path(v) for k, v in config.seat_env(seat).items()}
                     code = ("import json,os,subprocess,sys; "
                             "os.environ.update({k:os.path.expanduser(v) for k,v in json.loads(sys.argv[1]).items()}); "
                             "sys.exit(subprocess.call(json.loads(sys.argv[2])))")
-                    argv = ['wsl.exe', '-d', self.distro, '--exec', 'python3', '-c', code,
-                            json.dumps(account), json.dumps(argv)]
-                proc = self.run(argv, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30, **NO_WINDOW)
+                    argv = placement.WSL(self.distro).command(['python3', '-c', code,
+                            json.dumps(account), json.dumps(argv)])
+                proc = self.run(argv, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30, **placement.NO_WINDOW)
                 raw = proc.stdout or ''
                 if proc.returncode:
                     raise ValueError('usage command failed')
@@ -288,12 +287,11 @@ class Poller:
             else:
                 home = seat.get('codex_home') or seat.get('config_dir') or '~/.codex'
                 if self.windows and seat['placement'] == 'wsl':
-                    from .runner import to_wsl_path
                     code = ("import json,os,sys; sys.path.insert(0,sys.argv[1]); "
                             "from drover.usage import read_codex_raw; "
                             "print(json.dumps(read_codex_raw(os.path.expanduser(sys.argv[2]))))")
-                    argv = ['wsl.exe', '-d', self.distro, '--exec', 'python3', '-c', code,
-                            to_wsl_path(str(Path(__file__).resolve().parents[1])), to_wsl_path(home)]
+                    argv = placement.WSL(self.distro).command(['python3', '-c', code,
+                            placement.to_wsl_path(str(Path(__file__).resolve().parents[1])), placement.to_wsl_path(home)])
                     proc = self.run(argv, capture_output=True, text=True, encoding='utf-8', timeout=30)
                     if proc.returncode:
                         raise ValueError('rollout reader failed')

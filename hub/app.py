@@ -1,4 +1,5 @@
 """App factory: wires store, bus, auth, routers, SSE and the watchdog."""
+from drover import placement
 import logging
 
 from fastapi import FastAPI, Request
@@ -18,6 +19,7 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
     settings = settings or Settings()
     bus = events.Bus()
     store = Store(db_path, publish=bus.publish)
+    previous_placement = None
     dog = Watchdog(store, settings, bus=bus, wsl=wsl)
     dispatch = DispatcherService(store, settings, make_dispatcher=make_dispatcher)
     services = services or Services(store, settings, wsl=wsl)
@@ -36,6 +38,8 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
     app.state.allowed_hosts = auth.resolve_allowed_hosts(settings)
 
     def start_background():
+        nonlocal previous_placement
+        previous_placement = placement.bind_settings(store.get_settings)
         if settings.run_watchdog:
             dog.start()
         if settings.run_dispatcher:
@@ -48,6 +52,8 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
         dispatch.stop()
         dog.stop()
         ui_view.repo_states.close()
+        if previous_placement is not None:
+            placement.bind_settings(previous_placement)
         store.close()
 
     app.state.start_background = start_background

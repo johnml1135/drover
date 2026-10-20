@@ -21,10 +21,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from .winproc import CREATE_NO_WINDOW, NO_WINDOW
+from . import placement
+from .placement import IS_WINDOWS, KILL_AFTER_S, ScanError, find_runners
 
-IS_WINDOWS = sys.platform == "win32"
-KILL_AFTER_S = 15
 POLL_S = 0.2
 WATCH_GLOBS = ("*.step*.log",)       # a gate run's per-step logs, which gatejob fills while out.log stays quiet
 SCAN_BYTES = 8192
@@ -34,20 +33,13 @@ BLOCKER_KEYS = ("kind", "detail")
 STOP_FILE, STATUS_FILE, RECORD_FILE, OUT_FILE, RUNNER_LOG = "stop-request", "status.json", "record.json", \
     "out.log", "runner.log"
 STOP_REASONS = ("rotation", "requested")
-DISTRO_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-WINPATH_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$", re.S)
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9]{16,64}$")
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 ARTIFACT_URI_RE = re.compile(r"hub:tasks/[A-Za-z0-9][A-Za-z0-9._-]*/result\.md")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-PYTHON_RE = re.compile(r"(?i)python(w)?(\d+(\.\d+)?)?(\.exe)?")
 KIND_MAX, DETAIL_MAX = 40, 2000
 DETACH_WAIT_S = 5
-
-
-class ScanError(RuntimeError):
-    """The process list could not be read: callers must treat runners as unknown, not as absent."""
 
 
 def now_iso():
@@ -188,167 +180,6 @@ def scan_record(out_path):
     return rec if rec and rec["status"] == "blocked" else None
 
 
-# ---- process tree -----------------------------------------------------------------------------------------
-class PosixTree:
-    def __init__(self, proc):
-        self.proc, self.pgid = proc, proc.pid
-
-    def _group_alive(self):
-        try:
-            os.killpg(self.pgid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-
-    def _sig(self, sig):
-        try:
-            os.killpg(self.pgid, sig)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-    def kill(self, grace=KILL_AFTER_S):
-        """SIGTERM the group, then SIGKILL whatever is left after grace seconds."""
-        self._sig(signal.SIGTERM)
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline:
-            self.proc.poll()            # reap the leader so a zombie does not keep the group "alive"
-            if not self._group_alive():
-                break
-            time.sleep(0.05)
-        if self._group_alive():          # not after the group is gone: the pgid could be reused
-            self._sig(signal.SIGKILL)
-        self.proc.wait()
-
-    def reap_stragglers(self):
-        """The worker exited; end anything it left behind in the group."""
-        if self._group_alive():
-            self._sig(signal.SIGKILL)
-
-    def close(self):
-        pass
-
-
-if IS_WINDOWS:
-    import ctypes
-    from ctypes import wintypes
-
-    class _BASIC(ctypes.Structure):
-        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD)]
-
-    class _IOC(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_uint64) for n in ("ro", "wo", "oo", "rb", "wb", "ob")]
-
-    class _EXT(ctypes.Structure):
-        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IOC), ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _k32.CreateJobObjectW.restype = wintypes.HANDLE
-    _k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-    _k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
-    _k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-    _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-    _k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    _k32.CloseHandle.argtypes = [wintypes.HANDLE]
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-    JOB_BASIC_AND_IO_ACCOUNTING_CLASS = 8
-    JOB_EXTENDED_LIMIT_CLASS = 9
-    CREATE_SUSPENDED = 0x4
-    CREATE_NEW_PROCESS_GROUP = 0x200
-    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-
-    def _resume(handle):
-        nt = ctypes.WinDLL("ntdll")
-        nt.NtResumeProcess.argtypes = [wintypes.HANDLE]
-        return nt.NtResumeProcess(int(handle))
-
-    class WindowsTree:
-        """A Job Object that kills its whole tree on TerminateJobObject, or when the runner dies (KILL_ON_CLOSE)."""
-
-        def __init__(self, proc):
-            self.proc, self.job = proc, None
-            try:
-                self.job = self._make_job(proc)
-                if _resume(proc._handle) != 0:      # the worker started suspended so no child escapes the job
-                    raise OSError("could not resume the suspended worker")
-            except BaseException:
-                self.close_and_kill()
-                raise
-
-        @staticmethod
-        def _make_job(proc):
-            job = _k32.CreateJobObjectW(None, None)
-            if not job:
-                raise ctypes.WinError(ctypes.get_last_error())
-            info = _EXT()
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            if not _k32.SetInformationJobObject(job, JOB_EXTENDED_LIMIT_CLASS, ctypes.byref(info),
-                                                ctypes.sizeof(info)) \
-                    or not _k32.AssignProcessToJobObject(job, int(proc._handle)):
-                err = ctypes.get_last_error()
-                _k32.CloseHandle(job)
-                raise ctypes.WinError(err)
-            return job
-
-        def metrics(self):
-            class Accounting(ctypes.Structure):
-                _fields_ = [(n, ctypes.c_int64) for n in ("user", "kernel", "period_user", "period_kernel")] + [
-                    (n, wintypes.DWORD) for n in ("faults", "total", "active", "terminated")]
-            class AccountingAndIO(ctypes.Structure):
-                _fields_ = [("BasicInfo", Accounting), ("IoInfo", _IOC)]
-            accounting, ext = AccountingAndIO(), _EXT()
-            for kind, obj in ((JOB_BASIC_AND_IO_ACCOUNTING_CLASS, accounting), (JOB_EXTENDED_LIMIT_CLASS, ext)):
-                if not _k32.QueryInformationJobObject(self.job, kind, ctypes.byref(obj), ctypes.sizeof(obj), None):
-                    raise ctypes.WinError(ctypes.get_last_error())
-            basic = accounting.BasicInfo
-            return ((basic.user + basic.kernel) / 10_000_000, ext.PeakJobMemoryUsed,
-                    accounting.IoInfo.rb + accounting.IoInfo.wb)
-
-        def close_and_kill(self):
-            if self.job:
-                _k32.TerminateJobObject(self.job, 1)
-                _k32.CloseHandle(self.job)
-                self.job = None
-            self.proc.kill()
-            self.proc.wait()
-
-        def kill(self, grace=KILL_AFTER_S):
-            if self.job:
-                _k32.TerminateJobObject(self.job, 1)
-            try:
-                self.proc.wait(timeout=grace)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-
-        def reap_stragglers(self):
-            if self.job:
-                _k32.TerminateJobObject(self.job, 1)
-
-        def close(self):
-            if self.job:
-                _k32.CloseHandle(self.job)
-                self.job = None
-
-
-def spawn_worker(argv, out_f, stdin_f, cwd, env):
-    """(proc, tree). The worker's stdout and stderr both go to out_f."""
-    kw = dict(stdin=stdin_f, stdout=out_f, stderr=subprocess.STDOUT, cwd=cwd, env=env)
-    if IS_WINDOWS:
-        proc = subprocess.Popen(argv, creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | CREATE_NO_WINDOW,
-                                **kw)
-        return proc, WindowsTree(proc)
-    proc = subprocess.Popen(argv, start_new_session=True, **kw)
-    return proc, PosixTree(proc)
-
-
 # ---- supervising ------------------------------------------------------------------------------------------
 class Status:
     def __init__(self, path, run_id, nonce):
@@ -397,53 +228,11 @@ def request_stop(runs_dir, run_id, reason="requested", nonce=None):
     return True
 
 
-def _scratch_path(value):
-    root, path = Path("/tmp/drover-scratch"), Path(value)
-    parent = path.parent
-    direct = parent == root
-    task_scratch = Path(os.environ.get("TMPDIR", ""))
-    nested = (not direct and parent == task_scratch and parent.parent == root and parent.is_dir()
-              and not parent.is_symlink() and parent.resolve() == parent)
-    if (IS_WINDOWS or (not direct and not nested) or root.resolve() != root
-            or path.is_symlink() or path.resolve().parent != parent):
-        raise ValueError("scratch must be under /tmp/drover-scratch/ or its assigned TMPDIR")
-    return path
-
-
 def _cleanup_scratch(path):
     try:
-        shutil.rmtree(_scratch_path(path))
+        shutil.rmtree(placement.scratch_path(path))
     except (OSError, ValueError):
         pass
-
-
-DOTNET_SHM_ROOT = "/tmp/.dotnet"
-
-
-def ensure_dotnet_shm(root=DOTNET_SHM_ROOT):
-    """Create <root>/shm (sticky, 1777) for the .NET named-mutex shared memory; leave an existing one alone."""
-    shm = Path(root) / "shm"
-    if shm.is_dir():
-        return
-    created = not Path(root).is_dir()
-    Path(root).mkdir(parents=True, exist_ok=True)
-    if created:
-        os.chmod(root, 0o1777)      # sticky and world-writable like /tmp; chmod because mkdir's mode obeys the umask
-    shm.mkdir(exist_ok=True)
-    os.chmod(shm, 0o1777)
-
-
-def worker_scratch_env(scratch):
-    """Environment for a WSL worker's private temp and .NET caches; the global NuGet package cache stays shared."""
-    scratch = Path(scratch)
-    return {
-        "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
-        "DOTNET_CLI_HOME": str(scratch / "dotnet-home"),
-        "NUGET_HTTP_CACHE_PATH": str(scratch / "nuget-http"),
-        "NUGET_PLUGINS_CACHE_PATH": str(scratch / "nuget-plugins"),
-        "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1",
-        "NUGET_PACKAGES": str(Path.home() / ".nuget" / "packages"),
-    }
 
 
 def _watched_sizes(d, globs):
@@ -483,7 +272,7 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
     try:
         if scratch_dir:
             try:
-                path = _scratch_path(scratch_dir)
+                path = placement.scratch_path(scratch_dir)
                 path.parent.mkdir(mode=0o700, exist_ok=True)
                 path.mkdir(mode=0o700)
                 scratch = path
@@ -506,10 +295,10 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     env["DROVER_RUN_ID"] = st.d["run_id"]
     if scratch is not None:
         try:
-            ensure_dotnet_shm()
+            placement.ensure_dotnet_shm()
         except OSError:
             pass                    # best effort: a .NET worker reports its own EROFS/EACCES
-        env.update(worker_scratch_env(scratch))
+        env.update(placement.worker_scratch_env(scratch))
     for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
         if env.get(key):
             env[key] = os.path.expanduser(env[key])
@@ -518,15 +307,15 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
         if stdin_file:
             stdin_f = open(stdin_file, "rb")
         with open(out, "ab") as out_f:
-            proc, tree = spawn_worker(argv, out_f, stdin_f, cwd, env)
+            proc, tree = placement.spawn_worker(argv, out_f, stdin_f, cwd, env)
     except OSError as e:
         st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
         return st.d
     finally:
         if stdin_file and stdin_f is not subprocess.DEVNULL:
             stdin_f.close()
-    from .metrics import Peaks, proc_group
-    peaks = Peaks(tree.metrics if IS_WINDOWS else lambda: proc_group(proc.pid))
+    from .metrics import Peaks
+    peaks = Peaks(tree.metrics)
     watch = None
     try:
         st.set(state="running", pid=proc.pid)
@@ -592,20 +381,7 @@ def detach(run_id, runs_dir, child_args, wait_s=DETACH_WAIT_S, nonce=None):
                                         "started": now_iso(), "ended": None, "exit_code": None, "reason": None,
                                         "nonce": nonce, "detached_in_job": False})
     with open(d / RUNNER_LOG, "ab") as log:
-        kw = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
-        if IS_WINDOWS:
-            # CREATE_NO_WINDOW, not a detached console: a console app with none to inherit gets a fresh visible console (a Windows
-            # Terminal window under the default-terminal setting); the runner still outlives the hub via its own group.
-            flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-            try:
-                proc = subprocess.Popen(cmd, env=env, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kw)
-            except OSError:         # the parent's job does not allow breakaway: the runner dies with that job
-                in_job = True
-                log.write(b"warning: breakaway from the parent job was refused; this runner is still in it\n")
-                log.flush()
-                proc = subprocess.Popen(cmd, env={**env, "DROVER_DETACHED_IN_JOB": "1"}, creationflags=flags, **kw)
-        else:
-            proc = subprocess.Popen(cmd, env=env, start_new_session=True, **kw)
+        proc, in_job = placement.detach_process(cmd, env, log)
     # proc.pid may be a venv launcher over the real runner: report the pid the runner wrote itself
     info = {"runner_pid": None, "launcher_pid": proc.pid, "run_id": run_id, "dir": str(d),
             "detached_in_job": in_job}
@@ -624,168 +400,6 @@ def detach(run_id, runs_dir, child_args, wait_s=DETACH_WAIT_S, nonce=None):
 
 
 # ---- finding runners --------------------------------------------------------------------------------------
-def parse_runner_argv(argv):
-    """The run id when argv is exactly `python -m drover.runner [run args] --run-id ID [...]`, else None.
-
-    Exact on purpose: argv[0] must be a python interpreter and argv[1:3] must be `-m drover.runner`, so a wrapper
-    (wsl.exe, bash -c), a script that mentions the marker, or the stop/find subcommands never match. --run-id is
-    only read before any `--`, so a worker's own arguments cannot spoof it."""
-    argv = list(argv)
-    if len(argv) < 4 or not PYTHON_RE.fullmatch(re.split(r"[\\/]", argv[0])[-1]) or argv[1:3] != ["-m", "drover.runner"]:
-        return None
-    rest = argv[3:]
-    if "--" in rest:
-        rest = rest[:rest.index("--")]
-    if rest and rest[0] in ("stop", "find"):
-        return None
-    for j, a in enumerate(rest):
-        if a == "--run-id" and j + 1 < len(rest) and RUN_ID_RE.fullmatch(rest[j + 1]):
-            return rest[j + 1]
-        if a.startswith("--run-id=") and RUN_ID_RE.fullmatch(a[9:]):
-            return a[9:]
-    return None
-
-
-def _runner_runs_dir(argv):
-    """The runs directory from a valid runner command line, else None."""
-    argv = list(argv)
-    if parse_runner_argv(argv) is None:
-        return None
-    rest = argv[3:]
-    if "--" in rest:
-        rest = rest[:rest.index("--")]
-    for j, arg in enumerate(rest):
-        if arg == "--runs-dir" and j + 1 < len(rest):
-            return rest[j + 1]
-        if arg.startswith("--runs-dir="):
-            return arg[len("--runs-dir="):]
-    return None
-
-
-def _same_path(left, right):
-    try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(str(left)))) == \
-            os.path.normcase(os.path.abspath(os.path.expanduser(str(right))))
-    except (OSError, TypeError, ValueError):
-        return False
-
-
-def _proc_cmdlines_linux():
-    for e in os.scandir("/proc"):
-        if e.name.isdigit():
-            try:
-                raw = Path(e.path, "cmdline").read_bytes()
-            except OSError:
-                continue
-            yield int(e.name), [a.decode("utf-8", errors="replace") for a in raw.split(b"\0") if a]
-
-
-def _split_windows_cmdline(line):
-    n = ctypes.c_int()
-    shell32 = ctypes.WinDLL("shell32")
-    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-    ptr = shell32.CommandLineToArgvW(line, ctypes.byref(n))
-    if not ptr:
-        return []
-    try:
-        return [ptr[i] for i in range(n.value)]
-    finally:
-        k = ctypes.WinDLL("kernel32")
-        k.LocalFree.argtypes = [ctypes.c_void_p]
-        k.LocalFree(ptr)
-
-
-def _powershell():
-    root = os.environ.get("SystemRoot") or r"C:\Windows"
-    p = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    return str(p) if p.exists() else "powershell"
-
-
-def _proc_cmdlines_windows():
-    """(pid, argv, parent pid) rows from CIM. Raises ScanError when the list cannot be read."""
-    script = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-              "Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId,CommandLine | ConvertTo-Json")
-    try:
-        r = subprocess.run([_powershell(), "-NoProfile", "-Command", script], capture_output=True, timeout=60, **NO_WINDOW)
-        if r.returncode != 0:
-            raise ScanError(f"powershell exited {r.returncode}")
-        text = r.stdout.decode("utf-8", errors="replace").strip()
-        rows = json.loads(text)
-    except (OSError, subprocess.SubprocessError, ValueError) as e:
-        raise ScanError(f"cannot list processes: {e!r}") from e
-    rows = [rows] if isinstance(rows, dict) else rows
-    if not isinstance(rows, list) or not rows:
-        raise ScanError("process list came back empty")
-    out = []
-    for row in rows:
-        if isinstance(row, dict) and row.get("CommandLine") and isinstance(row.get("ProcessId"), int):
-            out.append((row["ProcessId"], _split_windows_cmdline(row["CommandLine"]), row.get("ParentProcessId")))
-    return out
-
-
-def find_runners(run_id=None, cmdlines=None, runs_dir=None):
-    """[{pid, run_id}] for live runner processes, one per run id. A venv launcher over its child python gives two
-    matching processes; the child is reported, as it is the runner whose pid status.json records. Raises ScanError when the process
-    list cannot be read on Windows: treat that as unknown, never as no runners.
-
-    `cmdlines` (iterable of (pid, argv[, parent pid])) is for injection in tests. `runs_dir` narrows discovery to a
-    single runner owner directory, which is useful when concurrent test processes scan the host."""
-    if cmdlines is None:
-        cmdlines = _proc_cmdlines_windows() if IS_WINDOWS else _proc_cmdlines_linux()
-    by_id = {}
-    for row in cmdlines:
-        pid, argv, ppid = (tuple(row) + (None,))[:3]
-        rid = parse_runner_argv(argv)
-        if rid and (run_id is None or rid == run_id) and \
-                (runs_dir is None or _same_path(_runner_runs_dir(argv), runs_dir)):
-            by_id.setdefault(rid, []).append((pid, ppid))
-    found = []
-    for rid, procs in by_id.items():
-        parents = {pp for _, pp in procs}
-        leaves = [p for p, _ in procs if p not in parents] or [p for p, _ in procs]
-        found.append({"pid": min(leaves), "run_id": rid})
-    return sorted(found, key=lambda r: r["pid"])
-
-
-# ---- from Windows into WSL --------------------------------------------------------------------------------
-def to_wsl_path(arg):
-    """C:\\drover\\runs -> /mnt/c/drover/runs; also `--opt=R:\\x`. Other arguments pass through."""
-    m = WINPATH_RE.match(arg)
-    if m:
-        return f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/")
-    if arg.startswith("--") and "=" in arg:
-        k, _, v = arg.partition("=")
-        if WINPATH_RE.match(v):
-            return f"{k}={to_wsl_path(v)}"
-    return arg
-
-
-def wsl_argv(distro, runner_args, cd=None, env=None):
-    """wsl.exe -d <distro> [--cd <dir>] --exec python3 -m drover.runner <args>.
-
-    --exec runs python3 directly, with no shell, so no argument is expanded or re-quoted. Windows paths are mapped
-    to /mnt/<d>/ in the runner's own options (before `--`) and in cd; the worker's argv after `--` is never changed.
-    env ({NAME: value}, values mapped the same way) is passed through /usr/bin/env, since a Windows variable does not
-    cross wsl.exe by itself."""
-    if not DISTRO_RE.fullmatch(str(distro)) or str(distro).startswith("-"):
-        raise ValueError(f"bad WSL distro name {distro!r}")
-    args = [str(a) for a in runner_args]
-    split = args.index("--") if "--" in args else len(args)
-    mapped = [to_wsl_path(a) for a in args[:split]] + args[split:]
-    argv = ["wsl.exe", "-d", distro]
-    if cd:
-        argv += ["--cd", to_wsl_path(str(cd))]
-    if env:
-        for name, value in env.items():
-            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(name)):
-                raise ValueError(f"bad environment variable name {name!r}")
-        argv += ["--exec", "/usr/bin/env", *[f"{k}={to_wsl_path(str(v))}" for k, v in env.items()], "python3"]
-    else:
-        argv += ["--exec", "python3"]
-    return argv + ["-m", "drover.runner", *mapped]
-
-
 # ---- CLI --------------------------------------------------------------------------------------------------
 def _num(s):
     v = float(s)

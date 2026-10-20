@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import brief, config, contract, dispatcher, gate, hostgit, landing, launch, pipeline, repos, runner
+from drover import brief, config, contract, dispatcher, gate, placement, landing, launch, pipeline, repos, runner
 from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -315,7 +315,7 @@ class Worktrees(Base):
                     return real(repo, *args, **kw)
 
                 tid = self.task()
-                with patch.object(pipeline, "git", fake), patch.object(pipeline.Pipeline, "_cross_os", return_value=False):
+                with patch.object(pipeline, "git", fake), patch.object(placement, "is_linux_native", return_value=True):
                     wt = self.pipe.worktree(self.get(tid))
                 self.assertEqual(len(calls), 2 if legacy else 1)
                 for args in calls:
@@ -338,7 +338,7 @@ class Worktrees(Base):
             launcher = RunnerLauncher(runs_dir=self.runs)
             cmd, _ = launcher.command({'run_id': 1, 'nonce': 'test', 'cwd': wt, 'placement': 'wsl'},
                                       self.runs, ['claude'])
-            self.assertEqual(cmd[cmd.index('--cwd') + 1], runner.to_wsl_path(expected))
+            self.assertEqual(cmd[cmd.index('--cwd') + 1], placement.to_wsl_path(expected))
 
     def test_creates_on_a_new_branch_from_origin_main_tags_it_and_reuses_it(self):
         tid = self.task()
@@ -403,18 +403,18 @@ class Worktrees(Base):
         tid = self.task(branch="feat")
         ops.update_task(self.conn, tid, worktree="/home/johnm/work/motif.worktrees/x")
         with patch("subprocess.run", fake_wsl), \
-                patch.object(hostgit, "routes_through_wsl", lambda p, nt=None: str(p).startswith("/home/")):
+                patch.object(placement, "routes_through_wsl", lambda p, nt=None: str(p).startswith("/home/")):
             wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertTrue(calls and calls[0][:5] == ["wsl.exe", "-d", "Ubuntu", "--exec", "git"], calls)
         self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
         self.assertTrue(Path(wt).exists())
 
-    def test_hostgit_routes_only_wsl_only_paths_through_wsl_from_windows(self):
-        self.assertEqual(hostgit.argv("/home/johnm/w", ["status"], nt=True, distro="Ubuntu"),
+    def test_placement_routes_only_wsl_only_paths_through_wsl_from_windows(self):
+        self.assertEqual(placement.git_argv("/home/johnm/w", ["status"], nt=True, distro="Ubuntu"),
                          ["wsl.exe", "-d", "Ubuntu", "--exec", "git", "-C", "/home/johnm/w", "status"])
-        self.assertEqual(hostgit.argv("/home/johnm/w", ["status"], nt=False)[0], "git")
-        self.assertEqual(hostgit.argv("/mnt/h/r", ["status"], nt=True)[0], "git")
-        self.assertEqual(hostgit.argv("/home/j/w", ["worktree", "add", "H:\\x"], nt=True, distro="U")[-1], "/mnt/h/x")
+        self.assertEqual(placement.git_argv("/home/johnm/w", ["status"], nt=False)[0], "git")
+        self.assertEqual(placement.git_argv("/mnt/h/r", ["status"], nt=True)[0], "git")
+        self.assertEqual(placement.git_argv("/home/j/w", ["worktree", "add", "H:\\x"], nt=True, distro="U")[-1], "/mnt/h/x")
 
     def _absolute_pointer(self, wt):
         admin = Path(self.fix.git("-C", wt, "rev-parse", "--absolute-git-dir"))
@@ -445,15 +445,15 @@ class Worktrees(Base):
         tid = self.task()
         wt = repos.native(self.pipe.worktree(self.get(tid)))
         self._absolute_pointer(wt)
-        with patch.object(pipeline.Pipeline, "_relativize", return_value=False):
+        with patch.object(placement, "relativize_gitdir", return_value=False):
             self.pipe.worktree(self.get(tid))
         self.assertTrue(ops.events(self.conn, task_id=tid, kind="worktree-repair-failed"))
         self.assertTrue(ops.events(self.conn, task_id=tid, kind="worktree-fallback"))
 
-    def test_hostgit_translates_path_arguments_only(self):
-        a = hostgit.argv("/home/j/w", ["commit", "-m", "fix C:\\x", "--", "R:\\f"], nt=True, distro="U")
+    def test_placement_translates_path_arguments_only(self):
+        a = placement.git_argv("/home/j/w", ["commit", "-m", "fix C:\\x", "--", "R:\\f"], nt=True, distro="U")
         self.assertEqual(a[-4:], ["-m", "fix C:\\x", "--", "R:\\f"])
-        a = hostgit.argv("/home/j/w", ["worktree", "add", "-b", "C:\\br", "D:\\wt", "E:\\ref"], nt=True, distro="U")
+        a = placement.git_argv("/home/j/w", ["worktree", "add", "-b", "C:\\br", "D:\\wt", "E:\\ref"], nt=True, distro="U")
         self.assertEqual(a[-5:], ["add", "-b", "C:\\br", "/mnt/d/wt", "E:\\ref"])
 
     def test_the_dispatcher_launches_on_a_fresh_branch_when_the_registered_worktree_is_dirty(self):
@@ -466,7 +466,7 @@ class Worktrees(Base):
         self.assertTrue((other / "scratch.txt").exists())
 
     def test_wsl_placement_gets_the_worktree_in_its_config_form_and_the_launcher_maps_it(self):
-        self.assertEqual(runner.to_wsl_path("R:\\repos\\acme-lib.worktrees\\drover-T1"),
+        self.assertEqual(placement.to_wsl_path("R:\\repos\\acme-lib.worktrees\\drover-T1"),
                          "/mnt/r/repos/acme-lib.worktrees/drover-T1")
         self.assertEqual(repos.native("R:\\repos\\x") if sys.platform != "win32" else "/mnt/r/repos/x",
                          "/mnt/r/repos/x")
@@ -563,12 +563,12 @@ class Safety(Base):
             return real(repo, *a, **kw)
         tid = self.task()
         from unittest import mock
-        with mock.patch.object(pipeline, "git", fake), mock.patch.object(pipeline.Pipeline, "_cross_os", lambda s, d: True):
+        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: False):
             with self.assertRaises(pipeline.WorktreeRefused) as cm:
                 self.pipe.worktree(self.get(tid))
         self.assertIn("relative-paths", str(cm.exception))
         self.assertFalse((Path(self.tmp.name) / "wts" / f"drover-{tid}").exists())
-        with mock.patch.object(pipeline, "git", fake), mock.patch.object(pipeline.Pipeline, "_cross_os", lambda s, d: False):
+        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: True):
             # a path only one OS can open may fall back to absolute gitdir pointers
             self.assertTrue(self.pipe.worktree(self.get(tid)))
 

@@ -3,6 +3,7 @@
 One thread (`services`) owns all three, so each uses its own ledger connection through the Store. Everything
 that touches the machine (wsl.exe, git, disks, Ollama) is injectable, so tests never reach real state.
 """
+from drover import placement
 import json
 import logging
 import os
@@ -136,7 +137,7 @@ class Services:
 
     # -- WSL tool discovery -----------------------------------------------
     def distro(self):
-        return self.store.get_settings().get("wsl_distro") or self.settings.distro
+        return placement.distro(self.settings.distro, self.store.get_settings())
 
     def wsl_up(self) -> bool:
         """Is the distro running? `wsl -l --running` lists without booting anything."""

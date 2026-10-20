@@ -21,9 +21,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from .winproc import NO_WINDOW
 
-from . import hostgit
+from . import placement
 
 DAY = 86400
 TAG = 'drover-tag.json'
@@ -38,7 +37,7 @@ EPIC_TITLE = 'Garden'
 
 def git(cwd, *args, check=False):
     # GIT_OPTIONAL_LOCKS=0: `git status` must not rewrite the index, so a scan writes nothing.
-    r = hostgit.run(cwd, *args, env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
+    r = placement.git(cwd, *args, env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
     if check and r.returncode:
         raise RuntimeError('git %s: %s' % (' '.join(args), r.stderr.strip()))
     return r
@@ -52,17 +51,9 @@ def side_of(path):
     return 'windows' if re.match(r'^[A-Za-z]:', path) else 'wsl'
 
 
-def to_local(path):
-    """A Windows path read from git metadata, as this side can open it."""
-    m = re.match(r'^([A-Za-z]):[\\/](.*)$', path)
-    if m and os.name != 'nt':
-        return '/mnt/%s/%s' % (m.group(1).lower(), m.group(2).replace('\\', '/'))
-    return path
-
-
 def common_dir(repo):
     out = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir', check=True).stdout.strip()
-    return Path(to_local(out))
+    return Path(placement.native(out))
 
 
 def state_dir():
@@ -84,7 +75,7 @@ def admin_dir_of(worktree):
     text = pointer.read_text().strip() if pointer.is_file() else ''
     if not text.startswith('gitdir: '):
         raise ValueError('%s is not a linked worktree' % worktree)
-    admin = Path(to_local(text[len('gitdir: '):]))
+    admin = Path(placement.native(text[len('gitdir: '):]))
     return admin if admin.is_absolute() or re.match(r'^[A-Za-z]:', str(admin)) else (Path(worktree) / admin).resolve()   # --relative-paths
 
 
@@ -131,7 +122,7 @@ def _cim_rows():
     out = subprocess.run(
         ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
          'Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress'],
-        capture_output=True, text=True, timeout=30, errors='replace', **NO_WINDOW)
+        capture_output=True, text=True, timeout=30, errors='replace', **placement.NO_WINDOW)
     if out.returncode or not out.stdout.strip():
         raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
     data = json.loads(out.stdout)
@@ -203,7 +194,7 @@ class Entry:
         self.id = self.meta.name
         raw = (self.meta / 'gitdir').read_text().strip()
         self.side = side_of(raw)
-        self.path = Path(to_local(raw)).parent
+        self.path = Path(placement.native(raw)).parent
         if not self.path.is_absolute() and not re.match(r'^[A-Za-z]:', str(self.path)):
             self.path = (self.meta / raw).resolve().parent                    # --relative-paths: relative to the admin dir
         lock = self.meta / 'locked'

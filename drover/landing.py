@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path, PureWindowsPath
 
-from . import config, gate, hostgit, origin, worktrees
+from . import config, gate, placement, origin
 from .port import DirectPort
 from .ledger import ops
 from .ledger.db import connect, default_path, tx
@@ -62,7 +62,7 @@ FETCH_TIMEOUT_S = 120
 
 def git(repo, *args, check=True, timeout=None):
     try:
-        r = hostgit.run(repo, *args, timeout=timeout)
+        r = placement.git(repo, *args, timeout=timeout)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {timeout}s')
     if check and r.returncode:
@@ -176,7 +176,7 @@ def build_tip(repo, worktree, base_sha, tasks):
     """Replay each task's commits onto base_sha in `worktree`. -> (tip sha, applied tasks with last_sha, conflicted ids)."""
     worktree = Path(worktree)
     if not (worktree / '.git').exists():
-        worktrees.add(repo, worktree, '-q', '--detach', str(worktree), base_sha, git=git, error=gate.GateError)
+        placement.add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, git=git, error=gate.GateError)
     else:
         pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
         if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():

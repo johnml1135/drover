@@ -7,12 +7,10 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 import threading
 
-from . import config, repos, task_context
-from .winproc import NO_WINDOW
+from . import config, placement, repos, task_context
 
 _LOCK = threading.Lock()
 
@@ -37,8 +35,7 @@ def check_read_roots(cwd, paths):
 
 
 def _git(path, *args):
-    r = subprocess.run(['git', '--no-optional-locks', '-C', str(path), *args],
-                       capture_output=True, text=True, timeout=60, **NO_WINDOW)
+    r = placement.git(path, '--no-optional-locks', *args, timeout=60)
     if r.returncode:
         raise ValueError(f'read checkout: {r.stderr.strip()[-250:]}')
     return r.stdout.strip()
@@ -77,7 +74,7 @@ def verify(reads):
 
 def prepare(entries, configured=None, root=None):
     configured = repos.load_all() if configured is None else configured
-    root = Path(root or config.state_path('read-checkouts'))
+    root = Path(root or config.state_path('read-checkouts')).resolve()
     out = []
     with _LOCK:
         for entry in entries:
@@ -97,16 +94,19 @@ def prepare(entries, configured=None, root=None):
                     pass
             if not sha:
                 raise ValueError(f'unknown read branch {name}@{branch}')
-            key = hashlib.sha256(f'{source}\0{branch}\0{sha}'.encode()).hexdigest()[:24]
+            key = hashlib.sha256(f'history\0{source}\0{branch}\0{sha}'.encode()).hexdigest()[:24]
             dest = root / key
             read = dict(entry=entry, path=str(dest), sha=sha)
             if not dest.exists():
                 root.mkdir(parents=True, exist_ok=True)
                 temp = Path(tempfile.mkdtemp(prefix='read-', dir=root))
                 try:
-                    _git(temp, 'init', '--quiet')
+                    cache = root / ('objects-' + hashlib.sha256(source.encode()).hexdigest()[:24])
+                    if not cache.exists():
+                        _git(root, 'init', '--bare', str(cache))
+                    _git(cache, 'fetch', '--no-tags', '--', source, f'+{sha}:refs/heads/snapshot')
+                    _git(temp, 'clone', '--local', '--no-checkout', '--', str(cache), '.')
                     _git(temp, 'config', 'core.filemode', 'false')
-                    _git(temp, 'fetch', '--depth=1', '--no-tags', '--', source, sha)
                     _git(temp, '-c', 'core.autocrlf=false', 'checkout', '--detach', sha)
                     _readonly(temp)
                     temp.rename(dest)

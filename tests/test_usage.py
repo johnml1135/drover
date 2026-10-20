@@ -1,4 +1,5 @@
 """Per-account readings and allowance ordering, using fictional seats only."""
+from drover import placement as placement_mod
 import json
 import ntpath
 import os
@@ -202,7 +203,7 @@ class DispatcherSeats(unittest.TestCase):
                 tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', goal=f'platform: {platform}')['id']
                 ops.approve(conn, tid)
                 windows_os = SimpleNamespace(name='nt', path=ntpath, environ=os.environ)
-                with patch.object(config, 'os', windows_os), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
+                with patch.object(config, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
                     self.assertEqual(d.tick()['launched'], [tid])
                 account = ntpath.normpath(r'R:\Users\acme\.claude')
                 self.assertEqual([ntpath.normpath(p) if p else p for p in probes], [account])
@@ -383,7 +384,7 @@ class ObservationEdges(unittest.TestCase):
                     # Execute the WSL reader with fictional local paths, without starting WSL.
                     code = argv[argv.index('-c') + 1]
                     return subprocess.run([sys.executable, '-c', code, *argv[-2:]], **kw)
-                with patch('drover.runner.to_wsl_path', side_effect=lambda p: p):
+                with patch('drover.placement.to_wsl_path', side_effect=lambda p: p):
                     poller = usage.Poller(self.conn, run=run, now=lambda: NOW, windows=windows)
                     self.assertIsNone(poller.refresh(seat))
                 row = usage.readings(self.conn)[-1]

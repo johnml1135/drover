@@ -1,3 +1,4 @@
+from drover import placement
 import json
 import sys
 import subprocess
@@ -136,13 +137,13 @@ class WorktreeTests(LandingCase):
                     return subprocess.CompletedProcess(args, 129, '', "error: unknown option `relative-paths'")
             return real(repo, *args, **kw)
 
-        with patch.object(landing, 'git', git), patch.object(landing.worktrees, 'cross_os', return_value=True):
+        with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=False):
             with self.assertRaisesRegex(gate.GateError, 'both Windows and WSL: update git'):
                 landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 1)
         self.assertFalse(self.work.exists())
         calls.clear()
-        with patch.object(landing, 'git', git), patch.object(landing.worktrees, 'cross_os', return_value=False):
+        with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=True):
             landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 2)
         for args in calls:

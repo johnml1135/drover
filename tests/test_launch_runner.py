@@ -1,4 +1,5 @@
 """RunnerLauncher and RunnerHandle against a fake runner (files only), plus one real runner smoke test."""
+from drover import placement as placement_mod
 import json
 import os
 import subprocess
@@ -108,13 +109,13 @@ class Commands(Base):
                 self.assertEqual(len(roots), 2 if placement == 'wsl' else 1)
                 if placement == 'wsl':
                     # The second root is the pre-created .NET shared-memory directory (named mutexes).
-                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}', runner.DOTNET_SHM_ROOT])
+                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}', placement_mod.DOTNET_SHM_ROOT])
                     self.assertEqual(head[head.index('--scratch-dir') + 1], roots[0])
                     self.assertEqual(list(self.dir(rid).glob('scratch-*')), [])
                 else:
                     scratch = list(self.dir(rid).glob('scratch-*'))
                     self.assertEqual(len(scratch), 1)
-                    self.assertEqual(roots, [launch.to_windows_path(scratch[0])])
+                    self.assertEqual(roots, [placement_mod.to_windows_path(scratch[0])])
                     self.assertNotIn('--scratch-dir', head)
                 self.assertTrue(sandbox['exclude_slash_tmp'])
                 self.assertTrue(sandbox['exclude_tmpdir_env_var'])
@@ -156,7 +157,7 @@ class Commands(Base):
         i = cmd.index("--")
         head, worker = cmd[9:i], cmd[i + 1:]
         self.assertEqual(head[head.index("--cwd") + 1], "/mnt/r/repos/wt")
-        self.assertEqual(head[head.index("--runs-dir") + 1], runner.to_wsl_path(str(self.runs)))
+        self.assertEqual(head[head.index("--runs-dir") + 1], placement_mod.to_wsl_path(str(self.runs)))
         self.assertEqual(worker[0], "claude")
         self.assertIsNone(kw.get("env"))
 
@@ -457,19 +458,19 @@ class Scanning(Base):
     def test_wsl_running_reads_utf16_list(self):
         out = "Ubuntu\r\nDebian\r\n".encode("utf-16-le")
         run = lambda *a, **k: SimpleNamespace(stdout=out, stderr=b"", returncode=0)
-        self.assertTrue(launch.wsl_running("ubuntu", run))
-        self.assertFalse(launch.wsl_running("Other", run))
-        self.assertFalse(launch.wsl_running("Ubuntu", lambda *a, **k: SimpleNamespace(stdout=b"", stderr=b"", returncode=1)))
+        self.assertTrue(placement_mod.wsl_running("ubuntu", run))
+        self.assertFalse(placement_mod.wsl_running("Other", run))
+        self.assertFalse(placement_mod.wsl_running("Ubuntu", lambda *a, **k: SimpleNamespace(stdout=b"", stderr=b"", returncode=1)))
 
 
 class PathHelpers(unittest.TestCase):
     def test_paths(self):
-        self.assertEqual(launch.to_windows_path("/mnt/r/a/b"), r"R:\a\b")
-        self.assertEqual(launch.to_windows_path("/mnt/c"), "C:\\")
-        self.assertEqual(launch.to_windows_path(r"R:\x"), r"R:\x")
-        self.assertTrue(launch.is_linux_native("/home/x"))
-        self.assertFalse(launch.is_linux_native("/mnt/r/x"))
-        self.assertFalse(launch.is_linux_native(r"R:\x"))
+        self.assertEqual(placement_mod.to_windows_path("/mnt/r/a/b"), r"R:\a\b")
+        self.assertEqual(placement_mod.to_windows_path("/mnt/c"), "C:\\")
+        self.assertEqual(placement_mod.to_windows_path(r"R:\x"), r"R:\x")
+        self.assertTrue(placement_mod.is_linux_native("/home/x"))
+        self.assertFalse(placement_mod.is_linux_native("/mnt/r/x"))
+        self.assertFalse(placement_mod.is_linux_native(r"R:\x"))
 
 
 class LateRunner(unittest.TestCase):

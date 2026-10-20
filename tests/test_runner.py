@@ -1,3 +1,4 @@
+from drover import placement
 """Runner tests: real subprocesses running small python child scripts on the current OS."""
 import ctypes
 import importlib.util
@@ -73,7 +74,7 @@ class WindowsMetricsTests(unittest.TestCase):
             return 1
 
         kernel.QueryInformationJobObject.side_effect = query
-        spec = importlib.util.spec_from_file_location("drover._runner_windows_test", runner.__file__)
+        spec = importlib.util.spec_from_file_location("drover._placement_windows_test", placement.__file__)
         windows_runner = importlib.util.module_from_spec(spec)
         # Load the Windows implementation on either OS, without touching real jobs.
         with patch.object(sys, "platform", "win32"), \
@@ -90,7 +91,7 @@ class ScratchEnvironmentTests(unittest.TestCase):
     def test_wsl_worker_environment_uses_scratch_and_keeps_user_nuget_packages(self):
         scratch = Path('/tmp/drover-scratch/7-0123456789abcdef')
 
-        self.assertEqual(runner.worker_scratch_env(scratch), {
+        self.assertEqual(placement.worker_scratch_env(scratch), {
             'TMPDIR': str(scratch), 'TMP': str(scratch), 'TEMP': str(scratch),
             'DOTNET_CLI_HOME': str(scratch / 'dotnet-home'),
             'NUGET_HTTP_CACHE_PATH': str(scratch / 'nuget-http'),
@@ -182,20 +183,20 @@ with tempfile.TemporaryDirectory() as tmp:
     def test_ensure_dotnet_shm_creates_world_writable_dir_and_keeps_existing(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / '.dotnet'
-            runner.ensure_dotnet_shm(root)
+            placement.ensure_dotnet_shm(root)
             self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o1777)
             self.assertEqual(stat.S_IMODE((root / 'shm').stat().st_mode), 0o1777)
             root.chmod(0o755)
-            runner.ensure_dotnet_shm(root)
+            placement.ensure_dotnet_shm(root)
             self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o755)
-        self.assertEqual(runner.DOTNET_SHM_ROOT, '/tmp/.dotnet')
+        self.assertEqual(placement.DOTNET_SHM_ROOT, '/tmp/.dotnet')
 
     @unittest.skipUnless(shutil.which('dotnet'), 'dotnet SDK is absent')
     def test_dotnet_info_starts_with_scratch_environment(self):
         with tempfile.TemporaryDirectory(prefix='dotnet-smoke-') as temp:
             scratch = Path(temp) / 'scratch'
             scratch.mkdir()
-            env = {**os.environ, **runner.worker_scratch_env(scratch)}
+            env = {**os.environ, **placement.worker_scratch_env(scratch)}
             result = subprocess.run(['dotnet', '--info'], env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn('.NET SDK', result.stdout)
@@ -494,7 +495,7 @@ class DetachTests(Base):
                 return observed_status
 
             clock = Mock(return_value=100)
-            with patch.multiple(runner, IS_WINDOWS=True, create=True, **flags), \
+            with patch.multiple(placement, IS_WINDOWS=True, create=True, **flags), \
                     patch.dict(os.environ, {}, clear=True), \
                     patch.object(runner.subprocess, "Popen", popen), \
                     patch.object(runner, "read_status", side_effect=read_child_status), \
@@ -533,8 +534,8 @@ class DetachTests(Base):
         self.assertNotIn("DETACHED_PROCESS", Path(runner.__file__).read_text())
 
     def test_no_window_helper_is_empty_off_windows(self):
-        from drover import winproc
-        self.assertEqual(winproc.NO_WINDOW, {"creationflags": 0x08000000} if os.name == "nt" else {})
+        from drover import placement
+        self.assertEqual(placement.NO_WINDOW, {"creationflags": 0x08000000} if os.name == "nt" else {})
 
     def test_windows_detach_propagates_failed_fallback_spawn(self):
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_NEW_PROCESS_GROUP": 0x200,
@@ -544,7 +545,7 @@ class DetachTests(Base):
         fallback_error = OSError(87, "fallback spawn failed")
         popen = Mock(side_effect=[first_error, fallback_error])
 
-        with patch.multiple(runner, IS_WINDOWS=True, create=True, **flags), \
+        with patch.multiple(placement, IS_WINDOWS=True, create=True, **flags), \
                 patch.dict(os.environ, {}, clear=True), \
                 patch.object(runner.subprocess, "Popen", popen), \
                 patch.object(runner.time, "monotonic", Mock(return_value=100)):
@@ -594,12 +595,12 @@ class FindTests(Base):
         self.assertEqual(wait_for(lambda: runner.find_runners(runs_dir=self.runs) == [], timeout=30), True)
 
     def test_parse_runner_argv(self):
-        self.assertEqual(runner.parse_runner_argv(["pythonw.exe", "-m", "drover.runner", "--run-id", "c3"]), "c3")
-        self.assertEqual(runner.parse_runner_argv(["/usr/bin/python3.14", "-m", "drover.runner", "--run-id", "c4"]),
+        self.assertEqual(placement.parse_runner_argv(["pythonw.exe", "-m", "drover.runner", "--run-id", "c3"]), "c3")
+        self.assertEqual(placement.parse_runner_argv(["/usr/bin/python3.14", "-m", "drover.runner", "--run-id", "c4"]),
                          "c4")
         ok = ["python3", "-m", "drover.runner", "--run-id", "a1", "--runs-dir", "x", "--", "w"]
-        self.assertEqual(runner.parse_runner_argv(ok), "a1")
-        self.assertEqual(runner.parse_runner_argv(["C:\\Py\\python.exe", "-m", "drover.runner", "--run-id=b2"]), "b2")
+        self.assertEqual(placement.parse_runner_argv(ok), "a1")
+        self.assertEqual(placement.parse_runner_argv(["C:\\Py\\python.exe", "-m", "drover.runner", "--run-id=b2"]), "b2")
         for bad in (
             ["wsl.exe", "-d", "u", "--", "python3", "-m", "drover.runner", "--run-id", "a1"],
             ["bash", "-c", "python3 -m drover.runner --run-id a1"],
@@ -613,7 +614,7 @@ class FindTests(Base):
             ["python3", "-u", "-m", "drover.runner", "--run-id", "a1"],
             ["python3-evil", "-m", "drover.runner", "--run-id", "a1"],
         ):
-            self.assertIsNone(runner.parse_runner_argv(bad), bad)
+            self.assertIsNone(placement.parse_runner_argv(bad), bad)
 
     def test_find_runners_injected(self):
         lines = [(7, ok_argv("a") + ["--runs-dir", "runs-a"]),
@@ -629,13 +630,13 @@ class FindTests(Base):
 
     @unittest.skipUnless(runner.IS_WINDOWS, "CIM is Windows only")
     def test_windows_scan_failure_raises(self):
-        orig = runner._powershell
-        runner._powershell = lambda: "no-such-powershell-xyz"
+        orig = placement._powershell
+        placement._powershell = lambda: "no-such-powershell-xyz"
         try:
             with self.assertRaises(runner.ScanError):
                 runner.find_runners()
         finally:
-            runner._powershell = orig
+            placement._powershell = orig
 
 
 def ok_argv(rid):
@@ -658,7 +659,7 @@ def default_distro(exe):
 
 class WslTests(unittest.TestCase):
     def test_wsl_argv_maps_paths_only_in_runner_options(self):
-        a = runner.wsl_argv("Ubuntu-24.04", ["--run-id", "x", "--runs-dir", "C:\\drover\\runs", "--stdin-file",
+        a = placement.wsl_argv("Ubuntu-24.04", ["--run-id", "x", "--runs-dir", "C:\\drover\\runs", "--stdin-file",
                                              "C:/drover/runs/x/in.txt", "--cwd=R:\\repos\\w", "--", "codex",
                                              "C:\\keep\\this", "--x=D:/keep"], cd="R:\\repos\\w")
         self.assertEqual(a[:8], ["wsl.exe", "-d", "Ubuntu-24.04", "--cd", "/mnt/r/repos/w", "--exec", "python3", "-m"])
@@ -672,7 +673,7 @@ class WslTests(unittest.TestCase):
     def test_wsl_argv_rejects_bad_distro(self):
         for bad in ("a b", "x;rm", "", "-e", "a$(x)", "d\n"):
             with self.assertRaises(ValueError, msg=bad):
-                runner.wsl_argv(bad, [])
+                placement.wsl_argv(bad, [])
 
     def test_live_wsl_passes_shell_metacharacters_literally(self):
         exe = wsl_exe()
@@ -691,7 +692,7 @@ class WslTests(unittest.TestCase):
 
 
 def wsl_argv_for_exe(exe, distro, args):
-    argv = runner.wsl_argv(distro, args, cd=PKG_ROOT)
+    argv = placement.wsl_argv(distro, args, cd=PKG_ROOT)
     argv[0] = exe
     return argv
 

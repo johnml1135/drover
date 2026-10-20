@@ -2,6 +2,7 @@
 
 A file lock held for the thread's life keeps a second dispatcher (another hub, `python -m drover.dispatcher`) out.
 """
+from drover import placement
 import json
 import logging
 import os
@@ -17,7 +18,6 @@ from drover.ledger import ops
 from drover.lock import FileLock, LockHeld
 from drover.pipeline import Pipeline, truthy
 from drover.port import DirectPort
-from drover.winproc import NO_WINDOW
 
 log = logging.getLogger("hub.dispatcher")
 
@@ -76,7 +76,7 @@ class LandingService:
         self._stop, self._thread, self.error = threading.Event(), None, None
 
     def _distro(self):
-        return self.store.get_settings().get("wsl_distro") or self.settings.distro
+        return placement.distro(self.settings.distro, self.store.get_settings())
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():
@@ -129,15 +129,15 @@ class LandingService:
         return run
 
     def _wsl_gate(self, command, base_ref, out_dir, timeout_s=3600.0):
-        drover_dir = runner.to_wsl_path(str(Path(__file__).resolve().parents[1]))
+        drover_dir = placement.to_wsl_path(str(Path(__file__).resolve().parents[1]))
 
         def run(worktree, tip, tasks):
             out = Path(out_dir) / f"gate-{tip[:12]}-{len(tasks)}.json"
-            argv = ["wsl.exe", "-d", self._distro(), "--cd", drover_dir, "--exec", "python3", "-m", "drover.gate", "run",
-                    "--out", runner.to_wsl_path(str(out)), "--repo", runner.to_wsl_path(str(worktree)), "--base",
-                    base_ref, "--priority", "P1", "--json", "--", *command]
+            argv = placement.WSL(self._distro).command(["python3", "-m", "drover.gate", "run",
+                    "--out", placement.to_wsl_path(str(out)), "--repo", placement.to_wsl_path(str(worktree)), "--base",
+                    base_ref, "--priority", "P1", "--json", "--", *command], cd=drover_dir)
             try:
-                proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s, **NO_WINDOW)
+                proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s, **placement.NO_WINDOW)
             except subprocess.TimeoutExpired:
                 raise gate.GateError(f"the WSL gate timed out after {timeout_s:g}s")
             try:
@@ -222,7 +222,7 @@ class DispatcherService:
         self.dispatcher, self.error = None, None
 
     def _distro(self):
-        return self.store.get_settings().get("wsl_distro") or self.settings.distro
+        return placement.distro(self.settings.distro, self.store.get_settings())
 
     def _wsl_bins(self):
         """{'claude': path, 'codex': path} from the ledger settings ops-ui fills in; unset keys fall back to bare names."""
@@ -230,7 +230,7 @@ class DispatcherService:
         return {n: s.get(k) for n, k in WSL_BIN_KEYS.items() if s.get(k)}
 
     def _default_dispatcher(self, port):
-        launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro(), wsl_bins=self._wsl_bins)
+        launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins)
         return Dispatcher(port, launcher=launcher, pipeline=Pipeline(port, runs_dir=self.settings.runs_dir))
 
     @property

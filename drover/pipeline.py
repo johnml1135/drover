@@ -10,9 +10,9 @@ import re
 import subprocess
 import sys
 from fnmatch import fnmatchcase
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
-from . import config, garden, gate, hostgit, launch, origin, repos, runner, worktrees
+from . import config, garden, gate, placement, launch, origin, repos, runner
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -43,7 +43,7 @@ FETCH_TIMEOUT_S = 120
 def git(repo, *args, check=False, timeout=None):
     """git with an argv list. A timeout is a failed command (rc 124), never a hang."""
     try:
-        r = hostgit.run(repo, *args, timeout=timeout)
+        r = placement.git(repo, *args, timeout=timeout)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {timeout}s")
     if check and r.returncode:
@@ -216,24 +216,24 @@ class Pipeline:
         if branch and branch == prog["default_branch"]:
             raise WorktreeRefused(f"task branch {branch!r} is the default branch; work happens on its own branch")
         reuse, why = None, None
-        if have and hostgit.reachable(repos.native(have)):
+        if have and placement.reachable(repos.native(have)):
             reuse = have
         else:
             found = self._worktree_of_branch(repo, branch) if branch else None
-            if found and hostgit.reachable(found):
+            if found and placement.reachable(found):
                 reuse = found
             elif found or have:
                 # Never prune or delete the stale registration: it may be another host's, or the owner's.
                 why = f"registered worktree {found or have} is unreachable from this host"
         if reuse:
-            path = self._canon(repos.native(reuse))
+            path = placement.canonical(repos.native(reuse))
             self._not_main(path, repo, prog)
             dirty = self._dirty_foreign(path, tid)
-            if not dirty and not self._relativize(path, tid):
+            if not dirty and self._owned(path, tid) and not placement.relativize_gitdir(path):
                 self.port.append_event("worktree-repair-failed", {"path": str(path), "branch": branch}, tid)
                 why = f"worktree {reuse} has a gitdir pointer that could not be made relative; left untouched"
             elif not dirty:
-                reuse_cfg = self._cfg_form(path, prog)
+                reuse_cfg = placement.config_path(path, prog["repo"])
                 if reuse_cfg != t.get("worktree") or branch != t.get("branch"):
                     self._persist(tid, branch, reuse_cfg)
                 return reuse_cfg
@@ -245,36 +245,6 @@ class Pipeline:
         return self._create(t, prog, repo, branch, source=branch if why else None)
 
     @staticmethod
-    def _canon(path):
-        """A resolved path; a WSL-only path is not resolvable from a Windows host and is used as given."""
-        return str(path) if hostgit.routes_through_wsl(path) else str(Path(path).resolve())
-
-    def _relativize(self, path, tid):
-        """True when `path` is usable from WSL as well. A worktree Windows git made carries an absolute gitdir pointer
-        that WSL git reads as relative and fails on ("not a git repository: <wt>/H:/..."). For a worktree this task
-        owns, rewrite only that worktree's own `.git` file to a relative pointer. `git worktree repair
-        --relative-paths` is not used: it sets extensions.relativeWorktrees in the shared repo config. A worktree
-        the task does not own is never edited."""
-        if hostgit.routes_through_wsl(path) or not self._owned(path, tid):
-            return True
-        dotgit = Path(path) / ".git"
-        try:
-            pointer = dotgit.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
-        except (OSError, UnicodeDecodeError):
-            return True
-        if not (Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute()):
-            return True
-        admin = repos.native(pointer)
-        try:
-            if not os.path.isdir(admin):
-                return False
-            rel = os.path.relpath(admin, path).replace("\\", "/")
-            dotgit.write_text(f"gitdir: {rel}\n", encoding="utf-8")
-        except (OSError, ValueError):
-            return False
-        return True
-
-    @staticmethod
     def _not_main(path, repo, prog):
         """Never hand out the repo's own checkout (or anything sitting on the default branch) to a worker."""
         if Path(path).resolve() == Path(repo).resolve():
@@ -282,18 +252,6 @@ class Pipeline:
         head = git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         if head == prog["default_branch"]:
             raise WorktreeRefused(f"{path} is on the default branch {head!r}; a task needs its own branch")
-
-    @staticmethod
-    def _cfg_form(path, prog):
-        """A path git printed, in the repo config's form (so the ledger keeps one spelling)."""
-        want_win = bool(repos.WIN_RE.match(prog["repo"]))
-        path = str(path)
-        if want_win and path.startswith("/mnt/"):
-            m = repos.MNT_RE.match(path)
-            return f"{m.group(1).upper()}:\\" + (m.group(2) or "").replace("/", "\\")
-        if want_win and path[1:2] == ":":
-            return path.replace("/", "\\")
-        return path
 
     def _persist(self, tid, branch, wt):
         self.port.update_task(tid, branch=branch, worktree=wt)
@@ -336,7 +294,7 @@ class Pipeline:
         base = self.base_ref(prog)
         name = f"drover-{tid}"
         dest = str(Path(repos.native(join_cfg(prog["worktrees"], name))).resolve())
-        dest_cfg = self._cfg_form(dest, prog)
+        dest_cfg = placement.config_path(dest, prog["repo"])
         if source:                       # the branch's own worktree is unusable: branch from its committed tip
             branch, base = f"drover/{tid}", source
         branch = branch or f"drover/{tid}"
@@ -354,16 +312,8 @@ class Pipeline:
         self._persist(tid, branch, dest_cfg)
         return dest_cfg
 
-    @staticmethod
-    def _cross_os(dest):
-        """True when both Windows and WSL can open `dest` (a drive path or /mnt/<d>/...), so its gitdir pointers must
-        not be absolute."""
-        return worktrees.cross_os(dest)
-
     def _add(self, repo, dest, branch, base, remote="origin"):
-        """git worktree add on the branch: an existing local branch is checked out, a remote branch is tracked, a new
-        one starts at `base` (the synced local default branch). --relative-paths lets WSL git open
-        a worktree Windows git made; where git lacks it a worktree both OSes can reach is refused, not made absolute."""
+        """Choose the branch; Placement creates a worktree both operating systems can read."""
         def have(ref):
             return git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0
         if have(f"refs/heads/{branch}"):
@@ -372,7 +322,7 @@ class Pipeline:
             tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
         else:
             tail = ["-b", branch, str(dest), base]
-        worktrees.add(repo, dest, *tail, git=git, error=WorktreeRefused, shared=self._cross_os(dest))
+        placement.add_worktree(repo, dest, *tail, git=git, error=WorktreeRefused)
 
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):
@@ -427,7 +377,7 @@ class Pipeline:
         d.mkdir(parents=True, exist_ok=True)
         wsl = (platform or plan.get("platform") or repos.gate_platforms(prog)[0]) == "wsl"
         def m(p):
-            return runner.to_wsl_path(str(p)) if wsl else str(p)
+            return placement.to_wsl_path(str(p)) if wsl else str(p)
         out = d / "receipt.json"
         body = {"repo": m(plan["repo"]), "base": plan["base"], "sha": plan["sha"], "commands": plan["commands"],
                 "scope": plan["scope"], "kind": plan.get("kind"), "out": m(out), "priority": priority,

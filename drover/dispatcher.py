@@ -11,6 +11,7 @@ platform), a gated task is reviewed by a fresh `review` run, and LAND@sha moves 
 from the ledger on every tick (so a hub restart loses nothing). While `dispatch_enabled` is false the dispatcher
 claims and launches nothing, but still reaps, adopts and recovers.
 """
+from . import placement
 import json
 import os
 import re
@@ -142,7 +143,7 @@ def placement_for(task, route, worktree=None, platforms=None):
         return "windows" if "windows" in can and "windows" in (platforms or config_mod.PLACEMENTS) else "wsl"
     if seat and seat["placement"] == "wsl":
         return "wsl"
-    return "wsl" if worktree and launch_mod.is_linux_native(worktree) else "windows"
+    return "wsl" if worktree and placement.is_linux_native(worktree) else "windows"
 
 
 def place(task, route, worktree, prog):
@@ -153,7 +154,7 @@ def place(task, route, worktree, prog):
     seat = seat_of(route)
     allowed = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
     hard = bool(_platform_tag(task) or route.get("platform") or is_dotnet(task)) \
-        or route.get("backend") == "codex" or bool(worktree and launch_mod.is_linux_native(worktree))
+        or route.get("backend") == "codex" or bool(worktree and placement.is_linux_native(worktree))
     default = ((prog or {}).get("run") or {}).get("default")
     if not hard and default in plats and default in allowed:
         return default, None

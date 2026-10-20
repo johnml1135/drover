@@ -27,7 +27,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import hostgit
+from . import placement
 
 VERSION = 1
 PRIORITIES = ('P0', 'P1', 'P2', 'P3', 'P4')
@@ -103,6 +103,7 @@ def wrap_command(command, priority, memory_max='8G', max_seconds=1800, available
 
 def _spawn(argv, repo, stream, env=None):
     kw = {'preexec_fn': _default_interrupt} if os.name == 'posix' else {}
+    placement.prepare_worktree(repo)
     command = _with_unittest_traceback(argv)
     return subprocess.run(command, cwd=repo, stdout=stream, stderr=subprocess.STDOUT,
                           env=git_environment(env), **kw).returncode
@@ -172,7 +173,7 @@ def _gate_test_environment():
 
 def git(repo, *args, check=True):
     try:
-        result = hostgit.run(repo, *args, env=git_environment(), timeout=60)
+        result = placement.git(repo, *args, env=git_environment(), timeout=60)
     except subprocess.TimeoutExpired as error:
         raise GateError(f'git {" ".join(args)} timed out after 60 seconds') from error
     if check and result.returncode:
@@ -185,8 +186,7 @@ def head(repo):
 
 
 def dirty(repo):
-    # Ignored build output is fine; tracked edits and new unignored files are not part of the tested commit.
-    return git(repo, 'status', '--porcelain', '--untracked-files=normal').stdout.strip()
+    return git(repo, *placement.status_args(repo)).stdout.strip()
 
 
 def contains(repo, base_ref, sha):

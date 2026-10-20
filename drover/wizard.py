@@ -9,6 +9,7 @@ machine needs a change (OLLAMA_MODELS, DROVER_HOME) it prints the command for yo
 --defaults takes every default; --answers FILE.toml answers questions by key (see ANSWER_KEYS). Every detection is a
 callable in the `detect` dict, so tests inject them (real_detect() holds the real ones).
 """
+from drover import placement
 import argparse
 import json
 import os
@@ -22,7 +23,6 @@ from pathlib import Path
 
 from . import config, decisions, repos
 from .tool_discovery import DISCOVERY_SCRIPT, parse_discovery
-from .winproc import NO_WINDOW
 
 # The thresholds settled in plan section 12 were set for the owner's machine: 64 GB RAM (queue 6 GB free, hold 4 GB),
 # C: of 476 GB (queue 50, hold 25) and a 931 GB data drive (queue 75, hold 25). Levels scale from those, so that machine
@@ -46,13 +46,9 @@ class WizardError(Exception):
 
 def _run(cmd, timeout=10):
     try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout, **NO_WINDOW)
+        return subprocess.run(cmd, capture_output=True, timeout=timeout, **placement.NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return None
-
-
-def _decode(raw):
-    return raw.decode("utf-16-le", "ignore").replace("\x00", "") if b"\x00" in raw[:4] else raw.decode("utf-8", "ignore")
 
 
 def is_windows():
@@ -148,7 +144,7 @@ def detect_nvidia():
         r = _run([exe, "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader,nounits"])
         if r and r.returncode == 0 and r.stdout.strip():
             try:
-                name, used, total = (x.strip() for x in _decode(r.stdout).splitlines()[0].split(","))
+                name, used, total = (x.strip() for x in placement.decode_output(r.stdout).splitlines()[0].split(","))
                 return {"name": name, "used_mb": float(used), "total_mb": float(total)}
             except ValueError:
                 continue
@@ -218,7 +214,7 @@ def _windows_exe(tool):
     r = _run([CMD_EXE, "/c", "where", tool + ".exe"], 20)
     if r is None:
         return None, False
-    lines = [x.strip() for x in _decode(r.stdout).splitlines() if x.strip().lower().endswith((".exe", ".com"))]
+    lines = [x.strip() for x in placement.decode_output(r.stdout).splitlines() if x.strip().lower().endswith((".exe", ".com"))]
     return (lines[0] if r.returncode == 0 and lines else None), True
 
 
@@ -234,13 +230,13 @@ def detect_tools(distro=None):
     if not on_windows:
         probed["wsl"] = True
         r = _run(["bash", "-lc", DISCOVERY_SCRIPT], 30)
-        found = parse_discovery(_decode(r.stdout)) if r and r.returncode == 0 else {}
+        found = parse_discovery(placement.decode_output(r.stdout)) if r and r.returncode == 0 else {}
         for t in out:
             out[t]["wsl"] = found.get(t)
     elif distro and any(d["name"] == distro and d["state"] == "Running" for d in detect_distros()):
         probed["wsl"] = True
-        r = _run(["wsl.exe", "-d", distro, "--exec", "bash", "-lc", DISCOVERY_SCRIPT], 30)
-        found = parse_discovery(_decode(r.stdout)) if r and r.returncode == 0 else {}
+        r = _run(placement.WSL(distro).command(["bash", "-lc", DISCOVERY_SCRIPT]), 30)
+        found = parse_discovery(placement.decode_output(r.stdout)) if r and r.returncode == 0 else {}
         for t in out:
             out[t]["wsl"] = found.get(t)
     out["_probed"] = probed
@@ -256,7 +252,7 @@ def _host_ram_wsl():
     r = _run(["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile", "-Command",
               "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"], 30)
     try:
-        return int(_decode(r.stdout).strip()) / 1024 ** 3 if r and r.returncode == 0 else None
+        return int(placement.decode_output(r.stdout).strip()) / 1024 ** 3 if r and r.returncode == 0 else None
     except ValueError:
         return None
 
@@ -309,8 +305,8 @@ def detect_distros():
     if not is_windows():
         name = os.environ.get("WSL_DISTRO_NAME")
         return [{"name": name, "state": "Running", "version": 2, "default": True}] if name else []
-    r = _run(["wsl.exe", "-l", "-v"], 20)
-    return parse_distros(_decode(r.stdout)) if r and r.returncode == 0 else []
+    r = _run(placement.wsl_control(["-l", "-v"]), 20)
+    return parse_distros(placement.decode_output(r.stdout)) if r and r.returncode == 0 else []
 
 
 def detect_tailscale():
@@ -319,7 +315,7 @@ def detect_tailscale():
         r = _run([exe, "status", "--json"], 20)
         if r and r.returncode == 0:
             try:
-                d = json.loads(_decode(r.stdout))
+                d = json.loads(placement.decode_output(r.stdout))
                 return {"up": d.get("BackendState") == "Running",
                         "login": d["User"][str(d["Self"]["UserID"])]["LoginName"]}
             except (ValueError, KeyError, TypeError):

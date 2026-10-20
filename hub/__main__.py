@@ -11,7 +11,7 @@ import uvicorn
 
 from hub.app import create_app
 from hub.settings import Settings
-from drover.winproc import NO_WINDOW
+from drover.placement import NO_WINDOW
 
 log = logging.getLogger("hub")
 

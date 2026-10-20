@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
-from drover.winproc import NO_WINDOW
+from drover.placement import NO_WINDOW
 
 TS_HEADER = "tailscale-user-login"
 

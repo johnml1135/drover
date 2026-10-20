@@ -1,3 +1,4 @@
+from drover import placement
 import io
 import json
 import os
@@ -103,7 +104,7 @@ class Windows(unittest.TestCase):
         from types import SimpleNamespace
         tracker = next(t for t in config.DEFAULT_TRACKERS if t['name'] == 'h')
         with mock.patch('os.path.expanduser', return_value=r'R:\Users\acme\repos'), \
-                mock.patch.object(config.os, 'name', 'nt'), \
+                mock.patch.object(placement, 'IS_WINDOWS', True), \
                 mock.patch.object(resources.shutil, 'disk_usage', return_value=SimpleNamespace(free=10 * resources.GB)) as usage:
             free = resources.read_disks(True, [tracker])
         usage.assert_called_once_with(r'R:\Users\acme\repos')

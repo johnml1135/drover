@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, repos, wizard
+from drover import config, placement, repos, wizard
 from drover.tool_discovery import DISCOVERY_SCRIPT
 
 DRIVES = [{"path": "C:\\", "free_gb": 200.0, "total_gb": 500.0}, {"path": "R:\\", "free_gb": 600.0, "total_gb": 1000.0}]
@@ -359,7 +359,7 @@ class Detections(Base):
         got = wizard.parse_distros(raw.encode("utf-16-le").decode("utf-16-le"))
         self.assertEqual([(d["name"], d["state"], d["default"], d["version"]) for d in got],
                          [("Ubuntu", "Running", True, 2), ("Debian", "Stopped", False, 2)])
-        self.assertEqual(wizard._decode(raw.encode("utf-16-le")).splitlines()[1].split()[1], "Ubuntu")
+        self.assertEqual(placement.decode_output(raw.encode("utf-16-le")).splitlines()[1].split()[1], "Ubuntu")
 
     def test_recommend_device(self):
         gpu = {"name": "g"}

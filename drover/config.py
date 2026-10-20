@@ -29,8 +29,7 @@ TRACKER_KINDS = ("ram", "disk", "load", "vram", "wsl")
 DEVICES = ("auto", "gpu", "cpu")
 AUTH_MODES = ("tailscale",)
 SIZES = ("S", "M", "L")
-WIN_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$", re.S)
-MNT_RE = re.compile(r"^/mnt/([a-zA-Z])(?:/(.*))?$")
+from .placement import native, WIN_RE, MNT_RE
 NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 ENV_ALIASES = {"DROVER_OLLAMA_URL": "decider.url", "DROVER_REPOS_DIR": "paths.repos_root",
                "DROVER_WSL_USER": "paths.wsl_user", "DROVER_WSL_DISTRO": "paths.wsl_distro"}
@@ -83,16 +82,6 @@ class ConfigError(ValueError):
 
 
 # ---- paths ----------------------------------------------------------------------------------------------------
-
-def native(path):
-    """A config path in the form this OS can open: R:\\x on Windows, /mnt/r/x on Linux; anything else unchanged."""
-    path = os.path.expanduser(str(path))
-    if os.name == "nt":
-        m = MNT_RE.match(path)
-        return f"{m.group(1).upper()}:\\" + (m.group(2) or "").replace("/", "\\") if m else path
-    m = WIN_RE.match(path)
-    return f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/") if m else path
-
 
 def home(env=None):
     """Where config.toml is found: $DROVER_HOME, else ~/.drover."""

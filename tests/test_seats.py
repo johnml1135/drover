@@ -1,4 +1,5 @@
 """Seat routing: priority, headroom, max_workers, the director's protected reserve, platforms, and the seat in the spec."""
+from drover import placement
 import random
 import unittest
 
@@ -173,14 +174,14 @@ class SeatInTheLaunch(unittest.TestCase):
         self.assertEqual(launch.build_argv({**spec, "backend": "codex", "binary": "codex-b"})[0][0], "codex-b")
 
     def test_wsl_runner_command_carries_the_env_through_usr_bin_env(self):
-        cmd = runner.wsl_argv("Ubuntu", ["--run-id", "1", "--runs-dir", "C:\\x", "--", "claude"], cd="C:\\d",
+        cmd = placement.wsl_argv("Ubuntu", ["--run-id", "1", "--runs-dir", "C:\\x", "--", "claude"], cd="C:\\d",
                               env={"CLAUDE_CONFIG_DIR": "C:\\acct"})
         i = cmd.index("--exec")
         self.assertEqual(cmd[i + 1:i + 4], ["/usr/bin/env", "CLAUDE_CONFIG_DIR=/mnt/c/acct", "python3"])
         self.assertEqual(cmd[-1], "claude")
         with self.assertRaises(ValueError):
-            runner.wsl_argv("Ubuntu", ["--"], env={"bad name": "x"})
-        self.assertEqual(runner.wsl_argv("Ubuntu", ["--"])[3:5], ["--exec", "python3"])
+            placement.wsl_argv("Ubuntu", ["--"], env={"bad name": "x"})
+        self.assertEqual(placement.wsl_argv("Ubuntu", ["--"])[3:5], ["--exec", "python3"])
 
     def test_windows_command_gets_the_env(self):
         lr = launch.RunnerLauncher(runs_dir="C:\\r", distro="Ubuntu", windows=False, which=lambda n: n)

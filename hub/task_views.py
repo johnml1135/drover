@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from markupsafe import Markup
 from drover import repos
-from drover.winproc import NO_WINDOW
+from drover.placement import NO_WINDOW
 
 
 def first_paragraph(text):

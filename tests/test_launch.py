@@ -1,4 +1,5 @@
 """Tests for the launcher's worker environment contracts."""
+from drover import placement as placement_mod
 import json
 import os
 import shutil
@@ -35,7 +36,7 @@ def claude_spec(**overrides):
 
 
 def runner_path(path, placement):
-    return launch.runner.to_wsl_path(str(path)) if placement == "wsl" else launch.to_windows_path(path)
+    return placement_mod.to_wsl_path(str(path)) if placement == "wsl" else placement_mod.to_windows_path(path)
 
 
 class ClaudeWorkerAccessTests(unittest.TestCase):
@@ -134,9 +135,9 @@ class ClaudeWorkerAccessTests(unittest.TestCase):
                 self.assertEqual(worker[worker.index("--permission-mode") + 1], "acceptEdits")
                 scratch = next((Path(temp) / "7").glob("scratch-*"))
                 for name in ("TMPDIR", "TMP", "TEMP"):
-                    self.assertEqual(settings["env"][name], launch.to_windows_path(scratch))
+                    self.assertEqual(settings["env"][name], placement_mod.to_windows_path(scratch))
                     self.assertEqual(run.call_args.kwargs["env"][name], str(scratch))
-                self.assertIn(launch._claude_edit_rule(launch.to_windows_path(scratch)),
+                self.assertIn(launch._claude_edit_rule(placement_mod.to_windows_path(scratch)),
                               settings["permissions"]["allow"])
 
     def test_windows_claude_review_and_read_only_workers_have_no_shell_or_sandbox(self):
@@ -385,7 +386,7 @@ class CodexWorkerEnvironmentTests(unittest.TestCase):
                      "codex or dotnet is absent")
 class DotnetSandboxIntegrationTests(unittest.TestCase):
     def test_dotnet_info_runs_under_the_real_wsl_sandbox_flags(self):
-        runner.ensure_dotnet_shm()
+        placement_mod.ensure_dotnet_shm()
         with tempfile.TemporaryDirectory(dir="/tmp/drover-scratch" if Path("/tmp/drover-scratch").is_dir() else None,
                                          prefix="sbx-") as scratch:
             argv, _ = launch.build_argv({
@@ -395,7 +396,7 @@ class DotnetSandboxIntegrationTests(unittest.TestCase):
             cmd = ["codex", "sandbox", "-c", "sandbox_mode=\"workspace-write\""]
             for f in flags:
                 cmd += ["-c", f]
-            env = {**os.environ, **runner.worker_scratch_env(scratch)}
+            env = {**os.environ, **placement_mod.worker_scratch_env(scratch)}
             r = subprocess.run([*cmd, "--", "dotnet", "--info"], cwd=scratch, env=env, capture_output=True,
                                text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)

@@ -4,29 +4,10 @@ The dispatcher runs inside the hub (ADR 0002), so there is no dispatcher to rest
 note when it defers a WSL task because WSL is down; this is the only thing that starts WSL. A booted WSL VM idles
 out in about a minute, so the watchdog holds it up with a tracked `wsl.exe --exec sleep` child until the note
 expires (no WSL work is waiting), then kills that child."""
-import subprocess
+from drover import placement
 import threading
 import time
-from drover.winproc import NO_WINDOW
-
-
-def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
-    """Run wsl.exe; return (returncode, output). Timeout gives (-1, 'timeout')."""
-    try:
-        p = subprocess.run(["wsl.exe", *args], capture_output=True, timeout=timeout, **NO_WINDOW)
-    except subprocess.TimeoutExpired:
-        return -1, "timeout"
-    except OSError as e:
-        return -2, str(e)
-    out = (p.stdout + p.stderr).decode("utf-16-le", "ignore") if b"\x00" in p.stdout[:4] \
-        else (p.stdout + p.stderr).decode("utf-8", "ignore")
-    return p.returncode, out.strip()
-
-
-def real_keepalive(distro: str, seconds: float):
-    """Start `wsl.exe -d <distro> --exec sleep <seconds>`; the returned Popen is the keepalive child."""
-    return subprocess.Popen(["wsl.exe", "-d", distro, "--exec", "sleep", str(int(seconds))],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+from drover.placement import real_wsl, real_keepalive
 
 
 class Watchdog:
@@ -40,7 +21,7 @@ class Watchdog:
         self._thread = None
 
     def _distro(self):
-        return self.store.get_settings().get("wsl_distro") or self.settings.distro
+        return placement.distro(self.settings.distro, self.store.get_settings())
 
     def _log(self, action, message, **data):
         self.store.add_event(f"watchdog.{action}", "watchdog", {"message": message, **data})

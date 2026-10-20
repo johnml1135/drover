@@ -2,11 +2,12 @@
 
 A spec is {run_id, backend, model, effort, cwd, placement, system_append, user_prompt, task, wall_s, idle_s}.
 RunnerLauncher.launch() writes the brief to <runs>/<id>/in.txt and starts `python -m drover.runner --detach` (on
-Windows directly, for WSL through runner.wsl_argv). The handle's poll() gives None while the run is live, then a
+Windows directly, for WSL through placement_mod.wsl_argv). The handle's poll() gives None while the run is live, then a
 result {status, record, usage, text, handoff, returncode, timeout}. status is done|ready_to_commit|blocked (the worker's own
 action-state record), no-record (it ended without one), rotate (the Haiku context ceiling stopped it; handoff is
 set), timeout or error. The runner owns the process tree and the timeouts; the handle only reads and asks it to stop.
 """
+from drover import placement as placement_mod
 import json
 import os
 import re
@@ -23,7 +24,7 @@ from pathlib import Path
 from . import config, task_access
 from . import runner
 from .runner import ScanError
-from .winproc import NO_WINDOW
+from .placement import NO_WINDOW
 
 HAIKU_CEILING = 80_000        # the pricing line is 100K; rotate before it
 TAIL_LINES = 200
@@ -50,7 +51,6 @@ TERMINAL = ("exited", "killed", "timeout")
 IN_FILE, TAIL_FILE = "in.txt", "tail.log"
 FRESH_FILES = (runner.OUT_FILE, runner.RECORD_FILE, runner.STATUS_FILE, runner.STOP_FILE, runner.RUNNER_LOG,
                TAIL_FILE, "tail.tmp")
-MNT_RE = re.compile(r"^/mnt/([a-zA-Z])(?:/(.*))?$")
 parse_action_record = runner.parse_action_record
 
 
@@ -66,51 +66,6 @@ def _claude_edit_rule(path):
     """An absolute Claude Edit rule (also covers Write and NotebookEdit)."""
     path = str(path).replace("\\", "/").rstrip("/")
     return f"Edit(//{path.lstrip('/')}/**)"
-
-
-def _claude_external_git_dirs(cwd):
-    """Resolve Git's implicit write grants so they can be denied outside cwd.
-
-    Read the gitfile/commondir on the launcher's OS (the Windows hub can
-    inspect drive-backed WSL worktrees too). No Git command or hook runs.
-    """
-    workspace = Path(config.native(cwd)).resolve()
-
-    def resolve(base, value):
-        if not value:
-            raise ValueError("empty git metadata path")
-        path = config.native(value)
-        if os.name != "nt":
-            path = path.replace("\\", "/")
-        return (base / path).resolve(strict=True)
-
-    try:
-        for parent in (workspace, *workspace.parents):
-            marker = parent / ".git"
-            try:
-                marker.lstat()
-            except FileNotFoundError:
-                continue
-            if marker.is_dir():
-                gitdir = marker.resolve(strict=True)
-            else:
-                prefix, sep, target = marker.read_text(encoding="utf-8").strip().partition(":")
-                if prefix != "gitdir" or not sep:
-                    raise ValueError("invalid git metadata pointer")
-                gitdir = resolve(parent, target.strip())
-            common_file = gitdir / "commondir"
-            try:
-                common_file.lstat()
-            except FileNotFoundError:
-                common = gitdir
-            else:
-                common = resolve(gitdir, common_file.read_text(encoding="utf-8").strip())
-            if not gitdir.is_dir() or not common.is_dir():
-                raise ValueError("git metadata is not a directory")
-            return list(dict.fromkeys(str(path) for path in (common, gitdir) if not path.is_relative_to(workspace)))
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"cannot resolve git metadata for Claude sandbox: {exc}") from exc
-    return []
 
 
 class LaunchError(RuntimeError):
@@ -143,7 +98,7 @@ def build_argv(spec):
         scratch = spec.get("scratch_dir")
         if scratch:
             task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
-            scratch = runner.to_wsl_path(str(scratch)) if placement == "wsl" else to_windows_path(scratch)
+            scratch = placement_mod.to_wsl_path(str(scratch)) if placement == "wsl" else placement_mod.to_windows_path(scratch)
             settings["env"].update({"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch})
         if readonly:
             tools = "Read,Grep,Glob,Bash" if placement == "wsl" else "Read,Grep,Glob"
@@ -164,14 +119,14 @@ def build_argv(spec):
         if spec.get("read_dirs"):
             reads = [str(path) for path in spec["read_dirs"]]
             if placement == "wsl":
-                reads = [runner.to_wsl_path(path) for path in reads]
+                reads = [placement_mod.to_wsl_path(path) for path in reads]
             else:
-                reads = [to_windows_path(os.path.expanduser(path)) for path in reads]
+                reads = [placement_mod.to_windows_path(os.path.expanduser(path)) for path in reads]
             permissions["deny"].extend(_claude_edit_rule(path) for path in reads)
-        worker_path = runner.to_wsl_path if placement == "wsl" else to_windows_path
+        worker_path = placement_mod.to_wsl_path if placement == "wsl" else placement_mod.to_windows_path
         workspace = spec.get("cwd") or os.getcwd()
         cwd = worker_path(os.path.expanduser(str(workspace)))
-        external_git = [worker_path(path) for path in _claude_external_git_dirs(workspace)]
+        external_git = [worker_path(path) for path in placement_mod.external_git_dirs(workspace)]
         permissions["deny"].extend(_claude_edit_rule(path) for path in external_git)
         if placement == "wsl":
             defaults = ["/tmp/claude", "/private/tmp/claude", "~/.npm/_logs", "~/.claude/debug"]
@@ -200,17 +155,17 @@ def build_argv(spec):
         sandbox = "read-only" if (spec.get("role") == "review" or spec.get("write") is False) else spec.get("sandbox", "workspace-write")
         if sandbox not in ("read-only", "workspace-write"):
             raise ValueError(f"unsupported codex sandbox {sandbox!r}")
-        cwd = runner.to_wsl_path(spec["cwd"]) if spec.get("placement") == "wsl" else str(spec["cwd"])
+        cwd = placement_mod.to_wsl_path(spec["cwd"]) if spec.get("placement") == "wsl" else str(spec["cwd"])
         if sandbox == "workspace-write":
             task_access.check_read_roots(spec["cwd"], spec.get("read_dirs") or [])
         scratch = spec.get("scratch_dir") if sandbox == "workspace-write" else None
         if scratch:
             task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
-            scratch = runner.to_wsl_path(str(scratch)) if spec.get("placement") == "wsl" else to_windows_path(scratch)
+            scratch = placement_mod.to_wsl_path(str(scratch)) if spec.get("placement") == "wsl" else placement_mod.to_windows_path(scratch)
         # The .NET runtime hard-codes /tmp/.dotnet/shm for named mutexes (ignores TMPDIR); /tmp stays read-only otherwise.
         roots = [r for r in (scratch,) if r]
         if sandbox == "workspace-write" and spec.get("placement") == "wsl":
-            roots.append(runner.DOTNET_SHM_ROOT)
+            roots.append(placement_mod.DOTNET_SHM_ROOT)
         argv = [exe, "exec", "--json", "-s", sandbox, "-C", cwd, "-m", m, "-c", f"model_reasoning_effort={e}",
                 "-c", f"developer_instructions={json.dumps(spec['system_append'])}",
                 "-c", 'approval_policy="never"',
@@ -408,18 +363,6 @@ class Tail:
             self.error = self.error or repr(e)
 
 
-def to_windows_path(path):
-    """/mnt/r/x -> R:\\x; anything else unchanged."""
-    m = MNT_RE.match(str(path))
-    return f"{m.group(1).upper()}:\\" + (m.group(2) or "").replace("/", "\\") if m else str(path)
-
-
-def is_linux_native(path):
-    """A POSIX path outside /mnt/<drive>: only WSL can reach it."""
-    p = str(path)
-    return p.startswith("/") and not MNT_RE.match(p)
-
-
 class RunnerHandle:
     """Follows one run through <runs>/<id>/{status.json,out.log,record.json}, by offset, from the dispatcher's own
     launch or after a restart (adopt): it keeps no pipe to the worker. Stop is a nonce-checked stop-request file,
@@ -606,10 +549,14 @@ class RunnerLauncher(Launcher):
         self.windows = windows
         self.wsl_bins = wsl_bins or {}      # {'claude': '/abs/claude', 'codex': ...} or a callable returning it (ledger settings)
         self.runs_dir = str(runs_dir or config.state_path("runs"))
-        self.distro, self.run, self.which = distro or config.get()["paths"]["wsl_distro"], run, which
+        self._distro, self.run, self.which = distro, run, which
         self.drover_dir = str(drover_dir or Path(__file__).resolve().parents[1])
         self.python, self.handle_kw = python or sys.executable, handle_kw
         self.ceilings = {"haiku": HAIKU_CEILING, **(ceilings or {})}
+
+    @property
+    def distro(self):
+        return placement_mod.distro(self._distro)
 
     def ceiling(self, model):
         return next((v for k, v in self.ceilings.items() if k in model.lower()), None)
@@ -641,14 +588,14 @@ class RunnerLauncher(Launcher):
                 "--stdin-file", str(d / IN_FILE), "--cwd", str(cwd), *scratch, "--", *argv]
 
     def command(self, spec, d, argv):
-        """(command, env) that starts the detached runner for this spec's placement."""
+        """(command, env) that starts the detached runner for this spec's placement_mod."""
         cwd = os.path.expanduser(str(spec["cwd"]))
         if spec.get("placement") == "wsl":
             argv = self.wsl_exe(argv)
-            return runner.wsl_argv(self.distro, self.runner_args(spec, d, argv, cwd), cd=self.drover_dir,
+            return placement_mod.wsl_argv(self.distro, self.runner_args(spec, d, argv, cwd), cd=self.drover_dir,
                                    env=seat_env(spec)), None
-        cwd = to_windows_path(cwd)
-        if is_linux_native(cwd):
+        cwd = placement_mod.to_windows_path(cwd)
+        if placement_mod.is_linux_native(cwd):
             raise LaunchError(f"worktree {cwd} is not reachable from Windows")
         if self.windows:
             argv = [self.windows_exe(argv[0]), *argv[1:]]
@@ -678,7 +625,7 @@ class RunnerLauncher(Launcher):
         info, err = None, None
         try:
             r = self.run(cmd, capture_output=True, text=True, timeout=DETACH_TIMEOUT_S, env=env, stdin=subprocess.DEVNULL,
-                         cwd=self.drover_dir if env else None)
+                         cwd=self.drover_dir if env else None, **placement_mod.NO_WINDOW)
             info = _last_json(r.stdout)
             if info is None or r.returncode not in (0, 1):
                 err = f"runner start failed (rc {r.returncode}): {(r.stderr or r.stdout or '')[-300:].strip()}"
@@ -724,7 +671,7 @@ class RunnerLauncher(Launcher):
         return h
 
     def wsl_up(self):
-        return wsl_running(self.distro)
+        return placement_mod.wsl_running(self.distro)
 
     # ---- finding runners ------------------------------------------------------------------------------
     def scan(self, want_wsl=False):
@@ -737,9 +684,9 @@ class RunnerLauncher(Launcher):
         return found
 
     def _wsl_runners(self):
-        cmd = runner.wsl_argv(self.distro, ["find", "--json"], cd=self.drover_dir)
+        cmd = placement_mod.wsl_argv(self.distro, ["find", "--json"], cd=self.drover_dir)
         try:
-            r = self.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S)
+            r = self.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, **placement_mod.NO_WINDOW)
             rows = json.loads(r.stdout)
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             raise ScanError(f"cannot list WSL runners: {e!r}") from e
@@ -759,17 +706,6 @@ def normalize_run_ids(found):
         except ValueError:
             continue
     return out
-
-
-def wsl_running(distro, run=subprocess.run):
-    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
-    try:
-        r = run(["wsl.exe", "-l", "--running", "-q"], capture_output=True, timeout=20, **NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    raw = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()
-    text = raw.decode("utf-16-le", "ignore") if b"\x00" in raw[:4] else raw.decode("utf-8", "ignore")
-    return r.returncode == 0 and distro.lower() in [x.strip().lower() for x in text.replace("\x00", "").splitlines()]
 
 
 class PaneLauncher(Launcher):

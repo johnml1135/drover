@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 
 from .lock import FileLock
-from .winproc import NO_WINDOW
+from .placement import NO_WINDOW
 
 IGNORE = 'ledger.db*\nruns/\nrescue/\nlogs/\nhub-token\n*.log\n.decisions.lock\n'
 AUTHORS = ('owner', 'tuner', 'wizard', 'dispatcher')
