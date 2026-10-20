@@ -69,22 +69,34 @@ def schema_version(conn):
     return conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_version").fetchone()[0]
 
 
+def _execute_sql(conn, sql) -> None:
+    """Execute complete statements without executescript's implicit commit."""
+    statement = ""
+    for char in sql:
+        statement += char
+        if char == ";" and sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        conn.execute(statement)
+
+
 def migrate(conn, migrations=None):
-    """Apply pending migrations in order, each in one transaction. Safe to call repeatedly."""
+    """Apply each SQL migration and its conversion in one write transaction."""
+    from .schema import V7
     migrations = MIGRATIONS if migrations is None else migrations
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied TEXT NOT NULL)")
+    with tx(conn):
+        conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied TEXT NOT NULL)")
     for version, sql in sorted(migrations):
-        if schema_version(conn) >= version:
-            continue
-        # executescript commits first, so the transaction lives inside the script itself
-        try:
-            conn.executescript(
-                "BEGIN IMMEDIATE;\n" + sql + "\nINSERT INTO schema_version(version, applied) "
-                f"VALUES ({int(version)}, strftime('%Y-%m-%dT%H:%M:%SZ','now'));\nCOMMIT;")
-        except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
+        with tx(conn):
+            if schema_version(conn) >= version:
+                continue
+            _execute_sql(conn, sql)
+            if version == 7 and sql == V7:
+                from .waiting_migration import migrate_waiting
+                migrate_waiting(conn)
+            conn.execute("INSERT INTO schema_version(version,applied) VALUES(?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+                         (version,))
     return schema_version(conn)
 
 

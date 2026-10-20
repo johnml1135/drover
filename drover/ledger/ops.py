@@ -9,6 +9,8 @@ proposed/draft sets it. Holds (urgent, replan, manual block) are a list of {sour
 task returns to its previous state only when the list is empty.
 """
 import json
+from contextvars import ContextVar
+from collections import deque
 from datetime import datetime, timezone
 
 from .. import task_context
@@ -85,12 +87,36 @@ def _jrow(row, *cols):
     return d
 
 
+_answer_context = ContextVar("waiting_answer_context", default=None)
+_event_queues = ContextVar("waiting_event_queues", default=None)
+
+
 def event(conn, kind, actor, data=None, task_id=None, epic_id=None, at=None):
-    if kind == "status" and (data or {}).get("to") == "landed" and (data or {}).get("from") != "landed":
-        from .. import stats
-        stats.landing(conn, _parse(at).timestamp() if at else None)
-    conn.execute("INSERT INTO task_events(task_id,epic_id,kind,actor,data,at) VALUES(?,?,?,?,?,?)",
-                 (task_id, epic_id, kind, actor, _j(data or {}), at or stamp()))
+    with tx(conn):
+        from .waiting import Waiting
+        Waiting(conn, actor)._validate_event(kind, data or {})
+        when = at or stamp()
+        if kind == "status" and (data or {}).get("to") == states.LANDED and (data or {}).get("from") != states.LANDED:
+            from .. import stats
+            stats.landing(conn, _parse(at).timestamp() if at else None)
+        cur = conn.execute("INSERT INTO task_events(task_id,epic_id,kind,actor,data,at) VALUES(?,?,?,?,?,?)",
+                           (task_id, epic_id, kind, actor, _j(data or {}), when))
+        ident = cur.lastrowid
+        row = {"id": ident, "kind": kind, "actor": actor, "task_id": task_id,
+               "epic_id": epic_id, "data": data or {}, "at": when}
+        contexts = _event_queues.get() or {}
+        if conn in contexts:
+            contexts[conn].append(row)
+            return ident
+        queue = deque([row])
+        token = _event_queues.set({**contexts, conn: queue})
+        try:
+            while queue:
+                current = queue.popleft()
+                Waiting(conn, current['actor']).resolve(current)
+        finally:
+            _event_queues.reset(token)
+        return ident
 
 
 def events(conn, task_id=None, epic_id=None, kind=None):
@@ -370,20 +396,39 @@ def set_status(conn, task_id, new, actor="system", reason=None, data=None):
     with tx(conn):
         t = get_task(conn, task_id)
         old = t["status"]
+        from .waiting import Waiting
+        if new == states.READY:
+            if not t["approved_at"] and old not in states.CREATION_STATES:
+                raise NotApproved(f"{task_id} was never approved by the owner; it cannot become ready")
+            waiting = Waiting(conn, actor)
+            pending = waiting.pending(("task", task_id))
+            if pending and actor in ("owner", "director"):
+                from .waiting import REPLAN
+                if any(row["kind"] != REPLAN for row in pending):
+                    raise ValueError('task has independent waits')
+                for request in waiting.replans():
+                    if request["task_id"] == task_id:
+                        waiting._request_done(request["id"], "owner-resolved")
+                t = get_task(conn, task_id)
+                old = t["status"]
+                if old == states.READY:
+                    return t
+            if waiting.pending(("task", task_id)):
+                raise ValueError('task has outstanding waits')
         states.check(old, new, actor)
-        if (old, new) == ('needs-owner', 'landed') and read_only_result(conn, t) is None:
+        if (old, new) == (states.NEEDS_OWNER, states.LANDED) and read_only_result(conn, t) is None:
             raise IllegalTransition('only completed read-only findings may be accepted without landing')
-        approved = None if new in ("draft", "proposed") else t["approved_at"]  # demotion needs re-approval
-        if (old, new) in (("proposed", "ready"), ("draft", "ready")):
+        approved = None if new in (states.DRAFT, states.PROPOSED) else t["approved_at"]  # demotion needs re-approval
+        if (old, new) in ((states.PROPOSED, states.READY), (states.DRAFT, states.READY)):
             approved = approved or stamp()
-        if new == "ready" and not approved:
+        if new == states.READY and not approved:
             raise NotApproved(f"{task_id} was never approved by the owner; it cannot become ready")
-        if new == "blocked":
+        if new == states.BLOCKED:
             if not reason:
                 raise ValueError("blocked needs a reason")
             return block(conn, task_id, reason, actor)
         extra = ""
-        if new in ("ready", "draft", "proposed"):
+        if new in (states.READY, states.DRAFT, states.PROPOSED):
             extra = ", owner_kind=NULL, model=NULL"
         conn.execute(f"UPDATE tasks SET status=?, blocker=NULL, approved_at=?, updated=?{extra} WHERE id=?",
                      (new, approved, stamp(), task_id))
@@ -439,6 +484,7 @@ def _candidates(conn, repo=None, repo_path=None):
          "(SELECT COUNT(*) FROM task_deps d JOIN tasks x ON x.id=d.task_id WHERE d.depends_on=t.id "
          " AND x.status NOT IN ('landed','cancelled')) AS dependents "
          "FROM tasks t LEFT JOIN epics e ON e.id=t.epic_id WHERE t.status='ready' AND t.archived=0 "
+         "AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.subject_kind='task' AND w.subject_key=t.id AND w.released_event IS NULL) "
          "AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks p ON p.id=d.depends_on "
          "WHERE d.task_id=t.id AND d.kind='blocks' AND p.status<>'landed')")
     a = []
@@ -632,7 +678,8 @@ def add_comment(conn, target_kind, target_id, author, body, urgent=False, replan
         if (target_kind == "task" and tgt["status"] == "needs-owner" and author == "owner"
                 and tgt["approved_at"]):
             from .waiting import Waiting
-            if not Waiting(conn, author).pending(("task", target_id)):
+            if (not Waiting(conn, author).pending(("task", target_id))
+                    and not conn.execute("SELECT 1 FROM questions WHERE target_kind='task' AND target_id=? AND status='open'", (target_id,)).fetchone()):
                 set_status(conn, target_id, "ready", author, reason="owner comment", data={"comment": cid})
                 routed.append("requeued")
         if urgent:
@@ -661,8 +708,13 @@ def ask_question(conn, target_kind, target_id, title, body="", options=(), allow
                            "VALUES(?,?,?,?,?,?,?)", (target_kind, target_id, title, body, _j(opts), int(allow_text), stamp()))
         ids = {"task_id": target_id} if target_kind == "task" else {"epic_id": target_id}
         event(conn, "question-asked", actor, {"question": cur.lastrowid, "title": title}, **ids)
-        if needs_owner and target_kind == "task" and tgt["status"] != "needs-owner":
-            set_status(conn, target_id, "needs-owner", actor, reason=f"question: {title}")
+        if needs_owner and target_kind == "task":
+            from .waiting import Waiting, OWNER_ANSWER, cause_key
+            waiting = Waiting(conn, actor)
+            cause = cause_key("question", cur.lastrowid)
+            waiting.wait(("task", target_id), OWNER_ANSWER, cause_key(cause), cause=cause,
+                         data={"mode": "needs-owner"})
+            waiting.ask(cause, target_kind, target_id, title, body, options, allow_text)
         return cur.lastrowid
 
 
@@ -681,6 +733,8 @@ def answer_question(conn, qid, choice=None, text=None, actor="owner"):
     """Answer with an option label and/or free text. Requeues a needs-owner task once none of its questions is open."""
     with tx(conn):
         q = get_question(conn, qid)
+        from .waiting import Waiting
+        Waiting(conn, actor)._owner_answer(qid, choice, text, actor)
         if q["status"] != "open":
             raise ValueError(f"question {qid} is already answered")
         if choice is None and not text:
@@ -692,12 +746,17 @@ def answer_question(conn, qid, choice=None, text=None, actor="owner"):
         conn.execute("UPDATE questions SET status='answered', answer_choice=?, answer_text=?, answered_at=? WHERE id=?",
                      (choice, text, stamp(), qid))
         ids = {"task_id": q["target_id"]} if q["target_kind"] == "task" else {"epic_id": q["target_id"]}
-        event(conn, "question-answered", actor, {"question": qid, "choice": choice}, **ids)
+        token = _answer_context.set((conn, qid))
+        try:
+            event(conn, "question-answered", actor, {"question": qid, "choice": choice}, **ids)
+        finally:
+            _answer_context.reset(token)
         if q["target_kind"] == "task":
             t = get_task(conn, q["target_id"])
             left = conn.execute("SELECT COUNT(*) FROM questions WHERE status='open' AND target_kind='task' "
                                 "AND target_id=?", (t["id"],)).fetchone()[0]
-            if t["status"] == "needs-owner" and not left and t["approved_at"]:
+            if (t["status"] == states.NEEDS_OWNER and not left and t["approved_at"]
+                    and not Waiting(conn, actor).pending(("task", t["id"]))):
                 set_status(conn, t["id"], "ready", actor, reason="question answered", data={"question": qid})
         return get_question(conn, qid)
 

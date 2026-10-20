@@ -1,27 +1,39 @@
 """The one table of legal task state transitions."""
 
-STATES = ("proposed", "draft", "ready", "claimed", "running", "gated", "reviewed", "landed",
-          "blocked", "failed", "needs-owner", "cancelled")
-CREATION_STATES = ("proposed", "draft")
-TERMINAL = ("landed", "cancelled")
-ACTIVE = ("claimed", "running", "gated", "reviewed")  # unlanded changes: scope overlap is checked against these
-PENDING = ("proposed", "draft", "ready")  # not started: safe to hold
-OWNER_ONLY = (("proposed", "ready"), ("draft", "ready"), ("needs-owner", "landed"))
+PROPOSED = 'proposed'
+DRAFT = 'draft'
+READY = 'ready'
+CLAIMED = 'claimed'
+RUNNING = 'running'
+GATED = 'gated'
+REVIEWED = 'reviewed'
+LANDED = 'landed'
+BLOCKED = 'blocked'
+FAILED = 'failed'
+NEEDS_OWNER = 'needs-owner'
+CANCELLED = 'cancelled'
+STATES = (PROPOSED, DRAFT, READY, CLAIMED, RUNNING, GATED, REVIEWED, LANDED,
+          BLOCKED, FAILED, NEEDS_OWNER, CANCELLED)
+CREATION_STATES = (PROPOSED, DRAFT)
+TERMINAL = (LANDED, CANCELLED)
+ACTIVE = (CLAIMED, RUNNING, GATED, REVIEWED)  # unlanded changes: scope overlap is checked against these
+PENDING = (PROPOSED, DRAFT, READY)  # not started: safe to hold
+OWNER_ONLY = ((PROPOSED, READY), (DRAFT, READY), (NEEDS_OWNER, LANDED))
 
-_ESC = ("blocked", "needs-owner", "failed", "cancelled")
+_ESC = (BLOCKED, NEEDS_OWNER, FAILED, CANCELLED)
 TRANSITIONS = {
-    "proposed": {"draft", "ready", "blocked", "cancelled"},
-    "draft": {"proposed", "ready", "blocked", "cancelled"},
-    "ready": {"draft", "claimed", "blocked", "needs-owner", "cancelled"},
-    "claimed": {"ready", "running", *_ESC},
-    "running": {"ready", "gated", *_ESC},
-    "gated": {"ready", "running", "reviewed", *_ESC},
-    "reviewed": {"ready", "running", "landed", *_ESC},
-    "landed": set(),
-    "blocked": {"proposed", "draft", "ready", "needs-owner", "failed", "cancelled"},
-    "failed": {"ready", "needs-owner", "cancelled"},
-    "needs-owner": {"draft", "ready", "landed", "failed", "cancelled"},
-    "cancelled": set(),
+    PROPOSED: {DRAFT, READY, BLOCKED, CANCELLED},
+    DRAFT: {PROPOSED, READY, BLOCKED, CANCELLED},
+    READY: {DRAFT, CLAIMED, BLOCKED, NEEDS_OWNER, CANCELLED},
+    CLAIMED: {READY, RUNNING, *_ESC},
+    RUNNING: {READY, GATED, *_ESC},
+    GATED: {READY, RUNNING, REVIEWED, *_ESC},
+    REVIEWED: {READY, RUNNING, LANDED, *_ESC},
+    LANDED: set(),
+    BLOCKED: {PROPOSED, DRAFT, READY, NEEDS_OWNER, FAILED, CANCELLED},
+    FAILED: {READY, NEEDS_OWNER, CANCELLED},
+    NEEDS_OWNER: {DRAFT, READY, LANDED, FAILED, CANCELLED},
+    CANCELLED: set(),
 }
 
 

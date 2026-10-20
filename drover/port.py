@@ -12,6 +12,7 @@ from .ledger import ops
 
 
 class LedgerPort(Protocol):
+    waiting: "Waiting"
     def claim_next(self, worker=None, exclude=()): ...
     def get_task(self, task_id): ...
     def list_tasks(self, status=None): ...
@@ -39,7 +40,9 @@ class LedgerPort(Protocol):
 
 class DirectPort:
     def __init__(self, conn, actor="dispatcher", now=time.time):
+        from .ledger.waiting import Waiting
         self.conn, self.actor, self.now = conn, actor, now
+        self.waiting = Waiting(conn, actor)
 
     def claim_next(self, worker=None, exclude=()):
         return ops.claim_next(self.conn, {"actor": self.actor, **(worker or {})}, exclude=exclude)
@@ -75,7 +78,7 @@ class DirectPort:
 
     def append_event(self, kind, data=None, task_id=None, actor=None):
         with ops.tx(self.conn):
-            ops.event(self.conn, kind, actor or self.actor, data, task_id=task_id)
+            return ops.event(self.conn, kind, actor or self.actor, data, task_id=task_id)
 
     def events(self, kind=None, after=0):
         return [e for e in ops.events(self.conn, kind=kind) if e["id"] > after]

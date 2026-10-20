@@ -522,3 +522,111 @@ class FailureWindows(LedgerCase):
         self.assertEqual(d.tick()['launched'], [tid])
         self.assertEqual((launcher.specs[-1]['backend'], launcher.specs[-1]['model']), ('codex', 'gpt-6-luna'))
         self.assertIsNone(ops.update_task(self.conn, tid, model_pin={})['model_pin'])
+
+
+class ReleaseRegressions(LedgerCase):
+    def test_base_success_resets_worker_window_and_budget(self):
+        w = self.waiting()
+        tid = self.task()
+        rid = ops.start_run(self.conn, tid, 'worker', 'codex', 'gpt-6-luna')
+        ops.finish_run(self.conn, rid, 'error')
+        self.conn.execute('UPDATE tasks SET replans_used=2 WHERE id=?', (tid,))
+        cause = self.key('base', 'p', 'a' * 40)
+        w.wait(('task', tid), 'base', self.key('p', 'a' * 40), cause=cause,
+               data={'repo': 'p', 'sha': 'a' * 40, 'mode': 'blocked'})
+        ops.event(self.conn, 'base-ci', 'landing', {'repo': 'p', 'sha': 'a' * 40, 'status': 'green'})
+        task = ops.get_task(self.conn, tid)
+        self.assertEqual((task['status'], task['retry_after_run'], task['replans_used']), ('ready', rid, 0))
+
+    def test_second_urgent_episode_requires_another_owner_answer(self):
+        w = self.waiting()
+        source, follower = self.task(), self.task()
+        ops.add_dep(self.conn, follower, source)
+        for _ in range(2):
+            ops.add_comment(self.conn, 'task', source, 'owner', 'Pause downstream', urgent=True)
+            self.assertEqual(self.status(follower), 'blocked')
+            row, = w.pending(('task', follower))
+            qid = row['question_id']
+            self.assertEqual(ops.get_question(self.conn, qid)['status'], 'open')
+            ops.answer_question(self.conn, qid, choice='Resume work')
+            self.assertEqual(self.status(follower), 'ready')
+        self.assertEqual(len(w.questions()), 0)
+
+    def test_red_base_retry_reopens_the_canonical_question(self):
+        w = self.waiting()
+        tid = self.task()
+        cause = self.key('base', 'p', 'a' * 40)
+        payload = {'repo': 'p', 'sha': 'a' * 40, 'mode': 'preserve'}
+        w.wait(('merge_queue', 'p'), 'base', self.key('p', 'a' * 40), cause=cause, data=payload)
+        qid = w.ask(cause, 'task', tid, 'Retry base?',
+                    options=[{'label': 'Retry landing'}, {'label': 'Keep holding'}], allow_text=False)
+        ops.answer_question(self.conn, qid, choice='Retry landing')
+        self.assertTrue(w.consume_retry(cause))
+        ops.event(self.conn, 'base-ci', 'landing', {'repo': 'p', 'sha': 'a' * 40, 'status': 'red'})
+        w.wait(('merge_queue', 'p'), 'base', self.key('p', 'a' * 40), cause=cause, data=payload)
+        self.assertEqual((w.state(cause), ops.get_question(self.conn, qid)['status']), ('open', 'open'))
+        self.assertFalse(w.consume_retry(cause))
+
+    def test_reserved_events_release_and_guard_clear(self):
+        w = self.waiting()
+        tid = self.task()
+        ops.block(self.conn, tid, 'manual pause', actor='owner')
+        ops.event(self.conn, 'waiting.release', 'owner', {'cause': self.key('manual', tid)})
+        self.assertEqual((self.status(tid), w.pending(('task', tid))), ('ready', []))
+        cause, qid, choice = self.retry(w, ('task', tid))
+        before = logical(self.conn)
+        with self.assertRaises((ValueError, PermissionError)):
+            ops.event(self.conn, 'waiting.clear', 'owner', {'cause': cause})
+        self.assertEqual(logical(self.conn), before)
+        ops.answer_question(self.conn, qid, choice=choice)
+        ops.event(self.conn, 'waiting.clear', 'owner', {'cause': cause})
+        self.assertEqual(w.state(cause), 'closed')
+        self.assertIsNone(w.answer(cause))
+        self.assertEqual(len(ops.events(self.conn, kind='waiting.released')), 2)
+
+    def test_invalid_family_types_and_missing_request_roll_back(self):
+        w = self.waiting()
+        tid = self.task()
+        for subject, kind, key, cause, data, error in [
+            (('task', tid), 'base', self.key(7, 'a' * 40), self.key('base', 7, 'a' * 40),
+             {'repo': 7, 'sha': 'a' * 40, 'mode': 'blocked'}, ValueError),
+            (('task', tid), 'replan', self.key(123456), self.key('replan', 123456),
+             {'request': 123456, 'source': tid, 'mode': 'blocked'}, ops.NotFound),
+        ]:
+            before = logical(self.conn)
+            with self.subTest(kind=kind), self.assertRaises(error):
+                w.wait(subject, kind, key, cause=cause, data=data)
+            self.assertEqual(logical(self.conn), before)
+
+    def test_recorded_owner_answer_cannot_be_replayed_as_a_new_grant(self):
+        w = self.waiting()
+        cause, qid, choice = self.retry(w, ('task', self.task()))
+        ops.answer_question(self.conn, qid, choice=choice)
+        self.assertTrue(w.consume_retry(cause))
+        before = logical(self.conn)
+        with self.assertRaises((ValueError, PermissionError)):
+            ops.event(self.conn, 'question-answered', 'owner', {'question': qid, 'choice': choice})
+        self.assertEqual(logical(self.conn), before)
+        self.assertFalse(w.consume_retry(cause))
+
+    def test_malformed_reserved_event_caught_inside_transaction_has_no_effect(self):
+        before = logical(self.conn)
+        with db.tx(self.conn):
+            with self.assertRaises(ValueError):
+                ops.event(self.conn, 'base-ci', 'landing', {'repo': 'p'})
+        self.assertEqual(logical(self.conn), before)
+
+    def test_live_base_question_cannot_be_cleared_directly(self):
+        w = self.waiting()
+        tid = self.task()
+        cause = self.key('base', 'p', 'a' * 40)
+        w.wait(('merge_queue', 'p'), 'base', self.key('p', 'a' * 40), cause=cause,
+               data={'repo': 'p', 'sha': 'a' * 40, 'mode': 'preserve'})
+        w.ask(cause, 'task', tid, 'Base is red',
+              options=[{'label': 'Retry landing'}, {'label': 'Keep holding'}], allow_text=False)
+        before = logical(self.conn)
+        with self.assertRaises((ValueError, PermissionError)):
+            w.clear(cause)
+        self.assertEqual(logical(self.conn), before)
+        ops.event(self.conn, 'base-observed', 'landing', {'repo': 'p', 'sha': 'b' * 40})
+        self.assertEqual(w.pending(('merge_queue', 'p')), [])

@@ -117,4 +117,41 @@ CREATE TABLE IF NOT EXISTS task_landed (
 CREATE TABLE IF NOT EXISTS gate_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, rank INTEGER NOT NULL, holder TEXT NOT NULL, slot INTEGER, requested REAL NOT NULL, heartbeat REAL NOT NULL);
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6)]
+V7 = """
+ALTER TABLE tasks ADD COLUMN retry_after_run INTEGER NOT NULL DEFAULT 0 CHECK(retry_after_run >= 0);
+ALTER TABLE tasks ADD COLUMN replans_used INTEGER NOT NULL DEFAULT 0 CHECK(replans_used >= 0);
+ALTER TABLE tasks ADD COLUMN model_pin TEXT;
+CREATE TABLE wait_subjects (
+ subject_kind TEXT NOT NULL CHECK(subject_kind IN ('task','merge_queue')),
+ subject_key TEXT NOT NULL, resume_state TEXT, reset_external INTEGER NOT NULL DEFAULT 0,
+ parked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(subject_kind,subject_key));
+CREATE TABLE wait_causes (
+ cause TEXT PRIMARY KEY, question_id INTEGER REFERENCES questions(id) ON DELETE SET NULL,
+ handler TEXT NOT NULL CHECK(handler IN ('script','retry','choice','text','proposal','manual')),
+ state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','authorized','attempting','resolved','closed')),
+ answer TEXT, accepted_event INTEGER REFERENCES task_events(id), consumed_event INTEGER REFERENCES task_events(id),
+ probe_session TEXT, probe_started REAL, data TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE waits (
+ id INTEGER PRIMARY KEY, subject_kind TEXT NOT NULL, subject_key TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('task-terminal','owner-answer','base','replan','deadline','manual')),
+ key TEXT NOT NULL, cause TEXT NOT NULL REFERENCES wait_causes(cause), timeout_at REAL,
+ data TEXT NOT NULL DEFAULT '{}', created_event INTEGER NOT NULL REFERENCES task_events(id),
+ released_event INTEGER REFERENCES task_events(id),
+ FOREIGN KEY(subject_kind,subject_key) REFERENCES wait_subjects(subject_kind,subject_key) ON DELETE CASCADE);
+CREATE UNIQUE INDEX waits_active ON waits(subject_kind,subject_key,kind,key,cause) WHERE released_event IS NULL;
+CREATE INDEX waits_kind_key ON waits(kind,key) WHERE released_event IS NULL;
+CREATE INDEX waits_cause ON waits(cause) WHERE released_event IS NULL;
+CREATE INDEX waits_deadline ON waits(timeout_at) WHERE released_event IS NULL AND timeout_at IS NOT NULL;
+CREATE TABLE replan_requests (
+ id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ requesting_event INTEGER NOT NULL REFERENCES task_events(id), finished_event INTEGER REFERENCES task_events(id),
+ current_run INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+ state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','running','owner','done')),
+ disposition TEXT, snapshot TEXT NOT NULL DEFAULT '{}', result TEXT);
+CREATE UNIQUE INDEX replan_unfinished ON replan_requests(task_id) WHERE state <> 'done';
+ALTER TABLE base_gate RENAME TO base_gate_legacy;
+CREATE TABLE base_gate (repo TEXT NOT NULL, sha TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('red','green')), at TEXT NOT NULL, PRIMARY KEY(repo,sha));
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7)]

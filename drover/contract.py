@@ -7,14 +7,32 @@ import json
 
 CI_PASSED, CI_FAILED, CI_REFUSED = "passed", "failed", "refused"
 
-OUTCOMES = ("gated", "gate-fail", "no-record", "error", "launch-error", "provider-error", "timeout", "rotated", "orphaned",
-            "unverified", "blocked", "done", "passed", "failed", "land", "hold")
+GATED = 'gated'
+GATE_FAIL = 'gate-fail'
+NO_RECORD = 'no-record'
+ERROR = 'error'
+LAUNCH_ERROR = 'launch-error'
+PROVIDER_ERROR = 'provider-error'
+TIMEOUT = 'timeout'
+ROTATED = 'rotated'
+ORPHANED = 'orphaned'
+UNVERIFIED = 'unverified'
+BLOCKED = 'blocked'
+DONE = 'done'
+PASSED = 'passed'
+FAILED = 'failed'
+LAND = 'land'
+HOLD = 'hold'
+READ_ONLY_DONE = 'read-only-done'
+
+OUTCOMES = (GATED, GATE_FAIL, NO_RECORD, ERROR, LAUNCH_ERROR, PROVIDER_ERROR, TIMEOUT, ROTATED, ORPHANED,
+            UNVERIFIED, BLOCKED, DONE, PASSED, FAILED, LAND, HOLD, READ_ONLY_DONE)
 # `done` is a worker run that finished and awaits its gate (amended to gated or gate-fail). Gate runs end `passed` or
 # `failed`, review runs `land` or `hold`: none of these is a worker failure, so FAIL_OUTCOMES leaves them out.
 # The dispatcher counts a `hold` against the worker run it reviewed.
-PIPELINE_OUTCOMES = ("done", "passed", "failed", "land", "hold")   # written only when a pipeline gates and reviews
-PASS_OUTCOMES = ("gated",)                                     # a worker run that passed its gate
-FAIL_OUTCOMES = ("gate-fail", "no-record", "error", "timeout")  # worker failures; launch-error/provider-error/orphaned never count
+PIPELINE_OUTCOMES = (DONE, PASSED, FAILED, LAND, HOLD)   # written only when a pipeline gates and reviews
+PASS_OUTCOMES = (GATED,)                                     # a worker run that passed its gate
+FAIL_OUTCOMES = (GATE_FAIL, NO_RECORD, ERROR, TIMEOUT)  # worker failures; launch-error/provider-error/orphaned never count
 GATE_EVENT = "gate"
 EXCERPT_LINES = 60
 
