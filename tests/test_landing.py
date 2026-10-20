@@ -515,7 +515,24 @@ class RunTests(LandingCase):
         n = self.conn.execute("SELECT COUNT(*) FROM base_gate").fetchone()[0]
         self.assertEqual(n, 1)
 
-    def test_interrupted_ci_preserves_merge_checkout_until_resume(self):
+    def test_hub_retry_adopts_interrupted_ci_and_runs_script_once(self):
+        from hub.dispatch import LandingService
+        from hub.settings import Settings
+        from hub.store import Store
+
+        configs = self.r.root / 'repos'
+        configs.mkdir()
+        trees = self.r.root / 'worktrees'
+        (configs / 'p.toml').write_text(
+            f'name="p"\nrepo={json.dumps(str(self.r.repo))}\n'
+            f'worktrees={json.dumps(str(trees))}\n')
+        self.r.commit('drover.toml', '[scripts]\ntest="scripts/check.ps1"\n[gate]\ndocs_only=false\n')
+        store = Store(self.r.root / 'ledger.db')
+        self.addCleanup(store.close)
+        settings = Settings(runs_dir=self.r.root / 'receipts')
+        service = LandingService(store, settings, repos_dir=configs)
+        ops.set_setting(self.conn, 'dispatch_enabled', 'true')
+        work = trees / 'drover-landing-p'
         count, release = self.r.root / 'count', self.r.root / 'release'
         self.addCleanup(release.touch)
         # The script stays live until the test lets the adopted runner finish.
@@ -524,8 +541,6 @@ class RunTests(LandingCase):
                       f"while (-not (Test-Path '{release}')) {{ Start-Sleep -Milliseconds 50 }}\nexit 0\n")
         self.r.git('push', '-q', 'origin', 'HEAD:main')
         tid = self.task('a', {'a.txt': 'a'})
-        def gate(work, commit, tasks):
-            return self.ci.run(self.prog, work, commit, conn=self.conn)
         def fail_heartbeat(*args):
             deadline = time.monotonic() + 20
             while not count.exists() and time.monotonic() < deadline:
@@ -534,21 +549,20 @@ class RunTests(LandingCase):
             raise sqlite3.OperationalError('database is locked')
         with patch.object(slots, 'lease_heartbeat', side_effect=fail_heartbeat):
             with self.assertRaises(ci.CIInterrupted):
-                landing.run_batch(self.conn, self.r.repo, gate, workdir=self.work)
-        self.assertTrue(self.work.is_dir())
-        self.assertTrue((self.work.parent / ('.' + self.work.name + '.merge-group.json')).is_file())
+                service.tick()
+        self.assertTrue(work.is_dir())
+        self.assertTrue((work.parent / ('.' + work.name + '.merge-group.json')).is_file())
         self.assertEqual(len(slots.lease_queue(self.conn)), 1)
         self.assertEqual(self.status(tid), 'reviewed')
         release.touch()
-        # This is the public sequence used by the hub before rebuilding a merge group.
-        service = ci.CI(self.r.root / 'receipts')
-        service.resume(self.prog, self.work, conn=self.conn)
-        result = landing.run_batch(self.conn, self.r.repo,
-            lambda work, commit, tasks: service.run(self.prog, work, commit, conn=self.conn), workdir=self.work)
+        # A fresh hub service must adopt saved execution before rebuilding the checkout.
+        service = LandingService(store, settings, repos_dir=configs)
+        result = service.tick()['p']
         self.assertEqual(result['outcome'], 'landed')
         self.assertEqual(count.read_text().splitlines(), ['started'])
-        self.assertFalse(self.work.exists())
+        self.assertFalse(work.exists())
         self.assertEqual(slots.lease_queue(self.conn), [])
+        self.assertEqual(len(list(settings.runs_dir.glob('ci-*/status.json'))), 1)
 
     def test_exception_mid_run_still_records_the_batch(self):
         self.task('a', {'a.txt': 'a'})

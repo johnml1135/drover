@@ -1,25 +1,19 @@
 """Landing batches: form, gate the tip, attribute red, land fast-forward only, keep velocity. Software only.
 
-python -m drover.landing --db LEDGER form|run|velocity ...
-
 A batch is 1..policy `landing_batch_size` reviewed tasks whose diffs share no file. Their commits are replayed in
 a scratch worktree on a fresh base and the full gate runs once on the tip. On red: one owning task is dropped and
 the rest regated; ambiguous failures go to one `batch_culprit` decision; below tau (or on fallback) we bisect.
 """
-import argparse
 import json
 import re
 import statistics
 import subprocess
-import sys
-import tempfile
 import time
 from pathlib import Path, PureWindowsPath
 
 from . import config, ci, placement, origin
 from .port import DirectPort
 from .ledger import ops, landing as storage
-from .ledger.db import connect, default_path
 
 MIN_SIZE, MAX_SIZE = 1, 5
 
@@ -377,11 +371,12 @@ def sync_main(conn, repo, remote, branch, repo_name=None):
     return None
 
 
-def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None, repo_name=None, workdir=None,
+def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
 
-    CIInterrupted preserves the checkout and checkpoint for CI.resume before the next batch.
+    The hub supplies a stable per-repo workdir and calls CI.resume before rebuilding it.
+    CIInterrupted preserves that checkout and checkpoint for the next service pass.
     push=False lands on the local branch only: the base is the local branch (so one batch builds on the last) and
     nothing is pushed. Fetch failure pauses the repo; divergent main needs owner intervention."""
     repo = Path(repo)
@@ -399,9 +394,8 @@ def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None,
     result['batch'] = [t['id'] for t in tasks]
     if not tasks:
         return result
-    own_tmp = workdir is None
     interrupted = False
-    work = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix='drover-landing-')) / 'wt'
+    work = Path(workdir)
     try:
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
     except BaseException as e:
@@ -413,11 +407,6 @@ def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None,
         if not interrupted:
             git(repo, 'worktree', 'remove', '--force', str(work), check=False)
             (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
-            if own_tmp:
-                try:
-                    work.parent.rmdir()
-                except OSError:
-                    pass
     storage.record_batch(conn, result)
     return result
 
@@ -509,49 +498,3 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
 
 def land_sha(conn, task_id):
     return storage.land_sha(conn, task_id)
-
-
-# ---- CLI -----------------------------------------------------------------------------------------------------
-
-def main(argv=None):
-    p = argparse.ArgumentParser(prog='python -m drover.landing')
-    p.add_argument('--db', help='ledger path (default: the hub default)')
-    sub = p.add_subparsers(dest='action', required=True)
-    for name in ('form', 'run'):
-        s = sub.add_parser(name)
-        s.add_argument('--repo', required=True)
-        s.add_argument('--remote', default='origin')
-        s.add_argument('--branch', default='main')
-        s.add_argument('--repo-name')
-        s.add_argument('--size', type=int)
-        s.add_argument('--json', action='store_true')
-        if name == 'run':
-            s.add_argument('--out', required=True, help='directory for receipts')
-    v = sub.add_parser('velocity')
-    v.add_argument('--json', action='store_true')
-    a = p.parse_args(argv)
-    conn = connect(a.db or default_path())
-    try:
-        if a.action == 'velocity':
-            out = velocity(conn)
-            print(json.dumps(out) if a.json else '\n'.join(f'{k}: {v}' for k, v in out.items()))
-            return 0
-        if a.action == 'form':
-            origin.sync(a.repo, a.remote, a.branch)
-            batch = form_batch(conn, a.repo, a.branch, a.size, a.repo_name)
-            print(json.dumps(batch) if a.json else '\n'.join(f"{t['id']}  {t['branch']}  {len(t['files'])} file(s)" for t in batch))
-            return 0
-        from . import repos
-        prog = repos.load({'name': a.repo_name or Path(a.repo).name, 'repo': a.repo})
-        service = ci.CI(a.out)
-        fn = lambda worktree, commit, tasks: service.run(prog, worktree, commit, base=a.branch, conn=conn)
-        r = run_batch(conn, a.repo, fn, remote=a.remote, branch=a.branch, size=a.size, repo_name=a.repo_name)
-        print(json.dumps(r) if a.json else f"{r['outcome']}: landed {r['landed']} dropped {r['dropped']} gates {r['gates']}")
-        return 0 if r['outcome'] in ('landed', 'empty') else 1
-    except (ci.CIError, origin.SyncError) as e:
-        print(f'drover.landing: {e}', file=sys.stderr)
-        return 2
-
-
-if __name__ == '__main__':
-    sys.exit(main())

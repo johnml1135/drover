@@ -40,7 +40,7 @@ T-7 coordination: `T-7:drover/ledger/schema.py:73-85` defines `kind`, `write`, `
 
 Required: automatic reload after relevant successful self-landings, safe manual “Reload now”, persistent auto on/off, preserved owner dispatch preference, adoption without duplicate launches, rollback to a known healthy runtime, durable events, and a non-elevated Windows start command. No new packages or services.
 
-Non-goals: zero HTTP downtime, arbitrary schema/dependency upgrades, automatic Git revert/reset, supervisor hot replacement, runtime garbage collection, changes to admission capacity or landing/push policy. Safety covers **hub-managed** gates and landings. Standalone `drover.landing` also exists (`drover/landing.py:561-595`); owners must turn auto-reload off before independent CLI gates/landings and finish them before “Reload now”. Concurrent unregistered owner commands are outside this protocol.
+Non-goals: zero HTTP downtime, arbitrary schema/dependency upgrades, automatic Git revert/reset, supervisor hot replacement, runtime garbage collection, changes to admission capacity or landing/push policy. Safety covers **hub-managed** gates and landings. Landing runs only through the hub service. Concurrent unregistered owner commands are outside this protocol.
 
 | Option | Evaluation |
 | --- | --- |
