@@ -639,6 +639,10 @@ class Waiting:
 
     def _request(self, event) -> list[dict]:
         from . import ops
+        if self.conn.execute(
+                "SELECT 1 FROM task_events WHERE kind='replan-request-processed' "
+                "AND json_extract(data,'$.requesting_event')=? LIMIT 1", (event['id'],)).fetchone():
+            return []
         if event['task_id']:
             tasks = [ops.get_task(self.conn, event['task_id'])]
         elif event['epic_id']:
@@ -664,6 +668,10 @@ class Waiting:
                           data={'request': request_id, 'source': task['id'], 'mode': 'blocked'})
             self._supersede_stage(request_id)
             result.append(dict(self.conn.execute('SELECT * FROM replan_requests WHERE id=?', (request_id,)).fetchone()))
+        # Coalesced events need durable identities too: the creating event alone
+        # cannot identify them after the shared request has completed.
+        ops.event(self.conn, 'replan-request-processed', self.actor,
+                  {'requesting_event': event['id']}, task_id=event['task_id'], epic_id=event['epic_id'])
         return result
 
     def _request_done(self, request_id, disposition, result=None) -> dict:
@@ -812,7 +820,6 @@ class Waiting:
                 return None
             if self.conn.execute('SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL', (task['id'],)).fetchone():
                 return None
-            from . import scope
             sources = [r[0] for r in self.conn.execute(
                 'SELECT task_id FROM replan_requests WHERE state<>? ORDER BY task_id', (DONE,))]
             followers = {source: set(ops.dependents_of(self.conn, source, transitive=True)) for source in sources}
@@ -823,14 +830,14 @@ class Waiting:
                 if row['kind'] == REPLAN and row['cause'] == cause_key('replan', request_id):
                     continue
                 # Keep follower waits for worker protection, but order overlapping
-                # queued planners by dependencies, then task id. Running planners win.
+                # queued planners by dependencies, then task id. These durable
+                # waits still order planners after scope or epic edits.
+                # Running planners win.
                 if row['kind'] == REPLAN and order.get(row['data']['source'], -1) > order[task['id']]:
                     other = self.conn.execute('SELECT state FROM replan_requests WHERE id=?',
                                               (row['data']['request'],)).fetchone()
-                    source = ops.get_task(self.conn, row['data']['source'])
-                    if (other and other['state'] == QUEUED and source['epic_id'] == task['epic_id']
-                            and task['epic_id'] and scope.any_overlap(source['scope_files'], task['scope_files'])
-                            and task['id'] not in followers[source['id']]):
+                    if (other and other['state'] == QUEUED
+                            and task['id'] not in followers[row['data']['source']]):
                         continue
                 return None
             raw_limit = ops.get_setting(self.conn, 'replan_limit', '2')

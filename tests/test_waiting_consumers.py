@@ -481,6 +481,33 @@ class FinalReviewRegressions(LedgerCase):
     route = {'backend': 'codex', 'model': 'gpt-6.1-sol'}
     revise = {'action': 'revise', 'goal': 'Revised', 'acceptance': ['works'], 'scope_files': ['src/*']}
 
+    def test_overlap_release_survives_scope_edit(self):
+        self._overlap_release_after_edit(scope_files=['elsewhere/*'])
+
+    def test_overlap_release_survives_epic_edit(self):
+        epic = ops.create_epic(self.conn, 'p', 'New epic')['id']
+        self._overlap_release_after_edit(epic_id=epic)
+
+    def _overlap_release_after_edit(self, **edit):
+        w = self.waiting()
+        epic = ops.create_epic(self.conn, 'p', 'Overlap')['id']
+        sources = sorted(self.task(epic_id=epic, scope_files=['src/*']) for _ in range(2))
+        for tid in reversed(sources):
+            w.request_replan(tid, 'owner-request')
+        requests = {r['task_id']: r for r in w.replans()}
+        ops.update_task(self.conn, sources[0], **edit)
+        # Reload the public interface: the waits, rather than current metadata,
+        # must retain a runnable leader and protect the follower until release.
+        w = self.waiting()
+        self.assertIsNone(w.start_replan(requests[sources[1]]['id'], self.route, {}))
+        for tid in sources:
+            started = w.start_replan(requests[tid]['id'], self.route, {})
+            self.assertIsNotNone(started, 'metadata edits must not strand both planners')
+            self.assertTrue(w.pending(('task', sources[1])))
+            w.finish_replan(requests[tid]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        self.assertEqual(w.replans(), [])
+        self.assertEqual(w.pending(), [])
+
     def test_overlapping_sources_replan_in_turn(self):
         w = self.waiting()
         epic = ops.create_epic(self.conn, 'p', 'Overlap')['id']
@@ -565,6 +592,21 @@ class FinalReviewRegressions(LedgerCase):
         before = logical(self.conn)
         w.resolve(event)
         self.assertEqual(w.replans(), [], 'completed request replay must not queue another replan')
+        self.assertEqual(w.pending(('task', tid)), [])
+        self.assertEqual(logical(self.conn), before)
+        self.assertNotEqual(w.request_replan(tid, 'new-request')['id'], request['id'])
+
+    def test_coalesced_request_replay_does_not_reblock(self):
+        w = self.waiting()
+        tid = self.task()
+        request = w.request_replan(tid, 'owner-request')
+        self.assertEqual(w.request_replan(tid, 'second-request')['id'], request['id'])
+        event = ops.events(self.conn, task_id=tid, kind='replan-request')[-1]
+        started = w.start_replan(request['id'], self.route, {})
+        w.finish_replan(request['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        before = logical(self.conn)
+        self.waiting().resolve(event)
+        self.assertEqual(w.replans(), [], 'coalesced event replay must not queue another replan')
         self.assertEqual(w.pending(('task', tid)), [])
         self.assertEqual(logical(self.conn), before)
         self.assertNotEqual(w.request_replan(tid, 'new-request')['id'], request['id'])
