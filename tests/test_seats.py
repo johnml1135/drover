@@ -213,7 +213,7 @@ class Dispatching(test_dispatcher.Base):
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(tid), "ready")
         self.assertEqual(len(self.fl.specs), 1)
-        self.assertIn(tid, self.port.get_backoffs())
+        self.assertTrue([row for row in self.port.waiting.pending(("task", tid)) if row["kind"] == "deadline"])
         self.finish(0, test_dispatcher.res("done", test_dispatcher.DONE))
         now = self.d.now()
         self.d.now = lambda: now + 61

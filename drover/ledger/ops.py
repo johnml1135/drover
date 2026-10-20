@@ -334,9 +334,6 @@ def dependents_of(conn, task_id, transitive=False):
 
 # ---- status --------------------------------------------------------------------------------------------
 
-def _blocker(holds, prev):
-    return {"reason": "; ".join(h["reason"] for h in holds), "holds": holds, "prev": prev}
-
 
 class NotApproved(PermissionError):
     pass
@@ -365,7 +362,7 @@ def accept_read_only(conn, task_id, actor='owner'):
                           data={'read_only': True, 'run': run['id']})
 
 
-def set_status(conn, task_id, new, actor="system", reason=None, blocker=None, data=None):
+def set_status(conn, task_id, new, actor="system", reason=None, data=None):
     """Move a task along a legal transition and write one event. Illegal moves raise IllegalTransition.
 
     Entering `ready` needs approved_at; only the owner's proposed/draft -> ready sets it.
@@ -382,25 +379,16 @@ def set_status(conn, task_id, new, actor="system", reason=None, blocker=None, da
         if new == "ready" and not approved:
             raise NotApproved(f"{task_id} was never approved by the owner; it cannot become ready")
         if new == "blocked":
-            if blocker is None:
-                if not reason:
-                    raise ValueError("blocked needs a reason")
-                blocker = _blocker([{"source": "manual", "reason": reason}], old)
-            else:
-                holds = blocker.get("holds") or [{"source": blocker.get("source", "manual"),
-                                                  "reason": blocker.get("reason", "blocked")}]
-                blocker = _blocker(holds, blocker.get("prev", old))
-        else:
-            blocker = None
+            if not reason:
+                raise ValueError("blocked needs a reason")
+            return block(conn, task_id, reason, actor)
         extra = ""
         if new in ("ready", "draft", "proposed"):
             extra = ", owner_kind=NULL, model=NULL"
-        conn.execute(f"UPDATE tasks SET status=?, blocker=?, approved_at=?, updated=?{extra} WHERE id=?",
-                     (new, _j(blocker) if blocker else None, approved, stamp(), task_id))
+        conn.execute(f"UPDATE tasks SET status=?, blocker=NULL, approved_at=?, updated=?{extra} WHERE id=?",
+                     (new, approved, stamp(), task_id))
         event(conn, "status", actor, {"from": old, "to": new, "reason": reason, **(data or {})},
               task_id=task_id, epic_id=t["epic_id"])
-        if new != "blocked" and (old == "blocked" or new in states.TERMINAL):
-            release_stale_holds(conn, actor, source=task_id)     # the source stopped holding: free what it held
         return get_task(conn, task_id)
 
 
@@ -415,100 +403,26 @@ def approve(conn, task_id, actor="owner"):
         return set_status(conn, task_id, "ready", actor, reason="approved")
 
 
-def _restore(conn, t, actor, reason):
-    prev = (t["blocker"] or {}).get("prev", "ready")
-    if prev not in states.PENDING or (prev == "ready" and not t["approved_at"]):
-        prev = "ready" if t["approved_at"] else "proposed"
-    return set_status(conn, t["id"], prev, actor, reason=reason)
-
-
-def _holds_of(t):
-    """The blocker's hold list; converts an old-format blocker (reason only) in place of a missing list."""
-    b = t["blocker"] or {}
-    if "holds" in b:
-        return b["holds"], b.get("prev", "ready")
-    return ([{"source": b.get("source", "manual"), "reason": b.get("reason", "blocked")}] if b else []), \
-        b.get("prev", "ready")
-
-
-def add_hold(conn, task_id, source, reason, actor="system"):
-    """Hold a task for `source`. Joins an existing hold; otherwise blocks the task, remembering its state."""
+def block(conn, task_id, reason, actor="system"):
+    from .waiting import Waiting, MANUAL, cause_key
     with tx(conn):
-        t = get_task(conn, task_id)
-        if t["status"] != "blocked":
-            return set_status(conn, task_id, "blocked", actor,
-                              blocker=_blocker([{"source": source, "reason": reason}], t["status"]), reason=reason)
-        old, prev = _holds_of(t)
-        holds = [h for h in old if not (h["source"] == source and h["reason"] == reason)]
-        holds.append({"source": source, "reason": reason})
-        conn.execute("UPDATE tasks SET blocker=?, updated=? WHERE id=?",
-                     (_j(_blocker(holds, prev)), stamp(), task_id))
-        event(conn, "hold-added", actor, {"source": source, "reason": reason}, task_id=task_id, epic_id=t["epic_id"])
+        Waiting(conn, actor).wait(("task", task_id), MANUAL, cause_key(task_id),
+                                  cause=cause_key("manual", task_id),
+                                  data={"note": reason, "mode": "blocked"})
         return get_task(conn, task_id)
 
 
-def remove_hold(conn, task_id, source, actor="system", reason=None):
-    """Drop `source`'s holds (optionally only those with `reason`); restore the prior state when none remain.
-    Returns True when the task was released."""
-    with tx(conn):
-        t = get_task(conn, task_id)
-        if t["status"] != "blocked":
-            return False
-        old, prev = _holds_of(t)
-        left = [h for h in old if not (h["source"] == source and (reason is None or h["reason"] == reason))]
-        if len(left) == len(old):
-            return False
-        if left:
-            conn.execute("UPDATE tasks SET blocker=?, updated=? WHERE id=?",
-                         (_j(_blocker(left, prev)), stamp(), task_id))
-            event(conn, "hold-removed", actor, {"source": source}, task_id=task_id, epic_id=t["epic_id"])
-            return False
-        _restore(conn, t, actor, f"{source} released")
-        return True
-
-
-def _hold_is_stale(conn, holder_id, hold):
-    """A hold is stale when its source task is terminal (landed or cancelled), or, for a replan hold, no longer
-    blocked (its replan ended). Manual holds, a task's own hold and holds whose source is no task never go stale."""
-    src = hold.get("source")
-    if not src or src == "manual" or src == holder_id:
-        return False
-    row = conn.execute("SELECT status FROM tasks WHERE id=?", (src,)).fetchone()
-    if row is None:
-        return False
-    return row[0] in states.TERMINAL or (hold.get("reason") == "replan" and row[0] != "blocked")
-
-
-def release_stale_holds(conn, actor="dispatcher", source=None):
-    """Release every stale hold (only those of `source` when given); a task left with no hold returns to its prior
-    status (blocker.prev, never past an owner approval). Returns the released task ids."""
-    with tx(conn):
-        like = f'%"{source}"%' if source else "%"
-        released = []
-        for (tid,) in conn.execute("SELECT id FROM tasks WHERE status='blocked' AND blocker LIKE ? ORDER BY id",
-                                   (like,)).fetchall():
-            holds, _ = _holds_of(get_task(conn, tid))
-            stale = [h for h in holds if (source is None or h.get("source") == source) and _hold_is_stale(conn, tid, h)]
-            for h in stale:
-                if remove_hold(conn, tid, h["source"], actor, h["reason"]):
-                    released.append(tid)
-        if released:
-            event(conn, "stale-holds-released", actor, {"released": released, **({"source": source} if source else {})},
-                  task_id=source)
-        return released
-
-
-def block(conn, task_id, reason, actor="system"):
-    return add_hold(conn, task_id, "manual", reason, actor)
-
-
 def unblock(conn, task_id, actor="system"):
-    """Remove the manual block; the task stays blocked while other holds remain."""
-    t = get_task(conn, task_id)
-    if t["status"] != "blocked":
-        raise IllegalTransition(f"{task_id} is {t['status']}, not blocked")
-    remove_hold(conn, task_id, "manual", actor)
-    return get_task(conn, task_id)
+    """Release only the manual cause, retaining independent waits."""
+    from .waiting import Waiting, MANUAL, cause_key
+    with tx(conn):
+        task = get_task(conn, task_id)
+        waiting = Waiting(conn, actor)
+        manual = any(row["kind"] == MANUAL for row in waiting.pending(("task", task_id)))
+        if task["status"] != "blocked" and not manual:
+            raise IllegalTransition(f"{task_id} is {task['status']}, not blocked")
+        waiting.release(cause_key("manual", task_id))
+        return get_task(conn, task_id)
 
 
 # ---- claiming ------------------------------------------------------------------------------------------
@@ -579,28 +493,6 @@ def claim_next(conn, worker=None, now=None, exclude=()):
                       epic_id=cand["epic_id"])
                 return _task(row)
     return None
-
-
-# ---- dispatch backoff ----------------------------------------------------------------------------------
-# Per-task launch backoff lives in one hidden setting (no task metadata column): {task_id: {"until": epoch, "min": n}}.
-
-BACKOFF_KEY = "_dispatch_backoff"
-
-
-def get_backoffs(conn):
-    raw = get_setting(conn, BACKOFF_KEY)
-    return json.loads(raw) if raw else {}
-
-
-def set_backoff(conn, task_id, until, minutes):
-    """Record that `task_id` should not be claimed before epoch `until`; None clears it."""
-    with tx(conn):
-        b = get_backoffs(conn)
-        if until is None:
-            b.pop(task_id, None)
-        else:
-            b[task_id] = {"until": until, "min": minutes}
-        set_setting(conn, BACKOFF_KEY, json.dumps(b))
 
 
 # ---- runs ----------------------------------------------------------------------------------------------
@@ -716,56 +608,6 @@ def reorder(conn, kind, item_id, before_id=None, after_id=None, actor="owner"):
         return new
 
 
-# ---- holds and replan ----------------------------------------------------------------------------------
-
-def _hold(conn, task_id, source, reason, actor):
-    t = get_task(conn, task_id)
-    if t["status"] in states.PENDING or t["status"] == "blocked":
-        add_hold(conn, task_id, source, reason, actor)
-        return True
-    return False
-
-
-def _overlapping_in_epic(conn, t):
-    if t["epic_id"] is None:
-        return []
-    mine = t["scope_files"]
-    return [o["id"] for o in list_tasks(conn, epic_id=t["epic_id"], include_archived=True)
-            if o["id"] != t["id"] and o["status"] in (*states.PENDING, "blocked")
-            and scopes.any_overlap(mine, o["scope_files"])]
-
-
-def replan_hold(conn, task_id, actor="system", reason="replan"):
-    """Block the task (reason replan) and hold its dependents plus same-epic scope-overlapping pending tasks."""
-    with tx(conn):
-        t = get_task(conn, task_id)
-        if t["status"] in states.TERMINAL:
-            raise IllegalTransition(f"cannot hold a {t['status']} task")
-        add_hold(conn, task_id, task_id, reason, actor)
-        held = []
-        for tid in [*dependents_of(conn, task_id, transitive=True), *_overlapping_in_epic(conn, t)]:
-            if tid not in held and _hold(conn, tid, task_id, reason, actor):
-                held.append(tid)
-        event(conn, "hold", actor, {"reason": reason, "held": held}, task_id=task_id, epic_id=t["epic_id"])
-        return held
-
-
-def replan_release(conn, task_id, actor="system", reason="replan"):
-    """Remove this source's replan holds everywhere (pass reason="urgent" for urgent ones, None for all). Returns the ids that actually left blocked."""
-    with tx(conn):
-        held = []
-        for r in conn.execute("SELECT id FROM tasks WHERE status='blocked' ORDER BY id").fetchall():
-            holds, _ = _holds_of(get_task(conn, r[0]))
-            if any(h["source"] == task_id and (reason is None or h["reason"] == reason) for h in holds):
-                held.append(r[0])
-        for tid in held:
-            remove_hold(conn, tid, task_id, actor, reason)
-        # a task may already have left blocked when the source's own status change released it (see set_status)
-        released = [tid for tid in held if get_task(conn, tid)["status"] != "blocked"]
-        event(conn, "release", actor, {"released": released}, task_id=task_id)
-        return released
-
-
 # ---- comments ------------------------------------------------------------------------------------------
 
 def _target(conn, kind, tid):
@@ -789,15 +631,11 @@ def add_comment(conn, target_kind, target_id, author, body, urgent=False, replan
         routed = []
         if (target_kind == "task" and tgt["status"] == "needs-owner" and author == "owner"
                 and tgt["approved_at"]):
-            set_status(conn, target_id, "ready", author, reason="owner comment", data={"comment": cid})
-            routed.append("requeued")
+            from .waiting import Waiting
+            if not Waiting(conn, author).pending(("task", target_id)):
+                set_status(conn, target_id, "ready", author, reason="owner comment", data={"comment": cid})
+                routed.append("requeued")
         if urgent:
-            if target_kind == "task":
-                victims = dependents_of(conn, target_id, transitive=True)
-            else:
-                victims = [t["id"] for t in list_tasks(conn, epic_id=target_id, include_archived=True)]
-            held = [v for v in victims if _hold(conn, v, target_id, "urgent", author)]
-            event(conn, "hold", author, {"reason": "urgent", "held": held}, **ids)
             routed.append("held")
         if replan:
             event(conn, "replan-request", author, {"comment": cid}, **ids)
@@ -935,7 +773,6 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
                 "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
             raise ValueError("finish or cancel active work before deleting")
         _rehome_gate_questions(conn, task_id)
-        replan_release(conn, task_id, actor, reason=None)
         # Landing metadata may reference a task; retain the audit batch but detach its membership.
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_landed'").fetchone():
             conn.execute("DELETE FROM task_landed WHERE task_id=?", (task_id,))

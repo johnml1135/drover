@@ -124,7 +124,7 @@ class DeleteRegressions(unittest.TestCase):
         overlap = self.task('Overlap', epic_id=epic, scope_files=['src/module.py'])
         ops.archive_task(self.conn, overlap)
         ops.add_comment(self.conn, 'task', source, 'owner', 'Pause work', urgent=True)
-        ops.replan_hold(self.conn, source)
+        ops.add_comment(self.conn, 'task', source, 'owner', 'Revise plan', replan=True)
         return source, dependent, transitive, overlap
 
     def test_delete_releases_dependents_and_archived_overlaps(self):
@@ -140,14 +140,21 @@ class DeleteRegressions(unittest.TestCase):
     def test_delete_keeps_other_sources_and_manual_holds(self):
         source, dependent, _, overlap = self.held_tasks()
         other = self.task('Other source')
-        ops.add_hold(self.conn, dependent, other, 'replan')
+        ops.add_dep(self.conn, dependent, other)
+        ops.add_comment(self.conn, 'task', other, 'owner', 'Revise other plan', replan=True)
         ops.block(self.conn, overlap, 'Owner review')
         ops.delete_task(self.conn, source, confirm=True)
-        for target, hold in ((dependent, {'source': other, 'reason': 'replan'}),
-                             (overlap, {'source': 'manual', 'reason': 'Owner review'})):
-            task = ops.get_task(self.conn, target)
-            self.assertEqual(task['status'], 'blocked')
-            self.assertEqual(task['blocker']['holds'], [hold])
+        from drover.ledger.waiting import Waiting, cause_key
+        waiting = Waiting(self.conn)
+        for target in (dependent, overlap):
+            self.assertEqual(ops.get_task(self.conn, target)['status'], 'blocked')
+            rows = waiting.pending(("task", target))
+            self.assertEqual(len(rows), 1)
+            if target == dependent:
+                self.assertEqual(rows[0]['data']['source'], other)
+            else:
+                self.assertEqual(rows[0]['cause'], cause_key("manual", overlap))
+                self.assertEqual(rows[0]['data']['note'], 'Owner review')
 
     def test_cleanup_rolls_back_if_deletion_fails(self):
         source, dependent, _, _ = self.held_tasks()

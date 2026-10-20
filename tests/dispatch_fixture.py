@@ -36,7 +36,7 @@ class FakePipeline:
         task['worktree'] = WORKTREE
         return WORKTREE
 
-    def gate_known(self, task):
+    def prepare_dispatch(self, task) -> bool:
         return True
 
     def head(self, task):
@@ -47,9 +47,6 @@ class FakePipeline:
 
     def diff_text(self, repo, base, sha):
         return "fixture diff"
-
-    def sync_gates(self):
-        return []
 
 
 class Observations:

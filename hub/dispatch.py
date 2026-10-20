@@ -46,8 +46,8 @@ class HubPort(DirectPort):
         self._pub("run.finished", id=run_id, task_id=r["task_id"], outcome=outcome)
         return r
 
-    def set_status(self, task_id, new, reason=None, blocker=None, data=None):
-        r = super().set_status(task_id, new, reason=reason, blocker=blocker, data=data)
+    def set_status(self, task_id, new, reason=None, data=None):
+        r = super().set_status(task_id, new, reason=reason, data=data)
         self._pub("task.status", id=task_id, status=new)
         return r
 
@@ -124,8 +124,11 @@ class LandingService:
         hold = landing.sync_main(conn, repo, repos.remote_name(prog), base_ref, name)
         if hold:
             return hold
-        batch = landing.form_batch(conn, repo, base_ref, size, name) if not landing.held(
-            conn, landing.git(repo, "rev-parse", base_ref).stdout.strip()) else []
+        from drover.ledger.waiting import Waiting, repo_key
+        waiting = Waiting(conn, "landing")
+        if waiting.pending(("merge_queue", repo_key(name, repo))):
+            return {"outcome": "held"}
+        batch = landing.form_batch(conn, repo, base_ref, size, name)
         if not batch:
             return {"outcome": "empty"}
         tasks = [{"id": t["id"], "title": t["title"]} for t in batch]
@@ -137,8 +140,6 @@ class LandingService:
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)
-        if r["outcome"] == "refused" and "uncommitted changes" in str(r.get("error")):
-            self._ask_clean(conn, name, r["error"])
         return r
 
     @staticmethod
@@ -149,18 +150,6 @@ class LandingService:
             "status": last or "idle",
             "median": f"{v['median_gate_s']:.0f}s" if v["median_gate_s"] is not None else None,
             "red_rate": f"{v['red_rate']:.0%}" if v["red_rate"] is not None else None}))
-
-    @staticmethod
-    def _ask_clean(conn, name, error):
-        """Landing waits for the owner's checkout of the default branch to be clean: ask once while that is open."""
-        key = f"_land_dirty_q_{name.lower()}"
-        qid = ops.get_setting(conn, key)
-        if qid and ops.get_question(conn, int(qid))["status"] == "open":
-            return
-        qid = ops.ask_question(conn, "epic", landing._epic(conn, "Landing"), f"Landing {name} is waiting for a clean checkout",
-                               error, options=[{"label": "Retry landing", "description": "it retries every 2 minutes anyway",
-                                                "recommended": True}], actor="landing")
-        ops.set_setting(conn, key, qid)
 
 
 class DispatcherService:

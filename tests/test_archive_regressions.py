@@ -25,9 +25,14 @@ class ArchiveRegressions(unittest.TestCase):
         return task['id']
 
     def assert_held_after_restore(self, task_id, source, reason):
+        from drover.ledger.waiting import Waiting, cause_key
         task = ops.archive_task(self.conn, task_id, False)
         self.assertEqual(task['status'], 'blocked')
-        self.assertIn({'source': source, 'reason': reason}, task['blocker']['holds'])
+        rows = Waiting(self.conn).pending(("task", task_id))
+        if reason == "urgent":
+            self.assertIn(cause_key("urgent", "epic", source), [row["cause"] for row in rows])
+        else:
+            self.assertTrue(any(row["data"].get("source") == source for row in rows))
         self.assertIsNone(ops.claim_next(self.conn, {'owner_kind': 'claude', 'model': 'sonnet'}))
 
     def test_archived_overlapping_tasks_keep_replan_hold_when_restored(self):
@@ -37,9 +42,9 @@ class ArchiveRegressions(unittest.TestCase):
                 source = self.task('Source', epic, 'ready', ['src/*'])
                 target = self.task('Overlap', epic, status, ['src/module.py'])
                 ops.archive_task(self.conn, target)
-                ops.replan_hold(self.conn, source)
+                ops.add_comment(self.conn, 'task', source, 'owner', 'Revise plan', replan=True)
                 self.assert_held_after_restore(target, source, 'replan')
-                ops.replan_release(self.conn, source)
+                ops.set_status(self.conn, source, 'ready', 'owner')
                 self.assertEqual(ops.get_task(self.conn, target)['status'], status)
                 # Keep this subtest's tasks out of subsequent claim checks.
                 ops.archive_task(self.conn, source)
@@ -53,7 +58,9 @@ class ArchiveRegressions(unittest.TestCase):
                 ops.archive_task(self.conn, target)
                 ops.add_comment(self.conn, 'epic', epic, 'owner', 'Pause work', urgent=True)
                 self.assert_held_after_restore(target, epic, 'urgent')
-                ops.replan_release(self.conn, epic, reason='urgent')
+                from drover.ledger.waiting import Waiting
+                rows = Waiting(self.conn).pending(("task", target))
+                ops.answer_question(self.conn, rows[0]["question_id"], choice="Resume work")
                 self.assertEqual(ops.get_task(self.conn, target)['status'], status)
                 ops.archive_task(self.conn, target)
 

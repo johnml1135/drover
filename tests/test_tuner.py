@@ -184,7 +184,7 @@ class Audit(Base):
         self.add_run(t, verdict="HOLD")
         t2 = self.task(status="ready")
         self.add_run(t2)
-        ops.replan_hold(self.conn, t2)
+        ops.event(self.conn, "replan-request", "owner", task_id=t2)
         a = tuner.audit(self.conn, tuner._runs(self.conn), self.ids())
         self.assertEqual(sorted(a["missed"]), sorted([t, t2]))
 

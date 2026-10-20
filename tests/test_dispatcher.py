@@ -492,8 +492,9 @@ class ProviderErrors(Base):
             self.assertEqual(dispatcher.failures(runs), 0)
             self.assertEqual(self.status(t), "ready")
             self.assertEqual(self.events("replan-request"), [])
-            self.conn.execute("DELETE FROM settings WHERE key LIKE 'backoff%'")
-            self.d.now = lambda: time.time() + 10 ** 6 * (i + 1)
+            now = self.d.now() + 10 ** 6
+            self.d.now = lambda now=now: now
+            self.port.waiting.expire(now)
         self.assertEqual(len(self.events("provider-error")), 2)
 
     def test_persistent_provider_errors_alert_the_owner(self):
@@ -548,16 +549,6 @@ class ProviderErrors(Base):
         self.finish(n, {**res("error"), "provider_error": "429 rate limit"})
         self.d.tick()
         self.assertEqual(self.status(t), "ready")
-
-    def test_tick_sweeps_stale_holds_as_dispatcher(self):
-        src = self.task(ready=False)
-        dep = self.task(deps=[src])
-        ops.replan_hold(self.conn, src)
-        self.conn.execute("UPDATE tasks SET status='cancelled', blocker=NULL WHERE id=?", (src,))
-        self.d.tick()
-        self.assertEqual(self.status(dep), "ready")
-        last = [e for e in ops.events(self.conn, task_id=dep, kind="status")][-1]
-        self.assertEqual(last["actor"], "dispatcher")
 
 
 class Timeouts(Base):
@@ -621,7 +612,7 @@ class Placement(Base):
         self.assertIn(w, out["launched"])                        # the Windows task behind it is not blocked
         note = json.loads(ops.get_setting(self.conn, "_wsl_needed"))
         self.assertEqual(note["task"], t)
-        self.assertEqual(self.port.get_backoffs()[t]["min"], 1)
+        self.assertEqual(next(row["data"]["minutes"] for row in self.port.waiting.pending(("task", t)) if row["kind"] == "deadline"), 1)
 
     def test_windows_task_never_asks_for_wsl(self):
         self.allow["codex"] = False
@@ -881,7 +872,7 @@ class HeadOfLine(Base):
         out = self.d.tick()
         self.assertEqual(out["launched"], [b])
         self.assertEqual(self.status(a), "ready")
-        self.assertEqual(self.port.get_backoffs()[a]["min"], 1)
+        self.assertEqual(next(row["data"]["minutes"] for row in self.port.waiting.pending(("task", a)) if row["kind"] == "deadline"), 1)
         self.assertEqual(len([e for e in self.events("status") if e["task_id"] == a and e["data"]["to"] == "claimed"]), 1)
 
     def test_backoff_doubles_to_thirty_minutes_and_is_cleared_on_launch(self):
@@ -890,12 +881,12 @@ class HeadOfLine(Base):
         mins = []
         for _ in range(8):
             self.d.tick()
-            mins.append(self.port.get_backoffs()[a]["min"])
+            mins.append(next(row["data"]["minutes"] for row in self.port.waiting.pending(("task", a)) if row["kind"] == "deadline"))
             self.t += mins[-1] * 60 + 1
         self.assertEqual(mins, [1, 2, 4, 8, 16, 30, 30, 30])
         self.no_route.clear()
         self.assertEqual(self.d.tick()["launched"], [a])
-        self.assertNotIn(a, self.port.get_backoffs())
+        self.assertFalse([row for row in self.port.waiting.pending(("task", a)) if row["kind"] == "deadline"])
 
     def test_a_task_in_backoff_is_not_claimed_and_makes_no_status_churn(self):
         a = self.task(title="a")
@@ -914,7 +905,7 @@ class HeadOfLine(Base):
         a = self.task(title="a", scope_files=["a/source.txt"], priority="P0")        # highest-priority task
         self.allow["claude"], self.allow["codex"] = False, True
         self.d.tick()
-        self.assertIn(a, self.port.get_backoffs())
+        self.assertTrue([row for row in self.port.waiting.pending(("task", a)) if row["kind"] == "deadline"])
         b = self.task(title="b", priority="P1")
         self.allow["claude"] = True
         self.d.unavailable[("claude", "windows")] = self.d.now()
@@ -928,7 +919,7 @@ class HeadOfLine(Base):
         b = self.task(title="b", priority="P1")
         self.d.launcher.wsl_up = lambda: True
         self.assertEqual(self.d.tick()["launched"], [b])
-        self.assertIn(a, self.port.get_backoffs())
+        self.assertTrue([row for row in self.port.waiting.pending(("task", a)) if row["kind"] == "deadline"])
 
 
 class HardeningFixtures(Base):
@@ -1078,17 +1069,20 @@ class Polish(HardeningFixtures):
     def test_backoff_entries_of_non_ready_tasks_are_pruned(self):
         d = self.make(now=lambda: self.t)
         a = self.task(title="a")
-        self.port.set_backoff(a, self.t + 999, 4)
+        from drover.ledger.waiting import DEADLINE, cause_key
+        self.port.waiting.wait(("task", a), DEADLINE, cause_key(a, "worker", "admission"),
+                               cause=cause_key("deadline", a, "worker", "admission"), timeout_at=self.t + 999,
+                               data={"role": "worker", "reason_code": "admission", "minutes": 4, "mode": "preserve"})
         ops.set_status(self.conn, a, "cancelled", "owner")
         d.tick()
-        self.assertEqual(self.port.get_backoffs(), {})
+        self.assertEqual(self.port.waiting.pending(), [])
 
     def test_wsl_is_rechecked_next_tick_after_a_boot_not_after_the_backoff(self):
         up = [False]
         d = self.make(now=lambda: self.t, wsl_up=lambda: up[0])
         t = self.task(size="S", goal="platform: linux")
         d.tick()
-        self.assertIn(t, self.port.get_backoffs())
+        self.assertTrue([row for row in self.port.waiting.pending(("task", t)) if row["kind"] == "deadline"])
         d.tick()
         self.assertEqual(self.fl.specs, [])
         up[0] = True                                         # the watchdog booted it; no time has passed

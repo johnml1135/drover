@@ -15,7 +15,6 @@ from .ledger.db import tx
 from .ledger.db import HubRequired, default_path, main_error
 
 
-
 def _policy():
     from . import config
     return config.get()["policy"]
@@ -321,40 +320,42 @@ def _tuner_epic(conn):
     return eid
 
 
-def _propose(conn, title, body, options):
-    """Open an owner question unless one with this title was ever asked. Nothing is applied here."""
-    if conn.execute("SELECT 1 FROM questions WHERE title=?", (title,)).fetchone():
-        return None
-    return ops.ask_question(conn, "epic", _tuner_epic(conn), title, body,
-                            [{"label": l, "description": d, "recommended": rec} for l, d, rec in options], actor="tuner")
-
-
 def proposals(conn, acc, stats):
+    from .ledger.waiting import Waiting, cause_key
+    waiting = Waiting(conn, "tuner")
     made = []
+
+    def offer(identity, title, body, options):
+        cause = cause_key("tuner", *identity)
+        if waiting.state(cause) is not None:
+            return None
+        return waiting.ask(cause, "epic", _tuner_epic(conn), title, body,
+                           [{"label": label, "description": description, "recommended": recommended}
+                            for label, description, recommended in options])
     for name, a in sorted(acc.items()):
         tag = f"{name} (criteria {a['version']})"
         if name in NO_RULE:
             if a["n"] >= SPOT_LABEL_MIN:
                 how = "spot-label a 30-item sample (need >=85% agreement)" if name == "note_admit" else "A/B on cost per landed task"
-                made.append(_propose(conn, f"Validate {tag}: no rule baseline", f"{a['n']} shadow decisions. Needs: {how}.",
+                made.append(offer(('validate', name, a['version']), f"Validate {tag}: no rule baseline", f"{a['n']} shadow decisions. Needs: {how}.",
                                      [("Start validation", how, True), ("Not now", "keep shadow mode", False)]))
         elif a["n"] >= PROMOTE_MIN and a["rule_acc"] is not None and a["model_acc"] > a["rule_acc"]:
-            made.append(_propose(conn, f"Promote {tag} from shadow to live?",
+            made.append(offer(('promote', name, a['version']), f"Promote {tag} from shadow to live?",
                                  f"{a['n']} decisions: model {a['model_acc']:.0%} vs rules {a['rule_acc']:.0%}.",
                                  [("Promote to live", "the decider acts above tau", True), ("Keep shadow", "gather more", False)]))
         if a["n"] >= 20 and a["model_acc"] < 0.7:
-            made.append(_propose(conn, f"Review criteria text for {tag}?",
+            made.append(offer(('criteria', name, a['version']), f"Review criteria text for {tag}?",
                                  f"Accuracy {a['model_acc']:.0%} over {a['n']} decisions. Rewriting needs an LLM; the tuner does not call one.",
                                  [("Run a Sonnet criteria review", "fresh Sonnet session reads misroute clusters", True),
                                   ("Leave as is", "", False)]))
     for key, per in sorted(stats.items()):
         for (backend, model), s in sorted(per.items()):
             if s["first_pass_n"] >= 10 and s["first_pass_ok"] / s["first_pass_n"] < 0.2:
-                made.append(_propose(conn, f"Pin a rule: stop routing {key} to {model}?",
+                made.append(offer(('pin', key, backend, model), f"Pin a rule: stop routing {key} to {model}?",
                                      f"First-pass gate rate {s['first_pass_ok']}/{s['first_pass_n']}.",
                                      [("Pin the rule", f"never route {key} to {model}", True), ("Keep routing", "", False)]))
             elif s["first_pass_n"] >= 10 and s["first_pass_ok"] / s["first_pass_n"] < route.MIN_FIRST_PASS:
-                made.append(_propose(conn, f"Review the brief template for {key} on {model}?",
+                made.append(offer(('brief', key, backend, model), f"Review the brief template for {key} on {model}?",
                                      f"First-pass gate rate {s['first_pass_ok']}/{s['first_pass_n']}, below {route.MIN_FIRST_PASS:.0%}.",
                                      [("Run a Sonnet brief review", "propose a template diff, replayed on 5 tasks", True),
                                       ("Leave as is", "", False)]))

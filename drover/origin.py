@@ -1,12 +1,10 @@
 """Sync local main with its remote and keep its checkout consistent."""
-import json
 import subprocess
 from pathlib import Path
 
 from . import placement
 
 FETCH_TIMEOUT_S = 120
-PAUSE_KEY = '_origin_pause_'
 
 
 class SyncError(ValueError):
@@ -94,24 +92,3 @@ def push_main(repo, remote='origin', main='main'):
         raise SyncError(f'push failed: {remote}/{main}; local landing is retained')
     # Push may not update tracking when remote.fetch excludes main. Preserve concurrent fetches.
     git(repo, 'update-ref', tracking, sha, old, check=False)
-
-
-def paused(port, name):
-    raw = port.get_setting(PAUSE_KEY + name.lower())
-    if not raw:
-        return False
-    state = json.loads(raw)
-    if port.get_question(state['question'])['status'] == 'open':
-        return True
-    port.set_setting(PAUSE_KEY + name.lower(), '')
-    return False
-
-
-def pause(port, name, target_kind, target_id, reason):
-    """Pause only this repo and ask once until the owner acknowledges the alert."""
-    if paused(port, name):
-        return
-    qid = port.ask_question(target_kind, target_id, f'Origin sync paused: {name}', body=str(reason),
-                            options=[{'label': 'Retry origin sync', 'recommended': True}])
-    port.set_setting(PAUSE_KEY + name.lower(), json.dumps({'question': qid}))
-    port.append_event('origin-sync-failed', {'repo': name, 'reason': str(reason)})

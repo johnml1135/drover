@@ -111,7 +111,7 @@ class FakeRepoPipeline(Base):
         self.assertEqual(self.status(tid), "needs-owner")
         self.assertIn("no platform-compatible seat", self.reason(tid))
         self.assertIn("windows", self.reason(tid))
-        self.assertNotIn(tid, self.port.get_backoffs())
+        self.assertFalse([row for row in self.port.waiting.pending(("task", tid)) if row["kind"] == "deadline"])
 
     def test_retry_without_a_measured_compatible_seat_waits(self):
         self.repo(["windows"])
@@ -122,7 +122,7 @@ class FakeRepoPipeline(Base):
         ops.set_status(self.conn, tid, "ready")
         self.assertEqual(self.tick_with_wsl()["launched"], [])
         self.assertEqual(self.status(tid), "ready")
-        self.assertIn(tid, self.port.get_backoffs())
+        self.assertTrue([row for row in self.port.waiting.pending(("task", tid)) if row["kind"] == "deadline"])
 
     def test_unconstrained_claude_launch_honours_the_repo_default(self):
         self.prog["run"]["default"] = "wsl"

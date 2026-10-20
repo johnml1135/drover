@@ -96,7 +96,9 @@ class TransitionTests(Base):
         with self.assertRaises(ValueError):
             ops.set_status(self.conn, t["id"], "blocked")
         ops.block(self.conn, t["id"], "waiting on owner")
-        self.assertEqual(ops.get_task(self.conn, t["id"])["blocker"]["reason"], "waiting on owner")
+        from drover.ledger.waiting import Waiting
+        rows = Waiting(self.conn).pending(("task", t["id"]))
+        self.assertEqual(rows[0]["data"]["note"], "waiting on owner")
         self.assertEqual(ops.unblock(self.conn, t["id"])["status"], "draft")
         self.assertIsNone(ops.get_task(self.conn, t["id"])["blocker"])
 
@@ -398,6 +400,7 @@ class CommentTests(Base):
         self.assertEqual(len(ops.events(self.conn, task_id=t["id"], kind="comment")), 1)
 
     def test_urgent_holds_dependents_and_release_restores(self):
+        from drover.ledger.waiting import Waiting, cause_key
         a = self.task("a")
         b = self.task("b", deps=[a["id"]])
         c = self.task("c", deps=[b["id"]], status="draft")
@@ -406,17 +409,22 @@ class CommentTests(Base):
         self.assertEqual(r["routed"], ["held"])
         self.assertEqual((self.status(a["id"]), self.status(b["id"]), self.status(c["id"]), self.status(free["id"])),
                          ("ready", "blocked", "blocked", "ready"))
-        self.assertEqual(ops.get_task(self.conn, b["id"])["blocker"]["reason"], "urgent")
-        self.assertEqual(sorted(ops.replan_release(self.conn, a["id"], reason="urgent")), sorted([b["id"], c["id"]]))
+        waiting = Waiting(self.conn, "owner")
+        cause = cause_key("urgent", "task", a["id"])
+        self.assertEqual({row["cause"] for row in waiting.pending(("task", b["id"]))}, {cause})
+        ops.set_status(self.conn, a["id"], "cancelled", "owner")
         self.assertEqual((self.status(b["id"]), self.status(c["id"])), ("ready", "draft"))
 
     def test_urgent_on_epic_holds_its_pending_tasks(self):
+        from drover.ledger.waiting import Waiting, cause_key
         e = ops.create_epic(self.conn, "p", "E")
         a = self.task("a", epic_id=e["id"])
         ops.add_comment(self.conn, "epic", e["id"], "owner", "pause", urgent=True)
         self.assertEqual(self.status(a["id"]), "blocked")
         self.assertIsNone(ops.claim_next(self.conn, self.worker()))
-        ops.replan_release(self.conn, e["id"], reason="urgent")
+        waiting = Waiting(self.conn, "owner")
+        qid = waiting.pending(("task", a["id"]))[0]["question_id"]
+        ops.answer_question(self.conn, qid, choice="Resume work")
         self.assertEqual(self.status(a["id"]), "ready")
 
     def test_replan_flag_creates_request_event(self):
@@ -435,98 +443,6 @@ class CommentTests(Base):
             ops.add_comment(self.conn, "run", "1", "owner", "x")
 
 
-class ReplanTests(Base):
-    def test_hold_covers_dependents_and_epic_scope_overlap_only(self):
-        e, e2 = ops.create_epic(self.conn, "p", "E"), ops.create_epic(self.conn, "p", "E2")
-        target = self.task("target", epic_id=e["id"], scope_files=["src/a/*"])
-        dep = self.task("dep", epic_id=e["id"], deps=[target["id"]])
-        dep2 = self.task("dep-of-dep", deps=[dep["id"]])  # other epic, still transitive dependent
-        overlap = self.task("overlap", epic_id=e["id"], scope_files=["src/a/x.py"])
-        other_epic_overlap = self.task("oe", epic_id=e2["id"], scope_files=["src/a/x.py"])
-        disjoint = self.task("disjoint", epic_id=e["id"], scope_files=["docs/*"])
-        held = ops.replan_hold(self.conn, target["id"], "system")
-        self.assertEqual(set(held), {dep["id"], dep2["id"], overlap["id"]})
-        st = {t["title"]: t["status"] for t in ops.list_tasks(self.conn)}
-        self.assertEqual(st, {"target": "blocked", "dep": "blocked", "dep-of-dep": "blocked", "overlap": "blocked",
-                              "oe": "ready", "disjoint": "ready"})
-        self.assertEqual(ops.get_task(self.conn, target["id"])["blocker"]["reason"], "replan")
-        self.assertEqual({ops.claim_next(self.conn, self.worker())["title"] for _ in range(2)}, {"oe", "disjoint"})
-        self.assertIsNone(ops.claim_next(self.conn, self.worker()))
-        self.assertEqual(len(ops.events(self.conn, task_id=target["id"], kind="hold")), 1)
-
-    def test_release_restores_prior_states(self):
-        e = ops.create_epic(self.conn, "p", "E")
-        target = self.task("t", epic_id=e["id"], scope_files=["a/*"])
-        draft = self.task("d", epic_id=e["id"], scope_files=["a/*"], status="draft")
-        ops.replan_hold(self.conn, target["id"])
-        released = ops.replan_release(self.conn, target["id"], "director")
-        self.assertEqual(set(released), {target["id"], draft["id"]})
-        self.assertEqual((self.status(target["id"]), self.status(draft["id"])), ("ready", "draft"))
-        self.assertEqual(ops.replan_release(self.conn, target["id"]), [])
-
-    def test_running_task_can_be_held_and_other_blockers_untouched(self):
-        t = self.task("t")
-        dep = self.task("dep", deps=[t["id"]])
-        ops.block(self.conn, dep["id"], "own reason")
-        ops.claim_next(self.conn, self.worker())
-        ops.replan_hold(self.conn, t["id"])
-        self.assertEqual([h["source"] for h in ops.get_task(self.conn, dep["id"])["blocker"]["holds"]],
-                         ["manual", t["id"]])
-        ops.replan_release(self.conn, t["id"])
-        self.assertEqual((self.status(t["id"]), self.status(dep["id"])), ("ready", "blocked"))
-
-    def test_cannot_hold_landed(self):
-        t = self.task("t")
-        ops.claim_next(self.conn, self.worker())
-        for s in ("running", "gated", "reviewed", "landed"):
-            ops.set_status(self.conn, t["id"], s, "w")
-        with self.assertRaises(IllegalTransition):
-            ops.replan_hold(self.conn, t["id"])
-
-
-class StaleHoldTests(Base):
-    def last_status_actor(self, tid):
-        return [e for e in ops.events(self.conn, task_id=tid, kind="status")][-1]["actor"]
-
-    def test_cancel_releases_dependents_as_the_actor(self):
-        a = self.task("a")
-        b = self.task("b", deps=[a["id"]])
-        ops.replan_hold(self.conn, a["id"])
-        self.assertEqual(self.status(b["id"]), "blocked")
-        ops.set_status(self.conn, a["id"], "cancelled", "owner", reason="drop")
-        self.assertEqual(self.status(b["id"]), "ready")
-        self.assertEqual(self.last_status_actor(b["id"]), "owner")
-
-    def test_source_leaving_replan_releases(self):
-        a = self.task("a")
-        b = self.task("b", deps=[a["id"]])
-        ops.replan_hold(self.conn, a["id"])
-        ops.set_status(self.conn, a["id"], "ready", "owner", reason="replanned")
-        self.assertEqual(self.status(b["id"]), "ready")
-
-    def test_sweep_releases_old_stale_holds_as_dispatcher_and_keeps_proposed(self):
-        a = self.task("a")
-        b = self.task("b", deps=[a["id"]], status="proposed")
-        c = self.task("c", deps=[a["id"]])
-        ops.replan_hold(self.conn, a["id"])
-        ops.block(self.conn, c["id"], "manual reason")
-        self.conn.execute("UPDATE tasks SET status='cancelled', blocker=NULL WHERE id=?", (a["id"],))   # pre-fix state
-        self.assertEqual(self.status(b["id"]), "blocked")
-        released = ops.release_stale_holds(self.conn, "dispatcher")
-        self.assertEqual(released, [b["id"]])
-        self.assertEqual(self.status(b["id"]), "proposed")
-        self.assertIsNone(ops.get_task(self.conn, b["id"])["approved_at"])
-        self.assertEqual(self.last_status_actor(b["id"]), "dispatcher")
-        self.assertEqual(self.status(c["id"]), "blocked")          # the manual hold stays
-        self.assertEqual([h["source"] for h in ops.get_task(self.conn, c["id"])["blocker"]["holds"]], ["manual"])
-        self.assertEqual(ops.release_stale_holds(self.conn, "dispatcher"), [])
-
-    def test_live_replan_source_keeps_its_holds(self):
-        a = self.task("a")
-        b = self.task("b", deps=[a["id"]])
-        ops.replan_hold(self.conn, a["id"])
-        self.assertEqual(ops.release_stale_holds(self.conn, "dispatcher"), [])
-        self.assertEqual(self.status(b["id"]), "blocked")
 
 
 class BacklogGateTests(Base):
@@ -552,13 +468,14 @@ class BacklogGateTests(Base):
         q = ops.ask_question(self.conn, "task", t["id"], "?")
         ops.answer_question(self.conn, q, text="yes")
         self.assertEqual(self.status(t["id"]), "needs-owner")
+        ops.unblock(self.conn, t["id"], "owner")
         ops.set_status(self.conn, t["id"], "draft", "owner")
         self.assertEqual(ops.approve(self.conn, t["id"])["status"], "ready")
 
     def test_claim_and_hold_release_never_make_unapproved_ready(self):
         t = self.task(status="proposed")
-        ops.replan_hold(self.conn, t["id"])
-        ops.replan_release(self.conn, t["id"])
+        ops.block(self.conn, t["id"], "Manual pause")
+        ops.unblock(self.conn, t["id"])
         self.assertEqual(self.status(t["id"]), "proposed")
         self.assertIsNone(ops.claim_next(self.conn, self.worker()))
 
@@ -583,38 +500,6 @@ class BacklogGateTests(Base):
         self.assertIsNotNone(got["landed"])
 
 
-class NestedHoldTests(Base):
-    def test_urgent_then_replan_needs_both_released(self):
-        a = self.task("a")
-        b = self.task("b", deps=[a["id"]])
-        ops.add_comment(self.conn, "task", a["id"], "owner", "stop", urgent=True)
-        ops.replan_hold(self.conn, a["id"])  # a itself is not blocked by urgent; b is held by both reasons
-        self.assertEqual(self.status(b["id"]), "blocked")
-        ops.replan_release(self.conn, a["id"], reason="urgent")
-        self.assertEqual(self.status(b["id"]), "blocked")  # replan still holds it
-        self.assertEqual(ops.replan_release(self.conn, a["id"], reason="replan"), [a["id"], b["id"]])
-        self.assertEqual((self.status(a["id"]), self.status(b["id"])), ("ready", "ready"))
-
-    def test_replan_hold_on_already_blocked_task_adds(self):
-        t = self.task("t")
-        ops.block(self.conn, t["id"], "manual reason")
-        ops.replan_hold(self.conn, t["id"])
-        self.assertEqual(len(ops.get_task(self.conn, t["id"])["blocker"]["holds"]), 2)
-        ops.unblock(self.conn, t["id"])  # removes only its own
-        self.assertEqual(self.status(t["id"]), "blocked")
-        self.assertEqual(ops.get_task(self.conn, t["id"])["blocker"]["holds"][0]["reason"], "replan")
-        ops.replan_release(self.conn, t["id"])
-        self.assertEqual(self.status(t["id"]), "ready")
-
-    def test_two_sources_each_release_own(self):
-        a, b = self.task("a"), self.task("b")
-        c = self.task("c", deps=[a["id"], b["id"]])
-        ops.replan_hold(self.conn, a["id"])
-        ops.replan_hold(self.conn, b["id"])
-        ops.replan_release(self.conn, a["id"])
-        self.assertEqual(self.status(c["id"]), "blocked")
-        ops.replan_release(self.conn, b["id"])
-        self.assertEqual(self.status(c["id"]), "ready")
 
 
 class FollowUpTests(Base):
@@ -633,27 +518,21 @@ class FollowUpTests(Base):
                 if "--actor" in act.option_strings:
                     self.assertEqual(act.default, "system")
 
-    def test_old_format_blocker_converted(self):
-        t = self.task()
-        ops.block(self.conn, t["id"], "old")
-        old = '{"prev":"ready","reason":"old"}'
-        self.conn.execute("UPDATE tasks SET blocker=? WHERE id=?", (old, t["id"]))
-        ops.add_hold(self.conn, t["id"], "T-9", "replan")
-        holds = ops.get_task(self.conn, t["id"])["blocker"]["holds"]
-        self.assertEqual([h["reason"] for h in holds], ["old", "replan"])
-        self.conn.execute("UPDATE tasks SET blocker=? WHERE id=?", (old, t["id"]))
-        self.assertTrue(ops.remove_hold(self.conn, t["id"], "manual"))
-        self.assertEqual(self.status(t["id"]), "ready")
 
     def test_replan_release_leaves_urgent_holds(self):
+        from drover.ledger.waiting import Waiting, cause_key
         a = self.task("a")
         b = self.task("b", deps=[a["id"]])
+        waiting = Waiting(self.conn, "owner")
         ops.add_comment(self.conn, "task", a["id"], "owner", "stop", urgent=True)
-        ops.replan_hold(self.conn, a["id"])
-        ops.replan_release(self.conn, a["id"])
+        ops.add_comment(self.conn, "task", a["id"], "owner", "revise", replan=True)
+        request = waiting.replans()[0]
+        ops.set_status(self.conn, a["id"], "ready", "owner")
+        waiting.release(cause_key("replan", request["id"]))
         self.assertEqual(self.status(b["id"]), "blocked")
-        self.assertEqual([h["reason"] for h in ops.get_task(self.conn, b["id"])["blocker"]["holds"]], ["urgent"])
-        ops.replan_release(self.conn, a["id"], reason="urgent")
+        rows = waiting.pending(("task", b["id"]))
+        self.assertEqual([row["cause"] for row in rows], [cause_key("urgent", "task", a["id"])])
+        ops.answer_question(self.conn, rows[0]["question_id"], choice="Resume work")
         self.assertEqual(self.status(b["id"]), "ready")
 
     def test_board_escapes_links(self):

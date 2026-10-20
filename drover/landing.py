@@ -12,7 +12,6 @@ import time
 from pathlib import Path, PureWindowsPath
 
 from . import config, ci, placement, origin
-from .port import DirectPort
 from .ledger import ops, landing as storage
 
 MIN_SIZE, MAX_SIZE = 1, 5
@@ -30,7 +29,6 @@ def default_size():
 BATCHING_OFF_MEDIAN_S = 600          # plan section 12: batching turns off once the median gate is 10 minutes or less
 MIN_GATES_FOR_OFF = 5
 VERDICT = re.compile(r'^LAND@([0-9a-fA-F]{7,40})$')
-HOLD_KEY, HOLD_QUESTION_KEY = 'landing_hold', 'landing_hold_question'
 RETRY, KEEP_HOLDING = 'Retry landing', 'Keep holding'
 PRIORITY_ORDER = ('P0', 'P1', 'P2', 'P3', 'P4')
 
@@ -307,24 +305,6 @@ def _epic(conn, title):
     return ops.create_epic(conn, 'drover', title, plan_md='Landing alerts.')['id']
 
 
-def held(conn, base_sha):
-    """True while landing is held for a red base. The hold ends when the base moves or the owner answers Retry."""
-    sha = ops.get_setting(conn, HOLD_KEY, '')
-    if not sha:
-        return False
-    if sha != base_sha:
-        ops.set_setting(conn, HOLD_KEY, '')
-        return False
-    qid = ops.get_setting(conn, HOLD_QUESTION_KEY, '')
-    if qid:
-        q = ops.get_question(conn, int(qid))
-        if q['status'] == 'answered' and q['answer_choice'] == RETRY:
-            storage.forget_base(conn, base_sha)
-            ops.set_setting(conn, HOLD_KEY, '')
-            return False
-    return True
-
-
 def base_status(conn, repo, work, gate_fn, base_sha, result):
     """'green' or 'red' for the base commit itself, gated at most once per base SHA."""
     known = storage.base_status(conn, base_sha)
@@ -337,37 +317,49 @@ def base_status(conn, repo, work, gate_fn, base_sha, result):
     return status
 
 
-def base_red(conn, result, base_sha, tasks):
+def base_red(conn, result, base_sha, tasks, repo_key):
     """Blame no task: hold landing and ask the owner."""
     result['outcome'] = 'base-red'
     result['base_sha'] = base_sha
-    ops.set_setting(conn, HOLD_KEY, base_sha)
-    qid = ops.ask_question(
-        conn, 'epic', _epic(conn, 'Landing'), 'The base branch is red: landing is held',
+    from .ledger.waiting import Waiting, BASE, cause_key
+    waiting = Waiting(conn, 'landing')
+    cause = cause_key('base', repo_key, base_sha)
+    waiting.wait(('merge_queue', repo_key), BASE, cause_key(repo_key, base_sha), cause=cause,
+                 data={'repo': repo_key, 'sha': base_sha, 'mode': 'blocked'})
+    qid = waiting.ask(
+        cause, 'epic', _epic(conn, 'Landing'), 'The base branch is red: landing is held',
         f'The full gate fails on the base commit {base_sha[:12]} itself, so no task was blamed and '
         f'{len(tasks)} reviewed task(s) are waiting. Fix the base, then choose Retry landing.',
         options=[{'label': RETRY, 'description': 'gate the base again and resume landing', 'recommended': True},
-                 {'label': KEEP_HOLDING, 'description': 'stay held'}], actor='landing')
-    ops.set_setting(conn, HOLD_QUESTION_KEY, qid)
+                 {'label': KEEP_HOLDING, 'description': 'stay held'}])
     ops.event(conn, 'base-red', 'landing', {'sha': base_sha, 'question': qid, 'tasks': [t['id'] for t in tasks]})
 
 
 def sync_main(conn, repo, remote, branch, repo_name=None):
     """Sync or return the repo hold, recording an owner alert on fetch failure."""
-    name = repo_name or str(Path(repo).resolve())
-    port = DirectPort(conn, actor='landing')
-    if origin.paused(port, name):
+    from .ledger.waiting import Waiting, OWNER_ANSWER, cause_key, repo_key
+    name = repo_key(repo_name, repo)
+    waiting = Waiting(conn, 'landing')
+    cause = cause_key('origin', name)
+    if waiting.state(cause) in ('open', 'authorized', 'attempting') and not waiting.consume_retry(cause):
+        waiting.wait(('merge_queue', name), OWNER_ANSWER, cause_key(cause), cause=cause,
+                     data={'mode': 'blocked'})
         return {'outcome': 'paused', 'reason': 'origin sync paused'}
     try:
         origin.sync(repo, remote, branch, run=git, timeout=FETCH_TIMEOUT_S)
     except origin.FetchFailed as e:
-        origin.pause(port, name, 'epic', _epic(conn, 'Landing'), str(e))
+        waiting.wait(('merge_queue', name), OWNER_ANSWER, cause_key(cause), cause=cause,
+                     data={'mode': 'blocked', 'note': str(e)})
+        waiting.ask(cause, 'epic', _epic(conn, 'Landing'), f'Origin sync paused: {name}', str(e),
+                    options=[{'label': 'Retry origin sync', 'recommended': True}])
+        ops.event(conn, 'origin-sync-failed', 'landing', {'repo': name, 'reason': str(e)})
         return {'outcome': 'paused', 'reason': str(e)}
     except origin.SyncError as e:
         reason = str(e)
         for task in reviewed_tasks(conn, repo, repo_name):
             ops.set_status(conn, task['id'], 'needs-owner', actor='landing', reason=reason)
         return {'outcome': 'needs-owner', 'reason': reason}
+    ops.event(conn, 'origin-synced', 'landing', {'repo': name})
     return None
 
 
@@ -387,7 +379,8 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     if sync_result:
         result.update(sync_result)
         return result
-    if held(conn, git(repo, 'rev-parse', base_ref).stdout.strip()):
+    from .ledger.waiting import Waiting, repo_key
+    if Waiting(conn, actor).pending(('merge_queue', repo_key(repo_name, repo))):
         return {'outcome': 'held', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
                 'decisions': 0, 'gate_s': [], 'batch': []}
     tasks = form_batch(conn, repo, base_ref, size, repo_name)
@@ -447,7 +440,8 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 continue
             return
         if base_status(conn, repo, work, gate_fn, base_sha, result) == 'red':
-            return base_red(conn, result, base_sha, tasks)
+            from .ledger.waiting import repo_key
+            return base_red(conn, result, base_sha, tasks, repo_key(repo_name, repo))
         failures = _failures(receipt, tasks)
         culprit, how, asked = attribute(conn, tasks, failures, decider)
         result['decisions'] += asked

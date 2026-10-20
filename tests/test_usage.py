@@ -228,7 +228,12 @@ class DispatcherSeats(unittest.TestCase):
                     tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
                     ops.approve(conn, tid)
                     if scenario == 'backoff':
-                        ops.set_backoff(conn, tid, NOW + 1000, 1)
+                        from drover.ledger.waiting import Waiting, DEADLINE, cause_key
+                        Waiting(conn).wait(("task", tid), DEADLINE, cause_key(tid, "worker", "admission"),
+                                           cause=cause_key("deadline", tid, "worker", "admission"),
+                                           timeout_at=NOW + 1000,
+                                           data={"role": "worker", "reason_code": "admission",
+                                                 "minutes": 1, "mode": "preserve"})
                 d.tick()
                 clock[0] += 61
                 d.tick()

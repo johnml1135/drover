@@ -15,9 +15,6 @@ from . import config, garden, ci, placement, origin, repos
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
 DISPATCH_KEY = "dispatch_enabled"
-GATE_CMD_KEY = "gate_cmd_"
-GATE_Q_KEY = "_gate_question_"
-UNKNOWN_REASON = "unknown gate"
 TRUE = ("1", "true", "yes", "on")
 
 
@@ -137,86 +134,42 @@ class Pipeline:
             prog = repos.load(prog, checkout=checkout)
         except repos.RepoError:
             return None
-        override = self._owner_gate_cmd(repos.repo_name(prog).lower()) if repos.ci_policy(prog)["unknown"] else None
-        if override:
-            prog = repos.with_test_script(prog, override)
+        if repos.ci_policy(prog)["unknown"]:
+            from .ledger.waiting import cause_key, repo_key
+            answer = self.port.waiting.answer(cause_key("script", repo_key(repos.repo_name(prog))))
+            if answer:
+                prog = repos.with_test_script(prog, answer["text"])
         return prog
 
-    def _owner_gate_cmd(self, name):
-        """The gate command the owner gave, or None. The setting is trusted only while it names the repo's own
-        unknown-gate question, that question is answered, its answer text is exactly this command and the answer
-        was recorded by the owner: a value written straight into settings (any API client can PUT one) is ignored."""
-        try:
-            raw = json.loads(self.port.get_setting(GATE_CMD_KEY + name) or "")
-            qid = int(raw["question"])
-            if str(qid) != str(self.port.get_setting(GATE_Q_KEY + name)):
-                return None
-            q = self.port.get_question(qid)
-        except (ValueError, TypeError, KeyError, AttributeError):
-            return None
-        answered = [e for e in self.port.events("question-answered") if e["data"].get("question") == qid]
-        if q["status"] != "answered" or (q.get("answer_text") or "").strip() != raw.get("cmd") \
-                or not answered or answered[-1]["actor"] != "owner":
-            return None
-        try:
-            repos.normalize({"name": name, "repo": ".", "scripts": {"test": raw["cmd"]}})
-        except repos.RepoError:
-            return None
-        return raw["cmd"]
 
     # ---- the unknown-gate question -------------------------------------------------------------------
-    def gate_known(self, task):
-        """True when the task's repo can be gated. Otherwise the task is sent to the owner (needs-owner) and False
-        comes back: a repo without config gets a reason; an unknown gate gets the question, asked once per repo."""
+
+
+    def prepare_dispatch(self, task) -> bool:
+        """Require a known script and register one shared owner decision when absent."""
+        from .ledger.waiting import OWNER_ANSWER, cause_key, repo_key
         prog = self.repo(task)
         tid = task["id"]
         if prog is None:
             self.port.set_status(tid, "needs-owner", reason=f"no repo config for {task.get('repo')!r}")
             return False
-        if origin.paused(self.port, repos.repo_name(prog)):
-            self.port.set_status(tid, "ready", reason="origin sync paused; answer the repo alert to retry")
+        waiting = self.port.waiting
+        name = repo_key(repos.repo_name(prog))
+        origin_cause = cause_key("origin", name)
+        if waiting.state(origin_cause) in ("open", "attempting"):
+            waiting.wait(("task", tid), OWNER_ANSWER, cause_key(origin_cause), cause=origin_cause,
+                         data={"mode": "blocked"})
             return False
         if not repos.ci_policy(prog)["unknown"]:
             return True
-        name = repos.repo_name(prog)
-        qid = self.port.get_setting(GATE_Q_KEY + name.lower())
-        reason = f"{UNKNOWN_REASON}: {name}"
-        if qid is None:
-            hint = repos.ci_policy(prog).get("hint")
-            qid = self.port.ask_question(
-                "task", tid, f"What is the test script path for {name}?",
-                body=("Add [scripts] test to .drover/config.toml, or answer with its relative .ps1 script path."
-                      + (f" Hint: {hint}." if hint else "")), needs_owner=True)
-            self.port.set_setting(GATE_Q_KEY + name.lower(), qid)
-        else:
-            self.port.set_status(tid, "needs-owner", reason=f"{reason} (question {qid})")
+        cause = cause_key("script", name)
+        waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
+                     data={"mode": "needs-owner"})
+        hint = repos.ci_policy(prog).get("hint")
+        waiting.ask(cause, "task", tid, f"What is the test script path for {name}?",
+                    "Add [scripts] test to .drover/config.toml, or answer with its relative .ps1 script path."
+                    + (f" Hint: {hint}." if hint else ""))
         return False
-
-    def sync_gates(self):
-        """Turn an answered unknown-gate question into the repo's gate command and requeue every task of that
-        repo it held (the ledger requeues only the task the question targeted). Returns the requeued task ids."""
-        out = []
-        for name, prog in self.all_repos().items():
-            qid = self.port.get_setting(GATE_Q_KEY + name)
-            if qid is None or self._owner_gate_cmd(name):
-                continue
-            q = self.port.get_question(int(qid))
-            text = (q.get("answer_text") or "").strip()
-            if q["status"] != "answered" or not text:
-                continue
-            self.port.set_setting(GATE_CMD_KEY + name, json.dumps({"cmd": text, "question": int(qid), "actor": "owner"}))
-            if self._owner_gate_cmd(name) is None:           # not an owner's answer, or not a usable command
-                self.port.set_setting(GATE_CMD_KEY + name, "")
-                continue
-            for t in self.port.list_tasks("needs-owner"):
-                if str(t["repo"]).lower() == name and self._held_for_gate(t["id"]):
-                    self.port.set_status(t["id"], "ready", reason="gate command answered")
-                    out.append(t["id"])
-        return out
-
-    def _held_for_gate(self, task_id):
-        last = [e for e in self.port.events("status") if e["task_id"] == task_id]
-        return bool(last) and str(last[-1]["data"].get("reason") or "").startswith(UNKNOWN_REASON)
 
     # ---- worktrees -----------------------------------------------------------------------------------
     def worktree(self, task):
@@ -304,15 +257,26 @@ class Pipeline:
 
     def _create(self, t, prog, repo, branch, source=None):
         tid, remote, default = t["id"], repos.remote_name(prog), repos.default_branch(prog)
-        if origin.paused(self.port, repos.repo_name(prog)):
+        from .ledger.waiting import OWNER_ANSWER, cause_key, repo_key
+        waiting = self.port.waiting
+        name = repo_key(repos.repo_name(prog))
+        cause = cause_key("origin", name)
+        if waiting.state(cause) in ("open", "authorized", "attempting") and not waiting.consume_retry(cause):
+            waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
+                         data={"mode": "blocked"})
             raise WorktreeRefused("origin sync paused; answer the repo alert to retry")
         try:
             origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
         except origin.FetchFailed as e:
-            origin.pause(self.port, repos.repo_name(prog), "task", tid, str(e))
+            waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
+                         data={"mode": "needs-owner", "note": str(e)})
+            waiting.ask(cause, "task", tid, f"Origin sync paused: {name}", str(e),
+                        options=[{"label": "Retry origin sync", "recommended": True}])
+            self.port.append_event("origin-sync-failed", {"repo": name, "reason": str(e)})
             raise WorktreeRefused(str(e)) from e
         except origin.SyncError as e:
             raise WorktreeRefused(str(e)) from e
+        self.port.append_event("origin-synced", {"repo": name})
         base = self.base_ref(prog)
         name = f"drover-{tid}"
         dest = str(Path(repos.native(join_cfg(repos.worktree_root(prog), name))).resolve())

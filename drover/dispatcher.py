@@ -44,7 +44,6 @@ WALL_MIN = {"S": 30, "M": 60, "L": 120}
 IDLE_MIN = 10
 MAX_LAUNCH_ERRORS = 3
 MAX_PROVIDER_ERRORS = 5     # provider errors in a row (never counted as task failures) before the owner is alerted
-PROVIDER_COOLDOWN_S = 300   # a review is not restarted this soon after a provider error
 CLAIM_STALE_S = 300
 SCAN_EVERY_S = 60            # how often live runs are checked against the process list
 ORPHAN_SCANS = 2             # consecutive clean scans that miss a run's runner before it is orphaned
@@ -203,7 +202,6 @@ class Dispatcher:
         self.scan_every_s, self.last_scan, self.scan_unknown = SCAN_EVERY_S, None, False
         self.recovered = False
         self.unavailable = {}                # (backend, placement) -> when its binary was found missing
-        self.wsl_waiting = set()             # re-checked next tick when the watchdog brings WSL up
         self.cancelling = {}                 # run_id -> (task_id, placement): cancelled runner may still exist
         self.finish_tries = {}
         self.live = {}                       # run_id -> (handle, task_id, spec)
@@ -228,19 +226,6 @@ class Dispatcher:
         except Exception as e:
             self.port.append_event("decide-error", {"question": name, "error": repr(e)}, task_id)
             return None
-
-    def _replan(self, task_id, trigger, **data):
-        self.port.append_event("replan-request", {"trigger": trigger, **data}, task_id)
-        self.port.replan_hold(task_id, "replan")
-
-    def _release_stale_holds(self):
-        """Release holds whose source task is landed, cancelled or out of replan (also clears holds left from before
-        this sweep existed). Scans the blocked tasks once per tick (cost grows with their number); never raises."""
-        try:
-            return self.port.release_stale_holds()
-        except Exception as e:
-            self._safe_event("stale-hold-error", {"error": repr(e)[:300]})
-            return []
 
     # ---- reap ---------------------------------------------------------------------------------------
     def reap(self):
@@ -326,7 +311,7 @@ class Dispatcher:
             pass
         elif st == "blocked":
             p.finish_run(run_id, "blocked", note=note, **usage)
-            self._replan(task_id, "blocker", blocker=rec["blocker"])
+            self.port.waiting.request_replan(task_id, "blocker", {"blocker": rec["blocker"]})
         elif st == "ready_to_commit":
             try:
                 sha = self.pipeline.commit_ready(p.get_task(task_id), run_id, rec["commit_message"])
@@ -368,7 +353,7 @@ class Dispatcher:
             return p.set_status(task_id, "needs-owner", reason=f"{streak} provider errors in a row: {message}"[:300])
         minutes = min(BACKOFF_MAX_MIN, 2 ** (streak - 1))
         p.set_status(task_id, "ready", reason=f"provider error: {message}"[:300])
-        p.set_backoff(task_id, self.now() + minutes * 60, minutes)
+        p.waiting.delay(task_id, "worker", "provider", self.now(), minutes=minutes)
 
     def _env_block_to_ready(self, task_id, run_id, rec, usage, result):
         """A worker blocked only by the sandbox (the Drover gate runs the full suites) with work in its worktree is
@@ -412,9 +397,9 @@ class Dispatcher:
             self._pend(task_id, r["decision_id"], "retry_or_escalate", took=rule)
         r = self._ask("plan_wrong", state, "no", task_id)
         if r and r.get("acted") and r.get("answer"):
-            return self._replan(task_id, "plan-wrong", failures=f)
+            return self.port.waiting.request_replan(task_id, "plan-wrong", {"failures": f})
         if second and at_top(run):
-            return self._replan(task_id, "retries-exhausted", failures=f, model=run["model"])
+            return self.port.waiting.request_replan(task_id, "retries-exhausted", {"failures": f, "model": run["model"]})
         ladder = ladders().get(run["backend"], [])
         new = ladder[ladder.index(run["model"]) + 1] if second and run["model"] in ladder else run["model"]
         p.append_event("retry" if not second else "escalate", {"failures": f, "model": run["model"], "to": new}, task_id)
@@ -706,8 +691,9 @@ class Dispatcher:
         if self._review_streak(runs) >= MAX_REVIEW_TRIES:
             p.set_status(tid, "needs-owner", reason=f"{MAX_REVIEW_TRIES} reviews in a row gave no verdict")
             return False
-        last = next((r for r in reversed(runs) if r["role"] == "review" and r["ended"]), None)
-        if last and last["outcome"] == "provider-error" and self.now() - _epoch(last["ended"]) < PROVIDER_COOLDOWN_S:
+        from .ledger.waiting import DEADLINE
+        if any(row["kind"] == DEADLINE and row["data"]["role"] == "review"
+               for row in p.waiting.pending(("task", tid))):
             return False
         if pl.head(task) != sha:
             p.set_status(tid, "ready", reason="the worktree moved after the gate; work must be gated again")
@@ -797,7 +783,7 @@ class Dispatcher:
                 r = self._ask("landed_diff_stale", {"landed": e["task_id"], "waiting": dep, "goal": t["goal"]},
                               "no", dep)
                 if r and r.get("acted") and r.get("answer"):
-                    self._replan(dep, "stale-brief", landed=e["task_id"])
+                    self.port.waiting.request_replan(dep, "stale-brief", {"landed": e["task_id"]})
 
     # ---- launch -------------------------------------------------------------------------------------
     def _launch(self, task, route, policy, placement, cwd=None):
@@ -1087,11 +1073,24 @@ class Dispatcher:
         base = self.route_fn(t, policy["data"], **self._route_inputs(task, admitted))
         if base.get("borrow_seat"):
             seat = base["borrow_seat"]
-            if self._director_borrow_approved(task["id"], seat):
-                base = route_mod.choose({**t, "director_seat": seat}, policy["data"],
-                                        **self._route_inputs(task, admitted), director_borrow_approved=True)
-            else:
+            from .ledger.waiting import OWNER_ANSWER, cause_key
+            waiting = self.port.waiting
+            cause = cause_key("borrow", task["id"], seat)
+            answer = waiting.answer(cause)
+            if answer is None:
+                waiting.wait(("task", task["id"]), OWNER_ANSWER, cause_key(cause), cause=cause,
+                             data={"mode": "needs-owner"})
+                waiting.ask(cause, "task", task["id"], f"Allow director to borrow {seat}?",
+                            "This approval applies to director work on this task and account.",
+                            options=[{"label": "Approve borrowing"}, {"label": "Keep default seat"}])
                 return base
+            approved = answer["choice"] == "Approve borrowing"
+            t = {**t}
+            t.pop("director_seat", None)
+            if approved:
+                t["director_seat"] = seat
+            base = route_mod.choose(t, policy["data"], **self._route_inputs(task, admitted),
+                                    director_borrow_approved=approved)
         if not base.get("backend"):
             return base
         if task.get("role") in route_mod.DIRECTOR_ROLES:
@@ -1104,17 +1103,6 @@ class Dispatcher:
         return route_mod.choose(t, data, seats=config_mod.get()["seats"],
                                 **self._route_inputs(task, admitted))
 
-    def _director_borrow_approved(self, task_id, seat):
-        for ev in reversed(self.port.events("director-borrow")):
-            if ev["actor"] == "dispatcher" and ev["task_id"] == task_id and ev["data"].get("seat") == seat:
-                q = self.port.get_question(ev["data"]["question"])
-                return q["status"] == "answered" and q["answer_choice"] == "Approve borrowing"
-        qid = self.port.ask_question("task", task_id, f"Allow director to borrow {seat}?",
-                                     "This approval applies to director work on this task and account.",
-                                     options=[{"label": "Approve borrowing"}, {"label": "Keep default seat"}],
-                                     needs_owner=True)
-        self.port.append_event("director-borrow", {"seat": seat, "question": qid}, task_id)
-        return False
 
     def _seat_tick(self):
         from . import stats
@@ -1156,15 +1144,13 @@ class Dispatcher:
             return None
 
     # ---- tick ---------------------------------------------------------------------------------------
-    def _defer(self, task, why):
-        """Put a claimed task back and keep it out of the claim order for 1, 2, 4 ... 30 minutes, so it does not
-        block the tasks behind it (head of line) and does not churn status events every tick."""
+    def _defer(self, task, why, *, reason_code="admission"):
+        """Return a claim to ready and let Waiting own its durable retry deadline."""
         p, tid = self.port, task["id"]
-        prev = p.get_backoffs().get(tid)
-        minutes = min(BACKOFF_MAX_MIN, prev["min"] * 2) if prev else 1
         p.set_status(tid, "ready", reason=why)
-        p.set_backoff(tid, self.now() + minutes * 60, minutes)
-        p.append_event("backoff", {"minutes": minutes, "why": why}, tid)
+        wait_id = p.waiting.delay(tid, "worker", reason_code, self.now())
+        row = next(row for row in p.waiting.pending(("task", tid)) if row["id"] == wait_id)
+        p.append_event("backoff", {"minutes": row["data"]["minutes"], "why": why}, tid)
 
     def _worktree(self, task):
         """The task's worktree path, or False when it could not have one (it is then needs-owner with the reason)."""
@@ -1186,16 +1172,6 @@ class Dispatcher:
             self.port.set_status(task["id"], "needs-owner", reason=f"worktree failed: {e!r}"[:300])
         return False
 
-    def _prune_backoffs(self, backoffs):
-        """Drop backoff entries of tasks that are no longer ready (landed, cancelled, running ...)."""
-        if not backoffs:
-            return backoffs
-        ready = {t["id"] for t in self.port.list_tasks("ready")}
-        for tid in [t for t in backoffs if t not in ready]:
-            self.port.set_backoff(tid, None, 0)
-            del backoffs[tid]
-            self.wsl_waiting.discard(tid)
-        return backoffs
 
     def tick(self):
         self._seat_tick()
@@ -1211,10 +1187,8 @@ class Dispatcher:
             out["recovered"] = self.watch_runs()
         out["recovered"] += self.requeue_stale_claims()
         self.check_stale()
-        self._release_stale_holds()
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
             return out
-        out["recovered"] += self.pipeline.sync_gates()
         res = self.resources_fn(new_workers=1)
         self.last_resources = res
         out["verdict"] = res["verdict"]
@@ -1234,19 +1208,14 @@ class Dispatcher:
         slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0))
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
         slots -= len(out["reviewed"])
-        if self.wsl_waiting and self.launcher.wsl_up():       # WSL came up (the watchdog booted it): do not wait out the backoff
-            for tid in self.wsl_waiting:
-                p.set_backoff(tid, None, 0)
-            self.wsl_waiting.clear()
-        backoffs = self._prune_backoffs(p.get_backoffs())
-        skip = {tid for tid, b in backoffs.items() if b["until"] > self.now()}
+        skip = {row["subject_key"] for row in p.waiting.pending() if row["subject_kind"] == "task"}
         while slots > 0:
             task = p.claim_next({}, exclude=skip)
             if task is None:
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            if task.get("write", True) and not self.pipeline.gate_known(task):
+            if task.get("write", True) and not self.pipeline.prepare_dispatch(task):
                 continue                             # no known gate for the repo: the owner was asked
             route = self._route(task, policy, admitted)
             if route.get("needs_owner"):
@@ -1267,8 +1236,7 @@ class Dispatcher:
                 continue
             if placement == "wsl" and not self.launcher.wsl_up():
                 p.note_wsl_needed(task["id"])
-                self._defer(task, "WSL is not running")
-                self.wsl_waiting.add(task["id"])
+                self._defer(task, "WSL is not running", reason_code="wsl-down")
                 continue
             if placement == "wsl" and self._wsl_blocked():
                 self._defer(task, self._wsl_blocked())
@@ -1277,8 +1245,6 @@ class Dispatcher:
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1
-                if task["id"] in backoffs:
-                    p.set_backoff(task["id"], None, 0)
         return out
 
 

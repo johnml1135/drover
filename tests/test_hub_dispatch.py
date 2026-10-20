@@ -212,14 +212,6 @@ class LedgerExclusion(unittest.TestCase):
         self.assertIsNone(ops.claim_next(self.conn, {}, exclude={a}))
         self.assertEqual(ops.claim_next(self.conn, {})["id"], a)
 
-    def test_backoff_round_trip(self):
-        self.assertEqual(ops.get_backoffs(self.conn), {})
-        ops.set_backoff(self.conn, "T-1", 5.0, 2)
-        ops.set_backoff(self.conn, "T-2", 9.0, 4)
-        self.assertEqual(ops.get_backoffs(self.conn), {"T-1": {"until": 5.0, "min": 2}, "T-2": {"until": 9.0, "min": 4}})
-        ops.set_backoff(self.conn, "T-1", None, 0)
-        self.assertEqual(list(ops.get_backoffs(self.conn)), ["T-2"])
-
 
 class ContractParsers(unittest.TestCase):
     def test_allowance_used_shapes(self):
