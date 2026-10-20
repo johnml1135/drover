@@ -1,6 +1,7 @@
 """CI's public interface, using repo scripts and the real composed runner command."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -101,8 +102,95 @@ class CITests(unittest.TestCase):
         self.repo.git('branch', '-f', 'main', 'HEAD')
         commit = self.repo.commit('docs/next.md', 'more docs\n')
         result = self.service.run(prog, self.repo.repo, commit)
-        self.assertEqual(result['steps'][0]['command'][-1], 'scripts/docs.ps1')
+        self.assertIn('--check', result['steps'][0]['command'])
+        self.assertEqual(result['steps'][1]['command'][-1], 'scripts/docs.ps1')
         self.assertIn('docs script', result['log_tail'])
+
+    def test_docs_script_cannot_bypass_diff_check(self):
+        self.configure('raise SystemExit(99)', docs=True)
+        self.repo.commit('scripts/docs.ps1', 'Write-Output "docs script ran"\nexit 0\n')
+        self.repo.commit('drover.toml', '[scripts]\ntest="scripts/check action.ps1"\ndocs="scripts/docs.ps1"\n')
+        self.repo.git('branch', '-f', 'main', 'HEAD')
+        for content, diagnostic in (('<<<<<<< ours\ntext\n=======\nother\n>>>>>>> theirs\n',
+                                     'conflict marker'), ('text\n\n', 'blank line at EOF')):
+            commit = self.repo.commit('docs/readme.md', content)
+            for kind in ('checks', 'full'):
+                with self.subTest(content=diagnostic, kind=kind):
+                    result = self.service.run(self.machine, self.repo.repo, commit, kind=kind)
+                    self.assertFalse(result['passed'])
+                    self.assertEqual(len(result['steps']), 1)
+                    self.assertIn('--check', result['steps'][0]['command'])
+                    self.assertIn(diagnostic, '\n'.join(result['log_tail']))
+                    self.assertNotIn('docs script ran', result['log_tail'])
+
+    @unittest.skipIf(os.name == 'nt', 'Linux resource scope')
+    def test_priority_controls_surround_the_verbatim_script_in_the_runner(self):
+        # A machine executable stand-in lets the composed command run even where
+        # the sandbox cannot access the systemd user bus. It execs the real script.
+        bindir = self.repo.root / 'bin'
+        bindir.mkdir()
+        calls = self.repo.root / 'scopes.jsonl'
+        scope = bindir / 'systemd-run'
+        scope.write_text(f"#!{sys.executable}\n" +
+                         'import json,os,sys\n'
+                         'args=sys.argv[1:]\n'
+                         'if args[-1:] == ["true"]: raise SystemExit(0)\n'
+                         'with open(os.environ["SCOPE_CALLS"], "a") as f: f.write(json.dumps(args)+"\\n")\n'
+                         'inner=args[args.index("--")+1:]\n'
+                         'os.execvp(inner[0], inner)\n')
+        scope.chmod(0o755)
+        prog = self.configure('print("script executed")')
+        commit = self.repo.commit('source.txt', 'changed')
+        self.machine['run']['env'] = {'PATH': str(bindir) + os.pathsep + os.environ['PATH'],
+                                      'SCOPE_CALLS': str(calls)}
+        prog = repos.load(self.machine)
+        command = repos.script_argv(prog, platform=PLATFORM)
+        for priority, weight in (('P0', 1000), ('P1', 1000), ('P2', 100), ('P3', 30), ('P4', 10)):
+            with self.subTest(priority=priority):
+                result = self.service.run(prog, self.repo.repo, commit, priority=priority)
+                self.assertTrue(result['passed'])
+                self.assertEqual(result['steps'][0]['command'], command)
+                self.assertIn('script executed', result['log_tail'])
+                invocation = json.loads(calls.read_text().splitlines()[-1])
+                self.assertEqual(invocation[:4], ['--user', '--scope', '--quiet', '-p'])
+                self.assertIn(f'CPUWeight={weight}', invocation)
+                self.assertIn(f'IOWeight={weight}', invocation)
+                inner = invocation[invocation.index('--')+1:]
+                if priority == 'P4':
+                    self.assertIn('MemoryMax=8G', invocation)
+                    self.assertEqual(inner, ['timeout', '1800', *command])
+                else:
+                    self.assertFalse(any(a.startswith('MemoryMax=') for a in invocation))
+                    self.assertEqual(inner, command)
+
+        # Shorten only the machine's timeout executable for a real expiry test;
+        # the CI command above must still supply the historical 1800 seconds.
+        timeout = bindir / 'timeout'
+        timeout.write_text(f"#!{sys.executable}\nimport os,sys\n" +
+                           'assert sys.argv[1] == "1800"\n' +
+                           f'os.execv({shutil.which("timeout")!r}, ["timeout", ".3", *sys.argv[2:]])\n')
+        timeout.chmod(0o755)
+        commit = self.repo.commit('scripts/check action.ps1', 'Write-Output "started"\nStart-Sleep 60\nexit 0\n')
+        result = self.service.run(prog, self.repo.repo, commit, priority='P4')
+        self.assertEqual((result['passed'], result['exit_code']), (False, 124))
+        # The old fallback remains valid on machines without a usable user bus.
+        scope.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
+        calls.unlink()
+        commit = self.repo.commit('scripts/check action.ps1', 'Write-Output "unwrapped"\nexit 0\n')
+        result = self.service.run(prog, self.repo.repo, commit, priority='P4')
+        self.assertTrue(result['passed'])
+        self.assertIn('unwrapped', result['log_tail'])
+        self.assertFalse(calls.exists())
+
+    def test_wall_timeout_stops_a_script_that_keeps_printing(self):
+        self.configure('import time; exec("while True: print(1,flush=True); time.sleep(.05)")')
+        commit = self.repo.commit('source.txt', 'changed')
+        prog = {**self.machine, 'gate': {**self.machine['gate'], 'timeout_s': 1, 'idle_s': 10}}
+        conn = db.connect(self.repo.root / 'ledger.db')
+        self.addCleanup(conn.close)
+        with self.assertRaisesRegex(ci.CIError, 'wall-clock limit'):
+            self.service.run(prog, self.repo.repo, commit, conn=conn)
+        self.assertEqual(slots.lease_queue(conn), [])
 
     @unittest.skipIf(os.name == 'nt', 'both composed entrypoints execute locally on WSL')
     def test_full_ci_requires_each_platform_and_stops_at_first_failure(self):

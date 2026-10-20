@@ -196,7 +196,7 @@ class CI:
         self.launcher = launcher or RunnerLauncher(runs_dir=self.runs_dir)
         self._resumed = {}
 
-    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None):
+    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2'):
         """Plan a repo script at commit and return its runner spec and CI context."""
         placement.prepare_worktree(checkout)
         prog = repos.load(prog, commit, checkout)
@@ -206,10 +206,11 @@ class CI:
         paths = changed_paths(checkout, base, commit)
         docs = policy['docs_only'] and changed_docs_only(checkout, base, commit, policy['docs_only_globs'])
         effective = 'docs' if docs else kind
-        if docs and not repos.has_script(prog, 'docs'):
-            commands = [['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', f'{base}...{commit}']]
-        else:
-            commands = [repos.script_argv(prog, 'docs' if docs else 'test', platform)]
+        commands = []
+        if docs:
+            commands.append(['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', f'{base}...{commit}'])
+        if not docs or repos.has_script(prog, 'docs'):
+            commands.append(repos.script_argv(prog, 'docs' if docs else 'test', platform))
         cfg = repos.run_config(prog)
         cfg['env'] = {**cfg['env'], **GIT_PROMPT_ENV, 'DROVER_CI_KIND': effective,
                       'DROVER_CHANGED_FILES': json.dumps(paths)}
@@ -217,7 +218,7 @@ class CI:
         d.mkdir(parents=True, exist_ok=True)
         result_path = d / 'receipt.json'
         plan = {'repo': placement.ci_path(platform, checkout), 'sha': commit, 'base': base,
-                'kind': effective, 'platform': platform, 'commands': commands,
+                'kind': effective, 'platform': platform, 'commands': commands, 'priority': priority,
                 'out': placement.ci_path(platform, result_path),
                 'log': placement.ci_path(platform, d / runner.OUT_FILE)}
         runner.write_json_atomic(d / 'plan.json', plan)
@@ -269,10 +270,11 @@ class CI:
             if saved and saved.get('checkout') == str(checkout):
                 key = request.stem.removeprefix('ci-')
                 result = self.run(prog, checkout, saved['commit'], kind=saved['kind'],
-                                  platforms=saved['platforms'], base=saved['base'], conn=conn)
+                                  platforms=saved['platforms'], base=saved['base'], conn=conn,
+                                  priority=saved.get('priority', 'P1'))
                 self._resumed[str(checkout)] = (key, result)
 
-    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None):
+    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1'):
         """Run all placements in order, or adopt a saved runner after a hub restart.
 
         A queued CI runner is released by a running ticket's completion or expiry.
@@ -281,17 +283,20 @@ class CI:
         prog = repos.load(prog, commit, checkout)
         platforms = platforms or repos.gate_platforms(prog)
         key = hashlib.sha256(json.dumps([str(checkout), commit, kind, platforms, base]).encode()).hexdigest()[:24]
+        if priority != 'P1':
+            key += '-' + priority
         request = Path(self.runs_dir) / f'ci-{key}.json'
         cached = self._resumed.pop(str(checkout), None)
         if cached and cached[0] == key:
             return cached[1]
         saved = read_result(request) or {'index': 0, 'results': [], 'checkout': str(checkout),
-                                        'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base}
+                                        'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority}
         for i in range(saved['index'], len(platforms)):
             context = saved.get('context')
             if context is None:
                 rid = 'ci-' + uuid.uuid4().hex
-                context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=platforms[i], base=base)
+                context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=platforms[i], base=base,
+                                       priority=priority)
                 saved['context'] = context
                 runner.write_json_atomic(request, saved)
             spec = context['spec']
@@ -301,7 +306,7 @@ class CI:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
                     while True:
                         if ticket is None:
-                            ticket = slots.lease_request(conn, key, 'P1', holder=spec['run_id'])
+                            ticket = slots.lease_request(conn, key, priority, holder=spec['run_id'])
                             saved['ticket'] = ticket
                             runner.write_json_atomic(request, saved)
                         try:
@@ -372,7 +377,8 @@ def _execute(plan):
     base_sha, has_base = contains(checkout, base, commit)
     started, steps = now(), []
     for argv in plan['commands']:
-        code = subprocess.run(argv, cwd=checkout, env=git_environment()).returncode
+        code = subprocess.run(placement.ci_command(argv, plan.get('priority', 'P2')),
+                              cwd=checkout, env=git_environment()).returncode
         steps.append({'command': argv, 'exit_code': code,
                       'status': contract.CI_PASSED if code == 0 else contract.CI_FAILED})
         if code:

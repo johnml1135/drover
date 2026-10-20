@@ -611,6 +611,32 @@ def detect_distros():
     return parse_distros(decode_output(r.stdout)) if r and r.returncode == 0 else []
 
 
+def ci_command(argv, priority):
+    """Apply Linux CI resource controls around verbatim argv when user scopes work.
+
+    Interactive work (P0/P1) gets weight 1000, P2 100, P3 30, P4 10.
+    Background P4 work also has an 8 GB memory cap and a 30 minute limit.
+    Machines without a usable systemd user bus run directly; the runner still
+    owns the process tree and its configured wall and idle timeouts.
+    """
+    if not sys.platform.startswith('linux') or not shutil.which('systemd-run'):
+        return list(argv)
+    try:
+        probe = subprocess.run(['systemd-run', '--user', '--scope', '--quiet', 'true'],
+                               capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return list(argv)
+    if probe.returncode:
+        return list(argv)
+    weight = {'P0': 1000, 'P1': 1000, 'P2': 100, 'P3': 30, 'P4': 10}[priority]
+    scope = ['systemd-run', '--user', '--scope', '--quiet', '-p', f'CPUWeight={weight}', '-p', f'IOWeight={weight}']
+    inner = list(argv)
+    if priority == 'P4':
+        scope += ['-p', 'MemoryMax=8G']
+        inner = ['timeout', '1800', *inner]
+    return [*scope, '--', *inner]
+
+
 def ci_invocation(platform, script, plan_file, python=None):
     """CI entrypoint argv and path mapping for the selected placement."""
     convert = to_wsl_path if platform == "wsl" else native

@@ -247,11 +247,13 @@ class RetryEscalate(Base):
         self.assertEqual(len(self.fl.specs), 2)
 
     def test_gate_pass(self):
-        t = self.task()
-        self.d.tick()
-        self.finish(0, res("done", DONE))
-        self.d.tick()
-        self.d.tick()
+        t = self.task(priority="P4")
+        with mock.patch.object(self.pipe.ci, "prepare", wraps=self.pipe.ci.prepare) as prepare:
+            self.d.tick()
+            self.finish(0, res("done", DONE))
+            self.d.tick()
+            self.d.tick()
+        self.assertEqual(prepare.call_args.kwargs["priority"], "P4")
         self.assertEqual(self.status(t), "gated")
         self.assertEqual(ops.list_runs(self.conn, t)[0]["tokens_in"], 10)
 

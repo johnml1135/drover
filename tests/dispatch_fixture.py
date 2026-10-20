@@ -10,7 +10,7 @@ GO = {'verdict': 'go', 'slots': 10, 'reasons': []}
 
 
 class FixtureCI(ci.CI):
-    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None):
+    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2'):
         out = runner.run_dir(self.runs_dir, run_id) / 'receipt.json'
         out.parent.mkdir(parents=True, exist_ok=True)
         return {'kind': kind, 'diff_lines': 0, 'scope': None, 'files': [], 'sha': commit, 'receipt': str(out),

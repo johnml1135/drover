@@ -539,7 +539,8 @@ class Dispatcher:
             p.set_run_context(gate_run, placement=platform)
         nonce = uuid.uuid4().hex
         try:
-            plan = pl.ci.prepare(prog, task["worktree"], sha, gate_run, platform=platform)
+            plan = pl.ci.prepare(prog, task["worktree"], sha, gate_run, platform=platform,
+                                 priority=task["priority"])
             receipt = plan["receipt"]
             spec = {**plan["spec"], "nonce": nonce, "task": task}
             p.append_event("gate-started", {"run": worker["id"], "gate_run": gate_run, "sha": sha, "kind": plan["kind"],
