@@ -12,7 +12,8 @@ import time
 from pathlib import Path, PureWindowsPath
 
 from . import config, ci, placement, origin
-from .ledger import ops, landing as storage
+from .ledger import ops, states, landing as storage
+from .ledger.db import tx
 
 MIN_SIZE, MAX_SIZE = 1, 5
 
@@ -283,6 +284,8 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
             origin.fast_forward(repo, branch, sha, old, run=git)
         except origin.MainMoved as e:
             raise ci.CIError('local main moved; rebase and regate') from e
+        except origin.DirtyCheckout:
+            raise
         except origin.SyncError as e:
             raise ci.CIError(str(e)) from e
     finally:
@@ -305,15 +308,15 @@ def _epic(conn, title):
     return ops.create_epic(conn, 'drover', title, plan_md='Landing alerts.')['id']
 
 
-def base_status(conn, repo, work, gate_fn, base_sha, result):
+def base_status(conn, repo, work, gate_fn, base_sha, result, repo_key):
     """'green' or 'red' for the base commit itself, gated at most once per base SHA."""
-    known = storage.base_status(conn, base_sha)
+    known = storage.base_status(conn, repo_key, base_sha)
     if known:
         return known
     tip, _, _ = build_tip(repo, work, base_sha, [])
     _, red = _gate(gate_fn, work, tip, [], result)
     status = 'red' if red else 'green'
-    storage.record_base(conn, base_sha, status)
+    storage.record_base(conn, repo_key, base_sha, status)
     return status
 
 
@@ -331,8 +334,22 @@ def base_red(conn, result, base_sha, tasks, repo_key):
         f'The full gate fails on the base commit {base_sha[:12]} itself, so no task was blamed and '
         f'{len(tasks)} reviewed task(s) are waiting. Fix the base, then choose Retry landing.',
         options=[{'label': RETRY, 'description': 'gate the base again and resume landing', 'recommended': True},
-                 {'label': KEEP_HOLDING, 'description': 'stay held'}])
+                 {'label': KEEP_HOLDING, 'description': 'stay held'}], allow_text=False)
     ops.event(conn, 'base-red', 'landing', {'sha': base_sha, 'question': qid, 'tasks': [t['id'] for t in tasks]})
+
+
+def _dirty_wait(conn, repo, repo_name, error):
+    from .ledger.waiting import Waiting, OWNER_ANSWER, cause_key, repo_key
+    name = repo_key(repo_name, repo)
+    waiting = Waiting(conn, 'landing')
+    cause = cause_key('dirty', name)
+    waiting.wait(('merge_queue', name), OWNER_ANSWER, cause_key(cause), cause=cause,
+                 data={'mode': 'blocked', 'note': str(error)})
+    if not any(r['cause'] == cause and r['question_id'] is not None for r in waiting.pending()):
+        waiting.ask(cause, 'epic', _epic(conn, 'Landing'), f'Clean the default checkout: {name}', str(error),
+                    options=[{'label': RETRY, 'recommended': True}], allow_text=False)
+    ops.event(conn, 'landing-dirty', 'landing', {'repo': name, 'reason': str(error)})
+    return {'outcome': 'refused', 'error': str(error)}
 
 
 def sync_main(conn, repo, remote, branch, repo_name=None):
@@ -340,26 +357,52 @@ def sync_main(conn, repo, remote, branch, repo_name=None):
     from .ledger.waiting import Waiting, OWNER_ANSWER, cause_key, repo_key
     name = repo_key(repo_name, repo)
     waiting = Waiting(conn, 'landing')
+    dirty = cause_key('dirty', name)
     cause = cause_key('origin', name)
-    if waiting.state(cause) in ('open', 'authorized', 'attempting') and not waiting.consume_retry(cause):
-        waiting.wait(('merge_queue', name), OWNER_ANSWER, cause_key(cause), cause=cause,
-                     data={'mode': 'blocked'})
-        return {'outcome': 'paused', 'reason': 'origin sync paused'}
+    # Check every prerequisite before consuming any approval; claim the admitted probes together.
+    with tx(conn):
+        for candidate, outcome in ((dirty, 'held'), (cause, 'paused')):
+            if waiting.state(candidate) in ('open', 'attempting'):
+                if waiting.state(candidate) == 'attempting':
+                    waiting.consume_retry(candidate)  # reopen abandoned probes, never replay them
+                waiting.wait(('merge_queue', name), OWNER_ANSWER, cause_key(candidate), cause=candidate,
+                             data={'mode': 'blocked'})
+                return {'outcome': outcome, 'reason': 'owner retry required'}
+        dirty_probe = waiting.state(dirty) == 'authorized' and waiting.consume_retry(dirty)
+        origin_probe = waiting.state(cause) == 'authorized' and waiting.consume_retry(cause)
     try:
         origin.sync(repo, remote, branch, run=git, timeout=FETCH_TIMEOUT_S)
+        if dirty_probe:
+            sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
+            origin.fast_forward(repo, branch, sha, sha, run=git)
+    except origin.DirtyCheckout as e:
+        if origin_probe:
+            ops.event(conn, 'origin-sync-failed', 'landing', {'repo': name, 'reason': str(e)})
+        return _dirty_wait(conn, repo, repo_name, e)
     except origin.FetchFailed as e:
+        if dirty_probe:
+            _dirty_wait(conn, repo, repo_name, e)
         waiting.wait(('merge_queue', name), OWNER_ANSWER, cause_key(cause), cause=cause,
                      data={'mode': 'blocked', 'note': str(e)})
-        waiting.ask(cause, 'epic', _epic(conn, 'Landing'), f'Origin sync paused: {name}', str(e),
-                    options=[{'label': 'Retry origin sync', 'recommended': True}])
+        if not any(r['cause'] == cause and r['question_id'] is not None for r in waiting.pending()):
+            waiting.ask(cause, 'epic', _epic(conn, 'Landing'), f'Origin sync paused: {name}', str(e),
+                        options=[{'label': 'Retry origin sync', 'recommended': True}], allow_text=False)
         ops.event(conn, 'origin-sync-failed', 'landing', {'repo': name, 'reason': str(e)})
         return {'outcome': 'paused', 'reason': str(e)}
     except origin.SyncError as e:
         reason = str(e)
+        if dirty_probe:
+            _dirty_wait(conn, repo, repo_name, e)
+        if origin_probe:
+            ops.event(conn, 'origin-sync-failed', 'landing', {'repo': name, 'reason': reason})
         for task in reviewed_tasks(conn, repo, repo_name):
-            ops.set_status(conn, task['id'], 'needs-owner', actor='landing', reason=reason)
+            ops.set_status(conn, task['id'], states.NEEDS_OWNER, actor='landing', reason=reason)
         return {'outcome': 'needs-owner', 'reason': reason}
+    if dirty_probe:
+        ops.event(conn, 'landing-clean', 'landing', {'repo': name})
     ops.event(conn, 'origin-synced', 'landing', {'repo': name})
+    sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
+    ops.event(conn, 'base-observed', 'landing', {'repo': name, 'sha': sha})
     return None
 
 
@@ -379,14 +422,27 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     if sync_result:
         result.update(sync_result)
         return result
-    from .ledger.waiting import Waiting, repo_key
-    if Waiting(conn, actor).pending(('merge_queue', repo_key(repo_name, repo))):
+    from .ledger.waiting import Waiting, repo_key, cause_key, BASE
+    waiting = Waiting(conn, actor)
+    name = repo_key(repo_name, repo)
+    sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
+    base_cause = cause_key('base', name, sha)
+    if waiting.state(base_cause) in ('open', 'attempting'):
+        if waiting.state(base_cause) == 'attempting':
+            waiting.consume_retry(base_cause)  # abandoned attempt reopens, without granting I/O
+        waiting.wait(('merge_queue', name), BASE, cause_key(name, sha), cause=base_cause,
+                     data={'repo': name, 'sha': sha, 'mode': 'blocked'})
+        return {**result, 'outcome': 'held'}
+    if waiting.pending(('merge_queue', name)):
         return {'outcome': 'held', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
                 'decisions': 0, 'gate_s': [], 'batch': []}
     tasks = form_batch(conn, repo, base_ref, size, repo_name)
     result['batch'] = [t['id'] for t in tasks]
     if not tasks:
         return result
+    if waiting.state(base_cause) in ('authorized', 'attempting'):
+        if not waiting.consume_retry(base_cause):
+            return {**result, 'outcome': 'held'}
     interrupted = False
     work = Path(workdir)
     try:
@@ -427,7 +483,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         tip, tasks, conflicts = build_tip(repo, work, base_sha, tasks)
         for tid in conflicts:
             result['dropped'][tid] = 'rebase conflict'
-            ops.set_status(conn, tid, 'needs-owner', actor='landing', reason='rebase conflict')
+            ops.set_status(conn, tid, states.NEEDS_OWNER, actor='landing', reason='rebase conflict')
         if not tasks:
             result['outcome'] = 'conflict'
             return
@@ -439,8 +495,8 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 result.pop('error', None)
                 continue
             return
-        if base_status(conn, repo, work, gate_fn, base_sha, result) == 'red':
-            from .ledger.waiting import repo_key
+        from .ledger.waiting import repo_key
+        if base_status(conn, repo, work, gate_fn, base_sha, result, repo_key(repo_name, repo)) == 'red':
             return base_red(conn, result, base_sha, tasks, repo_key(repo_name, repo))
         failures = _failures(receipt, tasks)
         culprit, how, asked = attribute(conn, tasks, failures, decider)
@@ -471,12 +527,15 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
         return
     try:
         local_fast_forward(conn, repo, work, branch, tip, receipt)
+    except origin.DirtyCheckout as e:
+        result.update(_dirty_wait(conn, repo, repo_name, e))
+        return
     except ci.CIError as e:
         result['outcome'] = 'stale-base' if 'rebase and regate' in str(e) else 'refused'
         result['error'] = str(e)
         return
     for t in tasks:
-        ops.set_status(conn, t['id'], 'landed', actor='system', reason='fast-forwarded',
+        ops.set_status(conn, t['id'], states.LANDED, actor='system', reason='fast-forwarded',
                        data={'land_sha': t['last_sha'], 'tip': tip, 'receipt': receipt.get('log')})
         storage.record_merged(conn, t, tip, receipt.get("log"))
         result['landed'].append(t['id'])

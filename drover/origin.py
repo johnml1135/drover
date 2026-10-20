@@ -15,6 +15,10 @@ class FetchFailed(SyncError):
     pass
 
 
+class DirtyCheckout(SyncError):
+    pass
+
+
 class MainMoved(SyncError):
     pass
 
@@ -47,7 +51,7 @@ def fast_forward(repo, main, new, old, *, run=git):
         raise SyncError(f'{main} is checked out in multiple worktrees; owner intervention required')
     checkout = checkouts[0]
     if run(checkout, 'status', '--porcelain', '--untracked-files=normal').stdout.strip():
-        raise SyncError(f'{main} checkout dirty; owner intervention required')
+        raise DirtyCheckout(f'{main} checkout dirty; owner intervention required')
     head = run(checkout, 'rev-parse', 'HEAD').stdout.strip()
     branch = run(checkout, 'symbolic-ref', '-q', 'HEAD', check=False).stdout.strip()
     if head != old or branch != ref:

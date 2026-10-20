@@ -338,6 +338,59 @@ class Waiting:
             if ops._answer_context.get() != (self.conn, data.get('question')):
                 raise PermissionError('answer events must be written by answer_question')
 
+    def delay(self, task_id, role, reason_code, now, *, minutes=None) -> int:
+        from . import ops
+        if type(now) not in (float, int) or not math.isfinite(now):
+            raise ValueError('invalid deadline time')
+        cause = cause_key('deadline', task_id, role, reason_code)
+        with tx(self.conn):
+            active = next((r for r in self.pending(('task', task_id)) if r['cause'] == cause), None)
+            if active:
+                return active['id']
+            if minutes is None:
+                boundary = 0
+                for row in self.conn.execute("SELECT id,data FROM task_events WHERE task_id=? AND kind='run-started' ORDER BY id DESC", (task_id,)):
+                    if json.loads(row['data']).get('role') == role:
+                        boundary = row['id']
+                        break
+                previous = self.conn.execute('SELECT data FROM waits WHERE cause=? AND created_event>? ORDER BY id DESC LIMIT 1', (cause, boundary)).fetchone()
+                minutes = min(30, 2 * json.loads(previous['data'])['minutes']) if previous else 1
+            if type(minutes) is not int or minutes < 0:
+                raise ValueError('invalid delay minutes')
+            return self.wait(('task', task_id), DEADLINE, cause_key(task_id, role, reason_code), cause=cause,
+                             timeout_at=now + minutes * 60,
+                             data={'role': role, 'reason_code': reason_code, 'minutes': minutes, 'mode': 'preserve'})
+
+    def expire(self, now) -> list[tuple[str, str]]:
+        from . import ops
+        if type(now) not in (float, int) or not math.isfinite(now):
+            raise ValueError('invalid expiration time')
+        with tx(self.conn):
+            due = [dict(r) for r in self.conn.execute(
+                'SELECT * FROM waits WHERE released_event IS NULL AND timeout_at IS NOT NULL AND timeout_at<=? ORDER BY timeout_at,id', (now,))]
+            released = []
+            for row in due:
+                row['data'] = json.loads(row['data'])
+                subject = (row['subject_kind'], row['subject_key'])
+                if row['kind'] != DEADLINE:
+                    cause = cause_key('timeout', row['id'])
+                    self.wait(subject, OWNER_ANSWER, cause_key(cause), cause=cause, data={'mode': 'needs-owner'})
+                    if subject[0] == 'task':
+                        target_kind, target_id = subject
+                    else:
+                        previous = self._cause(row['cause'])
+                        if previous['question_id']:
+                            q = ops.get_question(self.conn, previous['question_id'])
+                            target_kind, target_id = q['target_kind'], q['target_id']
+                        else:
+                            target_kind = 'epic'
+                            target_id = ops.create_epic(self.conn, subject[1], 'Waiting timeouts', actor=self.actor)['id']
+                    self.ask(cause, target_kind, target_id, 'A wait timed out', 'Confirm how work should proceed.')
+                eid = ops.event(self.conn, 'waiting.timeout', self.actor, {'wait': row['id'], 'cause': row['cause']},
+                                task_id=subject[1] if subject[0] == 'task' else None)
+                released += self._release_rows([row], eid)
+            return list(dict.fromkeys(released))
+
     def resolve(self, event) -> list[tuple[str, str]]:
         kind, data = event['kind'], event['data']
         if kind == 'waiting.release':
@@ -353,6 +406,21 @@ class Waiting:
         if kind == 'question-answered':
             return self._answered(event)
         released = []
+        if kind == 'capacity-available' and data['placement'] == 'wsl':
+            rows = [r for r in self.pending() if r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down']
+            return self._release_rows(rows, event['id'])
+        if kind in ('status', 'run-started') and event['task_id']:
+            subject = ('task', event['task_id'])
+            active = self.pending(subject)
+            rows = [r for r in active if r['kind'] == DEADLINE and
+                    ((kind == 'status' and data.get('to') != r['resume_state']) or
+                     (kind == 'run-started' and data.get('role') == r['data']['role']))]
+            if rows:
+                if all(r['data']['mode'] == 'preserve' for r in active):
+                    from . import ops
+                    self.conn.execute('UPDATE wait_subjects SET resume_state=? WHERE subject_kind=? AND subject_key=?',
+                                      (ops.get_task(self.conn, subject[1])['status'], *subject))
+                released += self._release_rows(rows, event['id'])
         terminal = kind == 'status' and data.get('to') in states.TERMINAL
         deleted = kind == 'task.deleted'
         if terminal or deleted:

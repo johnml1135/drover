@@ -85,6 +85,7 @@ class TaskPatch(AccessInput):
     handoff: str | None = None
     branch: str | None = None
     worktree: str | None = None
+    model_pin: dict[str, str] | None = None
 
 
 class StatusIn(BaseModel):
@@ -281,7 +282,10 @@ def get_task(tid: str, request: Request):
 @router.patch("/tasks/{tid}")
 def patch_task(tid: str, body: TaskPatch, request: Request,
                who: str = Depends(auth.require_api)):
-    return guard(_store(request).update_task, tid, actor(who), **body.model_dump())
+    fields = body.model_dump()
+    if 'model_pin' in body.model_fields_set and body.model_pin is None:
+        fields['model_pin'] = {}  # preserve an explicit clear through the store's omitted-value filter
+    return guard(_store(request).update_task, tid, actor(who), **fields)
 
 
 @router.post("/tasks/{tid}/status")

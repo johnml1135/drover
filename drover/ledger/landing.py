@@ -58,17 +58,20 @@ def last_outcome(conn):
     return row[0] if row else None
 
 
-def forget_base(conn, sha):
-    conn.execute("DELETE FROM base_gate WHERE sha=?", (sha,))
+def forget_base(conn, repo, sha):
+    conn.execute("DELETE FROM base_gate WHERE repo=? AND sha=?", (repo, sha))
 
 
-def base_status(conn, sha):
-    row = conn.execute("SELECT status FROM base_gate WHERE sha=?", (sha,)).fetchone()
+def base_status(conn, repo, sha):
+    row = conn.execute("SELECT status FROM base_gate WHERE repo=? AND sha=?", (repo, sha)).fetchone()
     return row['status'] if row else None
 
 
-def record_base(conn, sha, status):
-    conn.execute("INSERT OR REPLACE INTO base_gate(sha,status,at) VALUES(?,?,?)", (sha, status, ops.stamp()))
+def record_base(conn, repo, sha, status):
+    if status not in ('red', 'green'):
+        raise ValueError('invalid base cache status')
+    with tx(conn):
+        ops.event(conn, 'base-ci', 'landing', {'repo': repo, 'sha': sha, 'status': status})
 
 
 def record_merged(conn, task, tip, receipt):

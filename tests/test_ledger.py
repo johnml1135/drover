@@ -434,7 +434,10 @@ class CommentTests(Base):
         evs = ops.events(self.conn, task_id=t["id"], kind="replan-request")
         self.assertEqual(len(evs), 1)
         self.assertEqual(evs[0]["data"]["comment"], r["id"])
-        self.assertEqual(self.status(t["id"]), "ready")
+        self.assertEqual(self.status(t["id"]), "blocked")
+        from drover.ledger.waiting import Waiting
+        request, = Waiting(self.conn, "owner").replans()
+        self.assertEqual(request["task_id"], t["id"])
 
     def test_bad_target(self):
         with self.assertRaises(ops.NotFound):

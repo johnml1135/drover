@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 
 from . import launch as launch_mod
 from .launch import RunnerLauncher
+from .ledger import states
 from .pipeline import WorktreeRefused, truthy
 from .runner import ScanError
 
@@ -134,34 +135,36 @@ def effort_for(model, effort=None):
     return cfg["models"]["efforts"]["cheap"] if cheap else effort or config_mod.tier_effort(model, cfg)
 
 
-def fail_runs(runs):
-    """The worker runs that count as failures, in order: a worker run that failed, and the worker run a review run
-    put on HOLD (the reviewer's own backend and model are not the ladder's). Gate runs never count."""
-    out, worker = [], None
+def fail_runs(runs, after_run=0):
+    """Unique substantive worker failures in the current retry window."""
+    out, seen, worker = [], set(), None
     for r in runs:
-        if r.get("role", "worker") == "worker":
+        role = r.get('role', 'worker')
+        if role == 'worker':
             worker = r
-            if r["outcome"] in FAIL_OUTCOMES:
-                out.append(r)
-        elif r["role"] == "review" and r["outcome"] == "hold" and worker is not None:
+            failed = r['outcome'] in FAIL_OUTCOMES
+        else:
+            failed = role == 'review' and r['outcome'] == contract.HOLD and worker is not None
+        if failed and worker['id'] > after_run and worker['id'] not in seen:
             out.append(worker)
+            seen.add(worker['id'])
     return out
 
 
-def failures(runs):
-    return len(fail_runs(runs))
+def failures(runs, after_run=0):
+    return len(fail_runs(runs, after_run))
 
 
-def next_tier(runs, base):
-    """Route after failures: stay on the last backend; step up one tier after every 2nd failure."""
-    fails = fail_runs(runs)
+def next_tier(runs, base, after_run=0):
+    """Step up once per two distinct substantive worker failures."""
+    fails = fail_runs(runs, after_run)
     last = fails[-1] if fails else None
-    if not last or last["backend"] not in ladders():
+    if not last or last['backend'] not in ladders():
         return base
-    ladder = ladders()[last["backend"]]
-    idx = ladder.index(last["model"]) if last["model"] in ladder else start_idx()["M"]
-    idx = min(idx + (1 if failures(runs) % 2 == 0 else 0), len(ladder) - 1)
-    return {"backend": last["backend"], "model": ladder[idx]}
+    ladder = ladders()[last['backend']]
+    idx = ladder.index(last['model']) if last['model'] in ladder else start_idx()['M']
+    idx = min(idx + (1 if len(fails) % 2 == 0 else 0), len(ladder) - 1)
+    return {'backend': last['backend'], 'model': ladder[idx]}
 
 
 def at_top(run):
@@ -330,13 +333,16 @@ class Dispatcher:
             self._failed(task_id, run_id, "no action-state record" if st == "no-record" else "worker error")
 
     def _provider_streak(self, task_id, runs):
-        """Provider-error runs in a row at the end of the history, counted only after the task's last status change
-        by someone other than the dispatcher (an owner requeue starts the count again)."""
-        since = max((e.get("at") or "" for e in self.port.events("status")
-                     if e.get("task_id") == task_id and e.get("actor") not in ("dispatcher", None)), default="")
+        marker = self.port.get_task(task_id)['retry_after_run']
+        history, worker_id = [], 0
+        for r in runs:
+            if r['role'] == 'worker':
+                worker_id = r['id']
+            if worker_id > marker and r['role'] in ('worker', 'review') and r['ended'] is not None:
+                history.append(r)
         n = 0
-        for r in reversed([r for r in runs if r["ended"] is not None]):
-            if r["outcome"] != "provider-error" or (r["ended"] or "") < since:
+        for r in reversed(history):
+            if r['outcome'] != contract.PROVIDER_ERROR:
                 break
             n += 1
         return n
@@ -386,7 +392,10 @@ class Dispatcher:
         p = self.port
         runs = p.list_runs(task_id)
         run = next(r for r in runs if r["id"] == run_id)
-        f = failures(runs)
+        task = p.get_task(task_id)
+        f = failures(runs, task['retry_after_run'])
+        if not f:
+            return
         second = f % 2 == 0
         rule = "escalate" if second else "retry"
         state = {"task": task_id, "failures": f, "size": p.get_task(task_id)["size"], "model": run["model"],
@@ -759,7 +768,9 @@ class Dispatcher:
             p.finish_run(run_id, "provider-error", note=f"provider error: {result['provider_error']}"[:290], **usage)
             p.append_event("provider-error", {"run": run_id, "message": result["provider_error"][:300]}, task_id)
             if self._provider_streak(task_id, p.list_runs(task_id)) >= MAX_PROVIDER_ERRORS:
-                p.set_status(task_id, "needs-owner", reason=f"{MAX_PROVIDER_ERRORS} provider errors in a row")
+                p.set_status(task_id, states.NEEDS_OWNER, reason=f"{MAX_PROVIDER_ERRORS} provider errors in a row")
+            else:
+                p.waiting.delay(task_id, "review", "provider", self.now(), minutes=5)
             return
         why = {"timeout": "timeout", "error": "error"}.get(result["status"], "no-record")
         p.finish_run(run_id, why, note=(f"no usable verdict ({verdict or result['status']})")[:280], **usage)
@@ -1070,7 +1081,12 @@ class Dispatcher:
 
     def _route(self, task, policy, admitted):
         t = task
-        base = self.route_fn(t, policy["data"], **self._route_inputs(task, admitted))
+        pin = task.get('model_pin') if task.get('role', 'worker') == 'worker' else None
+        routing_data = policy['data']
+        if pin:
+            role_key = route_mod.route_key('worker', task.get('size'))
+            routing_data = {**routing_data, 'routes': {**routing_data.get('routes', {}), role_key: [pin]}}
+        base = self.route_fn(t, routing_data, **self._route_inputs(task, admitted))
         if base.get("borrow_seat"):
             seat = base["borrow_seat"]
             from .ledger.waiting import OWNER_ANSWER, cause_key
@@ -1082,7 +1098,7 @@ class Dispatcher:
                              data={"mode": "needs-owner"})
                 waiting.ask(cause, "task", task["id"], f"Allow director to borrow {seat}?",
                             "This approval applies to director work on this task and account.",
-                            options=[{"label": "Approve borrowing"}, {"label": "Keep default seat"}])
+                            options=[{"label": "Approve borrowing"}, {"label": "Keep default seat"}], allow_text=False)
                 return base
             approved = answer["choice"] == "Approve borrowing"
             t = {**t}
@@ -1095,7 +1111,7 @@ class Dispatcher:
             return base
         if task.get("role") in route_mod.DIRECTOR_ROLES:
             return base
-        route = next_tier(self.port.list_runs(task["id"]), base)
+        route = pin or next_tier(self.port.list_runs(task["id"]), base, task.get('retry_after_run', 0))
         if route["model"] != base["model"]:
             route = {**route, "effort": None}   # the router's effort was picked for the cheaper model
         role_key = route_mod.route_key(task.get("role", "worker"), task.get("size"))
@@ -1187,6 +1203,10 @@ class Dispatcher:
             out["recovered"] = self.watch_runs()
         out["recovered"] += self.requeue_stale_claims()
         self.check_stale()
+        from .ledger.waiting import DEADLINE
+        p.waiting.expire(self.now())
+        if any(r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down' for r in p.waiting.pending()) and self.launcher.wsl_up():
+            p.append_event('capacity-available', {'placement': 'wsl'})
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
             return out
         res = self.resources_fn(new_workers=1)
@@ -1218,6 +1238,8 @@ class Dispatcher:
             if task.get("write", True) and not self.pipeline.prepare_dispatch(task):
                 continue                             # no known gate for the repo: the owner was asked
             route = self._route(task, policy, admitted)
+            if p.waiting.pending(("task", task["id"])):
+                continue
             if route.get("needs_owner"):
                 p.set_status(task["id"], "needs-owner", reason=route["reason"])
                 continue

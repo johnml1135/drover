@@ -33,6 +33,20 @@ class ConsumerCase(PipelineBase):
 
 
 class ScriptsOrigin(ConsumerCase):
+    def test_abandoned_origin_attempt_reopens_before_parking(self):
+        w = self.waiting()
+        tid = self.task()
+        cause = self.key('origin', 'p')
+        w.wait(('task', tid), 'owner-answer', self.key(cause), cause=cause, data={'mode': 'needs-owner'})
+        q = w.ask(cause, 'task', tid, 'Origin?', options=[{'label': 'Retry origin sync'}], allow_text=False)
+        ops.answer_question(self.conn, q, choice='Retry origin sync')
+        self.assertTrue(w.consume_retry(cause))
+        with patch('drover.ledger.waiting.PROCESS_SESSION', 'replacement-process'):
+            self.assertFalse(self.pipe.prepare_dispatch(self.get(tid)))
+        self.assertEqual(w.state(cause), 'open')
+        self.assertEqual(ops.get_question(self.conn, q)['status'], 'open')
+        self.assertTrue(w.pending(('task', tid)))
+
     def test_script_immediate_reload_and_authority(self):
         w = self.waiting()
         self.pipe.all_repos()['p'] = prog_dict(self.fix.repo, Path(self.tmp.name) / 'wts', unknown=True)
@@ -141,6 +155,42 @@ class BorrowTuner(LedgerCase):
 
 
 class BaseQueue(LandingCase):
+    def test_abandoned_base_retry_remains_held_until_new_answer(self):
+        from drover.ledger.waiting import Waiting, BASE, cause_key
+        w = Waiting(self.conn, 'owner')
+        tid = self.task('feature', {'feature.txt': 'safe'})
+        sha = self.r.git('rev-parse', 'main')
+        cause = cause_key('base', 'p', sha)
+        w.wait(('merge_queue', 'p'), BASE, cause_key('p', sha), cause=cause,
+               data={'repo': 'p', 'sha': sha, 'mode': 'blocked'})
+        q = w.ask(cause, 'task', tid, 'Base', options=[{'label': 'Retry landing'}, {'label': 'Keep holding'}], allow_text=False)
+        ops.answer_question(self.conn, q, choice='Retry landing')
+        self.assertTrue(w.consume_retry(cause))
+        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', decider=fake_decider())
+        with patch('drover.ledger.waiting.PROCESS_SESSION', 'replacement-process'):
+            self.assertEqual(run()['outcome'], 'held')
+            self.assertEqual(w.state(cause), 'open')
+            self.assertEqual(run()['outcome'], 'held')
+        self.assertEqual(self.status(tid), 'reviewed')
+        self.assertEqual(ops.get_question(self.conn, q)['status'], 'open')
+
+    def test_empty_queue_retains_base_retry_grant(self):
+        from drover.ledger.waiting import Waiting, BASE, cause_key
+        w = Waiting(self.conn, 'owner')
+        sha = self.r.git('rev-parse', 'main')
+        cause = cause_key('base', 'p', sha)
+        w.wait(('merge_queue', 'p'), BASE, cause_key('p', sha), cause=cause,
+               data={'repo': 'p', 'sha': sha, 'mode': 'blocked'})
+        epic = ops.create_epic(self.conn, 'p', 'Landing')['id']
+        q = w.ask(cause, 'epic', epic, 'Base', options=[{'label': 'Retry landing'}, {'label': 'Keep holding'}], allow_text=False)
+        ops.answer_question(self.conn, q, choice='Retry landing')
+        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', decider=fake_decider())
+        self.assertEqual(run()['outcome'], 'empty')
+        self.assertEqual(w.state(cause), 'authorized')
+        tid = self.task('feature', {'feature.txt': 'safe'})
+        self.assertEqual(run()['outcome'], 'landed')
+        self.assertEqual(self.status(tid), 'landed')
+
     def test_red_base_dedupe_and_release(self):
         Waiting = require(self, 'drover.ledger.waiting', 'Waiting')
         key = require(self, 'drover.ledger.waiting', 'cause_key')
@@ -174,6 +224,25 @@ class BaseQueue(LandingCase):
 
 
 class DirtyQueue(LandingCase):
+    def test_dirty_approval_is_retained_until_origin_allows_probe(self):
+        from drover.ledger.waiting import Waiting, cause_key, OWNER_ANSWER
+        w = Waiting(self.conn, 'owner')
+        questions = {}
+        tid = self.task('feature', {'feature.txt': 'safe'})
+        for family, label in [('dirty', 'Retry landing'), ('origin', 'Retry origin sync')]:
+            cause = cause_key(family, 'p')
+            w.wait(('merge_queue', 'p'), OWNER_ANSWER, cause_key(cause), cause=cause, data={'mode': 'blocked'})
+            questions[family] = w.ask(cause, 'task', tid, family, options=[{'label': label}], allow_text=False)
+        ops.answer_question(self.conn, questions['dirty'], choice='Retry landing')
+        with patch.object(origin, 'sync', wraps=origin.sync) as sync:
+            landing.sync_main(self.conn, self.r.repo, 'origin', 'main', 'p')
+            sync.assert_not_called()
+        self.assertEqual(w.state(cause_key('dirty', 'p')), 'authorized')
+        ops.answer_question(self.conn, questions['origin'], choice='Retry origin sync')
+        self.assertIsNone(landing.sync_main(self.conn, self.r.repo, 'origin', 'main', 'p'))
+        self.assertEqual(w.state(cause_key('dirty', 'p')), 'resolved')
+        self.assertEqual(w.state(cause_key('origin', 'p')), 'resolved')
+
     def service(self):
         configs = self.r.root / 'repos'
         configs.mkdir(exist_ok=True)

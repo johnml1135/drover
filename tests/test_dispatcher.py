@@ -481,6 +481,21 @@ class ParserAndRotation(Base):
 
 
 class ProviderErrors(Base):
+    def test_owner_reset_excludes_reviews_of_previous_workers(self):
+        tid = self.task()
+        worker = ops.start_run(self.conn, tid, 'worker', 'claude', 'haiku-5.5')
+        ops.finish_run(self.conn, worker, 'gated')
+        review = ops.start_run(self.conn, tid, 'review', 'claude', 'sonnet-5.5')
+        ops.finish_run(self.conn, review, 'provider-error')
+        ops.set_status(self.conn, tid, 'needs-owner')
+        ops.set_status(self.conn, tid, 'ready', actor='owner')
+        self.d.tick()
+        self.finish(0, {**res('error'), 'provider_error': 'capacity'})
+        self.d.tick()
+        row, = self.port.waiting.pending(('task', tid))
+        self.assertEqual(row['data']['minutes'], 1)
+        self.assertEqual(self.status(tid), 'ready')
+
     def test_provider_error_is_not_a_task_failure(self):
         t = self.task(size="S")
         for i in range(2):

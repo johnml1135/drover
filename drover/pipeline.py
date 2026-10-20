@@ -11,6 +11,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 
 from . import config, garden, ci, placement, origin, repos
+from .ledger import states
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -151,12 +152,14 @@ class Pipeline:
         prog = self.repo(task)
         tid = task["id"]
         if prog is None:
-            self.port.set_status(tid, "needs-owner", reason=f"no repo config for {task.get('repo')!r}")
+            self.port.set_status(tid, states.NEEDS_OWNER, reason=f"no repo config for {task.get('repo')!r}")
             return False
         waiting = self.port.waiting
         name = repo_key(repos.repo_name(prog))
         origin_cause = cause_key("origin", name)
         if waiting.state(origin_cause) in ("open", "attempting"):
+            if waiting.state(origin_cause) == "attempting":
+                waiting.consume_retry(origin_cause)  # abandoned probes reopen; no new grant is claimed here
             waiting.wait(("task", tid), OWNER_ANSWER, cause_key(origin_cause), cause=origin_cause,
                          data={"mode": "blocked"})
             return False
@@ -166,9 +169,10 @@ class Pipeline:
         waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
                      data={"mode": "needs-owner"})
         hint = repos.ci_policy(prog).get("hint")
-        waiting.ask(cause, "task", tid, f"What is the test script path for {name}?",
-                    "Add [scripts] test to .drover/config.toml, or answer with its relative .ps1 script path."
-                    + (f" Hint: {hint}." if hint else ""))
+        if not any(r['cause'] == cause and r['question_id'] is not None for r in waiting.pending()):
+            waiting.ask(cause, "task", tid, f"What is the test script path for {name}?",
+                        "Add [scripts] test to .drover/config.toml, or answer with its relative .ps1 script path."
+                        + (f" Hint: {hint}." if hint else ""))
         return False
 
     # ---- worktrees -----------------------------------------------------------------------------------
@@ -264,16 +268,17 @@ class Pipeline:
         if waiting.state(cause) in ("open", "authorized", "attempting") and not waiting.consume_retry(cause):
             waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
                          data={"mode": "blocked"})
-            raise WorktreeRefused("origin sync paused; answer the repo alert to retry")
+            return False
         try:
             origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
         except origin.FetchFailed as e:
             waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
                          data={"mode": "needs-owner", "note": str(e)})
-            waiting.ask(cause, "task", tid, f"Origin sync paused: {name}", str(e),
-                        options=[{"label": "Retry origin sync", "recommended": True}])
+            if not any(r['cause'] == cause and r['question_id'] is not None for r in waiting.pending()):
+                waiting.ask(cause, "task", tid, f"Origin sync paused: {name}", str(e),
+                            options=[{"label": "Retry origin sync", "recommended": True}], allow_text=False)
             self.port.append_event("origin-sync-failed", {"repo": name, "reason": str(e)})
-            raise WorktreeRefused(str(e)) from e
+            return False
         except origin.SyncError as e:
             raise WorktreeRefused(str(e)) from e
         self.port.append_event("origin-synced", {"repo": name})

@@ -258,7 +258,7 @@ class UnknownGate(Base):
         pipe = pipeline.Pipeline(self.port, repos_map={'p': repos.load(machine)})
         tid = self.task()
         ops.update_task(self.conn, tid, worktree=str(Path(self.tmp.name) / 'missing'))
-        self.assertTrue(pipe.gate_known(self.get(tid)))
+        self.assertTrue(pipe.prepare_dispatch(self.get(tid)))
         self.assertEqual(ops.open_questions(self.conn), [])
         recovered = pipe.worktree(self.get(tid))
         self.assertTrue(placement.reachable(recovered))
@@ -267,7 +267,7 @@ class UnknownGate(Base):
     def test_missing_repo_path_goes_to_owner_without_crashing(self):
         self.pipe._repos = {'p': {'name': 'p', 'gate': {'unknown': True}}}
         tid = self.task(repo='p')
-        self.assertFalse(self.pipe.gate_known(self.get(tid)))
+        self.assertFalse(self.pipe.prepare_dispatch(self.get(tid)))
         self.assertEqual(self.get(tid)['status'], 'needs-owner')
         self.assertIsNone(self.pipe.repo(self.get(tid)))
 
@@ -288,7 +288,7 @@ class UnknownGate(Base):
         self.assertEqual(len(ops.open_questions(self.conn)), 1)           # not again
         ops.answer_question(self.conn, qs[0]["id"], text=".drover/scripts/drover/test.ps1")
         self.d.tick()
-        self.assertEqual(json.loads(ops.get_setting(self.conn, "gate_cmd_p"))["cmd"], ".drover/scripts/drover/test.ps1")
+        self.assertEqual(self.pipe.repo(self.get(a))["scripts"]["test"], ".drover/scripts/drover/test.ps1")
         self.assertEqual(len(self.fl.of("worker")), 3)                    # b and c came back too, and launched
         self.assertEqual(len(ops.open_questions(self.conn)), 0)
         self.assertFalse(self.pipe.repo({"repo": "p"})["gate"]["unknown"])
@@ -296,7 +296,7 @@ class UnknownGate(Base):
     def test_a_gate_cmd_written_without_an_owner_answer_is_ignored(self):
         t = self.task()
         self.d.tick()
-        qid = int(ops.get_setting(self.conn, "_gate_question_p"))
+        qid = ops.open_questions(self.conn)[0]["id"]
         for forged in (".drover/scripts/drover/test.ps1",                                     # a bare string, as a token would PUT
                        json.dumps({"cmd": "evil", "question": qid, "actor": "owner"}),   # the question is not answered
                        json.dumps({"cmd": "evil", "question": 999, "actor": "owner"})):  # not this repo's question
@@ -306,15 +306,16 @@ class UnknownGate(Base):
             self.assertEqual(self.status(t), "needs-owner")
         ops.answer_question(self.conn, qid, text=".drover/scripts/drover/other.ps1")
         ops.set_setting(self.conn, "gate_cmd_p", json.dumps({"cmd": "evil", "question": qid, "actor": "owner"}))
-        self.assertTrue(self.pipe.repo({"repo": "p"})["gate"]["unknown"])       # text differs from the answer
+        self.assertEqual(self.pipe.repo({"repo": "p"})["scripts"]["test"], ".drover/scripts/drover/other.ps1")
         self.d.tick()
         self.assertEqual(self.pipe.repo({"repo": "p"})["scripts"]["test"], ".drover/scripts/drover/other.ps1")
 
     def test_an_answer_recorded_by_anyone_but_the_owner_is_ignored(self):
         self.task()
         self.d.tick()
-        qid = int(ops.get_setting(self.conn, "_gate_question_p"))
-        ops.answer_question(self.conn, qid, text="cmd-x", actor="dispatcher")
+        qid = ops.open_questions(self.conn)[0]["id"]
+        with self.assertRaises(PermissionError):
+            ops.answer_question(self.conn, qid, text=".drover/scripts/test.ps1", actor="dispatcher")
         self.d.tick()
         self.assertTrue(self.pipe.repo({"repo": "p"})["gate"]["unknown"])
 
@@ -540,7 +541,7 @@ class Safety(Base):
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
         other = self.task()
         self.d.tick()
-        self.assertEqual(self.status(other), "ready")
+        self.assertEqual(self.status(other), "blocked")
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
         self.assertIsNone(self.get(other)["worktree"])
         self.assertEqual(self.fl.specs, [])
@@ -1341,8 +1342,11 @@ class Landing(Base):
         self.assertEqual(self.status(tid), "reviewed")
         self.assertEqual((Path(self.fix.repo) / "owner-wip.txt").read_text(), "mine\n")
         self.assertFalse((Path(self.fix.repo) / "feature.txt").exists())
-        self.assertEqual(len(ops.open_questions(self.conn)), 0)
+        question, = ops.open_questions(self.conn)
+        self.assertEqual(svc.tick()["p"]["outcome"], "held")
+        ops.answer_question(self.conn, question['id'], choice='Retry landing')
         self.assertEqual(svc.tick()["p"]["outcome"], "refused")
+        self.assertEqual([q['id'] for q in ops.open_questions(self.conn)], [question['id']])
 
 
 if __name__ == "__main__":

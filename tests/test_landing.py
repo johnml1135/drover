@@ -512,8 +512,14 @@ class RunTests(LandingCase):
         a, b = self.task('a', {'a.txt': 'BAD'}), self.task('b', {'b.txt': 'BAD'})
         res = self.land(size=2)
         self.assertEqual(res['outcome'], 'red')
-        n = self.conn.execute("SELECT COUNT(*) FROM base_gate").fetchone()[0]
-        self.assertEqual(n, 1)
+        from drover.ledger import landing as cache
+        from drover.ledger.waiting import repo_key
+        sha = self.r.git('rev-parse', 'main')
+        name = repo_key(None, self.r.repo)
+        self.assertEqual(cache.base_status(self.conn, name, sha), 'green')
+        cache.record_base(self.conn, 'other', sha, 'red')
+        self.assertEqual(cache.base_status(self.conn, name, sha), 'green')
+        self.assertEqual(cache.base_status(self.conn, 'other', sha), 'red')
 
     def test_hub_retry_adopts_interrupted_ci_and_runs_script_once(self):
         from hub.dispatch import LandingService

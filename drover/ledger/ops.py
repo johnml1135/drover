@@ -22,9 +22,9 @@ from .states import IllegalTransition  # noqa: F401  (re-exported)
 SIZE_ORDER = {"S": 0, "M": 1, "L": 2}
 HANDOFF_MAX = 1500
 NOTE_MAX = 300
-TASK_JSON = ("acceptance", "scope_files", "blocker", "read_access")
+TASK_JSON = ("acceptance", "scope_files", "model_pin", "read_access")
 TASK_EDITABLE = ("title", "goal", "acceptance", "scope_files", "priority", "size", "risk", "repo_path", "repo",
-                 "epic_id", "handoff", "branch", "worktree", "kind", "write", "read_access")
+                 "epic_id", "handoff", "branch", "worktree", "kind", "write", "read_access", "model_pin")
 EPIC_EDITABLE = ("repo", "title", "plan_md", "status")
 HOLD_REASONS = ("replan", "urgent")
 
@@ -71,7 +71,8 @@ def _task(row):
         return None
     d = dict(row)
     for k in TASK_JSON:
-        d[k] = json.loads(d[k]) if d.get(k) else (None if k == "blocker" else [])
+        d[k] = json.loads(d[k]) if d.get(k) else (None if k == "model_pin" else [])
+    d["blocker"] = None
     d["write"] = bool(d["write"])
     d["description"] = d["goal"]
     return d
@@ -256,6 +257,16 @@ def update_task(conn, task_id, actor="owner", **fields):
         raise ValueError(f"cannot update task fields {sorted(bad)} (use set_status/reorder/add_dep)")
     if "handoff" in fields:
         _check_handoff(fields["handoff"])
+    if "model_pin" in fields:
+        from .. import config
+        if actor != "owner":
+            raise PermissionError('only owner may edit a model pin')
+        pin = fields['model_pin']
+        if pin is not None and pin != {}:
+            ladders = config.get()['models']['ladders']
+            if not isinstance(pin, dict) or set(pin) != {'backend', 'model'} or not isinstance(pin['backend'], str) or not isinstance(pin['model'], str) or pin['backend'] not in ladders or pin['model'] not in ladders[pin['backend']]:
+                raise ValueError('invalid model pin')
+        fields['model_pin'] = pin or None
     with tx(conn):
         old = get_task(conn, task_id)
         if "kind" in fields:
@@ -267,7 +278,7 @@ def update_task(conn, task_id, actor="owner", **fields):
         _replace_connections(conn, task_id, deps, related, actor)
         if "epic_id" in fields and fields["epic_id"] is not None:
             get_epic(conn, fields["epic_id"])
-        vals = {k: (_j(list(v)) if k in ("acceptance", "scope_files", "read_access") else v) for k, v in fields.items()}
+        vals = {k: (_j(list(v)) if k in ("acceptance", "scope_files", "read_access") else (_j(v) if k == "model_pin" and v is not None else v)) for k, v in fields.items()}
         if vals:
             sets = ", ".join(f'"{k}"=?' for k in vals)
             conn.execute(f"UPDATE tasks SET {sets}, updated=? WHERE id=?", (*vals.values(), stamp(), task_id))
@@ -398,6 +409,11 @@ def set_status(conn, task_id, new, actor="system", reason=None, data=None):
         old = t["status"]
         from .waiting import Waiting
         if new == states.READY:
+            if actor not in ('dispatcher', 'system'):
+                from .. import contract
+                marker = conn.execute('SELECT COALESCE(MAX(id),0) FROM runs WHERE task_id=? AND role=? AND ended IS NOT NULL AND outcome<>?',
+                                      (task_id, 'worker', contract.DONE)).fetchone()[0]
+                conn.execute('UPDATE tasks SET retry_after_run=?,replans_used=0 WHERE id=?', (marker, task_id))
             if not t["approved_at"] and old not in states.CREATION_STATES:
                 raise NotApproved(f"{task_id} was never approved by the owner; it cannot become ready")
             waiting = Waiting(conn, actor)
