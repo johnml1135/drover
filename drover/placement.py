@@ -10,11 +10,10 @@ import subprocess
 import sys
 import json
 import signal
+import shutil
 import time
 from pathlib import Path
 
-PYTHON_RE = re.compile(r"(?i)python(w)?(\d+(\.\d+)?)?(\.exe)?")
-RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 KILL_AFTER_S = 15
 
 
@@ -24,6 +23,9 @@ class ScanError(RuntimeError):
 
 IS_WINDOWS = sys.platform == "win32"
 CREATE_NO_WINDOW = 0x08000000
+CREATE_SUSPENDED = 0x4
+CREATE_NEW_PROCESS_GROUP = 0x200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 NO_WINDOW = {"creationflags": CREATE_NO_WINDOW} if IS_WINDOWS else {}
 WIN_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$", re.S)
 MNT_RE = re.compile(r"^/mnt/([a-zA-Z])(?:/(.*))?$")
@@ -69,27 +71,61 @@ def canonical(path):
     return str(path) if routes_through_wsl(path) else str(Path(native(path)).resolve())
 
 
+def path_parts(path):
+    """Resolved components for overlap checks, respecting drive-mount case insensitivity."""
+    path = Path(native(path)).resolve()
+    return tuple(p.casefold() for p in path.parts) if IS_WINDOWS or MNT_RE.match(str(path)) else path.parts
+
+
 def config_path(path, reference):
     """Spell a discovered path like the repository's configured path."""
     path = str(path)
     return to_windows_path(path).replace("/", "\\") if WIN_RE.match(str(reference)) else path
 
 
+def drive(path):
+    """The Windows drive letter for either path spelling, or None for a Linux filesystem."""
+    match = WIN_RE.match(str(path).removeprefix("\\\\?\\")) or MNT_RE.match(str(path))
+    return match.group(1).upper() if match else None
+
+
+def windows_system_path(relative):
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return native(root.rstrip("\\/") + "/System32/" + relative)
+
+
+def sandbox_roots(roots):
+    """POSIX sandbox mounts have no native Windows counterpart."""
+    return () if IS_WINDOWS else roots
+
+
 def status_args(repo):
-    """DrvFs checks only tracked changes: never recursively scan build/untracked trees."""
-    untracked = "no" if not IS_WINDOWS and MNT_RE.match(native(repo)) else "normal"
-    return ["status", "--porcelain", f"--untracked-files={untracked}"]
+    """Tracked status; commit guards separately discover untracked paths with ls-files."""
+    return ["status", "--porcelain", "--untracked-files=no"]
 
 
 def _git_location(repo):
     """Override foreign absolute gitdir pointers without editing shared metadata."""
-    try:
-        text = (Path(repo) / ".git").read_text(encoding="utf-8").strip()
-        if not text.startswith("gitdir: ") or native(text[8:]) == text[8:]:
-            return [], {}
-        _, gitdir, common = _git_dirs(repo)
-    except (OSError, UnicodeError, ValueError):
+    marker = Path(repo) / ".git"
+    if marker.is_dir():
         return [], {}
+    try:
+        text = marker.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, IsADirectoryError):
+        return [], {}
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read git metadata for {repo}: {exc}") from exc
+    if not text.startswith("gitdir: "):
+        raise ValueError(f"invalid git metadata pointer for {repo}")
+    if native(text[8:]) == text[8:]:
+        return [], {}
+    try:
+        gitdir = Path(native(text[8:])).resolve(strict=True)
+        common_file = gitdir / "commondir"
+        common = ((gitdir / native(common_file.read_text(encoding="utf-8").strip())).resolve(strict=True)
+                  if common_file.exists() else gitdir)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"cannot resolve git metadata for {repo}: {exc}") from exc
     return [f"--git-dir={gitdir}", f"--work-tree={repo}"], {"GIT_COMMON_DIR": str(common)}
 
 
@@ -110,10 +146,16 @@ def routes_through_wsl(path, nt=None):
 class Windows:
     path = staticmethod(to_windows_path)
 
+    def executables(self, names):
+        """Native Windows tools, when this process can inspect that platform."""
+        return {name: shutil.which(name) for name in names} if IS_WINDOWS else {}
+
     def command(self, argv):
         return list(argv)
 
     def spawn(self, argv, **kw):
+        if WindowsTree is None:
+            raise OSError("Windows process ownership requires Windows")
         proc = subprocess.Popen(argv, creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | CREATE_NO_WINDOW, **kw)
         return proc, WindowsTree(proc)
 
@@ -146,13 +188,6 @@ def wsl_control(args):
     return ["wsl.exe", *args]
 
 
-def wsl_argv(distro, runner_args, cd=None, env=None):
-    args = [str(a) for a in runner_args]
-    split = args.index("--") if "--" in args else len(args)
-    args = [to_wsl_path(a) for a in args[:split]] + args[split:]
-    return WSL(distro).command(["python3", "-m", "drover.runner", *args], cd, env)
-
-
 # Arguments that follow these are paths; subcommand positionals of `worktree add|repair|remove|move` are too.
 _PATH_OPTS = {"--git-dir", "--work-tree", "-C", "--output", "-o"}
 _WORKTREE_PATH_SUBS = {"add", "repair", "remove", "move", "lock", "unlock"}
@@ -180,23 +215,27 @@ def _map_paths(args):
     return out
 
 
-def git_argv(repo, args, nt=None, distro=None):
-    """The argv that runs `git -C repo *args` from this host."""
+def _git_command(repo, args, nt=None, distro=None):
     repo = str(repo)
     if routes_through_wsl(repo, nt):
-        return WSL(distro).command(["git", "-C", repo, *_map_paths(args)])
+        return WSL(distro).command(["git", "-C", repo, *_map_paths(args)]), {}
     repo = native(repo)
-    prefix, _ = _git_location(repo)
-    return Windows().command(["git", "-C", repo, *prefix, *args])
+    prefix, env = _git_location(repo)
+    return Windows().command(["git", "-C", repo, *prefix, *args]), env
+
+
+def git_argv(repo, args, nt=None, distro=None):
+    """The argv that runs `git -C repo *args` from this host."""
+    return _git_command(repo, args, nt, distro)[0]
 
 
 def git(repo, *args, timeout=None, env=None, runner=None):
     """subprocess result of git in `repo`; a missing wsl.exe/git is a failed command (rc 127), not an exception."""
     try:
-        _, extra = _git_location(native(repo)) if not routes_through_wsl(repo) else ([], {})
+        argv, extra = _git_command(repo, args)
         if extra:
             env = {**(os.environ if env is None else env), **extra}
-        return (runner or subprocess.run)(git_argv(repo, args), text=True, capture_output=True, errors="replace",
+        return (runner or subprocess.run)(argv, text=True, capture_output=True, errors="replace",
                                            timeout=timeout, env=env, **NO_WINDOW)
     except FileNotFoundError as e:
         return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {e}")
@@ -221,6 +260,8 @@ def relativize_gitdir(path):
     if not (Path(pointer).is_absolute() or WIN_RE.match(pointer) or MNT_RE.match(pointer)):
         return True
     admin = native(pointer)
+    if drive(native(path)) != drive(admin):
+        return False
     try:
         if not os.path.isdir(admin):
             return False
@@ -277,6 +318,7 @@ class PosixTree:
         pass
 
 
+WindowsTree = None
 if IS_WINDOWS:
     import ctypes
     from ctypes import wintypes
@@ -307,9 +349,6 @@ if IS_WINDOWS:
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
     JOB_BASIC_AND_IO_ACCOUNTING_CLASS = 8
     JOB_EXTENDED_LIMIT_CLASS = 9
-    CREATE_SUSPENDED = 0x4
-    CREATE_NEW_PROCESS_GROUP = 0x200
-    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
     def _resume(handle):
         nt = ctypes.WinDLL("ntdll")
@@ -392,48 +431,6 @@ def spawn_worker(argv, out_f, stdin_f, cwd, env):
     return adapter.spawn(argv, **kw)
 
 
-def parse_runner_argv(argv):
-    """Recognize only a direct Python runner invocation; worker arguments cannot spoof the marker."""
-    argv = list(argv)
-    if len(argv) < 4 or not PYTHON_RE.fullmatch(re.split(r"[\\/]", argv[0])[-1]) or argv[1:3] != ["-m", "drover.runner"]:
-        return None
-    rest = argv[3:]
-    if "--" in rest:
-        rest = rest[:rest.index("--")]
-    if rest and rest[0] in ("stop", "find"):
-        return None
-    for j, a in enumerate(rest):
-        if a == "--run-id" and j + 1 < len(rest) and RUN_ID_RE.fullmatch(rest[j + 1]):
-            return rest[j + 1]
-        if a.startswith("--run-id=") and RUN_ID_RE.fullmatch(a[9:]):
-            return a[9:]
-    return None
-
-
-def _runner_runs_dir(argv):
-    """The runs directory from a valid runner command line, else None."""
-    argv = list(argv)
-    if parse_runner_argv(argv) is None:
-        return None
-    rest = argv[3:]
-    if "--" in rest:
-        rest = rest[:rest.index("--")]
-    for j, arg in enumerate(rest):
-        if arg == "--runs-dir" and j + 1 < len(rest):
-            return rest[j + 1]
-        if arg.startswith("--runs-dir="):
-            return arg[len("--runs-dir="):]
-    return None
-
-
-def _same_path(left, right):
-    try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(str(left)))) == \
-            os.path.normcase(os.path.abspath(os.path.expanduser(str(right))))
-    except (OSError, TypeError, ValueError):
-        return False
-
-
 def _proc_cmdlines_linux():
     for e in os.scandir("/proc"):
         if e.name.isdigit():
@@ -485,29 +482,12 @@ def _proc_cmdlines_windows():
             for row in rows if isinstance(row, dict) and row.get("CommandLine") and isinstance(row.get("ProcessId"), int)]
 
 
-def find_runners(run_id=None, cmdlines=None, runs_dir=None):
-    """One live leaf runner per run id, optionally restricted to an owner directory.
-
-    Failed discovery raises ScanError; it never means there are no runners.
-    """
-    if cmdlines is None:
-        cmdlines = _proc_cmdlines_windows() if IS_WINDOWS else _proc_cmdlines_linux()
-    by_id = {}
-    for row in cmdlines:
-        pid, argv, ppid = (tuple(row) + (None,))[:3]
-        rid = parse_runner_argv(argv)
-        if rid and (run_id is None or rid == run_id) and \
-                (runs_dir is None or _same_path(_runner_runs_dir(argv), runs_dir)):
-            by_id.setdefault(rid, []).append((pid, ppid))
-    found = []
-    for rid, procs in by_id.items():
-        parents = {pp for _, pp in procs}
-        leaves = [p for p, _ in procs if p not in parents] or [p for p, _ in procs]
-        found.append({"pid": min(leaves), "run_id": rid})
-    return sorted(found, key=lambda r: r["pid"])
+def process_cmdlines():
+    """Yield native process (pid, argv[, parent pid]) rows, or raise ScanError."""
+    return _proc_cmdlines_windows() if IS_WINDOWS else _proc_cmdlines_linux()
 
 
-def detach_process(cmd, env, log):
+def detach(cmd, env, log):
     in_job = False
     kw = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
     if IS_WINDOWS:
@@ -524,136 +504,8 @@ def detach_process(cmd, env, log):
         proc = subprocess.Popen(cmd, env=env, start_new_session=True, **kw)
     return proc, in_job
 
-def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
-    """Run wsl.exe; return (returncode, output). Timeout gives (-1, 'timeout')."""
-    try:
-        p = subprocess.run(wsl_control(args), capture_output=True, timeout=timeout, **NO_WINDOW)
-    except subprocess.TimeoutExpired:
-        return -1, "timeout"
-    except OSError as e:
-        return -2, str(e)
-    return p.returncode, decode_output(p.stdout + p.stderr).strip()
-
-
-def real_keepalive(distro: str, seconds: float):
-    """Start `wsl.exe -d <distro> --exec sleep <seconds>`; the returned Popen is the keepalive child."""
-    return subprocess.Popen(WSL(distro).command(["sleep", str(int(seconds))]),
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
-
-
-def wsl_running(default, run=subprocess.run):
-    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
-    try:
-        r = run(wsl_control(["-l", "--running", "-q"]), capture_output=True, timeout=20, **NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    names = decode_output(r.stdout).splitlines()
-    return r.returncode == 0 and distro(default).lower() in [x.strip().lower() for x in names]
-
-
-def add_worktree(repo, dest, *tail, git, error):
-    """Create a worktree; old git may use absolute pointers only on a native filesystem."""
-    r = git(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False)
-    rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
-                         r.stderr, re.IGNORECASE)
-    if r.returncode and rejected:
-        if not is_linux_native(dest):
-            raise error('this git has no `worktree add --relative-paths`, and a worktree under '
-                        f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
-        r = git(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False)
-    if r.returncode:
-        raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
-
-def _git_dirs(cwd):
-    workspace = Path(native(cwd)).resolve()
-
-    def resolve(base, value):
-        if not value:
-            raise ValueError("empty git metadata path")
-        path = native(value)
-        if os.name != "nt":
-            path = path.replace("\\", "/")
-        return (base / path).resolve(strict=True)
-
-    try:
-        for parent in (workspace, *workspace.parents):
-            marker = parent / ".git"
-            try:
-                marker.lstat()
-            except FileNotFoundError:
-                continue
-            if marker.is_dir():
-                gitdir = marker.resolve(strict=True)
-            else:
-                prefix, sep, target = marker.read_text(encoding="utf-8").strip().partition(":")
-                if prefix != "gitdir" or not sep:
-                    raise ValueError("invalid git metadata pointer")
-                gitdir = resolve(parent, target.strip())
-            common_file = gitdir / "commondir"
-            try:
-                common_file.lstat()
-            except FileNotFoundError:
-                common = gitdir
-            else:
-                common = resolve(gitdir, common_file.read_text(encoding="utf-8").strip())
-            if not gitdir.is_dir() or not common.is_dir():
-                raise ValueError("git metadata is not a directory")
-            return workspace, gitdir, common
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"cannot resolve git metadata for Claude sandbox: {exc}") from exc
-    return workspace, None, None
-
-
-def external_git_dirs(cwd):
-    workspace, gitdir, common = _git_dirs(cwd)
-    return list(dict.fromkeys(str(p) for p in (common, gitdir) if p and not p.is_relative_to(workspace)))
-
 
 def decode_output(raw):
     if isinstance(raw, str):
         return raw
     return raw.decode("utf-16-le" if b"\x00" in raw[:4] else "utf-8", "ignore").replace("\x00", "")
-
-def scratch_path(value):
-    root, path = Path("/tmp/drover-scratch"), Path(value)
-    parent = path.parent
-    direct = parent == root
-    task_scratch = Path(os.environ.get("TMPDIR", ""))
-    nested = (not direct and parent == task_scratch and parent.parent == root and parent.is_dir()
-              and not parent.is_symlink() and parent.resolve() == parent)
-    if (IS_WINDOWS or (not direct and not nested) or root.resolve() != root
-            or path.is_symlink() or path.resolve().parent != parent):
-        raise ValueError("scratch must be under /tmp/drover-scratch/ or its assigned TMPDIR")
-    return path
-
-
-
-DOTNET_SHM_ROOT = "/tmp/.dotnet"
-
-
-def ensure_dotnet_shm(root=DOTNET_SHM_ROOT):
-    """Create <root>/shm (sticky, 1777) for the .NET named-mutex shared memory; leave an existing one alone."""
-    shm = Path(root) / "shm"
-    if shm.is_dir():
-        return
-    created = not Path(root).is_dir()
-    Path(root).mkdir(parents=True, exist_ok=True)
-    if created:
-        os.chmod(root, 0o1777)      # sticky and world-writable like /tmp; chmod because mkdir's mode obeys the umask
-    shm.mkdir(exist_ok=True)
-    os.chmod(shm, 0o1777)
-
-
-def worker_scratch_env(scratch):
-    """Environment for a WSL worker's private temp and .NET caches; the global NuGet package cache stays shared."""
-    scratch = Path(scratch)
-    return {
-        "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
-        "DOTNET_CLI_HOME": str(scratch / "dotnet-home"),
-        "NUGET_HTTP_CACHE_PATH": str(scratch / "nuget-http"),
-        "NUGET_PLUGINS_CACHE_PATH": str(scratch / "nuget-plugins"),
-        "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1",
-        "NUGET_PACKAGES": str(Path.home() / ".nuget" / "packages"),
-    }
-
-

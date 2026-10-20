@@ -1,6 +1,8 @@
 """Build dispatchers through the production collaborators, with isolated test state."""
 import time
 
+from drover import runner
+
 from drover import dispatcher, repos, usage
 
 WORKTREE = r'R:\repos\wt'
@@ -8,12 +10,12 @@ GO = {'verdict': 'go', 'slots': 10, 'reasons': []}
 
 
 class FakePipeline:
-    """A docs-only repo: no check process is needed; review capacity is unavailable."""
+    """A configured repo interface; its test runner supplies check receipts and review capacity is unavailable."""
     def __init__(self, port, runs_dir):
         self.port, self.runs_dir = port, runs_dir
         self.prog = repos.normalize({'name': 'p', 'repo': WORKTREE,
-                                     'gate': {'commands': {'full': ['unused']}}})
-        self.prog['review']['seat'] = 'review-unavailable'
+                                     'scripts': {'test': 'scripts/drover/test.ps1'}})
+        self.prog['review'].update(backend='codex', model='gpt-6.1-sol', high_risk_model='gpt-6.1-sol', seat=None)
         self.current_head = lambda: 'abc1234'
 
     def repo(self, task):
@@ -31,7 +33,19 @@ class FakePipeline:
         return self.current_head()
 
     def gate_plan(self, task, prog, sha, platform):
-        return {'kind': 'none', 'diff_lines': 0, 'scope': []}
+        return {'kind': 'full', 'diff_lines': 0, 'scope': None, 'files': [], 'sha': sha,
+                'platform': platform, 'commands': [repos.script_argv(prog)]}
+
+    def gate_argv(self, plan, run_id, priority, prog, platform=None):
+        out = runner.run_dir(self.runs_dir, run_id) / 'receipt.json'
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return ['fixture-ci', str(out), plan['sha']], out
+
+    def base_ref(self, prog):
+        return prog["default_branch"]
+
+    def diff_text(self, repo, base, sha):
+        return "fixture diff"
 
     def sync_gates(self):
         return []

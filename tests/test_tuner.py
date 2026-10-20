@@ -174,13 +174,6 @@ class Routing(Base):
         self.assertIsNone(route.choose({"role": "review"}, {}, {"codex": OK_H["codex"]}, seed=1)["backend"])
         self.assertEqual(route.choose({"role": "director"}, {}, None, seed=1)["model"], "opus-5.5")
 
-    def test_dotnet_windows_claude_only(self):
-        t = {"role": "implementer", "size": "S", "platform": "windows", "stack": "dotnet"}
-        self.assertEqual({route.choose(t, {}, OK_H, seed=s)["backend"] for s in range(60)}, {"claude"})
-        t2 = {"role": "implementer", "size": "M", "platform": "windows", "scope_files": ["a/B.csproj"]}
-        self.assertEqual({route.choose(t2, {}, OK_H, seed=s)["backend"] for s in range(60)}, {"claude"})
-        t3 = {"role": "implementer", "size": "M", "platform": "linux", "stack": "dotnet"}
-        self.assertEqual({route.choose(t3, {}, OK_H, seed=s)["backend"] for s in range(60)}, {"claude", "codex"})
 
     def test_update_routes_fills_stats(self):
         for _ in range(3):

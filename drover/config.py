@@ -29,7 +29,7 @@ TRACKER_KINDS = ("ram", "disk", "load", "vram", "wsl")
 DEVICES = ("auto", "gpu", "cpu")
 AUTH_MODES = ("tailscale",)
 SIZES = ("S", "M", "L")
-from .placement import native, WIN_RE, MNT_RE
+from .placement import native
 NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 ENV_ALIASES = {"DROVER_OLLAMA_URL": "decider.url", "DROVER_REPOS_DIR": "paths.repos_root",
                "DROVER_WSL_USER": "paths.wsl_user", "DROVER_WSL_DISTRO": "paths.wsl_distro"}

@@ -1,11 +1,10 @@
-"""Isolated, immutable read checkouts and fail-closed end-of-run verification.
+"""Isolated read checkouts and fail-closed end-of-run verification.
 
-Never switch the owner's checkout. Cache by repository, ref and commit; a moving
-branch gets a new snapshot. These are read inputs, never task worktrees to land.
+Never switch the owner's checkout. Key snapshots by repository, ref and commit;
+a moving branch gets a new snapshot. Each clone retains history independently. These are read inputs, never task worktrees to land.
 """
 import hashlib
-import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
 import threading
@@ -17,19 +16,9 @@ _LOCK = threading.Lock()
 
 def check_read_roots(cwd, paths):
     """Reject inputs covered by the Codex worker's writable workspace root."""
-    workspace = Path(repos.native(cwd)).resolve()
-
-    def parts(path):
-        values = path.parts
-        # Windows drive mounts can be case insensitive even when the hub is
-        # running in WSL. Resolve symlinks first, then compare conservatively.
-        if os.name == 'nt' or (len(values) > 2 and values[1] == 'mnt' and len(values[2]) == 1):
-            return tuple(p.casefold() for p in values)
-        return values
-
-    writable = parts(workspace)
+    writable = placement.path_parts(cwd)
     for path in paths:
-        read = parts(Path(repos.native(path)).resolve())
+        read = placement.path_parts(path)
         if read[:len(writable)] == writable or writable[:len(read)] == read:
             raise ValueError(f'read-only checkout inside or containing writable workspace: {path}')
 
@@ -39,29 +28,6 @@ def _git(path, *args):
     if r.returncode:
         raise ValueError(f'read checkout: {r.stderr.strip()[-250:]}')
     return r.stdout.strip()
-
-
-def make_writable(path):
-    """For removing a snapshot we created (also used by temporary-directory tests)."""
-    path = Path(path)
-    if not path.exists():
-        return
-    for root, dirs, files in os.walk(path):
-        Path(root).chmod(0o700)
-        for name in files:
-            p = Path(root) / name
-            if not p.is_symlink():
-                p.chmod(0o600)
-
-
-def _readonly(path):
-    # Defense in depth only; Codex's filesystem sandbox enforces read access.
-    for root, dirs, files in os.walk(path, topdown=False):
-        for name in files:
-            p = Path(root) / name
-            if not p.is_symlink():
-                p.chmod(p.stat().st_mode & ~0o222)
-        Path(root).chmod(0o555)
 
 
 def verify(reads):
@@ -101,17 +67,14 @@ def prepare(entries, configured=None, root=None):
                 root.mkdir(parents=True, exist_ok=True)
                 temp = Path(tempfile.mkdtemp(prefix='read-', dir=root))
                 try:
-                    cache = root / ('objects-' + hashlib.sha256(source.encode()).hexdigest()[:24])
-                    if not cache.exists():
-                        _git(root, 'init', '--bare', str(cache))
-                    _git(cache, 'fetch', '--no-tags', '--', source, f'+{sha}:refs/heads/snapshot')
-                    _git(temp, 'clone', '--local', '--no-checkout', '--', str(cache), '.')
+                    via_wsl = placement.routes_through_wsl(source)
+                    url = (PurePosixPath(source).as_uri() if via_wsl else Path(source).resolve().as_uri())
+                    clone_dest = placement.to_wsl_path(temp) if via_wsl else str(temp)
+                    _git(source, 'clone', '--no-checkout', '--', url, clone_dest)
                     _git(temp, 'config', 'core.filemode', 'false')
                     _git(temp, '-c', 'core.autocrlf=false', 'checkout', '--detach', sha)
-                    _readonly(temp)
                     temp.rename(dest)
                 except Exception:
-                    make_writable(temp)
                     shutil.rmtree(temp)
                     raise
             verify([read])

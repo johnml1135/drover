@@ -1,6 +1,5 @@
 """Task presentation: safe Markdown and nonblocking cached repository state."""
 import html
-import ntpath
 from pathlib import Path
 import re
 import subprocess
@@ -10,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from markupsafe import Markup
-from drover import repos
+from drover import repos, placement
 from drover.placement import NO_WINDOW
 
 
@@ -105,7 +104,7 @@ def markdown(text):
 
 
 def _join(base, name):
-    return ntpath.join(base, name) if repos.WIN_RE.match(base) else str(Path(base) / name)
+    return placement.config_path(Path(placement.native(base)) / name, base)
 
 
 def probe(prog):

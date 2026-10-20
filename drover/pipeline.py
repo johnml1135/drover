@@ -5,14 +5,13 @@ config. Git is always driven with an argv list, never a shell. Paths in the ledg
 (R:\\repos\\x); `repos.native` turns one into a path this OS can open, and the launcher maps it for WSL.
 """
 import json
-import os
 import re
 import subprocess
 import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, garden, gate, placement, launch, origin, repos, runner
+from . import config, garden, gate, placement, origin, repos, runner
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 OWNER_PREFIX = "drover:"
@@ -54,6 +53,21 @@ def git(repo, *args, check=False, timeout=None):
 def join_cfg(base, name):
     """base/name in the form `base` is written in (Windows backslashes or POSIX slashes)."""
     return base.rstrip("\\/") + ("\\" if "\\" in base else "/") + name
+
+
+def add_worktree(repo, dest, *tail, run=None, error=WorktreeRefused):
+    run = run or git
+    """Create a worktree; old git may use absolute pointers only on a native filesystem."""
+    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False)
+    rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
+                         r.stderr, re.IGNORECASE)
+    if r.returncode and rejected:
+        if not placement.is_linux_native(dest):
+            raise error('this git has no `worktree add --relative-paths`, and a worktree under '
+                        f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
+        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False)
+    if r.returncode:
+        raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
 
 
 class Pipeline:
@@ -117,8 +131,13 @@ class Pipeline:
         prog = self.all_repos().get(str(task.get("repo") or "").lower())
         if prog is None:
             return None
+        prog = repos.load(prog, checkout=task.get("worktree") or prog["repo"])
         override = self._owner_gate_cmd(prog["name"].lower()) if prog["gate"]["unknown"] else None
-        return repos.with_override(prog, override) if override else prog
+        if override:
+            prog = {**prog, "scripts": {**prog["scripts"], "test": override},
+                    "gate": {**prog["gate"], "unknown": False},
+                    "_machine": config._merge(prog.get("_machine", {}), {"scripts": {"test": override}})}
+        return prog
 
     def _owner_gate_cmd(self, name):
         """The gate command the owner gave, or None. The setting is trusted only while it names the repo's own
@@ -137,7 +156,7 @@ class Pipeline:
                 or not answered or answered[-1]["actor"] != "owner":
             return None
         try:
-            repos.gate_argv(raw["cmd"])
+            repos.normalize({"name": name, "repo": ".", "scripts": {"test": raw["cmd"]}})
         except repos.RepoError:
             return None
         return raw["cmd"]
@@ -162,8 +181,8 @@ class Pipeline:
         if qid is None:
             hint = prog["gate"].get("hint")
             qid = self.port.ask_question(
-                "task", tid, f"What is the gate command for {name}?",
-                body=("Answer with the one command that gates a change in this repo (run in its worktree)."
+                "task", tid, f"What is the test script path for {name}?",
+                body=("Add [scripts] test to drover.toml, or answer with its relative .ps1 script path."
                       + (f" Hint: {hint}." if hint else "")), needs_owner=True)
             self.port.set_setting(GATE_Q_KEY + name.lower(), qid)
         else:
@@ -322,7 +341,7 @@ class Pipeline:
             tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
         else:
             tail = ["-b", branch, str(dest), base]
-        placement.add_worktree(repo, dest, *tail, git=git, error=WorktreeRefused)
+        add_worktree(repo, dest, *tail)
 
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):
@@ -345,28 +364,21 @@ class Pipeline:
         return git(repo, "diff", "--no-renames", f"{base}...{sha}").stdout
 
     def gate_plan(self, task, prog, sha, platform=None):
-        """{kind: none|scoped|full, commands, scope, base, repo, diff_lines, ...} for `base...sha` on one platform."""
-        platform = platform or repos.gate_platforms(prog)[0]
+        """Plan the repo script at this exact commit, with generic changed-file context."""
         repo = repos.native(task["worktree"])
+        prog = repos.load(prog, sha, repo)
+        platform = platform or repos.gate_platforms(prog)[0]
         base = self.base_ref(prog)
         paths = gate.changed_paths(repo, base, sha)
-        cmds, mp = repos.gate_commands(prog, platform), repos.scope_map_path(prog)
-        scope, kind, commands = None, "full", [cmds["full"]]
-        if mp is not None:
-            scope = gate.compute_scope(paths, gate.load_map(mp))
-            if scope["projects"] and not scope["fallback_used"] and "scoped" in cmds \
-                    and any("{project}" in a for a in cmds["scoped"]):
-                kind = "scoped"
-                commands = [[a.replace("{project}", p) for a in cmds["scoped"]] for p in scope["projects"]]
-            elif not scope["projects"] and not scope["fallback_used"]:
-                kind, commands = "none", []
-        elif "scoped" in cmds and not any("{project}" in a for a in cmds["scoped"]):
-            kind, commands = "scoped", [cmds["scoped"]]
+        kind = "full"
+        commands = [repos.script_argv(prog)]
         g = prog["gate"]
-        if kind != "none" and g.get("docs_only", True) and gate.changed_docs_only(repo, base, sha, g.get("docs_only_globs", repos.DOCS_ONLY_GLOBS)):
-            kind, commands = "docs", gate.docs_commands(base, sha, cmds.get("docs"))
-        return {"kind": kind, "commands": commands, "scope": scope, "base": base, "repo": repo, "sha": sha,
-                "project_pattern": prog["gate"].get("project_pattern", ""),
+        if g["docs_only"] and gate.changed_docs_only(repo, base, sha, g["docs_only_globs"]):
+            kind = "docs"
+            commands = gate.docs_commands(base, sha, repos.script_argv(prog, "docs") if "docs" in prog["scripts"] else None)
+        env = {**prog["run"]["env"], "DROVER_CHANGED_FILES": json.dumps(paths), "DROVER_CI_KIND": "checks" if kind == "full" else kind}
+        return {"kind": kind, "commands": commands, "scope": None, "base": base, "repo": repo, "sha": sha,
+                "env": env, "sandbox_writable_roots": prog["run"]["sandbox_writable_roots"],
                 "diff_lines": self.diff_lines(repo, base, sha), "files": paths, "platform": platform}
 
     def gate_argv(self, plan, gate_run, priority, prog, platform=None):
@@ -381,7 +393,7 @@ class Pipeline:
         out = d / "receipt.json"
         body = {"repo": m(plan["repo"]), "base": plan["base"], "sha": plan["sha"], "commands": plan["commands"],
                 "scope": plan["scope"], "kind": plan.get("kind"), "out": m(out), "priority": priority,
-                "project_pattern": plan.get("project_pattern", "")}
+                "env": plan.get("env", {}), "sandbox_writable_roots": plan.get("sandbox_writable_roots", [])}
         (d / "plan.json").write_text(json.dumps(body), encoding="utf-8")
         script = Path(__file__).with_name("gatejob.py")
         argv = [self.wsl_python if wsl else self.python, m(script), "--plan", m(d / "plan.json")]

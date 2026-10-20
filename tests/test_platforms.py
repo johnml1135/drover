@@ -3,33 +3,31 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
-from drover import config, contract, dispatcher, pipeline, repos, route, stats
+from drover import config, contract, dispatcher, repos, stats
 from hub.dispatch import LandingService
 from drover.ledger import ops
 from tests import test_dispatcher, test_pipeline
-from tests.test_pipeline import Base, done, prog_dict, result
+from tests.test_pipeline import Base, prog_dict
 
 
 def repo(repo, worktrees, platforms=None, gate_platform="windows", default=None):
     p = prog_dict(repo, worktrees)
     raw = {"name": "p", "repo": p["repo"], "worktrees": p["worktrees"],
            "run": {"platforms": ["windows", "wsl"] if platforms is None else platforms, **({"default": default} if default else {})},
-           "gate": {"platform": gate_platform, "commands": {"full": ["x"]}}}
+           "scripts": {"test": "scripts/drover/test.ps1"}, "gate": {"platform": gate_platform}}
     return repos.normalize(raw)
 
 
 class Normalize(unittest.TestCase):
     def test_defaults_are_both_platforms_with_windows_default(self):
         p = prog_dict("R:\\r", "R:\\w")
-        self.assertEqual(p["run"], {"platforms": ["windows", "wsl"], "default": "windows"})
+        self.assertEqual((p["run"]["platforms"], p["run"]["default"]), (["windows", "wsl"], "windows"))
         self.assertEqual(p["gate"]["platform"], "windows")
 
     def test_wsl_only_repo_defaults_to_wsl(self):
         p = repo("R:\\r", "R:\\w", ["wsl"], "wsl")
-        self.assertEqual(p["run"], {"platforms": ["wsl"], "default": "wsl"})
+        self.assertEqual((p["run"]["platforms"], p["run"]["default"]), (["wsl"], "wsl"))
 
     def test_gate_both(self):
         p = repo("R:\\r", "R:\\w", gate_platform="both")
@@ -59,10 +57,8 @@ class Normalize(unittest.TestCase):
     def test_the_shipped_examples_all_load(self):
         examples = repos.load_all(repos.REPOS_DIR)
         self.assertEqual(set(examples), {"acme-lib", "acme-app"})
-        self.assertEqual(repos.gate_platforms(examples['acme-app']), ['windows', 'wsl'])
-        for platform, python in [('windows', 'python'), ('wsl', 'python3')]:
-            self.assertEqual(repos.gate_commands(examples['acme-app'], platform)['full'],
-                             [python, '-m', 'unittest', 'discover'])
+        self.assertEqual(repos.gate_platforms(examples['acme-app']), ['windows'])
+        self.assertTrue(examples['acme-app']['gate']['unknown'])
 
     def test_state_dir_repos_win_once_the_folder_exists(self):
         from drover import config
@@ -139,7 +135,7 @@ class FakeRepoPipeline(Base):
         wsl_default = repo("R:\\r", "R:\\w", default="wsl")
         win_default = repo("R:\\r", "R:\\w", default="windows")
         for task, selected, path, prog, expected in (
-                ({"title": "msbuild"}, claude, "R:\\wt", wsl_default, "windows"),
+                ({"title": "task"}, claude, "R:\\wt", wsl_default, "wsl"),
                 ({"title": "t", "platform": "windows"}, claude, "R:\\wt", wsl_default, "windows"),
                 (plain, {**claude, "platform": "windows"}, "R:\\wt", wsl_default, "windows"),
                 (plain, {"backend": "codex", "seat": "codex"}, "R:\\wt", win_default, "wsl"),
@@ -173,59 +169,6 @@ class FakeRepoPipeline(Base):
         self.assertIn("windows", self.reason(tid))
         self.assertEqual(self.fl.of("worker"), [])
 
-    def test_wsl_only_repo_with_only_codex_allowance_runs_dotnet_on_codex_wsl(self):
-        self.repo(["wsl"], "wsl")
-        texts = [{"title": "t", "scope_files": ["src/App.cs"]}, {"title": "upgrade dotnet sdk"},
-                 {"title": "fix the msbuild target"}]
-        ids = [self.task(**kw) for kw in texts]
-        self.d = self.make(wsl_up=lambda: True, worktree=lambda t: "R:\\repos\\wt",
-                           allow=lambda backend: backend == "codex")
-        self.assertEqual(sorted(self.d.tick()["launched"]), sorted(ids))
-        for spec in self.fl.of("worker"):
-            self.assertEqual((spec["backend"], spec["placement"]), ("codex", "wsl"))
-
-
-    def test_windows_repo_runs_dotnet_on_claude_windows_never_codex(self):
-        self.repo(["windows"], "windows")
-        tid = self.task(title="t", scope_files=["src/App.cs"])
-        self.d = self.make(worktree=lambda t: "R:\\repos\\wt")
-        self.assertEqual(self.d.tick()["launched"], [tid])
-        spec = self.fl.of("worker")[0]
-        self.assertEqual((spec["backend"], spec["placement"]), ("claude", "windows"))
-
-    def test_windows_repo_with_only_codex_seats_goes_to_the_owner_with_the_dotnet_reason(self):
-        self.repo(["windows"], "windows")
-        config.use(config.validate({"seats": [{**config.DEFAULT_SEATS[0], "placement": "wsl"},
-                                              config.DEFAULT_SEATS[1]]}))
-        self.addCleanup(config.reset)
-        tid = self.task(title="t", scope_files=["src/App.cs"])
-        self.assertEqual(self.tick_with_wsl()["launched"], [])
-        self.assertEqual(self.status(tid), "needs-owner")
-        self.assertIn(".NET", self.reason(tid))
-        self.assertNotIn("max_workers", self.reason(tid))
-
-    def test_dotnet_on_a_wsl_only_repo_runs_on_wsl(self):
-        self.repo(["wsl"], "wsl")
-        tid = self.task(title="fix the msbuild target")
-        self.tick_with_wsl()
-        self.assertEqual(self.status(tid), "running")
-        self.assertEqual(self.fl.of("worker")[0]["placement"], "wsl")
-
-    def test_explicit_windows_dotnet_on_a_wsl_only_repo_goes_to_the_owner_with_a_reason(self):
-        self.repo(["wsl"], "wsl")
-        tid = self.task(title="fix the msbuild target", goal="platform: windows")
-        self.tick_with_wsl()
-        self.assertEqual(self.status(tid), "needs-owner")
-        self.assertIn(".NET", self.reason(tid))
-
-    def test_dotnet_on_a_wsl_claude_seat_runs_on_wsl(self):
-        seat = {**config.DEFAULT_SEATS[0], "placement": "wsl"}
-        config.use(config.validate({"seats": [seat]}))
-        self.addCleanup(config.reset)
-        tid = self.task(title="fix the msbuild target")
-        self.tick_with_wsl()
-        self.assertEqual(self.status(tid), "running")
-        self.assertEqual(self.fl.of("worker")[0]["placement"], "wsl")
 
     def test_a_platform_windows_tag_on_a_wsl_claude_seat_also_goes_to_the_owner(self):
         claude = {"backend": "claude", "seat": "claude"}
@@ -346,73 +289,6 @@ class GateBoth(Base):
         self.assertEqual(self.status(tid), "gated")
 
 
-class PlatformCommands(unittest.TestCase):
-    def setUp(self):
-        self.prog = repos.normalize({'name': 'p', 'repo': 'repo', 'gate': {
-            'platform': 'both', 'commands': {'windows': {'full': ['python', 'check.py']},
-                                           'wsl': {'full': ['python3', 'check.py']}}}})
-        self.pipe = pipeline.Pipeline(None, repos_map={'p': self.prog})
-        self.task = {'id': 'T-1', 'repo': 'p', 'worktree': 'worktree', 'priority': 'P1'}
-        self.sha = 'a' * 40
-        for target, name, value in ((pipeline.gate, 'changed_paths', ['src/a.py']),
-                                    (self.pipe, 'diff_lines', 2), (self.pipe, 'head', self.sha)):
-            patched = patch.object(target, name, return_value=value)
-            patched.start()
-            self.addCleanup(patched.stop)
-
-    def test_shared_full_commands_work_on_both_platforms_and_default_to_the_repos_platform(self):
-        self.prog['gate']['commands'] = {'full': ['shared']}
-        for platform in repos.PLATFORMS:
-            plan = self.pipe.gate_plan(self.task, self.prog, self.sha, platform)
-            self.assertEqual((plan['kind'], plan['commands'], plan['platform']), ('full', [['shared']], platform))
-        self.prog['gate']['platform'] = 'wsl'
-        plan = self.pipe.gate_plan(self.task, self.prog, self.sha)
-        self.assertEqual((plan['commands'], plan['platform']), ([['shared']], 'wsl'))
-
-    def test_dispatcher_writes_a_plan_with_each_platforms_full_command(self):
-        d = dispatcher.Dispatcher.__new__(dispatcher.Dispatcher)
-        d.port, d.pipeline, d.launcher, d.live = Mock(), self.pipe, Mock(), {}
-        d._event_for = Mock(return_value={'sha': self.sha})
-        d._last_nongate = Mock(return_value={'id': 1})
-        d._next_gate_platform = Mock(side_effect=['windows', 'wsl'])
-        d.launcher.wsl_up, d._wsl_blocked, d._lease = lambda: True, lambda: False, lambda task: True
-        d.port.start_run.side_effect = [2, 3]
-        with tempfile.TemporaryDirectory() as tmp:
-            self.pipe.runs_dir = tmp
-            for platform, run_id, python in [('windows', 2, 'python'), ('wsl', 3, 'python3')]:
-                self.assertTrue(d._begin_gate(self.task, []))
-                plan = json.loads((Path(tmp) / str(run_id) / 'plan.json').read_text())
-                self.assertEqual(plan['commands'], [[python, 'check.py']])
-                self.assertEqual(d.launcher.launch.call_args.args[0]['placement'], platform)
-
-    def test_scoped_overrides_expand_projects_and_fall_back_to_platform_full(self):
-        self.prog['gate']['scope_map'] = 'scope.json'
-        self.prog['gate']['commands']['scoped'] = ['shared', '{project}']
-        self.prog['gate']['commands']['wsl']['scoped'] = ['python3', '{project}']
-        scope = {'projects': ['Core.Tests', 'App.Tests'], 'fallback_used': False}
-        with patch.object(pipeline.gate, 'load_map', return_value={}), \
-                patch.object(pipeline.gate, 'compute_scope', return_value=scope):
-            for platform, cmd in [('windows', 'shared'), ('wsl', 'python3')]:
-                plan = self.pipe.gate_plan(self.task, self.prog, self.sha, platform)
-                self.assertEqual((plan['kind'], plan['platform']), ('scoped', platform))
-                self.assertEqual(plan['commands'], [[cmd, 'Core.Tests'], [cmd, 'App.Tests']])
-            scope['fallback_used'] = True
-            for platform, cmd in [('windows', 'python'), ('wsl', 'python3')]:
-                plan = self.pipe.gate_plan(self.task, self.prog, self.sha, platform)
-                self.assertEqual((plan['kind'], plan['commands']), ('full', [[cmd, 'check.py']]))
-
-    def test_unmapped_scoped_command_is_resolved_for_the_selected_platform(self):
-        self.prog['gate']['commands']['windows']['scoped'] = ['windows-scoped']
-        windows = self.pipe.gate_plan(self.task, self.prog, self.sha, 'windows')
-        wsl = self.pipe.gate_plan(self.task, self.prog, self.sha, 'wsl')
-        self.assertEqual((windows['kind'], windows['commands']), ('scoped', [['windows-scoped']]))
-        self.assertEqual((wsl['kind'], wsl['commands']), ('full', [['python3', 'check.py']]))
-        with tempfile.TemporaryDirectory() as tmp:
-            self.pipe.runs_dir = tmp
-            argv, _ = self.pipe.gate_argv(wsl, 1, 'P1', self.prog)
-            self.assertEqual(argv[0], 'python3')
-
-
 class WslTracker(test_dispatcher.Base):
     def test_wsl_pressure_blocks_only_work_that_needs_wsl(self):
         self.allow["codex"] = False
@@ -437,54 +313,7 @@ class WslTracker(test_dispatcher.Base):
         self.assertEqual(r["wsl"]["reasons"], ["WSL is not running"])
 
 
-class DotnetSeats(unittest.TestCase):
-    def test_a_windows_capable_seat_wins_the_dotnet_task_whatever_the_priority(self):
-        wsl = {**config.DEFAULT_SEATS[0], "name": "wsl-claude", "placement": "wsl", "priority": 1}
-        win = {**config.DEFAULT_SEATS[0], "name": "win-claude", "director": False, "priority": 2,
-               "director_reserve_pct": 0.0}
-        task = {"role": "worker", "size": "M", "platform": "windows", "stack": "dotnet"}
-        h = {"claude": {"remaining_pct": 90.0, "hours_to_reset": 10.0}, "codex": None}
-        for seed in range(10):
-            self.assertEqual(route.choose(task, {}, h, seed=seed, seats=[wsl, win])["seat"], "win-claude")
-            self.assertEqual(route.choose({**task, "platform": None, "stack": ""}, {}, h, seed=seed,
-                                          seats=[wsl, win])["seat"], "wsl-claude")
-
-    def test_no_windows_seat_leaves_it_to_the_dispatcher_to_ask_the_owner(self):
-        wsl = {**config.DEFAULT_SEATS[0], "placement": "wsl"}
-        task = {"role": "worker", "size": "M", "platform": "windows", "stack": "dotnet"}
-        r = route.choose(task, {}, {"claude": {"remaining_pct": 90.0, "hours_to_reset": 10.0}, "codex": None}, seed=1,
-                         seats=[wsl])
-        self.assertIsNone(r["backend"])          # an explicit Windows task has no Windows seat
-        self.assertTrue(r["needs_owner"])
-        self.assertIn(".NET", r["reason"])
-
-
 class LandingGateBoth(unittest.TestCase):
-    def test_batch_gate_uses_the_effective_full_command_on_each_platform(self):
-        svc = LandingService.__new__(LandingService)
-        svc.store, svc.gate_kw = SimpleNamespace(path='ledger.db'), {}
-        cases = [({'full': ['shared']}, [['shared'], ['shared']]),
-                 ({'windows': {'full': ['python']}, 'wsl': {'full': ['python3']}},
-                  [['python'], ['python3']]),
-                 ({'full': ['shared'], 'wsl': {'full': ['python3']}}, [['shared'], ['python3']])]
-        for commands, expected in cases:
-            with self.subTest(commands=commands):
-                prog = repos.normalize({'name': 'p', 'repo': 'repo',
-                                        'gate': {'platform': 'both', 'commands': commands}})
-                calls = []
-
-                def make(command, *args, **kw):
-                    return lambda wt, tip, tasks: calls.append(command) or {'status': 'passed'}
-
-                with patch('hub.dispatch.os', SimpleNamespace(name='nt')), \
-                        patch('hub.dispatch.landing.make_gate', side_effect=make) as windows, \
-                        patch.object(svc, '_wsl_gate', side_effect=make) as wsl:
-                    check = svc.gate_fn(prog, 'main', 'out', None)
-                    receipt = check('worktree', 'a' * 40, [])
-                self.assertEqual(calls, expected)
-                self.assertEqual(windows.call_args.args[0], expected[0])
-                self.assertEqual(wsl.call_args.args[0], expected[1])
-                self.assertEqual((receipt['status'], receipt['platform']), ('passed', 'windows+wsl'))
 
     def gate(self, statuses):
         calls = []
@@ -516,8 +345,8 @@ class LandingGateBoth(unittest.TestCase):
         for plat, want in (("windows", ["windows"]), ("wsl", ["wsl"]), ("both", ["windows", "wsl"])):
             made.clear()
             prog = repo("R:\\r", "R:\\w", gate_platform=plat)
-            prog["gate"]["commands"] = {"full": ["x"]}
-            svc.gate_fn(prog, "main", "out", None)
+            prog["scripts"] = {"test": "scripts/drover/test.ps1"}
+            svc.gate_fn(prog, "main", "out", None)("unreachable-fixture", "a" * 40, [])
             self.assertEqual(made, want)
 
 

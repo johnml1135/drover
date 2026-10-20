@@ -15,9 +15,9 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from drover import gate
+    from drover import gate, runner
 else:
-    from . import gate
+    from . import gate, runner
 
 
 HEARTBEAT_S = 30
@@ -59,11 +59,13 @@ def run_plan(plan):
     if gate.dirty(repo):
         raise gate.GateError("refused: working tree has uncommitted changes; commit the task before gating it")
     out.parent.mkdir(parents=True, exist_ok=True)
+    runner.prepare_writable_roots(plan.get("sandbox_writable_roots", []))
+    child_env = {**os.environ, **plan.get("env", {})}
     log, steps, texts, started = out.with_suffix(".log"), [], [], gate.now()
     for i, command in enumerate(plan.get("commands") or [], 1):
         step_log = out.with_name(f"{out.stem}.step{i}.log")
         r = _run_step(step_log, f"step{i}", repo, out.with_name(f"{out.stem}.step{i}.json"), command, base=base,
-                      priority=priority, project_pattern=plan.get("project_pattern", ""))
+                      priority=priority, env=child_env)
         steps.append({"command": r["command"], "exit_code": r["exit_code"], "status": r["status"], "log": r["log"]})
         texts.append(f"$ {' '.join(r['command'])}\n" + step_log.read_text(errors="replace"))
         if r["status"] == "failed":
@@ -74,7 +76,7 @@ def run_plan(plan):
     receipt = dict(version=gate.VERSION, sha=sha, repo=str(repo), base_ref=base, base_sha=base_sha,
                    contains_base=has_base, command=[c for s in steps for c in s["command"]], pins=[], started=started,
                    finished=gate.now(), exit_code=failed["exit_code"] if failed else 0, priority=priority,
-                   scope=plan.get("scope"), kind=plan.get("kind"), steps=steps, tree_unchanged=gate.head(repo) == sha and not gate.dirty(repo),
+                   scope=plan.get("scope"), kind=plan.get("kind"), steps=steps, tree_unchanged=gate.head(repo) == sha and not gate.dirty(repo, post_run=True),
                    log=str(log), log_tail=log.read_text(errors="replace").splitlines()[-40:])
     receipt["passed"] = failed is None and receipt["tree_unchanged"]
     receipt["status"] = "passed" if receipt["passed"] else "failed"

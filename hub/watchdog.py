@@ -5,9 +5,27 @@ note when it defers a WSL task because WSL is down; this is the only thing that 
 out in about a minute, so the watchdog holds it up with a tracked `wsl.exe --exec sleep` child until the note
 expires (no WSL work is waiting), then kills that child."""
 from drover import placement
+import subprocess
 import threading
 import time
-from drover.placement import real_wsl, real_keepalive
+from drover.placement import NO_WINDOW, WSL, wsl_control, decode_output
+
+
+def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
+    """Run wsl.exe; return (returncode, output). Timeout gives (-1, 'timeout')."""
+    try:
+        p = subprocess.run(wsl_control(args), capture_output=True, timeout=timeout, **NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return -1, "timeout"
+    except OSError as e:
+        return -2, str(e)
+    return p.returncode, decode_output(p.stdout + p.stderr).strip()
+
+
+def real_keepalive(distro: str, seconds: float):
+    """Start `wsl.exe -d <distro> --exec sleep <seconds>`; the returned Popen is the keepalive child."""
+    return subprocess.Popen(WSL(distro).command(["sleep", str(int(seconds))]),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
 
 
 class Watchdog:
@@ -65,7 +83,7 @@ class Watchdog:
         if self.keepalive_alive():
             return "ok"
         distro = self._distro()
-        rc, _ = self.wsl(["-d", distro, "-e", "true"], s.wsl_timeout_s)
+        rc, _ = self.wsl(placement.WSL(distro).command(["true"])[1:], s.wsl_timeout_s)
         if rc == 0:
             self.wsl_failures = 0
             self._hold_up(distro)
@@ -76,7 +94,7 @@ class Watchdog:
         if self.last_boot is not None and self.now() - self.last_boot < s.boot_cooldown_s:
             return "boot-cooldown"
         self.last_boot = self.now()
-        rc2, out = self.wsl(["-d", distro, "-e", "true"], s.wsl_boot_timeout_s)
+        rc2, out = self.wsl(placement.WSL(distro).command(["true"])[1:], s.wsl_boot_timeout_s)
         self._log("boot-wsl", f"booted WSL {distro}: rc={rc2}", rc=rc2, output=out[:300])
         if rc2 == 0:
             self.wsl_failures = 0

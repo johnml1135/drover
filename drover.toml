@@ -1,0 +1,12 @@
+# Repo rules travel with the commit. Machine files only override local facts.
+[scripts]
+test = "scripts/drover/test.ps1"
+
+[run]
+platforms = ["windows", "wsl"]
+default = "wsl"
+
+[gate]
+platform = "both"
+timeout_s = 1800
+idle_s = 1500

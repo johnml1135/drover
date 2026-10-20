@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from drover import gate, placement, task_access
+from drover import gate, placement, task_access, tool_discovery
+from drover.launch import RunnerLauncher
 from tests.gitfix import Repo
 
 
@@ -20,7 +21,7 @@ class PlacementTests(unittest.TestCase):
         for name in ('UI-choice', 'Changed'):
             settings['wsl_distro'] = name
             self.assertEqual(placement.git_argv('/home/repo', ['status'], nt=True)[2], name)
-            self.assertEqual(placement.wsl_argv('config-choice', ['find'])[2], name)
+            self.assertEqual(RunnerLauncher('unused', distro='config-choice').runner_argv(['find'])[2], name)
 
     @unittest.skipIf(os.name == 'nt', 'POSIX executable bridge')
     def test_composed_wsl_command_preserves_worker_arguments(self):
@@ -61,40 +62,67 @@ class PlacementTests(unittest.TestCase):
         self.assertFalse(Path(pointer).is_absolute())
         self.assertFalse(placement.WIN_RE.match(pointer))
 
-    @unittest.skipIf(os.name == 'nt', 'DrvFs gate policy')
-    def test_drvfs_status_skips_untracked_scan_but_detects_tracked_edits(self):
+
+    def test_cross_drive_gitdir_stays_absolute(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            marker = Path(tmp) / '.git'
+            marker.write_text('gitdir: C:/repo/.git/worktrees/topic\n')
+            original = marker.read_text()
+            # The worktree is on H:, the admin dir on C:. Both can exist on WSL.
+            with patch('os.path.isdir', return_value=True):
+                self.assertFalse(placement.relativize_gitdir(tmp))
+            self.assertEqual(marker.read_text(), original)
+
+    def test_malformed_git_metadata_reports_the_pointer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / '.git').write_text('broken metadata')
+            with self.assertRaisesRegex(ValueError, 'invalid git metadata pointer'):
+                placement.git(tmp, 'status')
+
+    @unittest.skipIf(os.name == 'nt', 'other-host adapter check')
+    def test_windows_spawn_requires_windows_process_ownership(self):
+        with self.assertRaisesRegex(OSError, 'requires Windows'):
+            placement.Windows().spawn([sys.executable, '-c', 'pass'])
+
+    def test_untracked_source_rejects_a_commit_before_gate(self):
         repo = Repo()
         self.addCleanup(repo.cleanup)
-        real = placement.MNT_RE
-        class DriveMount:
-            def match(self, path):
-                return real.match(path) or str(path) == str(repo.repo)
-        with patch.object(placement, 'MNT_RE', DriveMount()):
-            (repo.repo / 'untracked').mkdir()
-            (repo.repo / 'untracked' / 'build.bin').write_text('output')
-            self.assertEqual(gate.dirty(repo.repo), '')
-            (repo.repo / 'base.txt').write_text('tracked edit')
-            self.assertIn('base.txt', gate.dirty(repo.repo))
+        (repo.repo / 'new-source').write_text('never added')
+        self.assertIn('new-source', gate.dirty(repo.repo))
+        with self.assertRaisesRegex(gate.GateError, 'uncommitted'):
+            gate.run_gate(repo.repo, repo.root / 'receipt.json',
+                          [sys.executable, '-c', 'raise AssertionError("must not run")'], available=False)
 
-    def test_read_snapshots_have_history_and_share_objects_safely(self):
+    def test_read_snapshots_preserve_history_and_independent_exact_commits(self):
         repo = Repo()
         self.addCleanup(repo.cleanup)
         original = repo.git('rev-parse', 'HEAD')
         repo.commit('later.txt', 'later')
         with tempfile.TemporaryDirectory() as tmp:
-            self.addCleanup(task_access.make_writable, tmp)
             cfg = {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}
-            first = Path(task_access.prepare(['p'], cfg, tmp)[0]['path'])
+            first = task_access.prepare(['p'], cfg, tmp)[0]
             repo.commit('newest.txt', 'newest')
-            read = task_access.prepare(['p'], cfg, tmp)[0]
-            dest = Path(read['path'])
+            second = task_access.prepare(['p'], cfg, tmp)[0]
+            dest = Path(second['path'])
+            self.assertNotEqual(first['path'], second['path'])
             self.assertIn(original, repo.git('log', '--format=%H', cwd=dest))
             self.assertIn('base', repo.git('blame', 'base.txt', cwd=dest))
-            obj = Path('.git/objects') / original[:2] / original[2:]
-            if os.name != 'nt' and (first / obj).stat().st_dev == (dest / obj).stat().st_dev:
-                self.assertEqual((first / obj).stat().st_ino, (dest / obj).stat().st_ino)
             self.assertFalse((dest / '.git/objects/info/alternates').exists())
-            # Source refs can move without changing the snapshot's history.
+            self.assertFalse(any(Path(tmp).glob('objects-*')))
             repo.git('reset', '--hard', original)
-            self.assertEqual(repo.git('rev-parse', 'HEAD', cwd=dest), read['sha'])
-            task_access.make_writable(tmp)
+            self.assertEqual(repo.git('rev-parse', 'HEAD', cwd=dest), second['sha'])
+            self.assertEqual(repo.git('rev-parse', 'HEAD', cwd=first['path']), first['sha'])
+            task_access.verify([first, second])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable discovery')
+    def test_machine_tool_discovery_uses_path_executables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('claude', 'codex', 'pwsh'):
+                executable = Path(tmp) / name
+                executable.write_text('#!/bin/sh\nexit 0\n')
+                executable.chmod(0o755)
+            result = subprocess.run(['/bin/bash', '-c', tool_discovery.DISCOVERY_SCRIPT],
+                                    env={'PATH': tmp}, capture_output=True, text=True, check=True)
+            found, reasons = tool_discovery.parse_discovery_result(result.stdout)
+            self.assertEqual(found, {name: str(Path(tmp) / name) for name in ('claude', 'codex', 'pwsh')})
+            self.assertEqual(reasons, {})

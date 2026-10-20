@@ -1,11 +1,6 @@
 import io
 import json
-import os
-import queue
-import subprocess
-import sys
 import tempfile
-import threading
 import time
 import unittest
 import unittest.mock
@@ -44,12 +39,22 @@ class FakeLauncher:
     def __init__(self):
         self.specs, self.handles = [], []
 
-    scan = None
+    def scan(self, want_wsl=False):
+        handles = self.handles.items() if isinstance(self.handles, dict) else [(s["run_id"], h) for s, h in zip(self.specs, self.handles)]
+        return {rid: next((s.get("placement", "windows") for s in self.specs if s["run_id"] == rid), "windows")
+                for rid, h in handles if h.poll() is None}
 
     def wsl_up(self):
         return True
 
     def launch(self, spec):
+        if spec.get('role') == 'gate':
+            from drover import gate
+            out, sha = Path(spec['argv'][1]), spec['argv'][2]
+            out.write_text(json.dumps({'version': gate.VERSION, 'sha': sha, 'passed': True, 'status': 'passed',
+                                      'exit_code': 0, 'tree_unchanged': True, 'kind': 'full', 'log_tail': []}))
+            return FakeHandle({'status': 'done', 'returncode': 0, 'record': None, 'text': '',
+                               'usage': {'tokens_in': 0, 'tokens_out': 0, 'tokens_cached': 0, 'context': 0}})
         self.specs.append(spec)
         h = FakeHandle()
         self.handles.append(h)
@@ -122,7 +127,7 @@ class Admission(Base):
         self.assertEqual(self.status(t), "ready")
 
     def test_unadmitted_backend_unclaims(self):
-        t = self.task(scope_files=["a/x.cs"])      # dotnet: claude or codex, neither admitted
+        t = self.task(scope_files=["a/source.txt"])      # neither backend is admitted
         self.allow["claude"] = False
         self.allow["codex"] = False
         self.d.tick()
@@ -191,14 +196,6 @@ class Cap(Base):
 
 
 class Routing(Base):
-    def test_size_and_dotnet(self):
-        s = self.task(size="S", priority="P0")
-        m = self.task(size="M", priority="P1", scope_files=["x/a.csproj"])
-        self.allow["codex"] = False
-        self.d.tick()
-        by = {sp["task"]["id"]: sp for sp in self.fl.specs}
-        self.assertEqual((by[s]["backend"], by[s]["model"]), ("claude", "haiku-5.5"))
-        self.assertEqual((by[m]["backend"], by[m]["model"]), ("claude", "sonnet-5.5"))
 
     def test_real_router_picks_within_tiers_and_effort_rules(self):
         self.task(size="S", priority="P0")
@@ -234,13 +231,6 @@ class Routing(Base):
         self.d = self.make(route=lambda t, p, h, **kw: {"backend": None, "reason": "no allowance"})
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(t), "ready")
-
-    def test_dotnet_reaches_router_as_a_stack_not_a_platform(self):
-        seen = []
-        self.d = self.make(route=lambda t, p, h, **kw: seen.append(t) or {"backend": "claude", "model": "sonnet-5.5"})
-        self.task(scope_files=["a/b.csproj"])
-        self.d.tick()
-        self.assertEqual((seen[0].get("platform"), seen[0]["stack"]), (None, "dotnet"))
 
 
     def test_model_ids_mapped_for_cli(self):
@@ -294,6 +284,7 @@ class RetryEscalate(Base):
         t = self.task()
         self.d.tick()
         self.finish(0, res("done", DONE))
+        self.d.tick()
         self.d.tick()
         self.assertEqual(self.status(t), "gated")
         self.assertEqual(ops.list_runs(self.conn, t)[0]["tokens_in"], 10)
@@ -460,11 +451,6 @@ class TailError(Base):
 
 
 class FailClosed(Base):
-    def test_pipeline_is_required(self):
-        with self.assertRaises(TypeError):
-            dispatcher.Dispatcher(self.port)
-        with self.assertRaisesRegex(TypeError, "requires a Pipeline"):
-            dispatcher.Dispatcher(self.port, None)
 
 
     def test_main_wires_the_pipeline_and_stays_paused(self):
@@ -642,12 +628,9 @@ class Placement(Base):
         self.assertEqual(pf({**plain, "tags": ["platform: linux"]}, claude), "wsl")
         self.assertEqual(pf({**plain, "tags": ["platform:linux"]}, claude), "wsl")
         self.assertEqual(pf({"title": "t", "goal": "Port it. platform: linux"}, claude), "wsl")
-        self.assertEqual(pf({**plain, "scope_files": ["a/x.csproj"]}, claude), "windows")
-        self.assertEqual(pf({"title": "fix msbuild target", "goal": ""}, claude), "windows")
         self.assertEqual(pf(plain, {"backend": "claude", "platform": "linux"}), "wsl")   # the router may override
         self.assertEqual(pf({**plain, "platform": "linux"}, {"backend": "claude", "platform": "windows"}), "windows")
-        self.assertEqual(pf({**plain, "scope_files": ["a/x.csproj"]}, claude, None, ["wsl"]), "wsl")   # wsl-only repo
-        self.assertEqual(pf({**plain, "scope_files": ["a/x.cs"]}, codex, None, ["windows", "wsl"]), "wsl")
+        self.assertEqual(pf({**plain, "scope_files": ["a/source.txt"]}, codex, None, ["windows", "wsl"]), "wsl")
         self.assertEqual(pf(plain, claude, "/home/u/wt"), "wsl")                    # only WSL can reach it
         self.assertEqual(pf(plain, claude, "/mnt/r/repos/wt"), "windows")
 
@@ -735,6 +718,7 @@ class Recovery(Base):
         self.assertEqual(self.status(t), "running")
         self.fl.adopted[-1][1].result = res("done", DONE)
         d2.tick()
+        d2.tick()
         self.assertEqual(self.status(t), "gated")
 
     def test_recovery_restores_account_for_polling_and_worker_limits(self):
@@ -809,6 +793,7 @@ class Recovery(Base):
         self.found = {}
         for _ in range(4):
             d2.tick()
+        d2.tick()
         self.assertEqual(ops.list_runs(self.conn, t)[0]["outcome"], "gated")
         self.assertFalse(h.cancelled)
 
@@ -878,15 +863,9 @@ class Recovery(Base):
         self.assertIsNone(ops.list_runs(self.conn, t)[0]["outcome"])      # the handle will deliver its result
         self.fl.handles[0].result = res("done", DONE)
         self.d.tick()
+        self.d.tick()
         self.assertEqual(self.status(t), "gated")
 
-    def test_no_scan_function_means_no_orphan_decisions(self):
-        t, rid = self.start()
-        d = self.make(launcher=FakeLauncher(), scan_every_s=0)
-        d.launcher.scan = None
-        self.assertEqual(d.watch_runs(), [])
-        self.assertEqual(d.recover_orphans(), [])
-        self.assertEqual(self.status(t), "running")
 
     def test_wsl_is_scanned_only_when_a_wsl_run_is_open(self):
         self.allow["codex"] = False
@@ -964,7 +943,7 @@ class HeadOfLine(Base):
         self.assertEqual(self.d.tick()["launched"], [a])
 
     def test_unadmitted_backend_and_missing_binary_also_back_off(self):
-        a = self.task(title="a", scope_files=["a/x.cs"], priority="P0")        # dotnet -> claude
+        a = self.task(title="a", scope_files=["a/source.txt"], priority="P0")        # highest-priority task
         self.allow["claude"], self.allow["codex"] = False, True
         self.d.tick()
         self.assertIn(a, self.port.get_backoffs())

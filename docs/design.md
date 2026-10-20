@@ -48,22 +48,24 @@ The example TOML documents every supported key.
 ## Repo rules
 
 One repo is one git repository with its own execution, checks and merge rules.
-Private repo files live in `<state>/repos/*.toml`.
-An explicitly configured repo-config directory may replace that location.
-A legacy `programs/` directory is read only if `repos/` is missing.
-Legacy loading emits a deprecation warning and writes nothing there.
-Packaged examples require `DROVER_EXAMPLES=1` and no private config directory.
-The fictional examples are acme-lib and its consumer acme-app.
-Repo files declare the path, default branch, remote and worktree location.
-`[run].platforms` constrains Windows/WSL placement; `default` breaks ties.
+The target repo's committed `drover.toml` owns its rules and action script paths.
+The one repo loader reads that file from the commit being worked or checked, then overlays
+`<state>/repos/<name>.toml`. The machine file names checkout paths, worktree paths, default branch,
+remote and machine environment. An explicitly configured directory may replace the private location.
+A missing versioned file contributes an empty layer during migration; the merge is the same.
+A legacy `programs/` directory is read only if `repos/` is missing and emits a deprecation warning.
+Packaged neutral examples require `DROVER_EXAMPLES=1` and no private config directory.
+
+`[scripts]` maps action names to relative `.ps1` paths in the repo.
+Every action runs as `pwsh -NoLogo -NoProfile -NonInteractive -File <script>` with the worktree as cwd.
+The repo's script owns build tools, test selection and output; its exit code determines the result.
+PowerShell 7 and the repo's tools must already be installed on each selected platform.
+`[run].platforms` constrains Windows/WSL placement; `default` selects the default.
+`[run.env]` adds environment entries to workers and CI processes.
+`[run].sandbox_writable_roots` allows extra writable paths below `/tmp`; the runner creates them with mode 0777.
 `[gate].platform` selects Windows, WSL or both, with both required to pass.
-`[gate.commands]` supplies shared `full` and optional `scoped` argv lists.
-`[gate.commands.windows]` and `[gate.commands.wsl]` can override either key independently;
-an omitted key falls back to its shared value. A known check must resolve `full` on every
-selected check platform. Other command keys are rejected. Task checks select a plan for each
-platform; merge group full CI uses each platform's resolved `full` command. The wizard writes the shared form.
+Unknown test actions generate an owner question.
 Placement outside the allowed platforms sends the task to the owner.
-Unknown checks generate an owner question rather than an invented test command.
 `[land].policy` selects single-task merging or merge groups; pushing defaults off.
 
 ## Tasks and write scope
@@ -153,12 +155,11 @@ Backoff prevents unavailable infrastructure from blocking the rest of the queue.
 ## Checks, reviews and merging
 
 CI results apply to exact commit SHAs and unchanged, clean trees.
-Check and CI commands are argv lists, never task-provided shell interpolation.
-Scope maps and optional project patterns come from each repo's `[gate]` table.
-Without a scope map, full CI runs without a project filter.
-Relative scope-map paths resolve against the configured repo root.
-An unmapped changed path widens the checks to the full command.
-Failure parsing links failures to changed files where possible.
+Check and CI actions use the same fixed PowerShell invocation on both platforms.
+The scripts receive `DROVER_CHANGED_FILES`, a JSON string array, and `DROVER_CI_KIND`:
+`checks` for task checks, `full` for merge CI, or `docs` for documentation-only checks.
+Scoping and test policy belong entirely to the repo script.
+Results keep the process exit code and output tail for owner review and triage.
 Review verdicts also identify the exact reviewed SHA.
 Merge groups exist only to share CI time across disjoint tasks.
 Merge group size ranges from one to five and starts at three.

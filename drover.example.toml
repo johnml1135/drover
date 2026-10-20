@@ -17,32 +17,42 @@
 # is read with a warning only when repos/ is missing. DROVER_REPO_CONFIGS_DIR overrides this key.
 repos_dir = ""
 
-# Per-repository gate configuration belongs in repos/<name>.toml, not this machine config.
-# Shared [gate.commands] full/scoped argv still work on every gate platform. Optional windows/wsl
-# tables override each key independently; omitted keys fall back to the shared command. A known gate
-# needs full on each selected platform (from an override or the shared table). Only full/scoped and
-# the windows/wsl override tables are accepted. The wizard continues to write shared commands.
-# For example, in a repo file with [run] platforms = ["windows", "wsl"]:
+# Repo configuration has two layers: the target repo's drover.toml at the selected commit,
+# then <state>/repos/<name>.toml with machine overrides. One loader merges and validates both.
+# A machine file names the repo, worktrees, default branch and remote; it may set [run.env]
+# for machine tool paths. Commit repo rules and action scripts with the code they describe.
+#
+# Example versioned drover.toml:
+# [scripts]
+# test = "scripts/drover/test.ps1"
+# docs = "scripts/drover/docs.ps1"  # optional action for documentation-only changes
+# [run]
+# platforms = ["windows", "wsl"]
+# default = "wsl"
+# sandbox_writable_roots = ["/tmp/acme-cache"]
+# [run.env]
+# WORK_CACHE = "/tmp/acme-cache"
 # [gate]
-# platform = "both"          # windows, then wsl; both must pass for task and batch gates
-# unknown = false
-# [gate.commands]
-# full = ["python3", "-m", "unittest", "discover"]
-# [gate.commands.windows]
-# full = ["python", "-m", "unittest", "discover"]
-# [gate.commands.wsl]
-# full = ["python3", "-m", "unittest", "discover"]
-# scoped = ["python3", "-m", "unittest", "{project}"]  # optional; scope_map selects projects
-# Docs-only diffs: when every changed path matches gate.docs_only_globs the gate is kind "docs": `git diff --check`
-# plus the optional gate.commands.docs argv (shared or per platform). Any path outside the globs means the full gate.
-# docs_only = false (or an empty docs_only_globs) turns it off.
-# docs_only_globs = ["docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**"]   # the default; `!` excludes. `*` stays
-# in one directory; a glob without a slash matches the file name anywhere. A path must also be .md/.rst/.txt/.adoc (or
-# exactly LICENSE/GLOSSARY.md) and not a symlink, so docs/conf.py or a linked x.md still run the full gate.
-# [gate.commands]
-# docs = ["python3", "scripts/check_links.py"]
-# Simultaneous gates are not a config key: the owner sets the hub settings gate_slots (default 5, clamped 1..32) and
-# gate_reserved (default 1, clamped 0..slots-1; the last slots serve only P0-P2 work). Changes apply on the next tick.
+# platform = "both"          # windows, then wsl; both must pass
+# timeout_s = 3600
+# idle_s = 1200
+#
+# Every action runs verbatim as:
+# pwsh -NoLogo -NoProfile -NonInteractive -File <script>
+# Its cwd is the worktree. PowerShell 7 and the repo's tools must be installed on each side.
+# A result is the exit code plus the output tail. Repo scripts own tool setup and test scope.
+# DROVER_CHANGED_FILES is a JSON array of changed paths; DROVER_CI_KIND is checks, full or docs.
+# [run.env] adds environment entries to workers and checks. The runner pre-creates each
+# sandbox_writable_roots entry with mode 0777; only paths below /tmp are accepted.
+# A repo without scripts.test has an unknown check and needs owner configuration.
+#
+# Docs-only diffs use `git diff --check` and optional scripts.docs. Any non-documentation
+# path means the test action. gate.docs_only = false or empty docs_only_globs disables this.
+# Default docs_only_globs = ["docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**"].
+# Globs without a slash match a file name anywhere; ! excludes. Linked files run the test action.
+#
+# Simultaneous checks are owner settings gate_slots (default 5, 1..32) and gate_reserved
+# (default 1, 0..slots-1; reserved slots serve P0-P2). Changes apply on the next tick.
 
 [paths]
 # The state dir holds ledger.db, runs\, rescue\, hub-token, dispatcher.lock, config.toml and repos\, under an

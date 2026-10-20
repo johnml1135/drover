@@ -17,7 +17,7 @@ Drover is a working prototype. Begin with a small task and inspect its gate, rev
 ## Quickstart
 
 You need Windows Python 3.13+, git, `uv`, and at least one signed-in worker CLI. For Linux workers, use WSL2 with
-Python 3.12+ and the CLI installed inside the distro. Install Ollama and suitable local models to enable model
+Python 3.12+ and the CLI installed inside the distro. Install PowerShell 7 (`pwsh`) on each platform that runs repo actions. Install Ollama and suitable local models to enable model
 judgements. Tailscale provides authenticated access from another device.
 
 From your Drover checkout in PowerShell:
@@ -45,10 +45,35 @@ Open `http://127.0.0.1:8765`. For installation at login and remote access, follo
 
 ### Add a repo
 
-Re-run `python -m drover init` and select a discovered repo, its supported platforms, gate command and push policy.
-Alternatively, copy [acme-lib.toml](repos/acme-lib.toml) into `<state>/repos/`, then edit its name and path and supply
-the command that really tests your repo. [acme-app.toml](repos/acme-app.toml) shows a consumer's dependency declaration.
-Inspect private repo configuration with `python -m drover.repos --json`.
+Re-run `python -m drover init` and select a discovered repo. Alternatively, copy
+[acme-lib.toml](repos/acme-lib.toml) into `<state>/repos/`, then edit its name, repo path,
+worktree path, default branch and remote. [acme-app.toml](repos/acme-app.toml) is another neutral example.
+Machine files hold local facts; repository rules belong in a committed `drover.toml` at the repo root:
+
+```toml
+[scripts]
+test = "scripts/drover/test.ps1"
+
+[run]
+platforms = ["windows", "wsl"]
+default = "wsl"
+
+[gate]
+platform = "both"
+```
+
+Commit the named PowerShell script with that file. Drover runs every action as
+`pwsh -NoLogo -NoProfile -NonInteractive -File <script>` with the worktree as cwd.
+The script owns tool setup and test selection; its exit code determines pass or fail.
+Task checks receive `DROVER_CI_KIND=checks` and `DROVER_CHANGED_FILES` as a JSON path array;
+full CI receives kind `full`, and documentation checks receive `docs`.
+PowerShell and the repo's tools must already be installed on each selected platform.
+
+The loader reads `drover.toml` from the commit being worked or checked, then applies the machine file's
+overrides. Until a repo has its own file, those same keys can live in the machine file through the same merge.
+`[run.env]` supplies machine environment entries, and `[run].sandbox_writable_roots` declares extra writable
+paths below `/tmp`; the runner creates them with mode 0777. Repo brief text belongs in the versioned file.
+Inspect effective repo configuration with `python -m drover.repos --json`.
 
 Packaged examples are loaded only with `DROVER_EXAMPLES=1`, when no private `repos/` directory exists. A legacy
 `programs/` directory is read with a deprecation warning; move its files into `repos/` when convenient.
@@ -60,7 +85,7 @@ with its `repo`, goal, acceptance criteria and file scope. API clients use the c
 In the hub's Inbox, inspect the proposed task and choose Approve. Enable dispatch when ready.
 The Plan and Runs views show progress; owner questions appear in the Inbox.
 
-Repo configs support `[landing]` with `mode = "local"`, `push = false`, `remote = "origin"`, and
+Versioned repo configs support `[landing]` with `mode = "local"`, `push = false`, `remote = "origin"`, and
 `main = "main"` by default. `mode = "pr"` is reserved and rejected. `[land].policy` still selects batch or single.
 Before new task branches and before landing, Drover fetches remote main and fast-forwards the local main ref.
 It preserves local unpushed landings; histories with commits unique to both sides stop in `needs-owner`.
@@ -91,8 +116,11 @@ permit your intended use and check their licences before deployment.
 Run checks from the checkout root:
 
 ```sh
-python3 -m unittest discover -s tests -t .
-uv run --project hub python -m unittest discover -s tests -t .
+pwsh -NoLogo -NoProfile -NonInteractive -File scripts/drover/test.ps1
 ```
+
+The script selects the platform's Python, runs `python -m unittest discover -s tests -t .`,
+cleans up its temporary fixtures, and prints thread stacks if the suite stalls. Install the hub dependencies
+with `uv sync --project hub` and use that environment to include hub tests.
 
 Account allowance, routing and the Stats tab: [usage and statistics](docs/USAGE-STATS.md).

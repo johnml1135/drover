@@ -261,12 +261,6 @@ class Vhdx(unittest.TestCase):
         self.assertEqual(self.vhdx(env={'DROVER_VHDX_DIR': '/x'}), '/x')
         self.assertEqual(self.vhdx(env={'DROVER_VHDX_DIR': '/y'}), '/y')
 
-    def test_windows_to_wsl(self):
-        f = resources._windows_to_wsl
-        self.assertEqual(f('R:\\WSL\\Ubuntu'), '/mnt/r/WSL/Ubuntu')
-        self.assertEqual(f('\\\\?\\C:\\a\\b\\'), '/mnt/c/a/b/')
-        self.assertEqual(f('D:\\'), '/mnt/d/')
-        self.assertIsNone(f('/not/windows'))
 
     def test_missing_host_drive_warns_without_blocking(self):
         r = verdict(wsl(disk_free_gb=disks(h=None)))

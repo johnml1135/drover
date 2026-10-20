@@ -28,7 +28,7 @@ from . import config as config_mod
 GB = 1024 ** 3
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
 LXSS = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss'
-REG = '/mnt/c/Windows/System32/reg.exe'
+REG = placement.native(r'C:\Windows\System32\reg.exe')
 VHDX_WARNING = 'cannot locate VHDX host drive; set DROVER_VHDX_DIR'
 LEGACY_FILE = 'resources.toml'
 LEGACY_DISKS = {'h': 'h', 'wsl': 'wsl', 'c': 'c'}
@@ -140,10 +140,6 @@ def _free_gb(path):
         return None
 
 
-def _windows_to_wsl(path):
-    return placement.to_wsl_path(path) if placement.WIN_RE.match(path.removeprefix("\\\\?\\")) else None
-
-
 def vhdx_dir():
     """WSL path of the directory holding this distro's ext4.vhdx, or None."""
     override = os.environ.get('DROVER_VHDX_DIR')
@@ -166,7 +162,7 @@ def vhdx_dir():
         elif len(parts) == 3 and parts[0] == 'BasePath':
             base = parts[2]
         if name == distro and base:
-            return _windows_to_wsl(base)
+            return placement.to_wsl_path(base) if placement.drive(base) else None
     return None
 
 
@@ -256,14 +252,24 @@ def parse_wslconfig_memory_gb(text):
 def wslconfig_path():
     if is_windows():
         return Path.home() / '.wslconfig'
-    users = sorted(Path('/mnt/c/Users').glob('*/.wslconfig')) if Path('/mnt/c/Users').is_dir() else []
+    users = sorted(Path(placement.native(r'C:\Users')).glob('*/.wslconfig'))
     return users[0] if len(users) == 1 else None
+
+
+def wsl_running(default, run=subprocess.run):
+    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
+    try:
+        r = run(placement.wsl_control(["-l", "--running", "-q"]), capture_output=True, timeout=20, **placement.NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    names = placement.decode_output(r.stdout).splitlines()
+    return r.returncode == 0 and placement.distro(default).lower() in [x.strip().lower() for x in names]
 
 
 def read_wsl(distro, windows, mem_wanted):
     """(wsl_up, {'used_gb','cap_gb'} or None). Memory is read only when a threshold asks for it and WSL is already up."""
     if windows:
-        up = placement.wsl_running(distro)
+        up = wsl_running(distro)
         text = None
         if up and mem_wanted:
             try:

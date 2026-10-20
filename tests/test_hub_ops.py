@@ -18,7 +18,6 @@ except ImportError as exc:  # hub deps are third-party; skip when absent
     raise unittest.SkipTest(f"hub deps missing: {exc}")
 
 from drover import importer, tuner
-from drover.tool_discovery import CLAUDE_NODE_SHIM_REASON, NODE_SHIM_REASON
 from drover.ledger import ops
 from tests.test_importer import QUESTIONS, sample
 
@@ -329,7 +328,7 @@ class TestTunerScheduler(Base):
 
 class TestWslDiscovery(Base):
     def test_validation(self):
-        ok = ["/usr/bin/claude", "/home/u/.local/bin/claude", "/home/u/.nvm/versions/node/v22.1.0/bin/codex"]
+        ok = ["/usr/bin/claude", "/home/u/.local/bin/claude", "/opt/tools/bin/codex"]
         for p in ok:
             self.assertEqual(valid_tool_path(p, p.rsplit("/", 1)[1]), p)
         for p, tool in [("claude", "claude"), ("./claude", "claude"), ("/usr/../bin/claude", "claude"),
@@ -348,9 +347,6 @@ class TestWslDiscovery(Base):
     def test_discover_runs_the_fixed_command_and_stores_settings(self):
         found = self.svc.discover_tools()
         self.assertEqual(self.wsl.calls[-1], ["-d", "Ubuntu", "--exec", "bash", "-lc", DISCOVERY_SCRIPT])
-        self.assertIn("command -v claude", DISCOVERY_SCRIPT)
-        self.assertIn("command -v codex", DISCOVERY_SCRIPT)
-        self.assertIn("$HOME\"/.nvm/versions/node/*/bin", DISCOVERY_SCRIPT)
         s = self.store.get_settings()
         self.assertEqual((s["wsl_bin_claude"], s["wsl_bin_codex"]), ("/home/u/.local/bin/claude", "/usr/bin/codex"))
         self.assertEqual(found, {"claude": s["wsl_bin_claude"], "codex": s["wsl_bin_codex"]})
@@ -367,104 +363,6 @@ class TestWslDiscovery(Base):
         self.svc.discover_tools()
         self.assertEqual(self.store.get_settings()["wsl_bin_claude"], "/usr/bin/claude")
 
-    def test_claude_shim_rejection_is_reported_in_the_discovery_event(self):
-        self.wsl.discovery = f"DROVER_ERROR|claude|{CLAUDE_NODE_SHIM_REASON}\n"
-        self.assertNotIn("claude", self.svc.discover_tools())
-        self.assertNotIn("wsl_bin_claude", self.store.get_settings())
-        event = self.store.list_events(kind="wsl.tools")[-1]["data"]
-        self.assertIn("claude", event["missing"])
-        self.assertEqual(event["reasons"], {"claude": CLAUDE_NODE_SHIM_REASON})
-
-    @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
-    def test_nvm_codex_resolves_to_the_newest_vendored_native_binary(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            expected = None
-            for version in ("v18.20.0", "v22.4.1"):
-                node = home / ".nvm" / "versions" / "node" / version
-                package = node / "lib" / "node_modules" / "@openai" / "codex"
-                shim = package / "bin" / "codex.js"
-                shim.parent.mkdir(parents=True)
-                shim.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-                shim.chmod(0o755)
-                launcher = node / "bin" / "codex"
-                launcher.parent.mkdir(parents=True)
-                launcher.symlink_to(shim)
-                native = package / "node_modules" / "@openai" / "codex-linux-x64" / "vendor" / \
-                    "x86_64-unknown-linux-musl" / "bin" / "codex"
-                native.parent.mkdir(parents=True)
-                native.write_bytes(b"\x7fELF" + b"fake native binary")
-                native.chmod(0o755)
-                if version == "v22.4.1":
-                    expected = str(native)
-
-            run = subprocess.run(["bash", "-c", DISCOVERY_SCRIPT], capture_output=True, text=True, check=True,
-                                 env={"HOME": tmp, "PATH": "/usr/bin:/bin"})
-            self.assertEqual(parse_discovery(run.stdout), {"codex": expected})
-            self.assertNotIn(str(home / ".nvm" / "versions" / "node" / "v22.4.1" / "bin" / "codex"),
-                             run.stdout)
-
-    @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
-    def test_invalid_windows_wrapper_does_not_hide_nvm_codex(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            package = home / ".nvm" / "versions" / "node" / "v22.4.1" / "lib" / "node_modules" / "@openai" / "codex"
-            shim = package / "bin" / "codex.js"
-            shim.parent.mkdir(parents=True)
-            shim.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-            shim.chmod(0o755)
-            launcher = home / ".nvm" / "versions" / "node" / "v22.4.1" / "bin" / "codex"
-            launcher.parent.mkdir(parents=True)
-            launcher.symlink_to(shim)
-            native = package / "node_modules" / "@openai" / "codex-linux-x64" / "vendor" / \
-                "x86_64-unknown-linux-musl" / "bin" / "codex"
-            native.parent.mkdir(parents=True)
-            native.write_bytes(b"\x7fELF" + b"fake native binary")
-            native.chmod(0o755)
-
-            bash_env = home / "bash_env"
-            bash_env.write_text(
-                "command() {\n"
-                "    if [ \"$1\" = \"-v\" ] && [ \"$2\" = \"codex\" ]; then\n"
-                "        printf '%s\\n' '/mnt/c/Users/me/AppData/Roaming/npm/codex'\n"
-                "        return 0\n"
-                "    fi\n"
-                "    builtin command \"$@\"\n"
-                "}\n"
-                "[() {\n"
-                "    if [[ \"$1\" = \"-x\" && \"$2\" = \"/mnt/c/Users/me/AppData/Roaming/npm/codex\" ]]; then\n"
-                "        return 0\n"
-                "    fi\n"
-                "    builtin '[' \"$@\"\n"
-                "}\n",
-                encoding="utf-8",
-            )
-
-            run = subprocess.run(["bash", "-c", DISCOVERY_SCRIPT], capture_output=True, text=True, check=True,
-                                 env={**os.environ, "HOME": tmp, "PATH": "/usr/bin:/bin",
-                                      "BASH_ENV": str(bash_env)})
-            self.assertEqual(parse_discovery(run.stdout), {"codex": str(native)})
-            self.assertNotIn("DROVER_TOOL|codex|/mnt/c/", run.stdout)
-
-    @unittest.skipUnless(os.name == "posix", "requires Bash and POSIX filesystem paths")
-    def test_shim_only_reports_a_clear_event_reason(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            package = home / ".nvm" / "versions" / "node" / "v22.4.1" / "lib" / "node_modules" / "@openai" / "codex"
-            shim = package / "bin" / "codex.js"
-            shim.parent.mkdir(parents=True)
-            shim.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-            shim.chmod(0o755)
-            launcher = home / ".nvm" / "versions" / "node" / "v22.4.1" / "bin" / "codex"
-            launcher.parent.mkdir(parents=True)
-            launcher.symlink_to(shim)
-            run = subprocess.run(["bash", "-c", DISCOVERY_SCRIPT], capture_output=True, text=True, check=True,
-                                 env={"HOME": tmp, "PATH": "/usr/bin:/bin"})
-            self.wsl.discovery = run.stdout
-            self.assertNotIn("codex", self.svc.discover_tools())
-            event = self.store.list_events(kind="wsl.tools")[-1]["data"]
-            self.assertEqual(event["reasons"]["codex"], NODE_SHIM_REASON)
-            self.assertIn("node shim found", event["reasons"]["codex"])
 
     def test_discovery_when_wsl_first_comes_up(self):
         self.wsl.running = ""

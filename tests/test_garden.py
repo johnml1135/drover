@@ -1,5 +1,3 @@
-import json
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -361,7 +359,7 @@ class SafetyTests(GardenCase):
 
     def test_windows_busy_via_cim_command_line_and_unknown_fails_safe(self):
         wt = self.worktree('w')
-        rows = [(None, 'dotnet test ' + str(wt) + '/tests'), (None, 'notepad')]
+        rows = [(None, 'checker test ' + str(wt) + '/tests'), (None, 'notepad')]
         self.assertTrue(garden.Proc(windows=True, cim=lambda: rows).busy(wt))
         self.assertFalse(garden.Proc(windows=True, cim=lambda: [(None, 'notepad ' + str(wt) + '-pair/x')]).busy(wt))
 
@@ -377,7 +375,7 @@ class SafetyTests(GardenCase):
         wt = self.worktree('x')
         proc = self.r.root / 'proc2'
         (proc / '7').mkdir(parents=True)
-        (proc / '7' / 'cmdline').write_bytes(b'dotnet\0build\0' + str(wt).encode() + b'-pair/a.sln\0')
+        (proc / '7' / 'cmdline').write_bytes(b'checker\0build\0' + str(wt).encode() + b'-pair/project.txt\0')
         (proc / '7' / 'cwd').symlink_to(self.r.root)
         self.assertFalse(garden.Proc(proc, windows=False).busy(wt))
 

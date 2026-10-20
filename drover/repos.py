@@ -1,18 +1,7 @@
-"""Repo config: drover/repos/<name>.toml says where a repo's repo lives and how it is gated and landed.
+"""Load a repo's drover.toml at a commit, then apply machine overrides.
 
-    python -m drover.repos [NAME] [--json]
-
-Repos live in <state dir>/repos/*.toml (config `repos_dir`); the shipped repos/ are examples, read only
-when DROVER_EXAMPLES=1 and no private directory exists. A legacy programs/ directory is read with a warning.
-Keys: repo, worktrees (Windows paths; default <paths.worktrees>\\<name>.worktrees, else <repo>.worktrees), default_branch,
-remote; [run] platforms (a list of windows|wsl, default both),
-default (the platform used when nothing else decides); [gate] platform (windows|wsl|both: both must pass on each),
-unknown, scope_map,
-timeout_s, idle_s and [gate.commands] full/scoped/docs (argv lists, `{project}` filled per selected test project),
-optionally overridden per key by [gate.commands.windows] and [gate.commands.wsl];
-[review] backend, seat, model, effort, high_risk_model; [land] policy (batch|single); [landing] mode (local; pr reserved), push (false), remote (origin), main (main).
-Legacy [land].push, remote and default_branch remain readable; [landing] takes precedence.
-`gate.unknown = true` means nobody knows the gate command: the repo's tasks go to the owner with a question.
+Only this module reads repo configuration. Actions are relative PowerShell script paths;
+all platforms invoke them with the same argv and the checkout as cwd.
 """
 import json
 import logging
@@ -21,7 +10,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import config
+from . import config, placement
+from .placement import native
 
 REPOS_DIR = Path(__file__).resolve().parents[1] / "repos"   # the shipped examples
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -32,27 +22,6 @@ DEFAULTS = {"default_branch": "main", "remote": "origin"}
 
 class RepoError(ValueError):
     pass
-
-
-def _argv(v, what):
-    if not isinstance(v, list) or not v or not all(isinstance(x, str) and x for x in v):
-        raise RepoError(f"{what} must be a non-empty list of strings")
-    return list(v)
-
-
-def _commands(raw, what, platforms=True):
-    if not isinstance(raw, dict):
-        raise RepoError(f"{what} must be a table")
-    out = {}
-    for key, value in raw.items():
-        path = f"{what}.{key}"
-        if key in ("full", "scoped", "docs"):
-            out[key] = _argv(value, path)
-        elif platforms and key in PLATFORMS:
-            out[key] = _commands(value, path, platforms=False)
-        else:
-            raise RepoError(f"{path} is not a supported gate command key")
-    return out
 
 
 DOCS_ONLY_GLOBS = ("docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**")
@@ -68,7 +37,7 @@ def normalize(raw, name=None):
     raw = {**raw, "repo": os.path.expanduser(str(raw["repo"]))}
     raw["worktrees"] = os.path.expanduser(str(raw.get("worktrees") or worktrees_for(name, raw["repo"])))
     g = dict(raw.get("gate") or {})
-    platform = str(g.get("platform") or "windows").lower()
+    platform = str(g.get("platform") or ((raw.get("run") or {}).get("platforms") or ["windows"])[0]).lower()
     if platform not in GATE_PLATFORMS:
         raise RepoError(f"{name}: gate.platform must be one of {GATE_PLATFORMS}")
     run = dict(raw.get("run") or {})
@@ -82,12 +51,25 @@ def normalize(raw, name=None):
     gate_plats = list(PLATFORMS) if platform == "both" else [platform]
     if any(p not in plats for p in gate_plats):
         raise RepoError(f"{name}: gate.platform {platform!r} needs run.platforms to include {gate_plats}")
-    cmds = _commands(g.get("commands", {}), f"{name}: gate.commands")
-    unknown = bool(g.get("unknown", not cmds))
-    if not unknown:
-        for p in gate_plats:
-            if "full" not in cmds.get(p, {}) and "full" not in cmds:
-                raise RepoError(f"{name}: a known gate needs gate.commands.{p}.full or shared gate.commands.full")
+    scripts = raw.get("scripts", {})
+    if not isinstance(scripts, dict):
+        raise RepoError(f"{name}: scripts must be a table of action names and relative script paths")
+    for action, path in scripts.items():
+        if not isinstance(path, str) or not path or "\\" in path or path.startswith("/") or ":" in path \
+                or ".." in Path(path).parts or not path.endswith(".ps1"):
+            raise RepoError(f"{name}: scripts.{action} must be a relative .ps1 path inside the repo")
+    unknown = "test" not in scripts
+    env = run.get("env", {})
+    if not isinstance(env, dict) or not all(isinstance(k, str) and k and "=" not in k and isinstance(v, str)
+                                          for k, v in env.items()):
+        raise RepoError(f"{name}: run.env must map environment variable names to strings")
+    roots = run.get("sandbox_writable_roots", [])
+    if not isinstance(roots, list) or not all(isinstance(p, str) and p.startswith("/tmp/")
+                                            and ".." not in Path(p).parts for p in roots):
+        raise RepoError(f"{name}: run.sandbox_writable_roots must be paths under /tmp")
+    brief = raw.get("brief", "")
+    if not isinstance(brief, str):
+        raise RepoError(f"{name}: brief must be a string")
     docs_only = g.get("docs_only", True)
     docs_globs = g.get("docs_only_globs", list(DOCS_ONLY_GLOBS))
     if not isinstance(docs_only, bool):
@@ -134,13 +116,13 @@ def normalize(raw, name=None):
     return {"name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
             "default_branch": main,
             "remote": remote,
-            "run": {"platforms": plats, "default": default},
+            "run": {"platforms": plats, "default": default, "env": dict(env), "sandbox_writable_roots": list(roots)},
+            "scripts": dict(scripts), "brief": brief,
             "consumes": list(raw.get("consumes") or []),
-            "gate": {"platform": platform, "unknown": unknown, "scope_map": g.get("scope_map"),
+            "gate": {"platform": platform, "unknown": unknown,
                      "timeout_s": float(g.get("timeout_s") or 3600), "idle_s": float(g.get("idle_s") or 1200),
-                     "project_pattern": str(g.get("project_pattern") or ""),
                      "docs_only": docs_only, "docs_only_globs": docs_globs,
-                     "commands": cmds, "hint": g.get("hint") or ""},
+                     "hint": "Add [scripts] test to drover.toml"},
             "review": {"backend": backend, "seat": rev.get("seat"), "model": model,
                        "effort": rev.get("effort"), "high_risk_model": high_model},
             "landing": {"mode": mode, "push": push, "remote": remote, "main": main},
@@ -175,79 +157,59 @@ def gate_platforms(prog):
     return list(PLATFORMS) if plat == "both" else [plat]
 
 
-def gate_commands(prog, platform):
-    """Effective full/scoped argv for one gate platform; overrides replace shared keys individually."""
-    commands = prog["gate"]["commands"]
-    return {**{k: v for k, v in commands.items() if k in ("full", "scoped", "docs")}, **commands.get(platform, {})}
-
-
 def load_all(directory=None):
     """{lowercase name: repo} for every *.toml in the repos directory."""
     out = {}
     for path in sorted(Path(directory or repos_dir()).glob("*.toml")):
-        with open(path, "rb") as f:
-            raw = tomllib.load(f)
-        prog = normalize(raw, path.stem)
+        raw = read_machine(path)
+        prog = load({**raw, "name": raw.get("name") or path.stem})
         out[prog["name"].lower()] = prog
     return out
 
 
-def split_command(text):
-    """argv from a command line: whitespace separates, single or double quotes group and are removed, nothing else is
-    interpreted (a backslash is a path character, there is no shell)."""
-    out, cur, quote, have = [], [], None, False
-    for ch in str(text):
-        if quote:
-            if ch == quote:
-                quote = None
-            else:
-                cur.append(ch)
-        elif ch in "\"'":
-            quote, have = ch, True
-        elif ch.isspace():
-            if cur or have:
-                out.append("".join(cur))
-            cur, have = [], False
-        else:
-            cur.append(ch)
-    if quote:
-        raise RepoError("unbalanced quote in the gate command")
-    if cur or have:
-        out.append("".join(cur))
+def load(machine, revision="HEAD", checkout=None):
+    """Read versioned config at revision, including on reused task worktrees; never read a dirty file.
+
+    A missing drover.toml contributes an empty layer, so migration from machine files uses
+    the same merge. An inaccessible machine checkout also leaves its machine layer usable.
+    """
+    machine = machine.get("_machine", machine)
+    repo = checkout or machine["repo"]
+    versioned = {}
+    if placement.reachable(repo):
+        result = placement.git(repo, "rev-parse", "--verify", revision + "^{commit}", timeout=30)
+        if result.returncode:
+            raise RepoError(f"cannot resolve repo config commit {revision}: {result.stderr.strip()}")
+        commit = result.stdout.strip()
+        listing = placement.git(repo, "ls-tree", commit, "--", "drover.toml", timeout=30)
+        if listing.returncode:
+            raise RepoError(f"cannot inspect drover.toml at {commit}: {listing.stderr.strip()}")
+        if listing.stdout.strip():
+            result = placement.git(repo, "show", f"{commit}:drover.toml", timeout=30)
+            if result.returncode:
+                raise RepoError(f"cannot read drover.toml at {commit}: {result.stderr.strip()}")
+            try:
+                versioned = tomllib.loads(result.stdout)
+            except tomllib.TOMLDecodeError as e:
+                raise RepoError(f"invalid drover.toml at {commit}: {e}") from e
+    merged = config._merge(versioned, machine)
+    out = normalize(merged)
+    out["_machine"] = dict(machine)
     return out
 
 
-def gate_argv(text):
-    """The argv that runs an owner-given command line: a .ps1 script cannot be started directly, so it runs under
-    `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script> <args>`."""
-    argv = split_command(text)
-    if not argv or not all(argv):
-        raise RepoError("the gate command is empty")
-    if argv[0].lower().endswith(".ps1"):
-        argv = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", *argv]
-    return argv
+def script_argv(prog, action="test"):
+    """The complete action command. No platform variants, argument templates or inferred tools."""
+    path = prog["scripts"].get(action)
+    if path is None:
+        raise RepoError(f"{prog['name']}: no scripts.{action} in drover.toml")
+    return ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", path]
 
 
-def with_override(prog, command_line):
-    """The repo with its gate replaced by one owner-given command line (the answer to the unknown-gate question)."""
-    try:
-        argv = gate_argv(command_line)
-    except RepoError:
-        return prog
-    g = {**prog["gate"], "unknown": False, "commands": {"full": argv}, "scope_map": None}
-    return {**prog, "gate": g}
-
-
-native = config.native
-WIN_RE, MNT_RE = config.WIN_RE, config.MNT_RE
-
-
-def scope_map_path(prog):
-    name = prog["gate"].get("scope_map")
-    if not name:
-        return None
-    p = Path(native(name)).expanduser()
-    return p if p.is_absolute() else Path(native(prog["repo"])).expanduser() / p
+def read_machine(path):
+    """Raw machine overrides, for the setup editor as well as runtime loading."""
+    with open(path, "rb") as stream:
+        return tomllib.load(stream)
 
 
 def main(argv=None):

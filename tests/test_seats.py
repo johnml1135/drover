@@ -1,9 +1,7 @@
 """Seat routing: priority, headroom, max_workers, the director's protected reserve, platforms, and the seat in the spec."""
-from drover import placement
-import random
 import unittest
 
-from drover import config, dispatcher, launch, route, runner
+from drover import config, dispatcher, launch, route
 from tests import test_dispatcher
 
 CLAUDE = {"name": "claude", "backend": "claude", "priority": 1, "max_workers": 0, "reserve_pct": 10.0,
@@ -126,27 +124,7 @@ class DirectorReserve(unittest.TestCase):
 
 
 class Platforms(unittest.TestCase):
-    def test_windows_dotnet_codex_review_can_use_a_wsl_seat(self):
-        task = {"role": "review", "platform": "windows", "scope_files": ["src/app.cs"]}
-        policy = {"routes": {"review": [{"backend": "codex", "model": "gpt-6.1-sol"}]}}
-        r = route.choose(task, policy, heads(), seed=1, seats=[CLAUDE, CODEX],
-                         platforms=["windows", "wsl"])
-        self.assertEqual((r["backend"], r["seat"]), ("codex", "codex"))
-        self.assertEqual(dispatcher.place(task, r, r"R:\repos\acme-app", {
-            "run": {"platforms": ["windows", "wsl"]}}), ("wsl", None))
 
-    def test_windows_dotnet_review_keeps_seat_and_allowance_limits(self):
-        task = {"role": "review", "platform": "windows", "scope_files": ["src/app.cs"]}
-        policy = {"routes": {"review": [{"backend": "codex", "model": "gpt-6.1-sol"}]}}
-        for reason, h, load, platforms in (
-                ("max_workers", heads(), {"codex": 1}, ["windows", "wsl"]),
-                ("platform-compatible", heads(), {}, ["windows"]),
-                ("allowance", heads(codex={"remaining_pct": 5}), {}, ["windows", "wsl"])):
-            with self.subTest(reason=reason):
-                r = route.choose(task, policy, h, seed=1, seats=[{**CODEX, "max_workers": 1}],
-                                 seat_load=load, platforms=platforms)
-                self.assertIsNone(r["backend"])
-                self.assertIn(reason, r["reason"])
 
     def test_seats_that_cannot_run_on_the_repos_platforms_are_not_drawn(self):
         for r in pick([CLAUDE, CODEX], platforms=["windows"]):
@@ -174,14 +152,14 @@ class SeatInTheLaunch(unittest.TestCase):
         self.assertEqual(launch.build_argv({**spec, "backend": "codex", "binary": "codex-b"})[0][0], "codex-b")
 
     def test_wsl_runner_command_carries_the_env_through_usr_bin_env(self):
-        cmd = placement.wsl_argv("Ubuntu", ["--run-id", "1", "--runs-dir", "C:\\x", "--", "claude"], cd="C:\\d",
+        cmd = launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--run-id", "1", "--runs-dir", "C:\\x", "--", "claude"], cd="C:\\d",
                               env={"CLAUDE_CONFIG_DIR": "C:\\acct"})
         i = cmd.index("--exec")
         self.assertEqual(cmd[i + 1:i + 4], ["/usr/bin/env", "CLAUDE_CONFIG_DIR=/mnt/c/acct", "python3"])
         self.assertEqual(cmd[-1], "claude")
         with self.assertRaises(ValueError):
-            placement.wsl_argv("Ubuntu", ["--"], env={"bad name": "x"})
-        self.assertEqual(placement.wsl_argv("Ubuntu", ["--"])[3:5], ["--exec", "python3"])
+            launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--"], env={"bad name": "x"})
+        self.assertEqual(launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--"])[3:5], ["--exec", "python3"])
 
     def test_windows_command_gets_the_env(self):
         lr = launch.RunnerLauncher(runs_dir="C:\\r", distro="Ubuntu", windows=False, which=lambda n: n)
@@ -208,12 +186,6 @@ class Dispatching(test_dispatcher.Base):
         self.assertEqual(out["admitted"], ["claude"])
         self.assertEqual(out["launched"], [tid])
 
-    def test_unconfigured_backend_is_denied_without_reading_machine_state(self):
-        from drover import allowance
-        self.use(seats=[CLAUDE])
-        verdict = allowance.admit("codex", "worker", 1, state=self.tmp.name)
-        self.assertFalse(verdict["allow"])
-        self.assertIn("configured seat", verdict["reason"])
 
     def test_parallel_cap_comes_from_config(self):
         self.use(capacity={"parallel_cap": 2})
@@ -305,70 +277,3 @@ class Dispatching(test_dispatcher.Base):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class DotnetOwnerRule(unittest.TestCase):
-    """dotnet: (windows + claude) or (wsl + (claude or codex)), within the repo's platforms."""
-    SPENT = {"remaining_pct": 5.0, "hours_to_reset": 10.0}
-    CS = {"role": "worker", "size": "M", "scope_files": ["src/App.cs"]}
-
-    def both_paths(self, task, seats, h, **kw):
-        observed = {s["name"]: h[s["backend"]] for s in seats}
-        return (route.choose(task, {}, h, seed=1, seats=seats, **kw),
-                route.choose(task, {}, None, seed=1, seats=seats, seat_headroom=observed, **kw))
-
-    def test_wsl_only_repo_with_only_codex_allowance_gets_codex_on_wsl(self):
-        wsl_claude = {**CLAUDE, "placement": "wsl"}
-        tasks = [self.CS, {"role": "worker", "size": "S", "stack": "dotnet"},
-                 {"role": "worker", "size": "L", "stack": "msbuild"}, {"role": "worker", "size": "M", "tags": ["dotnet"]}]
-        for task in tasks:
-            for r in self.both_paths(task, [wsl_claude, CODEX], heads(claude=self.SPENT), platforms=["wsl"]):
-                self.assertEqual((r["backend"], r["seat"]), ("codex", "codex"), task)
-
-    def test_a_windows_only_repo_keeps_windows_claude(self):
-        for r in self.both_paths(self.CS, [CLAUDE, CODEX], heads(), platforms=["windows"]):
-            self.assertEqual((r["backend"], r["seat"]), ("claude", "claude"))
-
-    def test_codex_never_takes_dotnet_on_windows(self):
-        win_codex = {**CODEX, "placement": "windows"}          # config refuses this; the router must too
-        self.assertFalse(route.dotnet_seat_ok(win_codex, ["windows"]))
-        self.assertFalse(route.dotnet_seat_ok(win_codex, ["windows", "wsl"]))
-        for platforms in (["windows"], ["windows", "wsl"], None):
-            for r in self.both_paths(self.CS, [win_codex], heads(), platforms=platforms):
-                self.assertIsNone(r["backend"])
-        for seed in range(40):          # both platforms, both backends: Codex only ever lands on its WSL seat
-            r = route.choose(self.CS, {}, heads(), seed=seed, seats=[CLAUDE, CODEX], platforms=["windows", "wsl"])
-            self.assertIn(r["backend"], ("claude", "codex"))
-        self.assertEqual(route.dotnet_backends(["windows"]), ["claude"])
-        self.assertEqual(route.dotnet_backends(["windows", "wsl"]), ["claude", "codex"])
-
-    def test_explicit_windows_task_never_uses_codex(self):
-        task = {**self.CS, "platform": "windows"}
-        for r in self.both_paths(task, [CLAUDE, CODEX], heads(claude=self.SPENT)):
-            self.assertIsNone(r["backend"])
-
-    def test_non_dotnet_work_is_unchanged(self):
-        for r in self.both_paths(WORKER, [{**CLAUDE, "placement": "wsl"}, CODEX], heads(claude=self.SPENT),
-                                 platforms=["wsl"]):
-            self.assertEqual(r["backend"], "codex")
-
-    def test_no_seat_reason_names_the_dotnet_constraint(self):
-        for platforms in (["windows"], ["wsl"]):
-            seats = [CODEX] if platforms == ["windows"] else [{**CLAUDE, "placement": "windows"}]
-            r = route.choose(self.CS, {}, heads(), seed=1, seats=seats, platforms=platforms)
-            if platforms == ["wsl"]:
-                self.assertEqual(r["backend"], "claude")           # a Windows Claude seat can also run in WSL
-                continue
-            self.assertIsNone(r["backend"])
-            self.assertTrue(r["needs_owner"])
-            self.assertIn(".NET", r["reason"])
-            self.assertIn("Codex", r["reason"])
-            self.assertNotIn("max_workers", r["reason"])
-
-    def test_full_dotnet_seats_say_max_workers_and_defer(self):
-        seats = [{**CODEX, "max_workers": 1}]
-        r = route.choose(self.CS, {}, heads(), seed=1, seats=seats, seat_load={"codex": 1}, platforms=["wsl"])
-        self.assertIsNone(r["backend"])
-        self.assertFalse(r["needs_owner"])
-        self.assertIn("max_workers", r["reason"])
-        self.assertIn(".NET", r["reason"])

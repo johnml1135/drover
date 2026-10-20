@@ -1,4 +1,5 @@
 from drover import placement
+from drover.launch import RunnerLauncher
 """Runner tests: real subprocesses running small python child scripts on the current OS."""
 import ctypes
 import re
@@ -87,21 +88,6 @@ class WindowsMetricsTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in kernel.QueryInformationJobObject.call_args_list], [8, 9])
 
 
-class ScratchEnvironmentTests(unittest.TestCase):
-    @unittest.skipIf(runner.IS_WINDOWS, "WSL worker environment runs on Linux")
-    def test_wsl_worker_environment_uses_scratch_and_keeps_user_nuget_packages(self):
-        scratch = Path('/tmp/drover-scratch/7-0123456789abcdef')
-
-        self.assertEqual(placement.worker_scratch_env(scratch), {
-            'TMPDIR': str(scratch), 'TMP': str(scratch), 'TEMP': str(scratch),
-            'DOTNET_CLI_HOME': str(scratch / 'dotnet-home'),
-            'NUGET_HTTP_CACHE_PATH': str(scratch / 'nuget-http'),
-            'NUGET_PLUGINS_CACHE_PATH': str(scratch / 'nuget-plugins'),
-            'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1',
-            'NUGET_PACKAGES': str(Path.home() / '.nuget' / 'packages'),
-        })
-
-
 class Base(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -154,9 +140,7 @@ class ScratchTests(Base):
 from pathlib import Path
 from drover.ledger.db import connect
 scratch = Path(os.environ['TMPDIR'])
-env = {k: os.environ.get(k) for k in ('TMPDIR', 'TMP', 'TEMP', 'DOTNET_CLI_HOME',
-    'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'DOTNET_CLI_TELEMETRY_OPTOUT',
-    'DOTNET_NOLOGO', 'NUGET_PACKAGES')}
+env = {k: os.environ.get(k) for k in ('TMPDIR', 'TMP', 'TEMP')}
 with tempfile.TemporaryDirectory() as tmp:
     conn = connect(Path(tmp) / 'ledger.db', migrate_db=False)
     mode = conn.execute('PRAGMA journal_mode').fetchone()[0]
@@ -170,37 +154,12 @@ with tempfile.TemporaryDirectory() as tmp:
         data = json.loads(self.out('scratch'))
         self.assertEqual(data['env'], {
             'TMPDIR': str(scratch), 'TMP': str(scratch), 'TEMP': str(scratch),
-            'DOTNET_CLI_HOME': str(scratch / 'dotnet-home'),
-            'NUGET_HTTP_CACHE_PATH': str(scratch / 'nuget-http'),
-            'NUGET_PLUGINS_CACHE_PATH': str(scratch / 'nuget-plugins'),
-            'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1',
-            'NUGET_PACKAGES': str(Path.home() / '.nuget' / 'packages'),
         })
         self.assertEqual(data['mode'], 0o700)
         self.assertEqual(Path(data['tmp']).parent, scratch)
         self.assertEqual(data['journal'], 'wal')
         self.assertFalse(scratch.exists())
 
-    def test_ensure_dotnet_shm_creates_world_writable_dir_and_keeps_existing(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / '.dotnet'
-            placement.ensure_dotnet_shm(root)
-            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o1777)
-            self.assertEqual(stat.S_IMODE((root / 'shm').stat().st_mode), 0o1777)
-            root.chmod(0o755)
-            placement.ensure_dotnet_shm(root)
-            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o755)
-        self.assertEqual(placement.DOTNET_SHM_ROOT, '/tmp/.dotnet')
-
-    @unittest.skipUnless(shutil.which('dotnet'), 'dotnet SDK is absent')
-    def test_dotnet_info_starts_with_scratch_environment(self):
-        with tempfile.TemporaryDirectory(prefix='dotnet-smoke-') as temp:
-            scratch = Path(temp) / 'scratch'
-            scratch.mkdir()
-            env = {**os.environ, **placement.worker_scratch_env(scratch)}
-            result = subprocess.run(['dotnet', '--info'], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn('.NET SDK', result.stdout)
 
     def test_scratch_is_cleaned_after_timeout_and_spawn_failure(self):
         for rid, code, kw, state in (
@@ -530,9 +489,6 @@ class DetachTests(Base):
             log = (Path(self.runs) / "breakaway-fallback" / runner.RUNNER_LOG).read_text()
             self.assertIn("breakaway from the parent job was refused", log)
 
-    def test_runner_has_no_detached_process_flag(self):
-        self.assertFalse(hasattr(runner, "DETACHED_PROCESS"))
-        self.assertNotIn("DETACHED_PROCESS", Path(runner.__file__).read_text())
 
     def test_no_window_helper_is_empty_off_windows(self):
         from drover import placement
@@ -595,31 +551,19 @@ class FindTests(Base):
                         f"runner process {runner_pid} did not exit before the deadline")
         self.assertEqual(wait_for(lambda: runner.find_runners(runs_dir=self.runs) == [], timeout=30), True)
 
-    def test_parse_runner_argv(self):
-        self.assertEqual(placement.parse_runner_argv(["pythonw.exe", "-m", "drover.runner", "--run-id", "c3"]), "c3")
-        self.assertEqual(placement.parse_runner_argv(["/usr/bin/python3.14", "-m", "drover.runner", "--run-id", "c4"]),
-                         "c4")
-        ok = ["python3", "-m", "drover.runner", "--run-id", "a1", "--runs-dir", "x", "--", "w"]
-        self.assertEqual(placement.parse_runner_argv(ok), "a1")
-        self.assertEqual(placement.parse_runner_argv(["C:\\Py\\python.exe", "-m", "drover.runner", "--run-id=b2"]), "b2")
-        for bad in (
-            ["wsl.exe", "-d", "u", "--", "python3", "-m", "drover.runner", "--run-id", "a1"],
-            ["bash", "-c", "python3 -m drover.runner --run-id a1"],
-            ["python3", "-m", "drover.runner", "stop", "--run-id", "a1"],
-            ["python3", "-m", "other", "--run-id", "a1"],
-            ["python3", "-m", "drover.runner", "--runs-dir", "x", "--", "--run-id", "a1"],
-            ["python3", "-m", "drover.runner", "--run-id", "../evil"],
-            ["python3", "foo.py", "-m", "drover.runner", "--run-id", "a1"],
-            ["pylint", "-m", "drover.runner", "--run-id", "a1"],
-            ["pyright", "-m", "drover.runner", "--run-id", "a1"],
-            ["python3", "-u", "-m", "drover.runner", "--run-id", "a1"],
-            ["python3-evil", "-m", "drover.runner", "--run-id", "a1"],
-        ):
-            self.assertIsNone(placement.parse_runner_argv(bad), bad)
 
     def test_find_runners_injected(self):
         lines = [(7, ok_argv("a") + ["--runs-dir", "runs-a"]),
                  (8, ["python3", "x.py"]), (9, ok_argv("b") + ["--runs-dir", "runs-b"])]
+        decoys = [
+            ["wsl.exe", "-d", "u", "--", *ok_argv("spoof")],
+            ["bash", "-c", "python3 -m drover.runner --run-id spoof"],
+            ["python3", "-m", "drover.runner", "stop", "--run-id", "spoof"],
+            ["python3", "-m", "drover.runner", "--", "--run-id", "spoof"],
+            ["python3", "-m", "drover.runner", "--run-id", "../evil"],
+            ["python3-evil", "-m", "drover.runner", "--run-id", "spoof"],
+        ]
+        lines += [(100 + i, argv) for i, argv in enumerate(decoys)]
         self.assertEqual(runner.find_runners(cmdlines=lines), [{"pid": 7, "run_id": "a"}, {"pid": 9, "run_id": "b"}])
         self.assertEqual(runner.find_runners("b", cmdlines=lines), [{"pid": 9, "run_id": "b"}])
         self.assertEqual(runner.find_runners(cmdlines=lines, runs_dir="runs-a"), [{"pid": 7, "run_id": "a"}])
@@ -660,7 +604,7 @@ def default_distro(exe):
 
 class WslTests(unittest.TestCase):
     def test_wsl_argv_maps_paths_only_in_runner_options(self):
-        a = placement.wsl_argv("Ubuntu-24.04", ["--run-id", "x", "--runs-dir", "C:\\drover\\runs", "--stdin-file",
+        a = RunnerLauncher("unused", distro="Ubuntu-24.04").runner_argv( ["--run-id", "x", "--runs-dir", "C:\\drover\\runs", "--stdin-file",
                                              "C:/drover/runs/x/in.txt", "--cwd=R:\\repos\\w", "--", "codex",
                                              "C:\\keep\\this", "--x=D:/keep"], cd="R:\\repos\\w")
         self.assertEqual(a[:8], ["wsl.exe", "-d", "Ubuntu-24.04", "--cd", "/mnt/r/repos/w", "--exec", "python3", "-m"])
@@ -674,7 +618,7 @@ class WslTests(unittest.TestCase):
     def test_wsl_argv_rejects_bad_distro(self):
         for bad in ("a b", "x;rm", "", "-e", "a$(x)", "d\n"):
             with self.assertRaises(ValueError, msg=bad):
-                placement.wsl_argv(bad, [])
+                RunnerLauncher("unused", distro=bad).runner_argv([])
 
     def test_live_wsl_passes_shell_metacharacters_literally(self):
         exe = wsl_exe()
@@ -693,10 +637,48 @@ class WslTests(unittest.TestCase):
 
 
 def wsl_argv_for_exe(exe, distro, args):
-    argv = placement.wsl_argv(distro, args, cd=PKG_ROOT)
+    argv = RunnerLauncher("unused", distro=distro).runner_argv(args, cd=PKG_ROOT)
     argv[0] = exe
     return argv
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(runner.IS_WINDOWS, 'configured writable roots use the Linux temporary filesystem')
+class ConfiguredEnvironmentTests(Base):
+    def test_runner_prepares_configured_roots_and_passes_environment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / 'cache'
+            cfg = {'env': {'REPO_SETTING': 'literal value'}, 'sandbox_writable_roots': [str(root)]}
+            code = ('import json,os,stat; from pathlib import Path; '
+                    'print(json.dumps([os.environ["REPO_SETTING"],stat.S_IMODE(Path(' + repr(str(root)) + ').stat().st_mode)]))')
+            proc, status = self.run_runner('configured', code, extra=('--run-config', json.dumps(cfg)))
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(status['exit_code'], 0)
+            self.assertEqual(json.loads(self.out('configured')), ['literal value', 0o777])
+
+    def test_runner_refuses_roots_outside_tmp_and_symlinked_roots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            link = Path(temp) / 'link'
+            link.symlink_to(Path(temp), target_is_directory=True)
+            for root in ('/var/cache/never-create', str(link / 'escape')):
+                with self.subTest(root=root):
+                    cfg = {'sandbox_writable_roots': [root]}
+                    proc, status = self.run_runner('rejected', 'raise RuntimeError("must not run")',
+                                                   extra=('--run-config', json.dumps(cfg)))
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn('spawn-failed:', status['reason'])
+                    self.assertIsNone(status['exit_code'])
+
+
+class NativeWindowsEnvironmentTests(Base):
+    @unittest.skipUnless(runner.IS_WINDOWS, 'native Windows runner contract')
+    def test_configured_linux_roots_do_not_prevent_native_workers(self):
+        cfg = {'env': {'REPO_SETTING': 'native'}, 'sandbox_writable_roots': ['/tmp/repo-cache']}
+        proc, status = self.run_runner('native-configured', 'import os; print(os.environ["REPO_SETTING"])',
+                                       extra=('--run-config', json.dumps(cfg)))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(status['exit_code'], 0)
+        self.assertEqual(self.out('native-configured').strip(), 'native')

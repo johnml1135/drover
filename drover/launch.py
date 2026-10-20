@@ -75,6 +75,49 @@ class LaunchError(RuntimeError):
         self.cancel_requested = cancel_requested   # a runner may still come up; a stop-request was written for it
 
 
+def _git_dirs(cwd):
+    workspace = Path(placement_mod.native(cwd)).resolve()
+
+    def resolve(base, value):
+        if not value:
+            raise ValueError("empty git metadata path")
+        path = placement_mod.native(value)
+        return (base / path).resolve(strict=True)
+
+    try:
+        for parent in (workspace, *workspace.parents):
+            marker = parent / ".git"
+            try:
+                marker.lstat()
+            except FileNotFoundError:
+                continue
+            if marker.is_dir():
+                gitdir = marker.resolve(strict=True)
+            else:
+                prefix, sep, target = marker.read_text(encoding="utf-8").strip().partition(":")
+                if prefix != "gitdir" or not sep:
+                    raise ValueError("invalid git metadata pointer")
+                gitdir = resolve(parent, target.strip())
+            common_file = gitdir / "commondir"
+            try:
+                common_file.lstat()
+            except FileNotFoundError:
+                common = gitdir
+            else:
+                common = resolve(gitdir, common_file.read_text(encoding="utf-8").strip())
+            if not gitdir.is_dir() or not common.is_dir():
+                raise ValueError("git metadata is not a directory")
+            return workspace, gitdir, common
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot resolve git metadata for Claude sandbox: {exc}") from exc
+    return workspace, None, None
+
+
+def external_git_dirs(cwd):
+    workspace, gitdir, common = _git_dirs(cwd)
+    return list(dict.fromkeys(str(p) for p in (common, gitdir) if p and not p.is_relative_to(workspace)))
+
+
 def build_argv(spec):
     """(argv, stdin_text) for the spec's backend. The brief goes on stdin, the system block on the command line.
     A spec that carries its own `argv` (the gate run) is started as given."""
@@ -82,6 +125,8 @@ def build_argv(spec):
         argv = [str(a) for a in spec["argv"]]
         _reject_permission_bypass(argv)
         return argv, spec.get("user_prompt") or ""
+    for root in spec.get("run_config", {}).get("sandbox_writable_roots", []):
+        task_access.check_read_roots(root, spec.get("read_dirs") or [])
     m, e = config.model_id(spec["model"]), spec.get("effort") or EFFORT.get(spec["backend"])
     exe = spec.get("binary") or spec["backend"]
     if spec["backend"] == "claude":
@@ -94,7 +139,7 @@ def build_argv(spec):
                 "--permission-mode", "dontAsk" if readonly else "acceptEdits",
                 "--permission-prompts", "none", "--setting-sources", ""]
         permissions = {"allow": ["Read", "Grep", "Glob"], "deny": []}
-        settings = {"env": {}, "permissions": permissions}
+        settings = {"env": dict(spec.get("run_config", {}).get("env", {})), "permissions": permissions}
         scratch = spec.get("scratch_dir")
         if scratch:
             task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
@@ -126,7 +171,7 @@ def build_argv(spec):
         worker_path = placement_mod.to_wsl_path if placement == "wsl" else placement_mod.to_windows_path
         workspace = spec.get("cwd") or os.getcwd()
         cwd = worker_path(os.path.expanduser(str(workspace)))
-        external_git = [worker_path(path) for path in placement_mod.external_git_dirs(workspace)]
+        external_git = [worker_path(path) for path in external_git_dirs(workspace)]
         permissions["deny"].extend(_claude_edit_rule(path) for path in external_git)
         if placement == "wsl":
             defaults = ["/tmp/claude", "/private/tmp/claude", "~/.npm/_logs", "~/.claude/debug"]
@@ -138,7 +183,8 @@ def build_argv(spec):
                 if scratch:
                     filesystem["allowWrite"] = [scratch]
             else:
-                filesystem["allowWrite"] = [cwd, scratch] if scratch else [cwd]
+                filesystem["allowWrite"] = [cwd, *([scratch] if scratch else []),
+                                             *spec.get("run_config", {}).get("sandbox_writable_roots", [])]
                 # allowWrite is additive. Claude also grants the linked worktree's
                 # shared Git directory and these temp/log directories by default.
                 filesystem["denyWrite"] = [*reads, *external_git, *defaults]
@@ -162,10 +208,9 @@ def build_argv(spec):
         if scratch:
             task_access.check_read_roots(scratch, spec.get("read_dirs") or [])
             scratch = placement_mod.to_wsl_path(str(scratch)) if spec.get("placement") == "wsl" else placement_mod.to_windows_path(scratch)
-        # The .NET runtime hard-codes /tmp/.dotnet/shm for named mutexes (ignores TMPDIR); /tmp stays read-only otherwise.
         roots = [r for r in (scratch,) if r]
         if sandbox == "workspace-write" and spec.get("placement") == "wsl":
-            roots.append(placement_mod.DOTNET_SHM_ROOT)
+            roots.extend(spec.get("run_config", {}).get("sandbox_writable_roots", []))
         argv = [exe, "exec", "--json", "-s", sandbox, "-C", cwd, "-m", m, "-c", f"model_reasoning_effort={e}",
                 "-c", f"developer_instructions={json.dumps(spec['system_append'])}",
                 "-c", 'approval_policy="never"',
@@ -177,10 +222,12 @@ def build_argv(spec):
         # inherited writable roots and implicit temp roots as well: snapshots
         # can live under the state dir in TEMP or /tmp. Chmod is only hygiene,
         # not an access boundary (in particular on Windows).
+        shell_env = dict(spec.get("run_config", {}).get("env", {}))
         if scratch:
-            # The WSL runner derives .NET CLI and NuGet paths from this scratch; keep the shell override temp-only.
-            value = json.dumps(scratch)
-            argv[-1:-1] = ["-c", f"shell_environment_policy.set={{TMPDIR={value},TMP={value},TEMP={value}}}"]
+            shell_env.update({key: scratch for key in ("TMPDIR", "TMP", "TEMP")})
+        if shell_env:
+            values = ",".join(f"{json.dumps(key)}={json.dumps(value)}" for key, value in shell_env.items())
+            argv[-1:-1] = ["-c", f"shell_environment_policy.set={{{values}}}"]
     else:
         raise ValueError(f"headless launcher cannot run backend {spec['backend']!r}")
     _reject_permission_bypass(argv)
@@ -585,14 +632,22 @@ class RunnerLauncher(Launcher):
             spec.get("placement") == "wsl" and spec.get("scratch_dir")) else []
         return ["--detach", "--run-id", str(spec["run_id"]), "--nonce", spec["nonce"], "--runs-dir", self.runs_dir,
                 "--wall-s", f"{spec.get('wall_s') or 0:g}", "--idle-s", f"{spec.get('idle_s') or 0:g}",
-                "--stdin-file", str(d / IN_FILE), "--cwd", str(cwd), *scratch, "--", *argv]
+                "--stdin-file", str(d / IN_FILE), "--cwd", str(cwd), *scratch,
+                "--run-config", json.dumps(spec.get("run_config", {})), "--", *argv]
+
+    def runner_argv(self, runner_args, cd=None, env=None):
+        """Invoke the runner on the selected WSL distribution; worker argv stays verbatim."""
+        args = [str(a) for a in runner_args]
+        split = args.index("--") if "--" in args else len(args)
+        args = [placement_mod.to_wsl_path(a) for a in args[:split]] + args[split:]
+        return placement_mod.WSL(self.distro).command(["python3", "-m", "drover.runner", *args], cd, env)
 
     def command(self, spec, d, argv):
         """(command, env) that starts the detached runner for this spec's placement_mod."""
         cwd = os.path.expanduser(str(spec["cwd"]))
         if spec.get("placement") == "wsl":
             argv = self.wsl_exe(argv)
-            return placement_mod.wsl_argv(self.distro, self.runner_args(spec, d, argv, cwd), cd=self.drover_dir,
+            return self.runner_argv(self.runner_args(spec, d, argv, cwd), cd=self.drover_dir,
                                    env=seat_env(spec)), None
         cwd = placement_mod.to_windows_path(cwd)
         if placement_mod.is_linux_native(cwd):
@@ -671,7 +726,8 @@ class RunnerLauncher(Launcher):
         return h
 
     def wsl_up(self):
-        return placement_mod.wsl_running(self.distro)
+        from .resources import wsl_running
+        return wsl_running(self.distro)
 
     # ---- finding runners ------------------------------------------------------------------------------
     def scan(self, want_wsl=False):
@@ -684,7 +740,7 @@ class RunnerLauncher(Launcher):
         return found
 
     def _wsl_runners(self):
-        cmd = placement_mod.wsl_argv(self.distro, ["find", "--json"], cd=self.drover_dir)
+        cmd = self.runner_argv(["find", "--json"], cd=self.drover_dir)
         try:
             r = self.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, **placement_mod.NO_WINDOW)
             rows = json.loads(r.stdout)

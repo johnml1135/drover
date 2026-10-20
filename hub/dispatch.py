@@ -7,11 +7,10 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import threading
 from pathlib import Path
 
-from drover import gate, landing, repos, runner
+from drover import gate, landing, repos
 from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
 from drover.ledger import ops
@@ -102,18 +101,24 @@ class LandingService:
     def gate_fn(self, prog, base_ref, out_dir, conn):
         """The batch gate: each gate platform's effective full command. A WSL gate started from the Windows hub
         runs `python3 -m drover.gate run` through wsl.exe with every path mapped to /mnt/<d>/."""
-        platforms = repos.gate_platforms(prog)
-        runs = [self._gate_on(x, repos.gate_commands(prog, x)["full"], base_ref, out_dir, conn, prog) for x in platforms]
-        return runs[0] if len(runs) == 1 else self._both(runs, platforms)
+        def run(worktree, tip, tasks):
+            current = repos.load(prog, tip, worktree)
+            platforms = repos.gate_platforms(current)
+            runs = [self._gate_on(x, repos.script_argv(current), base_ref, out_dir, conn, current) for x in platforms]
+            return self._both(runs, platforms)(worktree, tip, tasks)
+        return run
 
     def _gate_on(self, platform, command, base_ref, out_dir, conn, prog):
         if platform == "wsl" and os.name == "nt":
-            return self._wsl_gate(command, base_ref, out_dir, float(prog["gate"]["timeout_s"]) + 120)
+            return self._wsl_gate(command, base_ref, out_dir, float(prog["gate"]["timeout_s"]) + 120, prog["run"],
+                                  prog["gate"]["docs_only_globs"] if prog["gate"]["docs_only"] else None,
+                                  repos.script_argv(prog, "docs") if "docs" in prog["scripts"] else None)
         g = prog["gate"]
         docs = g.get("docs_only", True) and g.get("docs_only_globs")
         return landing.make_gate(command, base_ref, out_dir, priority="P1", db_path=self.store.path,
                                  max_seconds=int(g["timeout_s"]), docs_globs=list(docs) if docs else None,
-                                 docs_extra=repos.gate_commands(prog, platform).get("docs"), **self.gate_kw)
+                                 docs_extra=repos.script_argv(prog, "docs") if "docs" in prog["scripts"] else None,
+                                 env={**os.environ, **prog["run"]["env"], "DROVER_CI_KIND": "full"}, writable_roots=prog["run"]["sandbox_writable_roots"], **self.gate_kw)
 
     @staticmethod
     def _both(runs, platforms):
@@ -128,14 +133,24 @@ class LandingService:
             return {**receipt, "platform": "+".join(platforms)}
         return run
 
-    def _wsl_gate(self, command, base_ref, out_dir, timeout_s=3600.0):
+    def _wsl_gate(self, command, base_ref, out_dir, timeout_s=3600.0, run_config=None, docs_globs=None, docs_extra=None):
         drover_dir = placement.to_wsl_path(str(Path(__file__).resolve().parents[1]))
 
         def run(worktree, tip, tasks):
             out = Path(out_dir) / f"gate-{tip[:12]}-{len(tasks)}.json"
-            argv = placement.WSL(self._distro).command(["python3", "-m", "drover.gate", "run",
-                    "--out", placement.to_wsl_path(str(out)), "--repo", placement.to_wsl_path(str(worktree)), "--base",
-                    base_ref, "--priority", "P1", "--json", "--", *command], cd=drover_dir)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            plan_file = out.with_suffix(".plan.json")
+            kind = "docs" if docs_globs and gate.changed_docs_only(worktree, base_ref, tip, docs_globs) else "full"
+            commands = gate.docs_commands(base_ref, tip, docs_extra) if kind == "docs" else [command]
+            plan = {"repo": placement.to_wsl_path(str(worktree)), "out": placement.to_wsl_path(str(out)),
+                    "base": base_ref, "sha": tip, "commands": commands, "kind": kind, "priority": "P1",
+                    "env": {**(run_config or {}).get("env", {}), "DROVER_CI_KIND": kind,
+                            "DROVER_CHANGED_FILES": json.dumps(gate.changed_paths(worktree, base_ref, tip))},
+                    "sandbox_writable_roots": (run_config or {}).get("sandbox_writable_roots", [])}
+            plan_file.write_text(json.dumps(plan), encoding="utf-8")
+            script = Path(gate.__file__).with_name("gatejob.py")
+            argv = placement.WSL(self._distro).command(["python3", placement.to_wsl_path(str(script)),
+                    "--plan", placement.to_wsl_path(str(plan_file))], cd=drover_dir)
             try:
                 proc = self.run(argv, capture_output=True, text=True, timeout=timeout_s, **placement.NO_WINDOW)
             except subprocess.TimeoutExpired:

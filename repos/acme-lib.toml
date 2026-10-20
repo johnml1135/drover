@@ -1,18 +1,6 @@
-# Fictional provider. Copy to ~/.drover/repos/ and set your repo path.
+# Fictional machine facts. Commit drover.toml and scripts/drover/test.ps1 in this repo.
 name = "acme-lib"
 repo = "~/repos/acme-lib"
-[run]
-platforms = ["windows", "wsl"]
-default = "windows"
-[gate]
-platform = "windows"
-unknown = false
-[gate.commands]
-full = ["python", "-m", "unittest", "discover"]
-[land]
-policy = "batch"
-[landing]
-mode = "local"
-push = false
+worktrees = "~/repos/acme-lib.worktrees"
+default_branch = "main"
 remote = "origin"
-main = "main"

@@ -15,7 +15,7 @@ class Fake:
 
     def __call__(self, args, timeout):
         self.calls.append(args)
-        if args[-2:] == ["-e", "true"] or args[-1] == "true":
+        if args[-2:] == ["--exec", "true"] or args[-1] == "true":
             return (0 if self.probe_ok else -1), ""
         return 0, ""
 
@@ -67,7 +67,7 @@ class WatchdogTests(unittest.TestCase):
     def test_needed_and_wsl_up_starts_one_keepalive_and_probes_no_more(self):
         self.need()
         self.assertEqual(self.dog.check(), "keepalive")
-        self.assertEqual(self.fake.calls, [["-d", "Dist", "-e", "true"]])
+        self.assertEqual(self.fake.calls, [["-d", "Dist", "--exec", "true"]])
         self.assertEqual((self.spawned[0].distro, self.spawned[0].seconds), ("Dist", 600.0))
         self.assertEqual(self.dog.check(), "ok")
         self.assertEqual(len(self.fake.calls), 1)
@@ -105,7 +105,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(dog.check(), "boot-wsl")
         flat = [a for c in fake.calls for a in c]
         self.assertNotIn("--shutdown", flat)
-        self.assertEqual(fake.calls[-1], ["-d", "Dist", "-e", "true"])
+        self.assertEqual(fake.calls[-1], ["-d", "Dist", "--exec", "true"])
         self.assertIn("watchdog.boot-wsl", [e["kind"] for e in self.store.list_events()])
         self.assertIn("alert", [e["kind"] for e in self.bus.recent()])
         self.assertEqual(len(self.spawned), 0)               # the boot probe failed (fake): no keepalive

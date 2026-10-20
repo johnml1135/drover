@@ -1,10 +1,8 @@
-"""Subscription allowance: read Claude/Codex usage, compute headroom, admit work, learn rates."""
-import argparse
+"""Subscription allowance: read Claude/Codex usage, learn usage rates."""
 import json
 import math
 import os
 import time
-import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -203,77 +201,6 @@ def read_plan(plan, state=None, home=None, now=None):
     return read_manual(plan, state, now) or live
 
 
-def load_config(state=None):
-    cfg = {k: dict(v) for k, v in defaults().items()}
-    base = state_dir(state) / 'allowance'
-    user = {}
-    try: user = tomllib.loads((base / 'config.toml').read_text(encoding='utf-8'))
-    except (OSError, tomllib.TOMLDecodeError):
-        user = _load_json(base / 'config.json') or {}
-    for plan, vals in (user.items() if isinstance(user, dict) else ()):
-        if plan in cfg and isinstance(vals, dict):
-            for k in ('reserve_pct', 'director_reserve_pct', 'five_hour_base_pct', 'five_hour_per_hour_pct'):
-                v = _num(vals.get(k), 0, 100)
-                if v is not None: cfg[plan][k] = v
-            if isinstance(vals.get('director_roles'), list): cfg[plan]['director_roles'] = [str(r) for r in vals['director_roles']]
-    return cfg
-
-
-def headroom(plan, state=None, home=None, now=None, reading=None, config=None):
-    """Remaining % per window, hours to reset and whether the burn rate fits the reserve."""
-    now = time.time() if now is None else now
-    reading = reading or read_plan(plan, state, home, now)
-    reserve = (config or load_config(state))[plan]['reserve_pct']
-    wins = {}
-    for name, w in reading['windows'].items():
-        remaining = 100 - w['used_pct']
-        hours = None if w['resets_at'] is None else max(0.0, (w['resets_at'] - now) / 3600)
-        ok = remaining > reserve
-        if ok and hours is not None and w['window_hours']:
-            elapsed = 1 - min(hours, w['window_hours']) / w['window_hours']
-            if elapsed >= 0.05: ok = w['used_pct'] / elapsed <= 100 - reserve  # projected use at reset
-        wins[name] = dict(remaining_pct=remaining, hours_to_reset=hours, burn_rate_ok=ok)
-    return dict(plan=plan, source=reading['source'], observed_at=reading['observed_at'], windows=wins,
-                burn_rate_ok=bool(wins) and all(w['burn_rate_ok'] for w in wins.values()))
-
-
-def admit(plan, role, predicted_pct, state=None, home=None, now=None, reading=None, config=None):
-    """Allow/deny a run predicted to use predicted_pct.
-
-    A scalar is the seven_day cost only; five_hour is then checked against its floor with no
-    prediction. Pass a dict {window: pct} to predict per window. Non-director roles are denied
-    when a plan has a director reserve and the seven_day window is missing.
-    """
-    cfg = (config if config is not None else load_config(state)).get(plan)
-    if cfg is None:
-        return dict(allow=False, reason='no configured seat for backend', plan=plan, role=role, source='unknown')
-    head = headroom(plan, state, home, now, reading, config)
-    privileged = role in cfg['director_roles']
-    decision = lambda allow, reason: dict(allow=allow, reason=reason, plan=plan, role=role, source=head['source'])
-    if not head['windows'] or head['source'] in ('stale', 'unknown'):
-        if privileged:
-            week = head['windows'].get('seven_day')
-            if week and week['remaining_pct'] < cfg['reserve_pct']:
-                return decision(False, f'allowance {head["source"]}; last known weekly {week["remaining_pct"]:g}% is below the {cfg["reserve_pct"]:g}% reserve, no probe')
-            return decision(True, f'allowance {head["source"]}; director/planner may probe')
-        return decision(False, f'allowance {head["source"]}; workers wait for an observation')
-    if not privileged and cfg['director_reserve_pct'] > 0 and 'seven_day' not in head['windows']:
-        return decision(False, 'weekly window unknown; director reserve cannot be checked')
-    for name, w in head['windows'].items():
-        need = predicted_pct.get(name, 0) if isinstance(predicted_pct, dict) else (predicted_pct if name == 'seven_day' else 0)
-        need = _num(need, 0)
-        if need is None: return decision(False, 'predicted_pct must be a non-negative number')
-        floor = cfg['reserve_pct']
-        if name == 'five_hour':
-            floor = five_hour_floor(w['hours_to_reset'], cfg.get('five_hour_base_pct'), cfg.get('five_hour_per_hour_pct'))
-        elif name == 'seven_day' and not privileged: floor += cfg['director_reserve_pct']
-        left = w['remaining_pct'] - need
-        if left < floor:
-            why = 'five-hour formula' if name == 'five_hour' else 'director reserve' if floor > cfg['reserve_pct'] else 'reserve'
-            return decision(False, f'{name}: {left:g}% would remain, below the {floor:g}% {why} floor')
-    return decision(True, 'within reserves')
-
-
 def _family(model, plan):
     m = str(model).lower()
     return next((f for f in PRIOR_RATIO[plan] if f in m), None)
@@ -290,48 +217,3 @@ def fit_rate(samples, plan='claude', model='sonnet', base_rate=PRIOR_BASE_RATE):
     fam = _family(model, plan)
     if fam is None: raise ValueError(f'no price prior for model {model!r} on {plan}')
     return dict(rate=base_rate * PRIOR_RATIO[plan][fam] / PRIOR_RATIO[plan][PRIOR_BASE[plan]], n=len(good), source='prior')
-
-
-def status(state=None, home=None, now=None):
-    now = time.time() if now is None else now
-    cfg = load_config(state)
-    return {p: headroom(p, state, home, now, config=cfg) for p in cfg}
-
-
-def _fmt_status(st):
-    lines = []
-    for plan, h in st.items():
-        lines.append(f'{plan}: source={h["source"]} burn_rate_ok={h["burn_rate_ok"]}')
-        for name, w in h['windows'].items():
-            hrs = '?' if w['hours_to_reset'] is None else f'{w["hours_to_reset"]:.1f}h'
-            lines.append(f'  {name}: {w["remaining_pct"]:.1f}% remaining, resets in {hrs}, burn_rate_ok={w["burn_rate_ok"]}')
-    return '\n'.join(lines)
-
-
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog='drover.allowance')
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
-    ap.add_argument('--json', action='store_true')
-    sub = ap.add_subparsers(dest='cmd')
-    sub.add_parser('status', parents=[common])
-    s = sub.add_parser('set', parents=[common]); s.add_argument('plan', choices=sorted(PLANS)); s.add_argument('--remaining-pct', type=float, required=True)
-    a = sub.add_parser('admit', parents=[common]); a.add_argument('plan', choices=sorted(PLANS))
-    a.add_argument('--role', default='worker'); a.add_argument('--predicted-pct', type=float, required=True)
-    args = ap.parse_args(argv)
-    if args.cmd == 'set':
-        try: out = dict(path=str(set_manual(args.plan, args.remaining_pct)))
-        except ValueError as e: ap.error(str(e))
-        print(json.dumps(out) if args.json else f'wrote {out["path"]}')
-        return 0
-    if args.cmd == 'admit':
-        d = admit(args.plan, args.role, args.predicted_pct)
-        print(json.dumps(d) if args.json else ('ALLOW' if d['allow'] else 'DENY') + ': ' + d['reason'])
-        return 0 if d['allow'] else 1
-    st = status()
-    print(json.dumps(st) if args.json else _fmt_status(st))
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

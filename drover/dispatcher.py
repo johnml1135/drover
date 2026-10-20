@@ -56,12 +56,10 @@ PLATFORM_RE = re.compile(r"(?<![\w-])platform:\s*(linux|windows)\b", re.I)
 CHEAP_MODELS = ("haiku", "luna")
 MAX_ROTATIONS = 3
 EXCERPT_LINES = contract.EXCERPT_LINES
-DOTNET_EXT = (".cs", ".csproj", ".sln", ".fs", ".vb", ".props", ".targets")
 LEASE_TTL_S = 600.0          # a gate ticket outlives one slow tick (a scan can take 90s)
 MAX_REVIEW_TRIES = 3         # reviews that produce no usable verdict in a row before the owner is asked
 MAX_GATE_LAUNCH_ERRORS = 3
 PENDING_KEY = "_pending_outcomes"
-GATE_CLASS_RULE_FAILS = ("build",)
 
 
 def ladders():
@@ -90,12 +88,6 @@ def seat_of(route):
     return seat
 
 
-def is_dotnet(task):
-    text = f"{task.get('title', '')} {task.get('goal', '')}".lower()
-    return any(f.lower().endswith(DOTNET_EXT) for f in task.get("scope_files") or []) \
-        or "dotnet" in text or "msbuild" in text
-
-
 def _platform_tag(task):
     """'linux' or 'windows' from the task's platform field, a `platform:linux` tag, or the same text in title/goal."""
     plat = str(task.get("platform") or "").lower()
@@ -111,7 +103,7 @@ def _platform_tag(task):
 
 def placement_for(task, route, worktree=None, platforms=None):
     """'wsl' or 'windows'. A Codex seat runs where its seat is (WSL; config refuses Windows); a WSL Claude seat runs in
-    WSL; a linux platform tag (or the router's platform) means WSL; dotnet takes Windows for a Claude seat that can and
+    WSL; a linux platform tag (or the router's platform) means WSL; the repo supplies its default and
     the repo allows, else WSL (owner rule: windows + claude, or wsl + claude or codex); Claude otherwise runs on
     Windows (unless the worktree is Linux-only)."""
     seat = seat_of(route)
@@ -122,22 +114,18 @@ def placement_for(task, route, worktree=None, platforms=None):
         return "wsl"
     if plat == "windows":
         return "windows"           # a WSL seat cannot honour this: place() sends the task to the owner
-    if is_dotnet(task):
-        can = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
-        return "windows" if "windows" in can and "windows" in (platforms or config_mod.PLACEMENTS) else "wsl"
     if seat and seat["placement"] == "wsl":
         return "wsl"
     return "wsl" if worktree and placement.is_linux_native(worktree) else "windows"
 
 
 def place(task, route, worktree, prog):
-    """(placement, None), or (None, reason) when no placement is within the repo's run platforms. A task tag, dotnet
-    or the seat's own side is a hard need; otherwise the repo's default platform is tried before giving up."""
+    """(placement, None), or (None, reason) for incompatible task, seat and repo platforms."""
     plats = ((prog or {}).get("run") or {}).get("platforms") or list(config_mod.PLACEMENTS)
     want = placement_for(task, route, worktree, plats)
     seat = seat_of(route)
     allowed = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
-    hard = bool(_platform_tag(task) or route.get("platform") or is_dotnet(task)) \
+    hard = bool(_platform_tag(task) or route.get("platform") ) \
         or route.get("backend") == "codex" or bool(worktree and placement.is_linux_native(worktree))
     default = ((prog or {}).get("run") or {}).get("default")
     if not hard and default in plats and default in allowed:
@@ -219,8 +207,6 @@ class DispatchRuntime:
 
 class Dispatcher:
     def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide):
-        if pipeline is None:
-            raise TypeError("Dispatcher requires a Pipeline")
         from .usage import Poller
         self.port, self.pipeline = port, pipeline
         runtime = runtime or DispatchRuntime()
@@ -600,11 +586,6 @@ class Dispatcher:
             return False
         platform = self._next_gate_platform(task, prog, worker["id"], sha)
         plan = pl.gate_plan(task, prog, sha, platform)
-        if plan["kind"] == "none":
-            p.append_event("gate-started", {"run": worker["id"], "sha": sha, "kind": "none"}, tid)
-            self._gate_passed(task, worker, sha, 0.0, plan["diff_lines"], {"sha": sha, "scope": plan["scope"],
-                                                                         "status": "passed", "kind": "none"}, None)
-            return True
         if platform == "wsl" and not self.launcher.wsl_up():
             p.note_wsl_needed(tid)
             return False
@@ -733,25 +714,11 @@ class Dispatcher:
         p.amend_run(worker["id"], outcome="gate-fail",
                     gate_receipt=contract.gate_receipt(False, diff_lines, excerpt, receipt=summary))
         self._failed(tid, worker["id"], excerpt)          # settles what the previous failure left pending
-        failed = self._parsed_failures(excerpt, files)
-        r = self._ask("gate_failure_class", {"task": tid, "failures": failed[:10], "excerpt": excerpt[-1500:]},
-                      self._class_rule(failed), tid)
+        r = self._ask("gate_failure_class", {"task": tid, "excerpt": excerpt[-1500:]},
+                      "env_flaky", tid)
         if r and r.get("decision_id"):
             self._pend(tid, r["decision_id"], "gate_failure_class")
 
-    @staticmethod
-    def _parsed_failures(excerpt, files):
-        return gate_mod.parse_failures(excerpt, files)
-
-    @staticmethod
-    def _class_rule(failed):
-        """The rule's guess at the failure class, recorded beside the decider's: build errors, else a test failure
-        in a changed file, else an unrecognised failure looks environmental."""
-        if not failed:
-            return "env_flaky"
-        if all(f["test"] in GATE_CLASS_RULE_FAILS for f in failed):
-            return "build_system"
-        return "test_logic"
 
     @staticmethod
     def _read_json(path):
@@ -771,21 +738,16 @@ class Dispatcher:
             return ""
 
     def _gate_excerpt(self, run_id, receipt, info, result):
-        """The failure excerpt (at most EXCERPT_LINES): parsed failures first, then the end of the gate's log. A refusal
+        """The failure excerpt (at most EXCERPT_LINES): the end of the gate's log. A refusal
         or crash has no receipt, so it is the end of the run's own output."""
-        files = info.get("files") or []
         text = self._gate_log(run_id, receipt)
         lines = []
         if result["status"] == "timeout":
             lines.append(f"gate timed out ({result.get('timeout')})")
         elif receipt is None:
             lines.append(f"gate refused or crashed (exit {result.get('returncode')}):")
-        else:
-            found = gate_mod.parse_failures(text, files)
-            if gate_mod.unparsed(found, 1):
-                lines.append("gate failed; its output was not recognised, so this is the end of the log:")
-            for f in found[:15]:
-                lines.append(f"FAILED {f['test']} {f['file'] or '-'}{' (in diff)' if f['in_diff'] else ''}: {f['error']}")
+        if receipt is not None and result["status"] != "timeout":
+            lines.append(f"CI command exited {receipt.get('exit_code', result.get('returncode'))}")
         tail = text.strip().splitlines()[-(EXCERPT_LINES - len(lines)):]
         return "\n".join(lines + tail)
 
@@ -936,6 +898,9 @@ class Dispatcher:
         last = self._last_nongate(runs)
         excerpt = contract.receipt_excerpt(last["gate_receipt"]) \
             if last and last["outcome"] in ("gate-fail", "hold") else None
+        prog = self.pipeline.repo(task)
+        if prog and prog.get("brief"):
+            task = {**task, "repo_brief": prog["brief"]}
         try:
             b = brief_mod.assemble(task, retry_excerpt=excerpt, handoff=task.get("handoff") or None,
                                    notes=p.owner_notes(task["id"]))
@@ -957,7 +922,8 @@ class Dispatcher:
         if hasattr(p, "set_run_context"):
             p.set_run_context(run_id, seat=seat["name"] if seat else None, placement=placement,
                               policy_version=policy.get("version"))
-        spec = {"run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
+        prog = self.pipeline.repo(task)
+        spec = {"run_config": (prog or {}).get("run", {}), "run_id": run_id, "role": role, "backend": route["backend"], "model": route["model"], "effort": effort,
                 "seat": seat["name"] if seat else None, "binary": seat["binary"] if seat else route["backend"],
                 "env": config_mod.seat_env(seat),
                 "write": task.get("write", True), "read_dirs": task.get("read_dirs", []),
@@ -1042,8 +1008,6 @@ class Dispatcher:
 
     def _scan(self, want_wsl):
         """{run_id: placement}, or None when the process list could not be read (unknown, never "none")."""
-        if self.launcher.scan is None:
-            return None
         try:
             found = launch_mod.normalize_run_ids(self.launcher.scan(want_wsl))
         except ScanError as e:
@@ -1131,7 +1095,7 @@ class Dispatcher:
         failed scan is unknown: it requeues nothing and restarts the count. Runs this dispatcher launched fall back
         to their own handle's status when the scan is unavailable. Returns requeued task ids."""
         pending = {rid: v for rid, v in self.live.items() if v[0].poll() is None and v[0].terminal() is None}
-        if (not pending and not self.cancelling) or self.launcher.scan is None:
+        if not pending and not self.cancelling:
             return []
         if self.last_scan is not None and self.now() - self.last_scan < self.scan_every_s:
             return []
@@ -1211,9 +1175,7 @@ class Dispatcher:
         return kw
 
     def _route(self, task, policy, admitted):
-        t = {**task, "stack": "dotnet"} if is_dotnet(task) else task    # placement: owner rule in route.py
-        if is_dotnet(task) and _platform_tag(task):
-            t["platform"] = _platform_tag(task)                         # an explicit tag narrows the router too
+        t = task
         heads = {b: self._headroom(b) for b in admitted}
         base = self.route_fn(t, policy["data"], heads, **self._route_inputs(task, admitted))
         if base.get("borrow_seat"):

@@ -1,7 +1,6 @@
 """RunnerLauncher and RunnerHandle against a fake runner (files only), plus one real runner smoke test."""
 from drover import placement as placement_mod
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -106,10 +105,9 @@ class Commands(Base):
                         ('sandbox_workspace_write.', 'shell_environment_policy.'))))
                 sandbox = settings['sandbox_workspace_write']
                 roots = sandbox['writable_roots']
-                self.assertEqual(len(roots), 2 if placement == 'wsl' else 1)
+                self.assertEqual(len(roots), 1)
                 if placement == 'wsl':
-                    # The second root is the pre-created .NET shared-memory directory (named mutexes).
-                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}', placement_mod.DOTNET_SHM_ROOT])
+                    self.assertEqual(roots, [f'/tmp/drover-scratch/7-{NONCE}'])
                     self.assertEqual(head[head.index('--scratch-dir') + 1], roots[0])
                     self.assertEqual(list(self.dir(rid).glob('scratch-*')), [])
                 else:
@@ -458,9 +456,9 @@ class Scanning(Base):
     def test_wsl_running_reads_utf16_list(self):
         out = "Ubuntu\r\nDebian\r\n".encode("utf-16-le")
         run = lambda *a, **k: SimpleNamespace(stdout=out, stderr=b"", returncode=0)
-        self.assertTrue(placement_mod.wsl_running("ubuntu", run))
-        self.assertFalse(placement_mod.wsl_running("Other", run))
-        self.assertFalse(placement_mod.wsl_running("Ubuntu", lambda *a, **k: SimpleNamespace(stdout=b"", stderr=b"", returncode=1)))
+        self.assertTrue(__import__("drover.resources", fromlist=["wsl_running"]).wsl_running("ubuntu", run))
+        self.assertFalse(__import__("drover.resources", fromlist=["wsl_running"]).wsl_running("Other", run))
+        self.assertFalse(__import__("drover.resources", fromlist=["wsl_running"]).wsl_running("Ubuntu", lambda *a, **k: SimpleNamespace(stdout=b"", stderr=b"", returncode=1)))
 
 
 class PathHelpers(unittest.TestCase):

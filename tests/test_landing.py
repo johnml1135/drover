@@ -2,7 +2,6 @@ from drover import placement
 import json
 import sys
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
@@ -17,9 +16,9 @@ import pathlib, sys
 files = {p.name: p.read_text() for p in pathlib.Path('.').glob('*.txt')}
 bad = [n for n, t in files.items() if 'BAD' in t]
 for n in bad:
-    print(f'FAILED {n}::check - bad content in {n}')
+    print(f'bad content in {n}')
 if 'x.txt' in files and 'y.txt' in files:
-    print('FAILED shared.txt::interaction - x and y clash')
+    print('x and y clash')
     bad.append('shared')
 sys.exit(1 if bad else 0)
 """
@@ -101,8 +100,12 @@ class HubDocsGate(LandingCase):
         from types import SimpleNamespace
         from drover import repos
         from hub.dispatch import LandingService
-        prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo), 'gate': {
-            'platform': 'windows', 'commands': {'full': [sys.executable, '-c', 'raise SystemExit(1)']}, **gate_cfg}})
+        self.r.commit('scripts/drover/test.ps1', 'exit 1\n')
+        self.r.git('push', '-q', 'origin', 'HEAD:main')
+        self.r.git('fetch', '-q', 'origin')
+        prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo),
+                                'scripts': {'test': 'scripts/drover/test.ps1'},
+                                'gate': {'platform': 'windows', **gate_cfg}})
         svc = LandingService(SimpleNamespace(path=None), SimpleNamespace(), gate_kw={'available': False})
         return svc.gate_fn(prog, 'origin/main', self.r.root / 'receipts', None)
 
@@ -186,19 +189,6 @@ class WorktreeTests(LandingCase):
         self.assertFalse(PureWindowsPath(pointer).is_absolute())
         self.assertEqual((tip, applied, conflicts), (base, [], []))
         self.assertEqual((self.work / 'base.txt').read_bytes(), b'base\n')
-
-
-class ReceiptLogTests(unittest.TestCase):
-    def test_wsl_receipt_log_is_mapped_before_reading_the_full_log(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / 'gate.log'
-            log.write_text('FAILED src/check.py::test_check - bad content\n' + 'output\n' * 30)
-            receipt = {'log': '/mnt/c/acme-lib/runs/gate.log', 'log_tail': ['output'] * 20}
-            tasks = [{'id': 'T-1', 'files': ['src/check.py']}]
-            with patch.object(landing.config, 'native', return_value=str(log)) as native:
-                failures = landing._failures(receipt, tasks)
-            self.assertEqual(landing.owners_of(failures, tasks), ['T-1'])
-            native.assert_called_once_with('/mnt/c/acme-lib/runs/gate.log')
 
 
 class FormationTests(LandingCase):
@@ -454,12 +444,12 @@ class RunTests(LandingCase):
         v = landing.velocity(self.conn)
         self.assertEqual((v['tasks_landed'], v['gates'], v['red_rate']), (3, 1, 0.0))
 
-    def test_single_owner_is_dropped_without_a_decision(self):
+    def test_unstructured_failure_bisects_without_guessing_file_ownership(self):
         a, b = self.task('a', {'a.txt': 'ok'}), self.task('b', {'b.txt': 'BAD'})
         d = fake_decider()
         res = self.land(decider=d)
-        self.assertEqual((res['outcome'], res['landed'], res['dropped'], res['gates']), ('landed', [a], {b: 'owner'}, 3))   # batch, base (cached green), regate
-        self.assertEqual(d.calls, [])
+        self.assertEqual((res['outcome'], res['landed'], res['dropped'], res['gates']), ('landed', [a], {b: 'bisect'}, 4))
+        self.assertEqual([call[0] for call in d.calls], ['batch_culprit'])
         self.assertEqual(self.status(b), 'ready')
         self.assertIn('bad content', ops.get_task(self.conn, b)['handoff'])
         self.assertEqual(self.status(a), 'landed')

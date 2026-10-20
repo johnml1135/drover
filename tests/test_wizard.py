@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, placement, repos, wizard
+from drover import config, placement, wizard
 from drover.tool_discovery import DISCOVERY_SCRIPT
 
 DRIVES = [{"path": "C:\\", "free_gb": 200.0, "total_gb": 500.0}, {"path": "R:\\", "free_gb": 600.0, "total_gb": 1000.0}]
@@ -130,46 +130,6 @@ class Defaults(Base):
 
 
 class Questions(Base):
-    def test_scripted_input_answers_every_question(self):
-        inputs = [
-            "",                                   # state dir: default
-            "R:\\repos", "R:\\wts",               # repos root, shared worktrees root
-            "D:\\ollama",                         # ollama dir
-            "tev1", "nimble", "cpu",              # primary, shadow, device
-            "claude-main", "1", "3", "15", "",    # claude seat: name, priority, max workers, reserve, config dir
-            "codex-main", "2", "2", "10", "",     # codex seat
-            "claude-main",                        # director
-            "y",                                  # accept tracker levels
-            "Debian", "wsluser",                  # distro, user
-            "9000", "9001", "y", "me@example.org", "",   # ports, tailscale, login, auth mode
-            "all",                                # repos
-            "alpha", "R:\\repos\\alpha", "python3 -m unittest", "wsl", "wsl", "n",
-            "beta", "R:\\repos\\beta", "ask me later", "windows", "windows", "y",
-            "n", "y", "",                       # commercial use, state git, private remote
-            "y",                                  # confirm
-        ]
-        code, script = self.run_wizard(inputs=inputs)
-        self.assertEqual((code, script.answers), (0, []))
-        cfg = config.validate(self.config())
-        self.assertEqual((cfg["paths"]["worktrees"], cfg["paths"]["wsl_distro"], cfg["paths"]["wsl_user"]),
-                         ("R:\\wts", "Debian", "wsluser"))
-        self.assertEqual(cfg["decider"]["models"]["primary"], "tev1")
-        self.assertEqual(cfg["decider"]["ollama_models"], "D:\\ollama")
-        s = {x["name"]: x for x in cfg["seats"]}
-        self.assertEqual((s["claude-main"]["max_workers"], s["claude-main"]["reserve_pct"], s["claude-main"]["director"]),
-                         (3, 15.0, True))
-        self.assertEqual((s["codex-main"]["priority"], s["codex-main"]["max_workers"]), (2, 2))
-        self.assertEqual((cfg["hub"]["ui_port"], cfg["hub"]["api_port"], cfg["hub"]["allowed_logins"]),
-                         (9000, 9001, ["me@example.org"]))
-        a = tomllib.loads((self.state / "repos" / "alpha.toml").read_text())
-        b = tomllib.loads((self.state / "repos" / "beta.toml").read_text())
-        self.assertEqual(a["run"], {"platforms": ["wsl"], "default": "wsl"})
-        self.assertEqual((a["gate"]["platform"], a["gate"]["commands"]["full"]), ("wsl", ["python3", "-m", "unittest"]))
-        self.assertEqual(a["worktrees"], "R:\\wts\\alpha.worktrees")
-        self.assertIs(a["land"]["push"], False)
-        self.assertTrue(b["gate"]["unknown"])
-        self.assertIs(b["land"]["push"], True)
-        self.assertEqual(repos.load_all(self.state / "repos")["alpha"]["gate"]["platform"], "wsl")
 
     def test_bad_answers_are_asked_again(self):
         out = io.StringIO()
@@ -212,24 +172,6 @@ class Questions(Base):
 
 
 class Answers(Base):
-    def test_answers_file_keys(self):
-        answers = {"repos_root": "D:\\code", "decider_device": "cpu", "ui_port": 7000, "tailscale": False,
-                   "wsl_distro": "Debian", "trackers_accept": True,
-                   "seats": [{"name": "main", "backend": "claude", "director": True, "max_workers": 2, "config_dir": "C:\\a2"},
-                             {"name": "cx", "backend": "codex", "priority": 3}],
-                   "repos": [{"name": "alpha", "repo": "D:\\code\\alpha", "platforms": ["windows"],
-                                 "gate_command": ".\\test.ps1 -All", "push": True}]}
-        code, script = self.run_wizard(answers=answers, defaults=True)
-        self.assertEqual(code, 0)
-        cfg = config.validate(self.config())
-        self.assertEqual((cfg["paths"]["repos_root"], cfg["decider"]["device"], cfg["hub"]["ui_port"],
-                          cfg["hub"]["tailscale"]), ("D:\\code", "cpu", 7000, False))
-        self.assertEqual([(s["name"], s["priority"], s["max_workers"], s["config_dir"]) for s in cfg["seats"]],
-                         [("main", 1, 2, "C:\\a2"), ("cx", 3, 0, "")])
-        prog = tomllib.loads((self.state / "repos" / "alpha.toml").read_text())
-        self.assertEqual(prog["gate"]["commands"]["full"][:5], ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        self.assertEqual(prog["run"]["platforms"], ["windows"])
-        self.assertIs(prog["land"]["push"], True)
 
     def test_a_bad_answer_names_the_key(self):
         with self.assertRaisesRegex(wizard.WizardError, "answers file, decider_device: one of auto, gpu, cpu"):
@@ -237,12 +179,6 @@ class Answers(Base):
         with self.assertRaisesRegex(wizard.WizardError, "answers file, ui_port"):
             self.run_wizard(answers={"ui_port": 0}, defaults=True)
 
-    def test_an_inconsistent_repo_is_refused_before_anything_is_written(self):
-        bad = {"repos": [{"name": "a", "repo": "R:\\a", "platforms": ["windows"], "gate_platform": "both",
-                             "gate_command": "x"}]}
-        with self.assertRaises(repos.RepoError):
-            self.run_wizard(answers=bad, defaults=True)
-        self.assertFalse(self.state.exists())
 
     def test_main_reads_an_answers_file_and_the_defaults_flag(self):
         f = Path(self.tmp.name) / "a.toml"
@@ -418,31 +354,6 @@ class Detections(Base):
         cfg = config.validate({"trackers": ts})
         self.assertIs(next(t for t in cfg["trackers"] if t["name"] == "h")["enabled"], False)
 
-    def test_gate_hint_prefers_agents_md_then_test_ps1_then_pg_ps1(self):
-        with tempfile.TemporaryDirectory() as d:
-            repo = Path(d)
-            self.assertIsNone(wizard.detect_gate_hint(str(repo)))
-            (repo / "pg.ps1").write_text("")
-            self.assertEqual(wizard.detect_gate_hint(str(repo)), ("pg.ps1", "pg.ps1"))
-            (repo / "test.ps1").write_text("")
-            self.assertEqual(wizard.detect_gate_hint(str(repo)), ("test.ps1", "test.ps1"))
-            (repo / "AGENTS.md").write_text("Run the tests with `python3 -m unittest discover -s tests -t .` before commit.\n")
-            self.assertEqual(wizard.detect_gate_hint(str(repo)),
-                             ("python3 -m unittest discover -s tests -t .", "AGENTS.md"))
-
-    def test_repo_discovery_and_kind(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root / "a" / ".git").mkdir(parents=True)
-            (root / "a.worktrees" / "x").mkdir(parents=True)
-            (root / "b").mkdir()
-            (root / "c").mkdir()
-            (root / "c" / ".git").write_text("gitdir: ../elsewhere")           # a linked worktree or submodule
-            self.assertEqual([r["name"] for r in wizard.detect_repos(str(root))], ["a", "c"])
-            self.assertEqual(wizard.detect_worktree_roots(str(root)), ["a.worktrees"])
-            (root / "a" / "App.sln").write_text("")
-            self.assertEqual(wizard.detect_repo_kind(str(root / "a")), "windows")
-            self.assertIsNone(wizard.detect_repo_kind(str(root / "b")))
 
     def test_real_detections_do_not_crash_on_this_host(self):
         d = wizard.real_detect()
@@ -490,9 +401,8 @@ class Tools(Base):
 
     def test_wizard_reports_wsl_native_paths_from_the_shared_resolver(self):
         from unittest import mock
-        native = ("/home/u/.nvm/versions/node/v22.4.1/lib/node_modules/@openai/codex/node_modules/"
-                  "@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
-        claude = "/home/u/.nvm/versions/node/v22.4.1/bin/claude"
+        native = "/opt/agents/bin/codex"
+        claude = "/opt/agents/bin/claude"
         done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\nDROVER_TOOL|claude|{claude}\n".encode(), returncode=0)
         with mock.patch.object(wizard, "is_windows", return_value=True), \
                 mock.patch.object(wizard, "_windows_exe", return_value=(None, True)), \
@@ -608,121 +518,8 @@ class CPUModels(Base):
         self.assertIn("python -m drover.decide ensure-cpu-models", self.out.getvalue())
 
 
-class RepoReruns(Base):
-    def setUp(self):
-        super().setUp()
-        self.saved = {
-            "name": "acme-app", "repo": "R:\\repos\\acme-app", "worktrees": "R:\\custom\\acme-app",
-            "default_branch": "release", "remote": "upstream",
-            "run": {"platforms": ["windows", "wsl"], "default": "wsl"},
-            "gate": {"platform": "wsl", "timeout_s": 91, "idle_s": 17, "scope_map": "acme-scopes.json",
-                     "commands": {"full": ["make", "test"], "scoped": ["make", "{project}"]}},
-            "review": {"model": "acme-review", "high_risk_model": "acme-director"},
-            "land": {"policy": "single", "push": False}}
-        self.path = self.state / "repos" / "acme-app.toml"
-        self.path.parent.mkdir(parents=True)
-        self.path.write_text(config.dumps(self.saved), encoding="utf-8")
-        examples = Path(self.tmp.name) / "examples"
-        examples.mkdir()
-        (examples / self.path.name).write_text(config.dumps({**self.saved, "default_branch": "main",
-                                                            "remote": "origin", "review": {"model": "example"}}),
-                                               encoding="utf-8")
-        patch = mock.patch.object(repos, "REPOS_DIR", examples)
-        patch.start()
-        self.addCleanup(patch.stop)
-        self.detect = fake(repos=lambda root: [{"name": "acme-app", "path": "R:\\repos\\acme-app"}])
-
-    def test_explicit_gate_command_replaces_platform_full_overrides(self):
-        commands = {"full": ["make", "test"], "scoped": ["make", "{project}"],
-                    "windows": {"full": ["python", "old.py"], "scoped": ["python", "{project}"]},
-                    "wsl": {"full": ["python3", "old.py"]}}
-        saved = {**self.saved, "gate": {**self.saved["gate"], "platform": "both", "commands": commands}}
-        for explicit in (False, True):
-            with self.subTest(explicit=explicit):
-                self.path.write_text(config.dumps(saved), encoding="utf-8")
-                answer = {"name": "acme-app"}
-                if explicit:
-                    answer["gate_command"] = "make check"
-                code = wizard.run(self.detect, out=self.out, state_dir=str(self.state), now=self.now,
-                                  defaults=True, answers={"repos": [answer]})
-                self.assertEqual(code, 0)
-                raw = tomllib.loads(self.path.read_text(encoding="utf-8"))
-                prog = repos.normalize(raw)
-                for platform in repos.PLATFORMS:
-                    expected = ["make", "check"] if explicit else commands[platform]["full"]
-                    self.assertEqual(repos.gate_commands(prog, platform)["full"], expected)
-                    self.assertEqual(repos.gate_commands(prog, platform)["scoped"],
-                                     commands[platform].get("scoped", commands["scoped"]))
-                if not explicit:
-                    self.assertEqual(raw, saved)
-
-    def test_interactive_rerun_merges_saved_repo_before_example(self):
-        def answer(prompt):
-            if prompt.startswith("Repos to set up"):
-                return "all"
-            if prompt.startswith("acme-app: repo path"):
-                return "R:\\repos\\acme-lib"
-            if prompt.startswith("acme-app: push landed work"):
-                return "y"
-            return ""
-
-        expected = {**self.saved, "repo": "R:\\repos\\acme-lib", "land": {"policy": "single", "push": True}}
-        for has_example in (True, False):
-            with self.subTest(has_example=has_example):
-                if not has_example:
-                    (repos.REPOS_DIR / self.path.name).unlink()
-                self.path.write_text(config.dumps(self.saved), encoding="utf-8")
-                code = wizard.run(self.detect, answer, self.out, state_dir=str(self.state), now=self.now)
-                self.assertEqual(code, 0)
-                self.assertEqual(tomllib.loads(self.path.read_text(encoding="utf-8")), expected)
-
-    def test_answers_rerun_preserves_omitted_repo_answers(self):
-        answers_path = Path(self.tmp.name) / "answers.toml"
-        answers_path.write_text(config.dumps({"repos": [{"name": "acme-app", "push": True}]}), encoding="utf-8")
-        code = wizard.main(["--defaults", "--answers", str(answers_path), "--state-dir", str(self.state)],
-                           detect=self.detect, out=self.out)
-        self.assertEqual(code, 0)
-        expected = {**self.saved, "land": {"policy": "single", "push": True}}
-        self.assertEqual(tomllib.loads(self.path.read_text(encoding="utf-8")), expected)
-
-    def test_answers_rerun_merges_saved_repo_and_keeps_a_valid_default(self):
-        answers_path = Path(self.tmp.name) / "answers.toml"
-        for plats, default in [(["windows", "wsl"], "wsl"), (["windows"], "windows")]:
-            with self.subTest(platforms=plats):
-                self.path.write_text(config.dumps(self.saved), encoding="utf-8")
-                answers_path.write_text(config.dumps({"repos": [{"name": "acme-app", "repo": "R:\\repos\\acme-lib",
-                    "platforms": plats, "gate_platform": "windows", "gate_command": "make check", "push": True}]}),
-                    encoding="utf-8")
-                code = wizard.main(["--defaults", "--answers", str(answers_path), "--state-dir", str(self.state)],
-                                   detect=self.detect, out=self.out)
-                self.assertEqual(code, 0)
-                expected = {**self.saved, "repo": "R:\\repos\\acme-lib",
-                            "run": {"platforms": plats, "default": default},
-                            "gate": {**self.saved["gate"], "platform": "windows", "unknown": False,
-                                     "commands": {"full": ["make", "check"], "scoped": ["make", "{project}"]}},
-                            "land": {"policy": "single", "push": True}}
-                self.assertEqual(tomllib.loads(self.path.read_text(encoding="utf-8")), expected)
-
-
 class ExampleRepos(Base):
-    def test_a_repo_named_like_a_shipped_example_keeps_its_gate_and_scope_map(self):
-        answers = {"repos": [{"name": "acme-lib", "repo": "R:\\repos\\acme-lib", "platforms": ["windows"]}]}
-        self.run_wizard(defaults=True, answers=answers)
-        mine = tomllib.loads((self.state / "repos" / "acme-lib.toml").read_text())
-        ex = tomllib.loads((Path(repos.REPOS_DIR) / "acme-lib.toml").read_text())
-        self.assertEqual(mine["gate"].get("scope_map"), ex["gate"].get("scope_map"))
-        self.assertEqual(mine["gate"]["commands"], ex["gate"]["commands"])
-        self.assertEqual(mine.get("review"), ex.get("review"))
-        self.assertEqual(mine["repo"], "R:\\repos\\acme-lib")
-        self.assertEqual(mine["run"]["platforms"], ["windows"])
-        self.assertIs(mine["land"]["push"], False)
 
-    def test_an_explicit_gate_command_means_no_example(self):
-        answers = {"repos": [{"name": "acme-lib", "repo": "R:\\m", "gate_command": "make test", "platforms": ["wsl"]}]}
-        self.run_wizard(defaults=True, answers=answers)
-        mine = tomllib.loads((self.state / "repos" / "acme-lib.toml").read_text())
-        self.assertNotIn("scope_map", mine["gate"])
-        self.assertEqual(mine["gate"]["commands"]["full"], ["make", "test"])
 
     def test_the_note_about_unselected_examples_is_printed(self):
         self.run_wizard(defaults=True, answers={"repos": [{"name": "zzz", "repo": "R:\\z"}]})

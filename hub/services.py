@@ -15,27 +15,12 @@ import urllib.request
 from pathlib import Path
 
 from drover import config, importer, tuner
-from drover.tool_discovery import DISCOVERY_SCRIPT, parse_discovery_result
+from drover.tool_discovery import DISCOVERY_SCRIPT, TOOLS, parse_discovery_result, valid_tool_path
 from drover.ledger import ops
 
 log = logging.getLogger("hub.services")
 
-TOOLS = ("claude", "codex")
-ABS_POSIX = re.compile(r"^/[A-Za-z0-9._+@:=,/-]+$")
 DAY_S = 86400
-
-
-def valid_tool_path(line: str, tool: str) -> str | None:
-    """An absolute POSIX path named `tool`, with no traversal or odd characters; else None."""
-    line = line.strip()
-    if not ABS_POSIX.match(line) or "//" in line:
-        return None
-    if line.startswith("/mnt/"):  # a Windows drive: not a Linux install, and not ours to trust
-        return None
-    parts = line.split("/")[1:]
-    if any(p in ("", ".", "..") for p in parts) or parts[-1] != tool:
-        return None
-    return line
 
 
 def parse_discovery(output: str) -> dict:
@@ -118,6 +103,7 @@ class Services:
 
     def _loop(self):
         try:
+            self.discover_native_tools()
             self.resume_garden()
             self.discover_tools()          # at hub start
             self._wsl_was_up = self.wsl_up()
@@ -136,6 +122,18 @@ class Services:
         self.check_tuner()
 
     # -- WSL tool discovery -----------------------------------------------
+    def discover_native_tools(self):
+        """Report required native action tools at startup without changing the machine."""
+        paths = placement.Windows().executables(("pwsh",))
+        if not paths:
+            return paths
+        missing = [tool for tool, path in paths.items() if path is None]
+        self.store.add_event("windows.tools", "hub", {"found": {k: v for k, v in paths.items() if v},
+                                                      "missing": missing})
+        if missing:
+            log.error("Required Windows action tools missing from PATH: %s", ", ".join(missing))
+        return paths
+
     def distro(self):
         return placement.distro(self.settings.distro, self.store.get_settings())
 
@@ -149,7 +147,7 @@ class Services:
         """Run the fixed discovery command, validate, store `wsl_bin_claude` / `wsl_bin_codex`. Returns what was
         stored. A missing or invalid tool keeps its previous setting."""
         self._tried = self.clock()
-        rc, out = self.wsl(["-d", self.distro(), "--exec", "bash", "-lc", DISCOVERY_SCRIPT],
+        rc, out = self.wsl(placement.WSL(self.distro()).command(["bash", "-lc", DISCOVERY_SCRIPT])[1:],
                            self.settings.wsl_timeout_s)
         found, reasons = parse_discovery_result(out) if rc == 0 else ({}, {})
         have = self.store.get_settings()
@@ -297,4 +295,3 @@ class Services:
         for name, gb in self.disks().items():
             out.append({"name": name, "free_gb": None if gb is None else round(gb, 1)})
         return out
-

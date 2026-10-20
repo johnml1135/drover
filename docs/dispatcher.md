@@ -21,7 +21,7 @@ Default db: `$DROVER_LEDGER`, else `<state dir>\ledger.db` on Windows (the state
 
 The dispatcher runs as a thread inside the Windows hub (`hub/dispatch.py`, `DirectPort`, one ledger connection per
 thread) and starts every worker through `drover.runner --detach`: Windows placement runs the hub's python directly,
-WSL placement goes through `wsl.exe --exec` (`runner.wsl_argv`, `--cd` to this directory so `drover` imports).
+WSL placement goes through `wsl.exe --exec` (`RunnerLauncher.runner_argv`, `--cd` to this directory so `drover` imports).
 Every dispatcher requires a `Pipeline`; workers finish into checks, then review, before the merge queue. The unused
 `--no-gate-dry-run` CLI flag and synchronous `gate_fn` mode have been removed. To observe recovery without admitting
 work, keep `dispatch_enabled` false; paused dispatch still reaps and adopts runs.
@@ -33,13 +33,20 @@ The router always receives seat load, repo platforms, measured seat headroom and
 allowance accounting both use `drover.usage`; legacy allowance-file admission is no longer a dispatcher path.
 
 Placement rules:
+
 - Codex always runs in WSL.
-- `platform: linux` (task field, `platform:linux` tag, or that text in title/goal) means WSL.
-- dotnet/msbuild (owner rule, 2026-10-17): Windows with a Claude seat, or WSL with a Claude or Codex seat. Codex never
-  takes .NET on Windows.
-- The repo's `[run] platforms` still apply: a WSL-only repo puts .NET on WSL; a Windows-only repo keeps Windows + Claude.
-- With no such seat the task goes to the owner, and the reason names the rule.
-- Claude otherwise runs on Windows.
+- A task's explicit platform constrains placement.
+- The repo's `[run].platforms` lists allowed platforms; `[run].default` supplies the default.
+- Tasks with no eligible seat or platform go to the owner with a reason naming the constraint.
+
+Repo rules come from `drover.toml` at the task or CI commit, followed by the private machine file's
+overrides. Only `drover.repos` loads these keys. `[scripts]` maps action names to relative PowerShell paths.
+Each runs as `pwsh -NoLogo -NoProfile -NonInteractive -File <script>` with the worktree as cwd;
+no command is inferred or rewritten for a platform. The script's exit code and output tail form the result.
+`DROVER_CI_KIND` distinguishes `checks`, `full`, and `docs`; `DROVER_CHANGED_FILES` is a JSON path array.
+Repo scripts own scoping and tool environment. `[run.env]` provides machine environment values, while
+`[run].sandbox_writable_roots` names additional writable paths below `/tmp`, created with mode 0777.
+PowerShell 7 must already be installed on every platform selected for actions.
 
 Run files live in `<state dir>\runs\<id>\`.
 

@@ -18,7 +18,7 @@ class DeleteRegressions(unittest.TestCase):
         self.conn = connect(Path(self.tmp.name) / 'ledger.db')
         self.addCleanup(self.conn.close)
         self.pipe = pipeline.Pipeline(DirectPort(self.conn), repos_map={
-            'acme-lib': {'name': 'acme-lib', 'gate': {'unknown': True}}}, runs_dir=self.tmp.name)
+            'acme-lib': {'name': 'acme-lib', 'repo': '/nonexistent/acme-lib'}}, runs_dir=self.tmp.name)
 
     def task(self, title, **kw):
         task = ops.create_task(self.conn, title, 'acme-lib', **kw)
@@ -45,10 +45,10 @@ class DeleteRegressions(unittest.TestCase):
         self.assertEqual([q['id'] for q in self.inbox_questions()], [str(qid)])
         self.assertEqual(ops.get_question(self.conn, private)['status'], 'open')
         self.assertEqual(ops.get_setting(self.conn, '_gate_question_acme-lib'), str(qid))
-        ops.answer_question(self.conn, qid, text='python3 -m unittest')
+        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
         self.pipe.sync_gates()
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
-        self.assertEqual(self.pipe._owner_gate_cmd('acme-lib'), 'python3 -m unittest')
+        self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
         self.assertEqual(self.inbox_questions(), [])
 
     def test_shared_gate_visibility_tracks_remaining_tasks_in_same_repo(self):
@@ -86,15 +86,15 @@ class DeleteRegressions(unittest.TestCase):
         self.assertEqual(ops.get_question(self.conn, qid)['target_id'], target)
         with self.assertRaises(ops.NotFound):
             ops.get_question(self.conn, private)
-        ops.answer_question(self.conn, qid, text='python3 -m unittest')
+        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
         self.pipe.sync_gates()
-        self.assertEqual(self.pipe._owner_gate_cmd('acme-lib'), 'python3 -m unittest')
+        self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
         self.assertEqual(ops.get_task(self.conn, target)['status'], 'ready')
 
     def test_answered_gate_keeps_owner_provenance_and_command(self):
         source, target = self.task('Source'), self.task('Target')
         qid = self.gate_question(source)
-        ops.answer_question(self.conn, qid, text='python3 -m unittest')
+        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
         self.pipe.sync_gates()
         command = ops.get_setting(self.conn, 'gate_cmd_acme-lib')
         ops.archive_task(self.conn, target)
@@ -102,12 +102,12 @@ class DeleteRegressions(unittest.TestCase):
         self.assertEqual(self.pipe.sync_gates(), [])
         self.assertEqual(ops.get_question(self.conn, qid)['target_id'], target)
         self.assertEqual(ops.get_setting(self.conn, 'gate_cmd_acme-lib'), command)
-        self.assertEqual(self.pipe._owner_gate_cmd('acme-lib'), 'python3 -m unittest')
+        self.assertFalse(self.pipe.repo({'repo': 'acme-lib'})['gate']['unknown'])
 
     def test_last_task_clears_gate_references_before_next_task(self):
         source = self.task('Source')
         qid = self.gate_question(source)
-        ops.answer_question(self.conn, qid, text='python3 -m unittest')
+        ops.answer_question(self.conn, qid, text='scripts/drover/test.ps1')
         self.pipe.sync_gates()
         ops.delete_task(self.conn, source, confirm=True)
         self.assertIsNone(ops.get_setting(self.conn, '_gate_question_acme-lib'))

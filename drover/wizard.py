@@ -34,10 +34,6 @@ BENCH_CALLS = 10
 ANSWER_KEYS = ("state_dir", "repos_root", "worktrees", "ollama_models", "decider_primary", "decider_shadow",
                "decider_device", "seats", "trackers_accept", "trackers", "wsl_distro", "wsl_user", "ui_port",
                "api_port", "tailscale", "allowed_login", "auth_mode", "repos", "commercial_use", "state_git", "private_remote", "confirm")
-GATE_RE = re.compile(r"`([^`\n]*(?:unittest|pytest|dotnet test|npm (?:run )?test|test\.ps1|pg\.ps1|cargo test|go test)"
-                     r"[^`\n]*)`")
-
-
 class WizardError(Exception):
     pass
 
@@ -132,9 +128,9 @@ def detect_vhdx_drives():
         return out
     from . import resources
     host = resources.vhdx_dir()
-    m = re.match(r"^/mnt/([a-z])", host or "")
-    if m and os.environ.get("WSL_DISTRO_NAME"):
-        out[os.environ["WSL_DISTRO_NAME"]] = m.group(1).upper() + ":"
+    letter = placement.drive(host or "")
+    if letter and os.environ.get("WSL_DISTRO_NAME"):
+        out[os.environ["WSL_DISTRO_NAME"]] = letter + ":"
     return out
 
 
@@ -200,7 +196,7 @@ def bench_decider(device, url=None, models=None):
         config.use(previous)
 
 
-CMD_EXE = "/mnt/c/Windows/System32/cmd.exe"
+CMD_EXE = placement.windows_system_path("cmd.exe")
 
 
 def _windows_exe(tool):
@@ -249,7 +245,7 @@ def detect_config_dirs():
 
 def _host_ram_wsl():
     """The Windows host's RAM from inside WSL (MemTotal there is only the VM's share), or None."""
-    r = _run(["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "-NoProfile", "-Command",
+    r = _run([placement.windows_system_path("WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-Command",
               "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"], 30)
     try:
         return int(placement.decode_output(r.stdout).strip()) / 1024 ** 3 if r and r.returncode == 0 else None
@@ -258,7 +254,7 @@ def _host_ram_wsl():
 
 
 def detect_ram_gb():
-    if not is_windows() and Path("/mnt/c/Windows/System32").is_dir():
+    if not is_windows() and Path(placement.windows_system_path("")).is_dir():
         host = _host_ram_wsl()
         if host:
             return host
@@ -323,31 +319,6 @@ def detect_tailscale():
     return {"up": False, "login": None}
 
 
-def detect_gate_hint(repo):
-    """(command line, where it came from) suggested for a repo, or None: AGENTS.md first, then test.ps1, pg.ps1."""
-    base = Path(config.native(repo))
-    try:
-        m = GATE_RE.search((base / "AGENTS.md").read_text(encoding="utf-8", errors="replace"))
-        if m:
-            return m.group(1).strip(), "AGENTS.md"
-    except OSError:
-        pass
-    for script in ("test.ps1", "pg.ps1"):
-        if (base / script).is_file():
-            return script, script
-    return None
-
-
-def detect_repo_kind(repo):
-    """'windows' when the repo holds .NET or PowerShell build files, else None (no opinion)."""
-    base = Path(config.native(repo))
-    try:
-        names = {p.name.lower() for p in base.iterdir()}
-    except OSError:
-        return None
-    return "windows" if any(n.endswith((".sln", ".csproj", ".ps1")) for n in names) else None
-
-
 def real_detect():
     from . import decide
     return {"windows": is_windows, "home": Path.home, "drives": detect_drives, "free_gb": _free_gb,
@@ -356,8 +327,7 @@ def real_detect():
             "bench": bench_decider, "ensure_cpu_models": decide.ensure_cpu_models, "tools": detect_tools,
             "config_dirs": detect_config_dirs,
             "ram_gb": detect_ram_gb, "cores": lambda: os.cpu_count() or 1, "wslconfig_cap_gb": detect_wslconfig_cap,
-            "distros": detect_distros, "tailscale": detect_tailscale, "gate_hint": detect_gate_hint,
-            "repo_kind": detect_repo_kind, "exists": lambda p: Path(config.native(p)).exists()}
+            "distros": detect_distros, "tailscale": detect_tailscale, "exists": lambda p: Path(config.native(p)).exists()}
 
 
 # ---- asking ---------------------------------------------------------------------------------------------------
@@ -759,49 +729,26 @@ def example_for(name):
     for path in sorted(repos.REPOS_DIR.glob("*.toml")):
         if path.stem.lower() == str(name).lower():
             try:
-                with open(path, "rb") as f:
-                    return tomllib.load(f)
+                return repos.read_machine(path)
             except (OSError, tomllib.TOMLDecodeError):
                 return None
     return None
 
 
 def repo_toml(p, worktrees_root):
-    """Merge repo answers into saved settings, or a shipped example for a new repo."""
-    plats = p["platforms"]
+    """Write machine locations and environment; repo behavior stays versioned in drover.toml."""
+    base = p.get("base") or {}
     repo = p["repo"]
     trees = (worktrees_root.rstrip("\\/") + ("\\" if "\\" in worktrees_root else "/") + p["name"] + ".worktrees"
              if worktrees_root else repo.rstrip("\\/") + ".worktrees")
-    raw = {"name": p["name"], "repo": repo, "worktrees": trees, "default_branch": "main", "remote": "origin",
-           "run": {"platforms": plats, "default": "windows" if "windows" in plats else plats[0]},
-           "gate": {"platform": p["gate_platform"]}, "land": {"policy": "batch", "push": p["push"]}}
-    if p.get("base"):
-        base = p["base"]
-        updates = {k: raw[k] for k in ("name", "repo", "run", "gate")}
-        updates["land"] = {"push": p["push"]}
-        if "landing" in base:
-            updates["landing"] = {"push": p["push"]}
-        if p.get("existing"):
-            default = base.get("run", {}).get("default")
-            if default in plats:
-                updates["run"]["default"] = default
-        else:
-            updates["worktrees"] = trees
-        raw = config._merge(config._merge(raw, base), updates)
-    if p["gate_command"]:
-        if not p.get("base"):
-            raw["gate"].update(timeout_s=1800, idle_s=600)
-        raw["gate"]["commands"] = {**raw["gate"].get("commands", {}),
-                                   "full": repos.gate_argv(p["gate_command"])}
-        # An explicit shared command must take effect on every platform.
-        for platform in repos.PLATFORMS:
-            raw["gate"]["commands"].get(platform, {}).pop("full", None)
-        if p.get("base"):
-            raw["gate"]["unknown"] = False
-    elif p["gate_command"] is not None:
-        raw["gate"]["unknown"] = True
-        raw["gate"]["hint"] = "ask the owner: the wizard found no AGENTS.md, test.ps1 or pg.ps1 hint"
-    repos.normalize(raw)                 # validates before anything is written
+    canonical = repos.normalize({**base, "name": p["name"], "repo": repo})
+    raw = {"name": p["name"], "repo": repo, "worktrees": base.get("worktrees", trees),
+           "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
+    run = {k: v for k, v in base.get("run", {}).items() if k in ("env", "sandbox_writable_roots")}
+    if run:
+        raw["run"] = run
+    raw["landing"] = {"push": p.get("push", False)}
+    repos.normalize(raw)
     return config.dumps(raw)
 
 
@@ -809,14 +756,13 @@ def _saved_repo(state, name):
     state = Path(config.native(state))
     path = _inside(state, state / "repos" / f"{name}.toml")
     try:
-        with open(path, "rb") as f:
-            return tomllib.load(f)
+        return repos.read_machine(path)
     except FileNotFoundError:
         return None
 
 
 def q_repos(a, d, found_repos, worktrees, state):
-    a.say("\n9. Repos: the repos Drover works on (gate command, platforms, push policy).")
+    a.say("\n9. Repos: machine paths and landing policy; repo actions live in drover.toml.")
     if "repos" in a.answers:
         out = [_repo_answer(x, state) for x in a.answers["repos"]]
         for p in out:
@@ -838,35 +784,11 @@ def q_repos(a, d, found_repos, worktrees, state):
         existing = _saved_repo(state, name)
         base = existing if existing is not None else example_for(name)
         repo = a.ask(f"repo_{k}_repo", f"{name}: repo path", (existing or {}).get("repo", r["path"]))
-        hint = d["gate_hint"](repo)
-        if existing is not None:
-            a.say(f"   {name}: keeping saved settings as the defaults")
-            cmd = a.ask(f"repo_{k}_gate", f"{name}: gate command (empty = keep saved; or 'ask me later')", "") or None
-        elif base:
-            a.say(f"   {name}: starting from the shipped example (its gate commands, scope map and review models are kept)")
-            cmd = None
-        else:
-            if hint:
-                a.say(f"   gate suggested from {hint[1]}: {hint[0]}")
-            cmd = a.ask(f"repo_{k}_gate", f"{name}: gate command (or 'ask me later')", hint[0] if hint else "ask me later")
-        while True:
-            plats = a.ask(f"repo_{k}_platforms", f"{name}: platforms it may run on (windows,wsl)",
-                          ",".join((base or {}).get("run", {}).get("platforms") or []) or d["repo_kind"](repo) or "windows,wsl",
-                          _platforms)
-            gate_plat = a.ask(f"repo_{k}_gate_platform", f"{name}: gate platform (windows|wsl|both)",
-                              (base or {}).get("gate", {}).get("platform") or ("windows" if "windows" in plats else plats[0]),
-                              one_of(*repos.GATE_PLATFORMS))
-            push = a.ask(f"repo_{k}_push", f"{name}: push landed work to the remote?",
-                         bool((base or {}).get("landing", {}).get("push", (base or {}).get("land", {}).get("push", False))), to_bool)
-            p = {"name": name, "repo": repo, "platforms": plats, "gate_command": _gate(cmd) if cmd is not None else None,
-                 "gate_platform": gate_plat, "push": push, "base": base, "existing": existing is not None}
-            try:
-                repo_toml(p, worktrees)
-                break
-            except repos.RepoError as e:
-                if a.use_defaults or f"repo_{k}_platforms" in a.answers:
-                    raise WizardError(str(e)) from e
-                a.say(f"   {e}")
+        a.say(f"   {name}: actions and run platforms come from the repo's versioned drover.toml")
+        push = a.ask(f"repo_{k}_push", f"{name}: push landed work to the remote?",
+                     bool((base or {}).get("landing", {}).get("push", False)), to_bool)
+        p = {"name": name, "repo": repo, "push": push, "base": base, "existing": existing is not None}
+        repo_toml(p, worktrees)
         out.append(p)
     _examples_note(a, out)
     return out
@@ -878,32 +800,14 @@ def _examples_note(a, chosen):
               "Copy an example there, or re-run init, to add repos.")
 
 
-def _platforms(v):
-    plats = to_list(v)
-    bad = [x for x in plats if x not in repos.PLATFORMS]
-    if bad or not plats:
-        raise ValueError("platforms drawn from windows, wsl")
-    return plats
-
-
-def _gate(cmd):
-    cmd = str(cmd or "").strip()
-    return "" if cmd.lower() in ("", "ask me later", "later", "unknown") else cmd
-
-
 def _repo_answer(x, state):
     """Merge answers with the saved repo, using examples only for new repos."""
     existing = _saved_repo(state, x["name"])
     base = existing
-    if base is None and not x.get("gate_command") and x.get("from_example", True):
+    if base is None and x.get("from_example", True):
         base = example_for(x["name"])
-    plats = _platforms(x.get("platforms") or (base or {}).get("run", {}).get("platforms") or ["windows", "wsl"])
-    cmd = _gate(x["gate_command"]) if "gate_command" in x else None if base else ""
     return {"name": str(x["name"]), "repo": str(x.get("repo", (base or {}).get("repo", ""))),
-            "platforms": plats, "gate_command": cmd,
-            "gate_platform": x.get("gate_platform") or (base or {}).get("gate", {}).get("platform")
-            or ("windows" if "windows" in plats else plats[0]),
-            "push": bool(x.get("push", (base or {}).get("landing", {}).get("push", (base or {}).get("land", {}).get("push", False)))),
+            "push": bool(x.get("push", (base or {}).get("landing", {}).get("push", False))),
             "base": base, "existing": existing is not None}
 
 

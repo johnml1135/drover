@@ -7,13 +7,6 @@ PINNED_PATH = Path(__file__).with_name("pinned.md")
 BUDGET_TOKENS = {"S": 6000, "M": 15000, "L": 15000}
 EXCERPT_LINES = 60
 NOTE_MAX = 300
-DOTNET_EXTENSIONS = (".cs", ".csproj", ".sln", ".fs", ".fsproj", ".vb", ".vbproj", ".props", ".targets")
-DOTNET_GUIDANCE = (
-    ".NET worker guidance: Network access is unavailable in the sandbox. Restore can use only packages already "
-    "present in the read-only cache at `~/.nuget/packages`; leave `NUGET_PACKAGES` pointing there. Do not try "
-    "network or package-source workarounds. A package that is missing from the cache or a cache read is denied "
-    "is a blocker: report the package or error, then ask the owner to arrange an approved readable local cache."
-)
 ACTION_RECORD = (
     "## Finish\n"
     "End your final message with exactly one JSON object and nothing after it:\n"
@@ -71,20 +64,8 @@ def pinned_version(path=None):
     return hashlib.sha256(pinned_text(path).encode("utf-8")).hexdigest()[:12]
 
 
-def _is_dotnet_task(t):
-    tags = t.get("tags") or []
-    if isinstance(tags, str):
-        tags = [tags]
-    stack_tags = " ".join(str(v) for v in (t.get("stack"), *tags)).lower()
-    description = " ".join(str(t.get(k) or "") for k in ("title", "description", "goal")).lower()
-    if any(term in stack_tags or term in description for term in ("dotnet", "msbuild", ".net")):
-        return True
-    return any(str(path).lower().endswith(DOTNET_EXTENSIONS) for path in t.get("scope_files") or [])
-
-
 def _task_block(t):
     acc = "\n".join(f"- {a}" for a in t.get("acceptance") or []) or "- (none given)"
-    guidance = f"\n\n{DOTNET_GUIDANCE}" if _is_dotnet_task(t) else ""
     return (f"## Task {t['id']}: {t['title']}\n"
             f"Type: {t.get('kind', 'implementation')}\n"
             f"Access: {'write (own worktree; finish ready_to_commit)' if t.get('write', True) else 'read-only (no edits or commits; finish done)'}\n"
@@ -92,7 +73,7 @@ def _task_block(t):
             f"Read directories: {', '.join(t.get('read_dirs') or []) or '(resolved at launch)'}\n"
             f"size {t.get('size', 'M')}, risk {t.get('risk', 'low')}, priority {t.get('priority', 'P2')}, "
             f"repo {t.get('repo') or '-'}, branch {t.get('branch') or '-'}\n\n"
-            f"Description: {t.get('description') or t.get('goal') or t['title']}{guidance}\n\nAcceptance:\n{acc}")
+            f"Description: {t.get('description') or t.get('goal') or t['title']}\n\nAcceptance:\n{acc}")
 
 
 def _scope_block(scope):
@@ -117,7 +98,7 @@ def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pin
     notes_text = "\n".join(f"- {n}" for n in notes or [])
 
     def build(excerpt, notes_text):
-        parts = [_task_block(task), _scope_block(scope),
+        parts = [_task_block(task), _scope_block(scope), _section("Repo instructions", task.get("repo_brief", "")),
                  _section("Last gate failure (fix this)", f"```\n{excerpt}\n```" if excerpt else ""),
                  _section("Handoff from the previous worker", handoff or ""),
                  _section("Owner notes", notes_text), READ_ONLY_RECORD if task.get("write") is False else ACTION_RECORD]

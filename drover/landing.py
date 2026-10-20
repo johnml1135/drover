@@ -8,6 +8,7 @@ the rest regated; ambiguous failures go to one `batch_culprit` decision; below t
 """
 import argparse
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -176,7 +177,8 @@ def build_tip(repo, worktree, base_sha, tasks):
     """Replay each task's commits onto base_sha in `worktree`. -> (tip sha, applied tasks with last_sha, conflicted ids)."""
     worktree = Path(worktree)
     if not (worktree / '.git').exists():
-        placement.add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, git=git, error=gate.GateError)
+        from .pipeline import add_worktree
+        add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, run=git, error=gate.GateError)
     else:
         pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
         if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():
@@ -211,18 +213,22 @@ def make_gate(command, base_ref, out_dir, *, priority='P1', db_path=None, docs_g
 
     def run(worktree, tip, tasks):
         def go(_slot=None):
+            child_kw = dict(kw)
+            child_kw["env"] = {**os.environ, **kw.get("env", {}),
+                               "DROVER_CHANGED_FILES": json.dumps(gate.changed_paths(worktree, base_ref, tip))}
             out = out_dir / f'gate-{tip[:12]}-{len(tasks)}.json'
             if docs_globs and gate.changed_docs_only(worktree, base_ref, tip, docs_globs):
+                child_kw["env"]["DROVER_CI_KIND"] = "docs"
                 r = None
                 for i, cmd in enumerate(gate.docs_commands(base_ref, tip, docs_extra)):
                     r = gate.run_gate(worktree, out.with_name(f'{out.stem}.docs{i}.json'), cmd, base=base_ref,
-                                      priority=priority, **kw)
+                                      priority=priority, **child_kw)
                     if not r['passed']:
                         break
                 r['kind'] = 'docs'
                 out.write_text(json.dumps(r, indent=2) + '\n')
                 return r
-            return gate.run_gate(worktree, out, command, base=base_ref, priority=priority, **kw)
+            return gate.run_gate(worktree, out, command, base=base_ref, priority=priority, **child_kw)
         if db_path:
             return gate.run_leased(db_path, 'batch:' + ','.join(t['id'] for t in tasks), priority, go)
         return go()
@@ -240,6 +246,12 @@ def _recorder(conn):
     return record
 
 
+def _path_matches(file, changed):
+    file, changed = str(file).replace('\\', '/'), str(changed).replace('\\', '/')
+    changed = changed[2:] if changed.startswith('./') else changed
+    return file == changed or ((file.startswith('/') or placement.drive(file)) and file.endswith('/' + changed))
+
+
 def owners_of(failures, tasks):
     """Ids of the tasks whose changed files hold a failing file. Matching is path-component aware, and when an
     absolute path ends with several changed paths only the longest (most specific) one counts."""
@@ -247,7 +259,7 @@ def owners_of(failures, tasks):
     for f in failures:
         if not f.get('file'):
             continue
-        hits = [(len(gate._norm(p)), t['id']) for t in tasks for p in t['files'] if gate.path_matches(f['file'], p)]
+        hits = [(len(str(p).replace('\\', '/')), t['id']) for t in tasks for p in t['files'] if _path_matches(f['file'], p)]
         if hits:
             top = max(n for n, _ in hits)
             owners |= {tid for n, tid in hits if n == top}
@@ -475,7 +487,7 @@ def _failures(receipt, tasks):
         text = Path(config.native(receipt['log'])).read_text(errors='replace')
     except OSError:
         text = '\n'.join(receipt.get('log_tail') or [])
-    return gate.parse_failures(text, [p for t in tasks for p in t['files']])
+    return [{'test': 'CI command', 'error': '\n'.join(text.splitlines()[-40:]), 'file': None, 'in_diff': False}]
 
 
 def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None):

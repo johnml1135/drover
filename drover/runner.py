@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from . import placement
-from .placement import IS_WINDOWS, KILL_AFTER_S, ScanError, find_runners
+from .placement import IS_WINDOWS, KILL_AFTER_S, ScanError
 
 POLL_S = 0.2
 WATCH_GLOBS = ("*.step*.log",)       # a gate run's per-step logs, which gatejob fills while out.log stays quiet
@@ -40,6 +40,86 @@ ARTIFACT_URI_RE = re.compile(r"hub:tasks/[A-Za-z0-9][A-Za-z0-9._-]*/result\.md")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 KIND_MAX, DETAIL_MAX = 40, 2000
 DETACH_WAIT_S = 5
+
+
+PYTHON_RE = re.compile(r"(?i)python(w)?(\d+(\.\d+)?)?(\.exe)?")
+
+
+def parse_runner_argv(argv):
+    """Recognize only a direct Python runner invocation; worker arguments cannot spoof the marker."""
+    argv = list(argv)
+    if len(argv) < 4 or not PYTHON_RE.fullmatch(re.split(r"[\\/]", argv[0])[-1]) or argv[1:3] != ["-m", "drover.runner"]:
+        return None
+    rest = argv[3:]
+    if "--" in rest:
+        rest = rest[:rest.index("--")]
+    if rest and rest[0] in ("stop", "find"):
+        return None
+    for j, a in enumerate(rest):
+        if a == "--run-id" and j + 1 < len(rest) and RUN_ID_RE.fullmatch(rest[j + 1]):
+            return rest[j + 1]
+        if a.startswith("--run-id=") and RUN_ID_RE.fullmatch(a[9:]):
+            return a[9:]
+    return None
+
+
+def _runner_runs_dir(argv):
+    """The runs directory from a valid runner command line, else None."""
+    argv = list(argv)
+    if parse_runner_argv(argv) is None:
+        return None
+    rest = argv[3:]
+    if "--" in rest:
+        rest = rest[:rest.index("--")]
+    for j, arg in enumerate(rest):
+        if arg == "--runs-dir" and j + 1 < len(rest):
+            return rest[j + 1]
+        if arg.startswith("--runs-dir="):
+            return arg[len("--runs-dir="):]
+    return None
+
+
+def _same_path(left, right):
+    try:
+        return os.path.normcase(os.path.abspath(os.path.expanduser(str(left)))) == \
+            os.path.normcase(os.path.abspath(os.path.expanduser(str(right))))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def find_runners(run_id=None, cmdlines=None, runs_dir=None):
+    """One live leaf runner per run id, optionally restricted to an owner directory.
+
+    Failed discovery raises ScanError; it never means there are no runners.
+    """
+    if cmdlines is None:
+        cmdlines = placement.process_cmdlines()
+    by_id = {}
+    for row in cmdlines:
+        pid, argv, ppid = (tuple(row) + (None,))[:3]
+        rid = parse_runner_argv(argv)
+        if rid and (run_id is None or rid == run_id) and \
+                (runs_dir is None or _same_path(_runner_runs_dir(argv), runs_dir)):
+            by_id.setdefault(rid, []).append((pid, ppid))
+    found = []
+    for rid, procs in by_id.items():
+        parents = {pp for _, pp in procs}
+        leaves = [p for p, _ in procs if p not in parents] or [p for p, _ in procs]
+        found.append({"pid": min(leaves), "run_id": rid})
+    return sorted(found, key=lambda r: r["pid"])
+
+
+def scratch_path(value):
+    root, path = Path("/tmp/drover-scratch"), Path(value)
+    parent = path.parent
+    direct = parent == root
+    task_scratch = Path(os.environ.get("TMPDIR", ""))
+    nested = (not direct and parent == task_scratch and parent.parent == root and parent.is_dir()
+              and not parent.is_symlink() and parent.resolve() == parent)
+    if (IS_WINDOWS or (not direct and not nested) or root.resolve() != root
+            or path.is_symlink() or path.resolve().parent != parent):
+        raise ValueError("scratch must be under /tmp/drover-scratch/ or its assigned TMPDIR")
+    return path
 
 
 def now_iso():
@@ -230,7 +310,7 @@ def request_stop(runs_dir, run_id, reason="requested", nonce=None):
 
 def _cleanup_scratch(path):
     try:
-        shutil.rmtree(placement.scratch_path(path))
+        shutil.rmtree(scratch_path(path))
     except (OSError, ValueError):
         pass
 
@@ -248,7 +328,7 @@ def _watched_sizes(d, globs):
 
 
 def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=None, kill_after=KILL_AFTER_S,
-              poll_s=POLL_S, nonce=None, scratch_dir=None, watch_globs=WATCH_GLOBS):
+              poll_s=POLL_S, nonce=None, scratch_dir=None, watch_globs=WATCH_GLOBS, run_config=None):
     """Run the worker to its end. Returns the final status dict. Growth of out.log or of any file in the run
     directory matching `watch_globs` (a gate's per-step logs) counts as activity for the idle watchdog."""
     d = run_dir(runs_dir, run_id)
@@ -272,7 +352,7 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
     try:
         if scratch_dir:
             try:
-                path = placement.scratch_path(scratch_dir)
+                path = scratch_path(scratch_dir)
                 path.parent.mkdir(mode=0o700, exist_ok=True)
                 path.mkdir(mode=0o700)
                 scratch = path
@@ -281,7 +361,7 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
                 st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
                 return st.d
         return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason,
-                          scratch, watch_globs)
+                          scratch, watch_globs, run_config)
     finally:
         if scratch is not None:
             _cleanup_scratch(scratch)
@@ -289,16 +369,30 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
             signal.signal(sig, h)
 
 
+def prepare_writable_roots(roots):
+    """Pre-create explicitly configured sandbox roots under /tmp, refusing traversal and symlinks."""
+    for value in placement.sandbox_roots(roots):
+        path = Path(value)
+        if not path.is_absolute() or not path.is_relative_to('/tmp') or path == Path('/tmp') \
+                or '..' in path.parts or path.resolve() != path:
+            raise ValueError(f"sandbox writable root must be under /tmp without symlinks: {value}")
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o777)
+
+
 def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason, scratch=None,
-               watch_globs=WATCH_GLOBS):
+               watch_globs=WATCH_GLOBS, run_config=None):
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
+    run_config = run_config or {}
+    try:
+        prepare_writable_roots(run_config.get("sandbox_writable_roots", []))
+    except (OSError, ValueError) as e:
+        st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
+        return st.d
     if scratch is not None:
-        try:
-            placement.ensure_dotnet_shm()
-        except OSError:
-            pass                    # best effort: a .NET worker reports its own EROFS/EACCES
-        env.update(placement.worker_scratch_env(scratch))
+        env.update({key: str(scratch) for key in ("TMPDIR", "TMP", "TEMP")})
+    env.update(run_config.get("env", {}))
     for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
         if env.get(key):
             env[key] = os.path.expanduser(env[key])
@@ -381,7 +475,7 @@ def detach(run_id, runs_dir, child_args, wait_s=DETACH_WAIT_S, nonce=None):
                                         "started": now_iso(), "ended": None, "exit_code": None, "reason": None,
                                         "nonce": nonce, "detached_in_job": False})
     with open(d / RUNNER_LOG, "ab") as log:
-        proc, in_job = placement.detach_process(cmd, env, log)
+        proc, in_job = placement.detach(cmd, env, log)
     # proc.pid may be a venv launcher over the real runner: report the pid the runner wrote itself
     info = {"runner_pid": None, "launcher_pid": proc.pid, "run_id": run_id, "dir": str(d),
             "detached_in_job": in_job}
@@ -448,6 +542,7 @@ def main(argv=None):
     p.add_argument("--stdin-file")
     p.add_argument("--cwd")
     p.add_argument("--scratch-dir", help="private worker temp directory under /tmp/drover-scratch/ (WSL only)")
+    p.add_argument("--run-config", type=json.loads, default={})
     p.add_argument("--kill-after", type=_num, default=KILL_AFTER_S)
     p.add_argument("--detach", action="store_true")
     p.add_argument("--nonce", type=_nonce, help="the launch nonce (default: generated); stop-requests must carry it")
@@ -459,7 +554,7 @@ def main(argv=None):
         print(json.dumps(info))
         return 1 if "error" in info else 0
     st = supervise(a.run_id, a.runs_dir, worker, a.wall_s, a.idle_s, a.stdin_file, a.cwd, a.kill_after, nonce=a.nonce,
-                   scratch_dir=a.scratch_dir)
+                   scratch_dir=a.scratch_dir, run_config=a.run_config)
     print(json.dumps(st))
     return 0 if st["state"] == "exited" and st["exit_code"] == 0 else 1
 

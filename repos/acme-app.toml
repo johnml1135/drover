@@ -1,29 +1,6 @@
-# Fictional consumer. Paired work builds against the acme-lib provider branch.
+# Fictional machine facts. Commit drover.toml and scripts/drover/test.ps1 in this repo.
 name = "acme-app"
 repo = "~/repos/acme-app"
-consumes = ["acme-lib"]
-[run]
-platforms = ["windows", "wsl"]
-default = "wsl"
-[gate]
-platform = "both"
-unknown = false
-# Optional full/scoped keys here override the same keys in shared [gate.commands].
-# With both platforms selected, full must resolve for each. No shared command is needed below.
-[gate.commands.windows]
-full = ["python", "-m", "unittest", "discover"]
-[gate.commands.wsl]
-full = ["python3", "-m", "unittest", "discover"]
-# Optional reviewer routing (otherwise uses the configured default reviewer):
-# [review]
-# backend = "codex"
-# model = "gpt-6.1-sol"
-# effort = "xhigh"
-# seat = "codex"  # optional: pin a seat instead of choosing by priority and available capacity
-[land]
-policy = "batch"
-[landing]
-mode = "local"
-push = false
+worktrees = "~/repos/acme-app.worktrees"
+default_branch = "main"
 remote = "origin"
-main = "main"
