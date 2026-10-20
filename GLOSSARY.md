@@ -42,8 +42,20 @@ One step in the order of models a task is tried on: level 1 is the cheapest (Lun
 _Avoid_: Rung, tier, ladder
 
 **Tracker**:
-One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with the levels at which new work queues or stops.
+One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with its levels: warn, queue (no new work starts), hold (running work winds down) and critical (Drover pauses). A disk tracker measures the drive itself, never the free space inside a virtual disk stored on it.
 _Avoid_: Check, guard, monitor
+
+**Disk tracker**:
+A tracker for one drive. Its reading is cheap and runs on a schedule even when the hub is down, so a filling drive is caught while Drover is paused.
+_Avoid_: Disk check, space monitor
+
+**Disk cleanup**:
+The staged reclaim of disk space across the machine's repositories and declared paths, run daily, on demand, and whenever a disk tracker drops below its warn level. Each cleanup stage runs only while the drive is still below warn. It removes only what can be regenerated or restored, and lists everything else for the owner.
+_Avoid_: Garden, sweep, prune, tend
+
+**Ownership tag**:
+The record on a worktree of who owns it (a task, a lane or a session) and until when. A worktree without a current tag is an orphan: it is quarantined, then removed after a grace period if it is still clean.
+_Avoid_: Lease file, marker, claim
 
 **Placement**:
 The operating system side, Windows or Linux, on which a run executes.
