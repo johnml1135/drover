@@ -1,0 +1,124 @@
+"""Durable falling-space episodes through the cheap public tracker seam."""
+import concurrent.futures
+import threading
+import os
+import subprocess
+from unittest.mock import patch
+
+from tests.disk_fixture import DiskCase
+
+
+class Trigger(DiskCase):
+    def activate(self):
+        from drover import disk_schedule
+        context = patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'xdg')})
+        context.start()
+        self.addCleanup(context.stop)
+        self.approve_report()
+        disk_schedule.install(self.cfg, apply=True,
+                              runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+
+    def tick(self, enqueue):
+        from drover import disk
+        return disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, enqueue=enqueue)
+
+    def complete(self, *args, **kwargs):
+        from drover import disk_cleanup
+        return disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
+
+    def test_no_reclean_without_meaningful_change(self):
+        from drover import disk
+        launches = []
+        def enqueue(*args, **kwargs):
+            launches.append((args, kwargs))
+            if len(launches) == 1:
+                self.free = 80  # Cleanup gains space: suppression baseline is this post-read, not 60.
+            return self.complete()
+        self.activate()
+        self.free = 60
+        self.tick(enqueue)
+        self.assertEqual(len(launches), 1)
+        for free in (80, 79.75, 79.01):
+            self.free = free
+            self.now += 900
+            self.tick(enqueue)
+            self.assertEqual(len(launches), 1, 'drop is measured from post-cleanup 80 GiB')
+        self.free = 79
+        self.tick(enqueue)
+        self.assertEqual(len(launches), 2)
+        self.tick(enqueue)
+        self.assertEqual(len(launches), 2)
+        self.assertEqual(disk.admission(disk.read(self.cfg, reader=lambda p: self.free))['verdict'], 'queue')
+
+    def test_recovery_rearms_unknown_does_not_and_daily_still_runs(self):
+        from drover import disk_cleanup
+        launches = []
+        def enqueue(*args, **kwargs):
+            launches.append(1)
+            return self.complete()
+        self.activate()
+        self.tick(enqueue)
+        for free in (None, 80):
+            self.free = free
+            self.tick(enqueue)
+        self.assertEqual(len(launches), 1)
+        self.free = 150
+        self.tick(enqueue)
+        self.assertEqual(len(launches), 1)
+        self.free = 149
+        self.tick(enqueue)
+        self.assertEqual(len(launches), 2)
+        for free in (80, 180):
+            self.free = free
+            self.calls.clear()
+            disk_cleanup.run(self.cfg, mode='daily', apply=True, runtime=self.runtime())
+            stages = sorted({req['stage'] for _, req in self.calls})
+            self.assertEqual(stages, [1, 2, 3, 4])
+
+    def test_duplicate_readers_and_failed_launch_do_not_lose_trigger(self):
+        from drover import disk
+        self.activate()
+        launches = []
+        entered, release = threading.Event(), threading.Event()
+        def enqueue(*args, **kwargs):
+            launches.append(1)
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return self.complete()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(self.tick, enqueue)
+            self.assertTrue(entered.wait(5))
+            second = pool.submit(self.tick, enqueue)
+            try:
+                value = second.result(timeout=5)
+                self.assertIn('drives', value)
+                self.assertEqual(len(launches), 1)
+            finally:
+                release.set()
+            first.result(timeout=5)
+        # A distinct falling episode must survive a failed detach.
+        self.free = 150
+        self.tick(enqueue)
+        self.free = 149
+        def fail(*args, **kwargs):
+            raise OSError('fixture detach refused')
+        try:
+            self.tick(fail)
+        except OSError:
+            pass
+        self.tick(lambda *a, **kw: launches.append(1))
+        self.assertEqual(len(launches), 2)
+        self.assertEqual(disk.read(self.cfg, reader=lambda p: self.free)[0]['free_gb'], 149)
+
+    def test_critical_persists_while_hub_is_down(self):
+        from drover import disk, disk_state
+        self.free = 24.9
+        # A busy ordinary state writer must not delay or lose the critical token.
+        with patch.object(disk_state, 'update', side_effect=BlockingIOError('busy')):
+            result = self.tick(lambda *a, **kw: None)
+        self.assertTrue(result['pause'])
+        self.assertTrue(any('critical' in p.name for p in self.state.rglob('*') if p.is_file()))
+        self.free = 180
+        result = self.tick(lambda *a, **kw: self.fail('healthy reader launched cleanup'))
+        self.assertEqual(disk.admission(disk.read(self.cfg, reader=lambda p: self.free))['verdict'], 'go')
+        self.assertTrue(result['pause'], 'healthy capacity does not authorize resuming the hub')
