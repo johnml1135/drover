@@ -106,21 +106,22 @@ class LandingService:
         out = {}
         for name in sorted({t["repo"] for t in ops.list_tasks(conn, status="reviewed")}):
             prog = pipe.repo({"repo": name})
-            if prog is None or prog["gate"]["unknown"]:
+            if prog is None or repos.ci_policy(prog)["unknown"]:
                 continue
             out[name] = self._land_repo(conn, name, prog)
         return out
 
     def _land_repo(self, conn, name, prog):
-        repo = repos.native(prog["repo"])
-        push = prog["land"]["push"]
-        base_ref = prog["default_branch"]
+        repo = repos.native(repos.repo_path(prog))
+        land = repos.landing_config(prog)
+        push = land["push"]
+        base_ref = repos.default_branch(prog)
         out_dir = Path(self.settings.runs_dir) / "landing"
         out_dir.mkdir(parents=True, exist_ok=True)
-        work = Path(repos.native(prog["worktrees"])) / f"drover-landing-{name.lower()}"
+        work = Path(repos.native(repos.worktree_root(prog))) / f"drover-landing-{name.lower()}"
         self.ci.resume(prog, work, conn=conn)
-        size = 1 if prog["land"]["policy"] == "single" else None
-        hold = landing.sync_main(conn, repo, prog['remote'], prog['default_branch'], name)
+        size = 1 if land["policy"] == "single" else None
+        hold = landing.sync_main(conn, repo, repos.remote_name(prog), base_ref, name)
         if hold:
             return hold
         batch = landing.form_batch(conn, repo, base_ref, size, name) if not landing.held(
@@ -131,8 +132,8 @@ class LandingService:
         ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": tasks}))
         try:
             r = landing.run_batch(conn, repo, lambda checkout, commit, tasks: self.ci.run(
-                                      prog, checkout, commit, base=base_ref, conn=conn), remote=prog["remote"],
-                                  branch=prog["default_branch"], size=size, repo_name=name, workdir=work, push=push)
+                                      prog, checkout, commit, base=base_ref, conn=conn), remote=repos.remote_name(prog),
+                                  branch=base_ref, size=size, repo_name=name, workdir=work, push=push)
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)

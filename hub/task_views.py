@@ -110,7 +110,7 @@ def _join(base, name):
 def probe(prog):
     """Two bounded git calls per repo, only on the cache's background thread."""
     def git(*args):
-        r = subprocess.run(['git', '-C', repos.native(prog['repo']), *args],
+        r = subprocess.run(['git', '-C', repos.native(repos.repo_path(prog)), *args],
                            capture_output=True, text=True, timeout=1, **NO_WINDOW)
         if r.returncode:
             raise OSError(r.stderr[-200:])
@@ -135,7 +135,7 @@ class RepoStates:
         self.lock = threading.Lock()
 
     def get(self, prog):
-        key, now = (prog['repo'], prog['worktrees']), time.monotonic()
+        key, now = (repos.repo_path(prog), repos.worktree_root(prog)), time.monotonic()
         with self.lock:
             future = self.pending.get(key)
             if future and future.done():
@@ -156,17 +156,17 @@ class RepoStates:
 
 def derive(task, prog, disk=None):
     branch = task.get('branch') or f'drover/{task["id"]}'
-    planned = _join(prog['worktrees'], f'drover-{task["id"]}') if prog else 'unknown repo'
+    planned = _join(repos.worktree_root(prog), f'drover-{task["id"]}') if prog else 'unknown repo'
     wt = task.get('worktree') or (disk or {}).get('branch_paths', {}).get(branch) or planned
     checked = disk is not None and not disk.get('error')
     branch_exists = checked and (branch in disk['branches'] or
-                                f'{prog.get("remote", "origin")}/{branch}' in disk['branches'])
+                                f'{repos.remote_name(prog)}/{branch}' in disk['branches'])
     # A name persisted in the ledger but absent from disk is missing. A generated
     # name is planned until it is observed. Pending/error is displayed explicitly.
     bstate = 'exists' if branch_exists else 'missing' if task.get('branch') else 'planned'
     wt_exists = checked and wt != 'unknown repo' and str(Path(repos.native(wt)).resolve()) in disk['paths']
     wstate = 'exists' if wt_exists else 'missing' if task.get('worktree') else 'planned'
-    return dict(repo_config_path=prog['repo'] if prog else '', unknown_repo=prog is None,
+    return dict(repo_config_path=repos.repo_path(prog) if prog else '', unknown_repo=prog is None,
                 branch_name=branch, branch_state=bstate, worktree_name=wt, worktree_state=wstate,
                 state_pending=prog is not None and not checked,
                 first_paragraph=first_paragraph(task.get('description') or task.get('goal')))

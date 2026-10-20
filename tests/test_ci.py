@@ -2,11 +2,13 @@
 import json
 import os
 import shutil
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 from drover import ci, repos, runner
 from drover.ledger import db, ci as slots
@@ -105,6 +107,90 @@ class CITests(unittest.TestCase):
         self.assertIn('--check', result['steps'][0]['command'])
         self.assertEqual(result['steps'][1]['command'][-1], 'scripts/docs.ps1')
         self.assertIn('docs script', result['log_tail'])
+
+    def test_docs_policy_through_prepare(self):
+        self.configure('raise SystemExit(99)', docs=True)
+        for files, policy, expected in (
+                ({'docs/readme.md': 'docs\n', 'source.py': 'code\n'}, {}, 'checks'),
+                ({'.github/readme.md': 'docs\n'}, {}, 'checks'),
+                ({'docs/readme.md': 'docs\n'}, {'docs_only': False}, 'checks'),
+                ({'guide/readme.rst': 'docs\n'}, {'docs_only_globs': ['guide/**']}, 'docs'),
+                ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': ['guide/**']}, 'checks'),
+                ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': []}, 'checks'),
+                ({'guide/readme.md': 'docs\n'}, {'docs_only_globs': ['**/*.md', '!guide/**']}, 'checks')):
+            with self.subTest(files=files, policy=policy):
+                self.repo.git('checkout', '-B', 'case', 'main')
+                for path, content in files.items():
+                    commit = self.repo.commit(path, content)
+                machine = {**self.machine, 'gate': {**self.machine['gate'], **policy}}
+                context = self.service.prepare(machine, self.repo.repo, commit, 'docs-policy')
+                self.assertEqual(context['kind'], expected)
+                plan = json.loads((self.runs / 'docs-policy' / 'plan.json').read_text())
+                self.assertEqual('--check' in plan['commands'][0], expected == 'docs')
+
+    def test_docs_symlink_addition_and_removal_require_checks(self):
+        self.configure('raise SystemExit(99)', docs=True)
+        # Git's index represents symlinks even on machines without symlink privileges.
+        blob = self.repo.git('hash-object', '-w', '--stdin')
+        self.repo.git('update-index', '--add', '--cacheinfo', f'120000,{blob},docs/link.md')
+        self.repo.git('commit', '-qm', 'add symlink')
+        commit = self.repo.git('rev-parse', 'HEAD')
+        context = self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-add')
+        self.assertEqual(context['kind'], 'checks')
+        self.repo.git('branch', '-f', 'main', commit)
+        self.repo.git('update-index', '--force-remove', 'docs/link.md')
+        self.repo.git('commit', '-qm', 'remove symlink')
+        commit = self.repo.git('rev-parse', 'HEAD')
+        context = self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-remove')
+        self.assertEqual(context['kind'], 'checks')
+
+    def test_docs_markdown_hard_breaks_pass_the_composed_command(self):
+        prog = self.configure('raise SystemExit(99)', docs=True)
+        commit = self.repo.commit('docs/readme.md', 'line with hard break  \nnext line\n')
+        result = self.service.run(prog, self.repo.repo, commit)
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['kind'], 'docs')
+
+    def test_heartbeat_failure_keeps_the_live_runner_for_adoption(self):
+        from drover.launch import RunnerLauncher
+        count, release = self.repo.root / 'count', self.repo.root / 'release'
+        self.addCleanup(release.touch)
+        code = ('import pathlib,time; p=pathlib.Path("' + str(count).replace('\\', '/') + '"); '
+                'p.write_text(p.read_text()+"start\\n" if p.exists() else "start\\n"); '
+                'print("started",flush=True); '
+                '\nwhile not pathlib.Path("' + str(release).replace('\\', '/') + '").exists(): time.sleep(.05)')
+        prog = self.configure(code)
+        commit = self.repo.commit('source.txt', 'changed')
+        conn = db.connect(self.repo.root / 'ledger.db')
+        self.addCleanup(conn.close)
+        launcher = RunnerLauncher(self.runs)
+        service = ci.CI(self.runs, launcher)
+        def fail_heartbeat(*args):
+            deadline = time.monotonic() + 20
+            while not count.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            self.assertTrue(count.exists())
+            raise sqlite3.OperationalError('database is locked')
+        with patch.object(slots, 'lease_heartbeat', side_effect=fail_heartbeat):
+            with self.assertRaises(ci.CIInterrupted) as raised:
+                service.run(prog, self.repo.repo, commit, conn=conn)
+        self.assertIsInstance(raised.exception.__cause__, sqlite3.OperationalError)
+        self.assertEqual(count.read_text(), 'start\n')
+        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
+        self.assertEqual(len(slots.lease_queue(conn)), 1)
+        # A second database error before adoption must retain the same request too.
+        with patch.object(slots, 'lease_acquire', side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertRaises(ci.CIInterrupted):
+                ci.CI(self.runs, launcher).resume(prog, self.repo.repo, conn=conn)
+        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
+        self.assertEqual(len(slots.lease_queue(conn)), 1)
+        release.touch()
+        resumed = ci.CI(self.runs, launcher)
+        resumed.resume(prog, self.repo.repo, conn=conn)
+        self.assertTrue(resumed.run(prog, self.repo.repo, commit, conn=conn)['passed'])
+        self.assertEqual(count.read_text(), 'start\n')
+        self.assertEqual(slots.lease_queue(conn), [])
+        self.assertFalse(list(self.runs.glob('ci-*.json')))
 
     def test_docs_script_cannot_bypass_diff_check(self):
         self.configure('raise SystemExit(99)', docs=True)

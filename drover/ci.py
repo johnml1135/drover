@@ -32,6 +32,10 @@ class CIError(RuntimeError):
     pass
 
 
+class CIInterrupted(CIError):
+    """Supervision failed before termination was confirmed; resume before changing the checkout."""
+
+
 def git_environment(base=None):
     """Environment that keeps Git noninteractive even when a machine has an interactive credential helper."""
     env = os.environ.copy() if base is None else dict(base)
@@ -134,7 +138,7 @@ def changed_docs_only(repo, base, tip, globs):
     if not docs_only(paths, globs):
         return False
     raw = git(repo, 'diff', '--raw', '--no-renames', '-z', f'{base}...{tip}').stdout
-    return not any(f.startswith(':') and '120000' in f.split()[:2] for f in raw.split('\0'))
+    return not any(f.startswith(':') and '120000' in f.lstrip(':').split()[:2] for f in raw.split('\0'))
 
 
 def status_problems(receipt):
@@ -279,6 +283,8 @@ class CI:
 
         A queued CI runner is released by a running ticket's completion or expiry.
         Its ticket is renewed while waiting and executing, including after adoption.
+        CIInterrupted retains the request and ticket; callers must keep the checkout
+        until resume confirms that the saved execution has finished.
         """
         prog = repos.load(prog, commit, checkout)
         platforms = platforms or repos.gate_platforms(prog)
@@ -293,6 +299,7 @@ class CI:
                                         'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority}
         for i in range(saved['index'], len(platforms)):
             context = saved.get('context')
+            following = context is not None
             if context is None:
                 rid = 'ci-' + uuid.uuid4().hex
                 context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=platforms[i], base=base,
@@ -301,6 +308,7 @@ class CI:
                 runner.write_json_atomic(request, saved)
             spec = context['spec']
             ticket = saved.get('ticket')
+            interrupted = False
             try:
                 if conn is not None:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
@@ -317,6 +325,7 @@ class CI:
                             continue
                         time.sleep(0.25)
                 status = runner.read_status(self.runs_dir, spec['run_id'])
+                following = True  # launch may start execution even if returning a handle fails
                 handle = self.launcher.adopt(spec) if status else self.launcher.launch(spec)
                 next_scan, missed = time.monotonic() + (0 if status else 30), 0
                 while True:
@@ -355,11 +364,18 @@ class CI:
                 if not evaluated['passed']:
                     request.unlink(missing_ok=True)
                     return receipt
-            except Exception:
+            except BaseException as error:
+                status = runner.read_status(self.runs_dir, spec['run_id']) or {}
+                interrupted = following and not (status.get('nonce') == spec['nonce']
+                    and status.get('state') in ('exited', 'killed', 'timeout'))
+                if interrupted:
+                    # The runner owns its timeout. Keep its ticket and request so resume
+                    # follows this execution before landing can rebuild the checkout.
+                    raise CIInterrupted(f'CI supervision interrupted; resume saved runner: {error}') from error
                 request.unlink(missing_ok=True)
                 raise
             finally:
-                if conn is not None and ticket is not None:
+                if not interrupted and conn is not None and ticket is not None:
                     slots.lease_release(conn, ticket)
         request.unlink(missing_ok=True)
         # The final result certifies every placement; keep each individual result.

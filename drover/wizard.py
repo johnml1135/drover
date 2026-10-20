@@ -695,14 +695,7 @@ def repo_toml(p, worktrees_root):
     repo = p["repo"]
     trees = (worktrees_root.rstrip("\\/") + ("\\" if "\\" in worktrees_root else "/") + p["name"] + ".worktrees"
              if worktrees_root else repo.rstrip("\\/") + ".worktrees")
-    canonical = repos.normalize({**base, "name": p["name"], "repo": repo})
-    raw = {"name": p["name"], "repo": repo, "worktrees": base.get("worktrees", trees),
-           "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
-    for key in ("scripts", "gate", "run"):
-        if key in base:
-            raw[key] = base[key]
-    raw["landing"] = {"push": p.get("push", False)}
-    repos.normalize(raw)
+    raw = repos.machine_overrides(p["name"], repo, trees, base=base, push=p.get("push", False))
     return config.dumps(raw)
 
 
@@ -737,10 +730,10 @@ def q_repos(a, d, found_repos, worktrees, state):
         name = a.ask(f"repo_{k}_name", f"{k}: repo name", k)
         existing = _saved_repo(state, name)
         base = existing if existing is not None else example_for(name)
-        repo = a.ask(f"repo_{k}_repo", f"{name}: repo path", (existing or {}).get("repo", r["path"]))
+        repo = a.ask(f"repo_{k}_repo", f"{name}: repo path", repos.machine_defaults(existing, r["path"])["repo"])
         a.say(f"   {name}: actions and run platforms come from the repo's versioned drover.toml")
         push = a.ask(f"repo_{k}_push", f"{name}: push landed work to the remote?",
-                     bool((base or {}).get("landing", {}).get("push", False)), to_bool)
+                     bool(repos.machine_defaults(base)["push"]), to_bool)
         p = {"name": name, "repo": repo, "push": push, "base": base, "existing": existing is not None}
         repo_toml(p, worktrees)
         out.append(p)
@@ -760,8 +753,8 @@ def _repo_answer(x, state):
     base = existing
     if base is None and x.get("from_example", True):
         base = example_for(x["name"])
-    return {"name": str(x["name"]), "repo": str(x.get("repo", (base or {}).get("repo", ""))),
-            "push": bool(x.get("push", (base or {}).get("landing", {}).get("push", False))),
+    return {"name": str(x["name"]), "repo": str(x.get("repo", repos.machine_defaults(base)["repo"])),
+            "push": bool(x.get("push", repos.machine_defaults(base)["push"])),
             "base": base, "existing": existing is not None}
 
 

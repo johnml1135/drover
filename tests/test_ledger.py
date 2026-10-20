@@ -816,12 +816,12 @@ class MigrationTests(Base):
         self.assertEqual(self.conn.execute("SELECT title, extra FROM tasks WHERE id=?", (t["id"],)).fetchone()[0], "keep")
 
     def test_failed_migration_rolls_back(self):
-        bad = MIGRATIONS + [(MIGRATIONS[-1][0] + 1, "CREATE TABLE half(x); SELECT * FROM no_such_table;")]
+        bad = MIGRATIONS + [(MIGRATIONS[-1][0] + 1, "ALTER TABLE tasks ADD COLUMN rollback_probe TEXT; SELECT * FROM no_such_table;")]
         with self.assertRaises(Exception):
             migrate(self.conn, bad)
         self.assertFalse(self.conn.in_transaction)
         self.assertEqual(schema_version(self.conn), MIGRATIONS[-1][0])
-        self.assertIsNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='half'").fetchone())
+        self.assertNotIn("rollback_probe", {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)")})
 
     def test_pragmas_and_tables(self):
         self.assertEqual(self.conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")

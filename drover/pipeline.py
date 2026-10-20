@@ -137,7 +137,7 @@ class Pipeline:
             prog = repos.load(prog, checkout=checkout)
         except repos.RepoError:
             return None
-        override = self._owner_gate_cmd(prog["name"].lower()) if prog["gate"]["unknown"] else None
+        override = self._owner_gate_cmd(repos.repo_name(prog).lower()) if repos.ci_policy(prog)["unknown"] else None
         if override:
             prog = repos.with_test_script(prog, override)
         return prog
@@ -173,16 +173,16 @@ class Pipeline:
         if prog is None:
             self.port.set_status(tid, "needs-owner", reason=f"no repo config for {task.get('repo')!r}")
             return False
-        if origin.paused(self.port, prog["name"]):
+        if origin.paused(self.port, repos.repo_name(prog)):
             self.port.set_status(tid, "ready", reason="origin sync paused; answer the repo alert to retry")
             return False
-        if not prog["gate"]["unknown"]:
+        if not repos.ci_policy(prog)["unknown"]:
             return True
-        name = prog["name"]
+        name = repos.repo_name(prog)
         qid = self.port.get_setting(GATE_Q_KEY + name.lower())
         reason = f"{UNKNOWN_REASON}: {name}"
         if qid is None:
-            hint = prog["gate"].get("hint")
+            hint = repos.ci_policy(prog).get("hint")
             qid = self.port.ask_question(
                 "task", tid, f"What is the test script path for {name}?",
                 body=("Add [scripts] test to drover.toml, or answer with its relative .ps1 script path."
@@ -230,12 +230,12 @@ class Pipeline:
         prog = self.repo(t)
         if prog is None:
             raise WorktreeRefused(f"no repo config for {t.get('repo')!r}")
-        repo = repos.native(prog["repo"])
+        repo = repos.native(repos.repo_path(prog))
         if not (Path(repo) / ".git").exists():
-            raise WorktreeRefused(f"{prog['repo']} is not a git checkout")
+            raise WorktreeRefused(f"{repos.repo_path(prog)} is not a git checkout")
         have = t.get("worktree")
         branch = t.get("branch")
-        if branch and branch == prog["default_branch"]:
+        if branch and branch == repos.default_branch(prog):
             raise WorktreeRefused(f"task branch {branch!r} is the default branch; work happens on its own branch")
         reuse, why = None, None
         if have and placement.reachable(repos.native(have)):
@@ -255,7 +255,7 @@ class Pipeline:
                 self.port.append_event("worktree-repair-failed", {"path": str(path), "branch": branch}, tid)
                 why = f"worktree {reuse} has a gitdir pointer that could not be made relative; left untouched"
             elif not dirty:
-                reuse_cfg = placement.config_path(path, prog["repo"])
+                reuse_cfg = placement.config_path(path, repos.repo_path(prog))
                 if reuse_cfg != t.get("worktree") or branch != t.get("branch"):
                     self._persist(tid, branch, reuse_cfg)
                 return reuse_cfg
@@ -270,9 +270,9 @@ class Pipeline:
     def _not_main(path, repo, prog):
         """Never hand out the repo's own checkout (or anything sitting on the default branch) to a worker."""
         if Path(path).resolve() == Path(repo).resolve():
-            raise WorktreeRefused(f"{path} is the main checkout of {prog['name']}, not a task worktree")
+            raise WorktreeRefused(f"{path} is the main checkout of {repos.repo_name(prog)}, not a task worktree")
         head = git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        if head == prog["default_branch"]:
+        if head == repos.default_branch(prog):
             raise WorktreeRefused(f"{path} is on the default branch {head!r}; a task needs its own branch")
 
     def _persist(self, tid, branch, wt):
@@ -303,20 +303,20 @@ class Pipeline:
         return tag.get("owner") == OWNER_PREFIX + tid
 
     def _create(self, t, prog, repo, branch, source=None):
-        tid, remote, default = t["id"], prog["remote"], prog["default_branch"]
-        if origin.paused(self.port, prog["name"]):
+        tid, remote, default = t["id"], repos.remote_name(prog), repos.default_branch(prog)
+        if origin.paused(self.port, repos.repo_name(prog)):
             raise WorktreeRefused("origin sync paused; answer the repo alert to retry")
         try:
             origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
         except origin.FetchFailed as e:
-            origin.pause(self.port, prog["name"], "task", tid, str(e))
+            origin.pause(self.port, repos.repo_name(prog), "task", tid, str(e))
             raise WorktreeRefused(str(e)) from e
         except origin.SyncError as e:
             raise WorktreeRefused(str(e)) from e
         base = self.base_ref(prog)
         name = f"drover-{tid}"
-        dest = str(Path(repos.native(join_cfg(prog["worktrees"], name))).resolve())
-        dest_cfg = placement.config_path(dest, prog["repo"])
+        dest = str(Path(repos.native(join_cfg(repos.worktree_root(prog), name))).resolve())
+        dest_cfg = placement.config_path(dest, repos.repo_path(prog))
         if source:                       # the branch's own worktree is unusable: branch from its committed tip
             branch, base = f"drover/{tid}", source
         branch = branch or f"drover/{tid}"
@@ -327,7 +327,7 @@ class Pipeline:
             Path(dest).parent.mkdir(parents=True, exist_ok=True)
             self._add(repo, dest, branch, base, remote)
             try:
-                garden.tag_worktree(dest, prog["name"], "slice", owner=OWNER_PREFIX + tid, purpose=str(t["title"])[:120],
+                garden.tag_worktree(dest, repos.repo_name(prog), "slice", owner=OWNER_PREFIX + tid, purpose=str(t["title"])[:120],
                                     base=base)
             except (ValueError, OSError) as e:
                 raise WorktreeRefused(f"created {dest} but could not tag it for garden: {e}")
@@ -349,7 +349,7 @@ class Pipeline:
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):
         """Task diffs, reviews and new branches use local main, including its unpushed landings."""
-        return prog["default_branch"]
+        return repos.default_branch(prog)
 
     def head(self, task):
         return ci.head(repos.native(task["worktree"]))

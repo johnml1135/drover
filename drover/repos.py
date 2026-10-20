@@ -118,7 +118,6 @@ def normalize(raw, name=None):
             "remote": remote,
             "run": {"platforms": plats, "default": default, "env": dict(env), "sandbox_writable_roots": list(roots)},
             "scripts": dict(scripts), "brief": brief,
-            "consumes": list(raw.get("consumes") or []),
             "gate": {"platform": platform, "unknown": unknown,
                      "timeout_s": float(g.get("timeout_s") or 3600), "idle_s": float(g.get("idle_s") or 1200),
                      "docs_only": docs_only, "docs_only_globs": docs_globs,
@@ -127,6 +126,61 @@ def normalize(raw, name=None):
                        "effort": rev.get("effort"), "high_risk_model": high_model},
             "landing": {"mode": mode, "push": push, "remote": remote, "main": main},
             "land": {"policy": policy, "push": push}}
+
+
+def repo_name(prog):
+    return prog["name"]
+
+
+def repo_path(prog):
+    """The configured checkout path, before placement translates it."""
+    return prog["repo"]
+
+
+def worktree_root(prog):
+    return prog["worktrees"]
+
+
+def default_branch(prog):
+    return prog["default_branch"]
+
+
+def remote_name(prog):
+    return prog.get("remote", DEFAULTS["remote"])
+
+
+def review_config(prog):
+    """The resolved review policy, independent of worker routing."""
+    return dict(prog["review"])
+
+
+def brief_text(prog):
+    return prog.get("brief", "")
+
+
+def landing_config(prog):
+    """Landing behavior with the legacy policy resolved by normalize."""
+    return {**prog["landing"], "policy": prog["land"]["policy"]}
+
+
+def machine_defaults(raw, repo=""):
+    """Saved setup defaults; raw machine files may omit runtime defaults."""
+    raw = raw or {}
+    return {"repo": raw.get("repo", repo), "push": (raw.get("landing") or {}).get("push", False)}
+
+
+def machine_overrides(name, repo, trees, *, base=None, push=False):
+    """Build setup's machine file, retaining saved behavior and resolved mainline names."""
+    base = base or {}
+    canonical = normalize({**base, "name": name, "repo": repo})
+    raw = {"name": name, "repo": repo, "worktrees": base.get("worktrees", trees),
+           "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
+    for key in ("scripts", "gate", "run"):
+        if key in base:
+            raw[key] = base[key]
+    raw["landing"] = {"push": push}
+    normalize(raw)
+    return raw
 
 
 def worktrees_for(name, repo):

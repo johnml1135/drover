@@ -518,7 +518,7 @@ class Dispatcher:
         worker = self._last_nongate(runs)
         sha = self._event_for("worker-done", "run", worker["id"]).get("sha")
         prog = pl.repo(task)
-        if prog is None or prog["gate"]["unknown"] or not task.get("worktree") or not sha:
+        if prog is None or repos.ci_policy(prog)["unknown"] or not task.get("worktree") or not sha:
             p.set_status(tid, "needs-owner", reason="cannot gate: no repo gate, worktree or commit")
             return False
         head = pl.head(task)
@@ -681,7 +681,7 @@ class Dispatcher:
 
     def _review_route(self, task, prog, policy, admitted):
         """Route the repo's review through the usual seat priority, capacity and allowance checks."""
-        rev = prog["review"]
+        rev = repos.review_config(prog)
         model = rev["high_risk_model"] if task.get("risk") == "high" else rev["model"]
         candidate = {"backend": rev["backend"], "model": model, "effort": rev.get("effort")}
         seats = [s for s in config_mod.get()["seats"] if s["backend"] == rev["backend"]
@@ -807,8 +807,8 @@ class Dispatcher:
         excerpt = contract.receipt_excerpt(last["gate_receipt"]) \
             if last and last["outcome"] in ("gate-fail", "hold") else None
         prog = self.pipeline.repo(task)
-        if prog and prog.get("brief"):
-            task = {**task, "repo_brief": prog["brief"]}
+        if prog and repos.brief_text(prog):
+            task = {**task, "repo_brief": repos.brief_text(prog)}
         try:
             b = brief_mod.assemble(task, retry_excerpt=excerpt, handoff=task.get("handoff") or None,
                                    notes=p.owner_notes(task["id"]))

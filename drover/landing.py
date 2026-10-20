@@ -381,6 +381,7 @@ def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None,
               decider=None, actor='landing', push=False):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
 
+    CIInterrupted preserves the checkout and checkpoint for CI.resume before the next batch.
     push=False lands on the local branch only: the base is the local branch (so one batch builds on the last) and
     nothing is pushed. Fetch failure pauses the repo; divergent main needs owner intervention."""
     repo = Path(repo)
@@ -399,21 +400,24 @@ def run_batch(conn, repo, gate_fn, *, remote='origin', branch='main', size=None,
     if not tasks:
         return result
     own_tmp = workdir is None
+    interrupted = False
     work = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix='drover-landing-')) / 'wt'
     try:
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
     except BaseException as e:
+        interrupted = isinstance(e, ci.CIInterrupted)
         result['outcome'], result['error'] = 'error', repr(e)
         storage.record_batch(conn, result)
         raise
     finally:
-        git(repo, 'worktree', 'remove', '--force', str(work), check=False)
-        (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
-        if own_tmp:
-            try:
-                work.parent.rmdir()
-            except OSError:
-                pass
+        if not interrupted:
+            git(repo, 'worktree', 'remove', '--force', str(work), check=False)
+            (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
+            if own_tmp:
+                try:
+                    work.parent.rmdir()
+                except OSError:
+                    pass
     storage.record_batch(conn, result)
     return result
 

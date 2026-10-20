@@ -48,11 +48,11 @@ def prepare(entries, configured=None, root=None):
             prog = configured.get(name.lower())
             if prog is None:
                 raise ValueError(f'unknown read repo {name!r}')
-            source = repos.native(prog['repo'])
-            branch = branch or prog['default_branch']
+            source = repos.native(repos.repo_path(prog))
+            branch = branch or repos.default_branch(prog)
             sha = None
             # Only named branches, never revision syntax or an arbitrary path.
-            for ref in (f'refs/heads/{branch}', f'refs/remotes/{prog.get("remote", "origin")}/{branch}'):
+            for ref in (f'refs/heads/{branch}', f'refs/remotes/{repos.remote_name(prog)}/{branch}'):
                 try:
                     sha = _git(source, 'rev-parse', '--verify', ref + '^{commit}')
                     break

@@ -1,5 +1,7 @@
 from drover import placement
 import json
+import sqlite3
+import time
 import sys
 import subprocess
 import unittest
@@ -7,6 +9,7 @@ from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 from drover import ci, landing, origin, repos
+from drover.ledger import ci as slots
 from drover.ledger import landing as landing_storage
 from drover.ledger import db as ledger_db
 from drover.ledger import ops
@@ -511,6 +514,41 @@ class RunTests(LandingCase):
         self.assertEqual(res['outcome'], 'red')
         n = self.conn.execute("SELECT COUNT(*) FROM base_gate").fetchone()[0]
         self.assertEqual(n, 1)
+
+    def test_interrupted_ci_preserves_merge_checkout_until_resume(self):
+        count, release = self.r.root / 'count', self.r.root / 'release'
+        self.addCleanup(release.touch)
+        # The script stays live until the test lets the adopted runner finish.
+        self.r.commit('scripts/check.ps1',
+                      f"Add-Content '{count}' started\n"
+                      f"while (-not (Test-Path '{release}')) {{ Start-Sleep -Milliseconds 50 }}\nexit 0\n")
+        self.r.git('push', '-q', 'origin', 'HEAD:main')
+        tid = self.task('a', {'a.txt': 'a'})
+        def gate(work, commit, tasks):
+            return self.ci.run(self.prog, work, commit, conn=self.conn)
+        def fail_heartbeat(*args):
+            deadline = time.monotonic() + 20
+            while not count.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            self.assertTrue(count.exists())
+            raise sqlite3.OperationalError('database is locked')
+        with patch.object(slots, 'lease_heartbeat', side_effect=fail_heartbeat):
+            with self.assertRaises(ci.CIInterrupted):
+                landing.run_batch(self.conn, self.r.repo, gate, workdir=self.work)
+        self.assertTrue(self.work.is_dir())
+        self.assertTrue((self.work.parent / ('.' + self.work.name + '.merge-group.json')).is_file())
+        self.assertEqual(len(slots.lease_queue(self.conn)), 1)
+        self.assertEqual(self.status(tid), 'reviewed')
+        release.touch()
+        # This is the public sequence used by the hub before rebuilding a merge group.
+        service = ci.CI(self.r.root / 'receipts')
+        service.resume(self.prog, self.work, conn=self.conn)
+        result = landing.run_batch(self.conn, self.r.repo,
+            lambda work, commit, tasks: service.run(self.prog, work, commit, conn=self.conn), workdir=self.work)
+        self.assertEqual(result['outcome'], 'landed')
+        self.assertEqual(count.read_text().splitlines(), ['started'])
+        self.assertFalse(self.work.exists())
+        self.assertEqual(slots.lease_queue(self.conn), [])
 
     def test_exception_mid_run_still_records_the_batch(self):
         self.task('a', {'a.txt': 'a'})

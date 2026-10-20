@@ -606,9 +606,9 @@ class UiView:
                           for t in self.s.list_tasks(status="gated,reviewed")],
                 "batch": self.s._json_setting("landing_batch"),
                 "gate": self.s._json_setting("gate", {}),
-                "repos": [{"name": prog["name"], "ahead": count}
+                "repos": [{"name": repos.repo_name(prog), "ahead": count}
                           for prog in repos.load_all().values()
-                          if (count := origin.ahead(repos.native(prog["repo"]), prog["remote"], prog["default_branch"]))]}
+                          if (count := origin.ahead(repos.native(repos.repo_path(prog)), repos.remote_name(prog), repos.default_branch(prog)))]}
 
     def push_main(self, name):
         """Owner action; repo paths and remote names come only from validated configuration."""
@@ -616,7 +616,7 @@ class UiView:
         if prog is None:
             raise NotFound("unknown repo")
         try:
-            origin.push_main(repos.native(prog["repo"]), prog["remote"], prog["default_branch"])
+            origin.push_main(repos.native(repos.repo_path(prog)), repos.remote_name(prog), repos.default_branch(prog))
         except origin.SyncError as e:
             ops.ask_question(self.c, 'epic', landing._epic(self.c, 'Landing'), 'Push main failed', str(e),
                              options=[{'label': 'Acknowledged'}], actor='owner')
