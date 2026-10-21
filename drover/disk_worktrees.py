@@ -31,9 +31,9 @@ def outputs_at(machine, head, path):
     return repos.cleanup_config(repos.load(machine, revision=head, checkout=str(path)))['disposable']
 
 
-def status(path):
+def status(path, *, expand=True):
     """NUL-safe full status; expand ignored directories without following links."""
-    raw = git(path, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching')
+    raw = git(path, 'status', '--porcelain=v1', '-z', '--untracked-files=all' if expand else '--untracked-files=normal', '--ignored=matching')
     fields = iter(raw.split('\0'))
     dirty, ignored = [], []
     for field in fields:
@@ -43,14 +43,14 @@ def status(path):
         target = Path(path) / name
         if code == '!!':
             # Keep empty directories and every descendant, including protected/link entries.
-            def expand(p):
+            def leaves(p):
                 if placement.cleanup_link(p):
                     return [str(p)]
                 if p.is_dir():
                     children = list(p.iterdir())
-                    return [s for child in children for s in expand(child)] or [str(p)]
+                    return [s for child in children for s in leaves(child)] or [str(p)]
                 return [str(p)]
-            ignored.extend(expand(target))
+            ignored.extend(leaves(target) if expand else [str(target)])
         else:
             dirty.append(str(target))
             if 'R' in code or 'C' in code:
@@ -112,7 +112,7 @@ def inspect(request, machine, entry):
     if path == Path(placement.native(machine['repo'])):
         row['reason_code'] = 'main_checkout'
         return row
-    proof = placement.cleanup_processes()
+    proof = request.get('_processes') or placement.cleanup_processes()
     if task_facts(request, path, None)[0] or proof.busy(str(path)):
         row['reason_code'] = getattr(proof, 'reason', None) or 'busy'
         return row
@@ -128,14 +128,14 @@ def inspect(request, machine, entry):
     if live:
         row['reason_code'] = 'busy'
         return row
-    dirty, ignored = status(path)
+    dirty, ignored = status(path, expand=request['apply'])
     row.update(dirty=dirty, ignored=ignored)
     if dirty:
         row['reason_code'] = 'dirty'
         return row
     head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
     row.update(head=head, gitdir=git(path, 'rev-parse', '--absolute-git-dir').strip())
-    row.update(facts(path, request['now']))
+    row.update(facts(path, request['now'], request=request))
     lease = tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now']
     if not lease:
         row['reason_code'] = 'orphan'
@@ -207,7 +207,7 @@ def remove(request: dict, selected: dict) -> dict:
         else:
             if entry is None:
                 raise ValueError('registration changed')
-            current = inspect(request, machine, entry)
+            current = inspect({k: v for k, v in request.items() if k != '_processes'}, machine, entry)
             if row['reason_code'] == 'quarantine_elapsed' and current['reason_code'] == 'orphan':
                 fingerprint = identity(path) + repr((current.get('head'), current.get('tag'), current.get('branch'),
                                                    current.get('gitdir'), current.get('side_lock')))
@@ -367,7 +367,7 @@ def unlisted(request, machine, listed):
                 continue
             head = snapshot(machine, path)
             row.update(head=head, branch=None, side_lock=None, unlisted=True, ignored=[],
-                       tag=None, reason_code='orphan', **facts(path, request['now']))
+                       tag=None, reason_code='orphan', **facts(path, request['now'], request=request))
             row = quarantine(request, machine, row)
             if request['apply'] and row['action'] == 'candidate':
                 row = remove(request, row)

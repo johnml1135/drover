@@ -29,7 +29,7 @@ class Facts(unittest.TestCase):
             self.assertTrue(busy.busy(str(target)))
             self.assertFalse(busy.busy(str(root / 'work')))
             cim = placement.cleanup_processes(windows=True, cim=lambda: [
-                (r'H:\elsewhere', 'python "H:\\trees\\topic\\worker.py"')])
+                dict(pid=123, name='python', same_user=True, cwd=r'H:\elsewhere', cmd='python "H:\\trees\\topic\\worker.py"')])
             self.assertTrue(cim.busy(r'H:\trees\topic'))
             self.assertFalse(cim.busy(r'H:\trees\top'))
             def unavailable():
@@ -69,9 +69,9 @@ class Facts(unittest.TestCase):
 
     def test_windows_shell_cwd_and_missing_visibility_retain_candidates(self):
         visible = placement.cleanup_processes(windows=True, cim=lambda: [
-            (r'H:\trees\topic', 'pwsh.exe')])
+            dict(pid=123, name='pwsh', same_user=True, cwd=r'H:\trees\topic', cmd='pwsh.exe')])
         self.assertTrue(visible.busy(r'H:\trees\topic'))
         self.assertFalse(visible.busy(r'H:\trees\other'))
-        hidden = placement.cleanup_processes(windows=True, cim=lambda: [(None, 'pwsh.exe')])
+        hidden = placement.cleanup_processes(windows=True, cim=lambda: [dict(pid=123, name='pwsh', same_user=True, cwd=None, cmd='pwsh.exe')])
         self.assertTrue(hidden.busy(r'H:\trees\other'))
         self.assertEqual(hidden.reason, 'process visibility unavailable')

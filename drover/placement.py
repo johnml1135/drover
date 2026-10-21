@@ -801,7 +801,7 @@ def _cleanup_path(path, windows):
 
 
 def cleanup_processes(*, proc_root=None, cim=None, windows=None):
-    """Snapshot once; unknown process visibility always retains candidates."""
+    """Snapshot invoking-user visibility; foreign processes still contribute path evidence."""
     return _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows)
 
 
@@ -852,71 +852,95 @@ def _windows_cwd(pid):
 
 
 def _cim_rows():
-    """(cwd, command line) for every process via CIM plus native process parameters; missing cwd is unknown."""
-    out = subprocess.run(
-        ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-         'Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress'],
-        capture_output=True, text=True, timeout=30, errors='replace', **NO_WINDOW)
+    """One CIM query supplies owner SIDs alongside argv/exe evidence."""
+    script = r'''$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$rows = @(Get-CimInstance Win32_Process | ForEach-Object {
+    $ownerSid = $null
+    try { $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
+          if ($owner.ReturnValue -eq 0) { $ownerSid = $owner.Sid } } catch {}
+    [pscustomobject]@{ProcessId=$_.ProcessId; Name=$_.Name; ExecutablePath=$_.ExecutablePath;
+                     CommandLine=$_.CommandLine; OwnerSid=$ownerSid}
+})
+@{sid=$sid; processes=$rows} | ConvertTo-Json -Compress -Depth 4
+'''
+    out = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                         capture_output=True, text=True, timeout=30, errors='replace', **NO_WINDOW)
     if out.returncode or not out.stdout.strip():
         raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
     data = json.loads(out.stdout)
-    data = [data] if isinstance(data, dict) else data
-    return [(_windows_cwd(d['ProcessId']), ' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')]))) for d in data
-            if d.get('ProcessId') != os.getpid()]
+    if not data.get('sid') or not isinstance(data.get('processes'), list):
+        raise ValueError('CIM ownership unavailable')
+    return [dict(pid=d['ProcessId'], name=d.get('Name'), cwd=_windows_cwd(d['ProcessId']),
+                 same_user=d.get('OwnerSid') == data['sid'] if d.get('OwnerSid') else None,
+                 cmd=' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')])))
+            for d in data['processes'] if d.get('ProcessId') != os.getpid()]
 
 
 class _CleanupProcesses:
-    """One snapshot of running processes per run. A worktree is busy when any process has its cwd there or names its
-    path on its command line. If the snapshot cannot be taken (no /proc, CIM failed or timed out) everything is
-    busy: unknown fails safe, and keeps the worktree.
-
-    `windows` forces the CIM path (tests inject `cim`); the default follows os.name.
-    """
+    """One invoking-user snapshot. Unknown ownership fails closed; foreign argv still retains named paths."""
 
     def __init__(self, proc_root=None, windows=None, cim=None):
-        self.rows, self.unknown = [], False
-        windows = IS_WINDOWS if windows is None else windows
-        self.windows = windows
-        if windows:
+        self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
+        self.windows = IS_WINDOWS if windows is None else windows
+        if self.windows:
             try:
-                self.rows = (cim or _cim_rows)()
-                self.unknown = not self.rows or any(not cwd for cwd, _ in self.rows)
+                rows = (cim or _cim_rows)()
+                self.unknown = not rows
+                for row in rows:
+                    self._record(**row)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 self.unknown = True
             return
-        self.root = Path(proc_root if proc_root is not None else '/proc')
-        if not self.root.is_dir():
-            self.unknown = True
-            return
+        root = Path(proc_root if proc_root is not None else '/proc')
         try:
-            entries = list(self.root.iterdir())
+            entries = list(root.iterdir())
         except OSError:
             self.unknown = True
             return
         for entry in entries:
             if not entry.name.isdigit() or int(entry.name) == os.getpid():
                 continue
+            same_user, name = None, entry.name
+            try:
+                fields = dict(line.split(':', 1) for line in (entry / 'status').read_text().splitlines() if ':' in line)
+                same_user = int(fields['Uid'].split()[0]) == os.getuid()
+                name = fields.get('Name', name).strip()
+            except (OSError, ValueError, KeyError, IndexError):
+                if not entry.exists():
+                    continue
             try:
                 cmd = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
-            except FileNotFoundError:
-                if entry.exists():
-                    self.unknown = True
-                continue
             except OSError:
-                self.unknown = True
                 cmd = None
+            command_unreadable = cmd is None
+            cmd = cmd or ''
+            try:
+                cmd += ' ' + str((entry / 'exe').resolve(strict=True))
+            except OSError:
+                pass
             try:
                 cwd = str((entry / 'cwd').resolve(strict=True))
-            except FileNotFoundError:
-                # Kernel threads have neither userspace argv nor cwd; live userspace
-                # processes with invisible cwd do not provide an idle proof.
-                if cmd and entry.exists():
-                    self.unknown = True
-                continue
             except OSError:
-                self.unknown = True
+                if not entry.exists():
+                    continue
+                # Kernel threads have no userspace cwd/argv. A known foreign UID
+                # can be excluded; unknown ownership remains conservative.
                 cwd = None
-            self.rows.append((cwd, cmd))
+            if command_unreadable and same_user is not False:
+                self.unknown = True
+                if cwd:
+                    self.unreadable.append(dict(pid=int(entry.name), name=name, evidence='command_line'))
+            self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd)
+
+    def _record(self, *, pid, name, same_user, cwd, cmd):
+        if not cwd:
+            if same_user is False:
+                self.out_of_scope += 1
+            else:
+                self.unknown = True
+                self.unreadable.append(dict(pid=pid, name=name))
+        self.rows.append((cwd, cmd))
 
     @property
     def reason(self):
@@ -927,15 +951,12 @@ class _CleanupProcesses:
             return True
         worktree = _cleanup_path(worktree, self.windows)
         for cwd, cmd in self.rows:
-            if cwd is not None and (_cleanup_path(cwd, self.windows) == worktree or _cleanup_path(cwd, self.windows).startswith(worktree + '/')):
+            if cwd and (_cleanup_path(cwd, self.windows) == worktree or _cleanup_path(cwd, self.windows).startswith(worktree + '/')):
                 return True
-            if cmd is None and cwd is None:
-                return True  # cannot prove safety
             if cmd:
                 text = cmd.replace('\\', '/')
                 text = text.casefold() if self.windows else text
-                target = worktree.casefold() if self.windows else worktree
-                if re.search(r"(?:^|[\s\"'=])" + re.escape(target) + r'(?=$|[/\s"\'])', text):
+                if re.search(r"(?:^|[\s\"'=])" + re.escape(worktree) + r'(?=$|[/\s"\'])', text):
                     return True
         return False
 
@@ -1100,7 +1121,14 @@ def cleanup_worker(request):
         finally:
             _k32.CloseHandle(job)
     else:
-        os.setsid()
+        try:
+            os.setsid()
+        except OSError as error:
+            import errno
+            if error.errno != errno.EPERM or os.getpid() != os.getsid(0):
+                raise
+            # wsl.exe already established this session and group. Its group id
+            # is our pid, so the existing termination proof covers descendants.
     status = dict(pid=os.getpid(), runner_pid=os.getpid(), run_id=request['_worker_id'])
     name = 'worker-' + request['_worker_id'] + '.json'
     disk_state.save_file(request['state_dir'], name, status)
@@ -1111,6 +1139,28 @@ def cleanup_worker(request):
         raise
     disk_state.save_file(request['state_dir'], name, dict(status, completed=True, result=answer))
     json.dump(answer, sys.stdout)
+
+
+# No application import: a broken startup must still be independently verifiable.
+_CLEANUP_STARTUP_PROOF = r'''import os, sys
+from pathlib import Path
+token = sys.argv[1].encode()
+for entry in Path('/proc').iterdir():
+    if not entry.name.isdigit() or int(entry.name) == os.getpid():
+        continue
+    try:
+        if entry.stat().st_uid != os.getuid():
+            continue
+        if (entry / 'stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z':
+            continue
+        if token in (entry / 'cmdline').read_bytes().split(b'\0') or \
+                b'DROVER_RUN_ID=' + token in (entry / 'environ').read_bytes().split(b'\0'):
+            sys.exit(1)
+    except FileNotFoundError:
+        continue
+    except OSError:
+        sys.exit(2)
+'''
 
 
 def cleanup_call(side: str, request: dict) -> dict:
@@ -1160,13 +1210,13 @@ def cleanup_call(side: str, request: dict) -> dict:
     job, done, status, answer, pending = None, None, None, None, None
     evidence = {}
     reason, output, detail = 'worker_failed', '', ''
-    confirmed = False
+    confirmed, startup_failure = False, False
     def text(value):
         return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
     try:
         job = _CleanupJob(token) if IS_WINDOWS and side == 'windows' else None
         done = subprocess.run([*argv, '-c', code, root, token], input=json.dumps(request),
-                              capture_output=True, text=True, timeout=600, shell=False,
+                              capture_output=True, text=True, timeout=request['paths'].get('worker_timeout_s', 1800), shell=False,
                               env={**os.environ, 'DROVER_RUN_ID': token})
         output, detail = done.stdout, text(done.stderr)
         if not done.returncode:
@@ -1187,15 +1237,35 @@ def cleanup_call(side: str, request: dict) -> dict:
     finally:
         try:
             try:
-                status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text(encoding='utf-8'))
-                if not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
-                        status.get('run_id') != token:
+                try:
+                    status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text(encoding='utf-8'))
+                except FileNotFoundError:
+                    # The identity file is the destructive-work claim: cleanup_worker
+                    # must persist it before entering serve(). A completed, failed
+                    # subprocess with no claim never entered any stage. run() reaped
+                    # it; unlike timeout/cancellation this proves startup termination.
+                    if done is None or not done.returncode:
+                        raise
+                    startup_failure = True
+                    reason = 'worker_error'
+                    status = None
+                if not startup_failure and (not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
+                        status.get('run_id') != token):
                     raise ValueError('worker identity unavailable')
             finally:
                 # Drain the job even if reading worker identity is interrupted.
                 if job:
                     confirmed = job.terminate()
-            if not job:
+            if startup_failure and not job:
+                if IS_WINDOWS and side == 'wsl':
+                    # Reaping wsl.exe alone does not prove the Linux worker exited.
+                    # Verify absence of this execution's marker on the owning side.
+                    proof = subprocess.run(WSL().command(['python3', '-c', _CLEANUP_STARTUP_PROOF, token]),
+                                           capture_output=True, timeout=30, **NO_WINDOW)
+                    confirmed = proof.returncode == 0
+                else:
+                    confirmed = True
+            elif not job:
                 confirmed = recover_ci_children(side, status, str(Path(__file__).resolve().parents[1]))
         except BaseException as error:
             confirmed = False
@@ -1210,7 +1280,7 @@ def cleanup_call(side: str, request: dict) -> dict:
         if not confirmed or answer is None or pending is not None:
             evidence = dict(reason_code='worker_termination_unconfirmed' if answer is not None else reason,
                             output=text(output)[-4000:], error=text(detail)[-4000:],
-                            termination_confirmed=confirmed)
+                            termination_confirmed=confirmed, work_started=not startup_failure)
             try:
                 disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
             except BaseException as error:

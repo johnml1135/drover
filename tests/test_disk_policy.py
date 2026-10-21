@@ -48,8 +48,8 @@ class Policy(unittest.TestCase):
         policy = {'temp_roots': [root + '/temp'], 'report_roots': [root + '/inventory'],
                   'caches': [{'argv': ['fixture-tool', '--literal', 'a b;$(echo nope)'],
                               'cwd': root, 'placement': 'wsl'}]}
-        self.assertEqual(config.validate({'disk_cleanup': policy})['disk_cleanup'], policy)
-        self.assertEqual(config.validate({})['disk_cleanup'], {'temp_roots': [], 'report_roots': [], 'caches': []})
+        self.assertEqual(config.validate({'disk_cleanup': policy})['disk_cleanup'], dict(policy, worker_timeout_s=1800))
+        self.assertEqual(config.validate({})['disk_cleanup'], {'temp_roots': [], 'report_roots': [], 'caches': [], 'worker_timeout_s': 1800})
         state = self.fix.root / 'state'
         machine_file = state / 'repos' / 'alpha.toml'
         machine_file.parent.mkdir(parents=True)

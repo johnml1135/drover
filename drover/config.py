@@ -49,7 +49,7 @@ DEFAULT_TRACKERS = [
     {"kind": "wsl", "name": "wsl-up", "enabled": True, "distro": "", "queue_mem_pct": 0.0, "hold_mem_pct": 0.0},
 ]
 DEFAULTS = {
-    "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": []},
+    "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": [], "worker_timeout_s": 1800},
     "repos_dir": "",
     "config_sync": {"remote": "", "auto_push": True},
     "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": ""},
@@ -359,7 +359,10 @@ def _absolute_machine_path(value):
 def _cleanup_policy(raw):
     defaults = DEFAULTS["disk_cleanup"]
     _unknown(raw, defaults, ["disk_cleanup"])
-    out = {}
+    timeout = raw.get("worker_timeout_s", defaults["worker_timeout_s"])
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError("disk_cleanup.worker_timeout_s must be finite and positive")
+    out = {"worker_timeout_s": timeout}
     for key in ("temp_roots", "report_roots"):
         paths = _strs(raw.get(key, []), ["disk_cleanup", key])
         if not all(_absolute_machine_path(path) for path in paths):

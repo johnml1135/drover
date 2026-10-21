@@ -14,20 +14,12 @@ def within(path, root):
     return path == root or root in path.parents
 
 
-def facts(path, now, *, ignore_activity=()):
-    """Checked tree facts. Any link or enumeration error retains the subtree."""
-    path = Path(path)
-    if placement.cleanup_link(path):
-        raise ValueError('link or reparse point')
-    info = path.stat()
-    count, size, newest = (0, 0, (0 if path in ignore_activity else info.st_mtime)) if path.is_dir() else (1, info.st_size, info.st_mtime)
-    if path.is_dir():
-        for child in path.iterdir():
-            child_facts = facts(child, now, ignore_activity=ignore_activity)
-            count += child_facts['files']
-            size += child_facts['bytes']
-            newest = max(newest, now - child_facts['age_s'])
-    return dict(files=count, bytes=size, age_s=max(0, now - newest))
+def facts(path, now, *, ignore_activity=(), request=None):
+    """Strict safety facts. Only report-only requests may reuse an inventory."""
+    from .disk_inventory import Inventory
+    inventory = request.get('_inventory') if request and not request['apply'] and not ignore_activity else None
+    row = (inventory or Inventory(now, ignore_activity=ignore_activity)).measure(path, strict=True)
+    return {key: row[key] for key in ('files', 'bytes', 'age_s')}
 
 
 def item(path, request, reason, **extra):
@@ -49,53 +41,55 @@ def safe_path(path):
     return True
 
 
+def repository_root(candidate):
+    import os
+    marker = candidate / '.git'
+    if candidate.name == '.git':
+        return True
+    try:
+        marker.lstat()
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    # Even partial administrative layouts may contain unpublished objects.
+    if any((candidate / name).exists() for name in ('HEAD', 'objects', 'refs')):
+        return True
+    cfg = candidate / 'config'
+    if cfg.exists():
+        try:
+            env = dict(os.environ, GIT_DIR=str(candidate))
+            bare = placement.git(candidate, 'rev-parse', '--is-bare-repository',
+                                 env=env, timeout=60)
+            if bare.returncode == 0 and bare.stdout.strip() in ('true', 'false'):
+                return True
+            # Git owns its config grammar (BOM, quoting, comments, casing).
+            parsed = placement.git(candidate, 'config', '--file', str(cfg), '--list',
+                                   env=env, timeout=60)
+            if parsed.returncode or parsed.stderr:
+                return True
+            keys = [line.partition('=')[0].casefold() for line in parsed.stdout.splitlines()]
+            if any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys):
+                return True
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return True  # No certain parse, including unavailable Git: retain.
+    return False
+
+
 def repository_tree(path, *, boundary=None):
     """Repository evidence protects even damaged, unregistered and bare trees.
 
     A worktree's own gitfile is allowed only at the output stage's checked boundary.
     Never follow links while looking for evidence; unreadable trees fail closed.
     """
-    import os
     path = Path(path).absolute()
-    def root(candidate):
-        marker = candidate / '.git'
-        if candidate.name == '.git':
-            return True
-        try:
-            marker.lstat()
-            return True
-        except (FileNotFoundError, NotADirectoryError):
-            pass
-        # Even partial administrative layouts may contain unpublished objects.
-        if any((candidate / name).exists() for name in ('HEAD', 'objects', 'refs')):
-            return True
-        cfg = candidate / 'config'
-        if cfg.exists():
-            try:
-                env = dict(os.environ, GIT_DIR=str(candidate))
-                bare = placement.git(candidate, 'rev-parse', '--is-bare-repository',
-                                     env=env, timeout=60)
-                if bare.returncode == 0 and bare.stdout.strip() in ('true', 'false'):
-                    return True
-                # Git owns its config grammar (BOM, quoting, comments, casing).
-                parsed = placement.git(candidate, 'config', '--file', str(cfg), '--list',
-                                       env=env, timeout=60)
-                if parsed.returncode or parsed.stderr:
-                    return True
-                keys = [line.partition('=')[0].casefold() for line in parsed.stdout.splitlines()]
-                if any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys):
-                    return True
-            except (OSError, ValueError, subprocess.SubprocessError):
-                return True  # No certain parse, including unavailable Git: retain.
-        return False
     for parent in (path, *path.parents):
         if parent == boundary:
             break
-        if not safe_path(parent) or root(parent):
+        if not safe_path(parent) or repository_root(parent):
             return True
     if path.is_dir():
         for child in path.iterdir():
-            if not safe_path(child) or root(child) or child.is_dir() and repository_tree(child, boundary=path):
+            if not safe_path(child) or repository_root(child) or child.is_dir() and repository_tree(child, boundary=path):
                 return True
     return False
 
@@ -135,12 +129,12 @@ def temp_facts(path, request):
                 prove(child)
     if path.is_dir():
         prove(path)
-    return facts(path, request['now'])
+    return facts(path, request['now'], request=request)
 
 
 def temporary(request):
     out = result()
-    proof = placement.cleanup_processes()
+    proof = request.get('_processes') or placement.cleanup_processes()
     for root_text in request['paths'].get('temp_roots', []):
         root = Path(root_text).absolute()
         try:
@@ -253,7 +247,7 @@ def disposable_match(relative, declarations):
                for pattern in declarations for end in range(1, len(parts) + 1))
 
 
-def output_evidence(request, machine, entry, *, touched=()):
+def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     from . import ownership
     from .disk_worktrees import git, outputs_at
     path = Path(placement.native(entry['worktree']))
@@ -261,9 +255,9 @@ def output_evidence(request, machine, entry, *, touched=()):
             placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
             not placement.cleanup_contains(request, entry['worktree']):
         raise ValueError('not an eligible owning-side worktree')
-    if placement.cleanup_processes().busy(str(path)):
+    if (placement.cleanup_processes() if fresh else request.get('_processes') or placement.cleanup_processes()).busy(str(path)):
         raise ValueError('process using worktree')
-    if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched)['age_s'] < 3 * 86400:
+    if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < 3 * 86400:
         raise ValueError('worktree idle less than three days')
     head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
     return path, head, ownership.read(str(path)), outputs_at(machine, head, path)
@@ -280,7 +274,11 @@ def outputs(request: dict) -> dict:
                 try:
                     evidence = output_evidence(request, machine, entry)
                     path, head, tag, declarations = evidence
-                    dirty, ignored = status(path)
+                    dirty, ignored = status(path, expand=request['apply'])
+                    if not request['apply'] and declarations and any(
+                            Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
+                            for name in dirty + ignored):
+                        dirty, ignored = status(path)
                     tracked = set(git(path, 'ls-files', '-z').split('\0'))
                     touched = set()
                     for name in dict.fromkeys(dirty + ignored):
@@ -288,20 +286,20 @@ def outputs(request: dict) -> dict:
                         relative = target.relative_to(path)
                         if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
                             continue
-                        row = item(target, request, 'declared_disposable', repo=machine['repo'])
+                        row = item(target, request, 'declared_disposable', repo=machine['repo'], root=str(path))
                         try:
                             if not placement.cleanup_contains(request, str(target)):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, request):
                                 row['reason_code'] = 'live_owner'
-                            elif repository_tree(target, boundary=path) or overlaps_worktrees(request, target, path):
+                            elif not safe_path(target) or (repository_tree(target, boundary=path) if request['apply'] else request['_inventory'].contains_repository(target)) or overlaps_worktrees(request, target, path):
                                 row['reason_code'] = 'protected'
                             else:
-                                row.update(facts(target, request['now']), owner=tag['owner'] if tag else None, action='candidate')
+                                row.update(facts(target, request['now'], request=request), owner=tag['owner'] if tag else None, action='candidate')
                                 if request['apply']:
                                     current = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
                                     current_dirty, current_ignored = status(path)
-                                    if current != entry or output_evidence(request, machine, current, touched=touched) != evidence or \
+                                    if current != entry or output_evidence(request, machine, current, touched=touched, fresh=True) != evidence or \
                                             name not in current_dirty + current_ignored or \
                                             git(path, 'ls-files', '-z', '--', str(relative)) or \
                                             facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
@@ -328,18 +326,18 @@ def outputs(request: dict) -> dict:
 
 
 def report(request: dict) -> dict:
-    """Generic inventory, including excluded descendants; this stage never mutates."""
+    """One bounded summary per worktree/folder; this stage never mutates."""
     from . import ownership
+    from .disk_inventory import Inventory
     from .disk_worktrees import entries, status, task_facts, merged, git
+    inventory = request.get('_inventory') or Inventory(request['now'])
     out = result()
+    budgeted = set()
     def record(path, reason, owner=None):
         row = item(path, request, reason)
-        row['owner'] = owner
-        try:
-            row.update(facts(path, request['now']))
-        except (OSError, ValueError) as error:
-            row['error'] = str(error)
+        row.update(inventory.measure(path), owner=owner)
         out['items'].append(row)
+        return row
     for machine in request['repos']:
         try:
             listed = entries(machine['repo'])
@@ -347,31 +345,38 @@ def report(request: dict) -> dict:
                 path = Path(placement.native(entry['worktree']))
                 if not placement.cleanup_contains(request, entry['worktree']):
                     continue
-                # Foreign-side markers and owner notes are inventory only; never unlock.
                 tag = ownership.read(str(path)) if path.exists() else None
                 owner = tag['owner'] if tag else None
-                record(path, 'worktree_inventory', owner)
+                worktree_row = record(path, 'worktree_inventory', owner)
                 if tag and tag['owner'].startswith('drover:') and task_facts(request, path, tag)[0] and \
                         placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side() and \
                         merged(machine, git(path, 'rev-parse', '--verify', 'HEAD').strip()):
-                    record(path, 'merged_live_task', owner)
-                    out['items'][-1].update(task_id=tag['owner'][len('drover:'):], repo=machine['name'])
+                    record(path, 'merged_live_task', owner).update(task_id=tag['owner'][len('drover:'):], repo=machine['name'])
+                if machine.get('budget_gb') and placement.cleanup_path(path) not in budgeted and safe_path(path) and \
+                        placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side():
+                    row = record(path, 'budget_usage', owner)
+                    if not row.get('incomplete'):
+                        row.update(identity=placement.cleanup_path(path), repo=machine['name'], action='report')
+                        budgeted.add(row['identity'])
+                    else:
+                        out['items'].pop()  # Partial inventories cannot establish budget usage.
                 if placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side():
                     continue
                 try:
-                    dirty, ignored = status(path)
-                    touched = set()
-                    for name in dict.fromkeys(dirty + ignored):
-                        record(Path(name), 'untracked_or_ignored', owner)
-                except (OSError, ValueError):
-                    pass
+                    dirty, ignored = status(path, expand=False)
+                    if dirty or ignored:
+                        row = item(path, request, 'untracked_or_ignored')
+                        row.update(inventory.summarize(dirty + ignored), owner=owner)
+                        out['items'].append(row)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    worktree_row['status_error'] = str(error)
             root = Path(placement.native(machine['worktrees']))
             registered = {str(Path(placement.native(e['worktree']))) for e in listed}
             if root.is_dir() and safe_path(root):
                 for path in root.iterdir():
                     if str(path) not in registered and placement.cleanup_contains(request, str(path)):
                         record(path, 'unlisted_folder')
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             out['errors'].append(dict(repo=machine['repo'], error=str(error)))
     for root_text in request['paths'].get('report_roots', []):
         root = Path(root_text)

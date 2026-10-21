@@ -242,6 +242,7 @@ auto_push = true             # push after local configuration/decision commits; 
 
 # Explicit machine declarations win; install proposes editable defaults when this table is absent.
 [disk_cleanup]
+worker_timeout_s = 1800       # maximum seconds for each stage worker, on either placement
 temp_roots = []
 report_roots = []
 caches = []

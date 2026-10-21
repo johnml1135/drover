@@ -27,7 +27,8 @@ def _repos(cfg, errors=None):
             answer.append(repos.load({**raw, 'name': raw.get('name') or path.stem}, machine_path=path))
         except (OSError, ValueError) as error:
             if errors is not None:
-                errors.append(dict(path=str(path), reason_code='excluded_repo', error=str(error)))
+                errors.append(dict(path=str(path), reason_code='excluded_repo', error=str(error),
+                                   owner_action=f'commit .drover/config.toml, then drover config migrate-repo {path.stem}'))
     return answer
 
 
@@ -59,6 +60,12 @@ def _valid_result(value):
     return value
 
 
+def _save_report(state_dir, result):
+    from .disk_inventory import bound_report
+    bound_report(result)
+    disk_state.save_file(state_dir, 'last-report.json', result)
+
+
 def _reading(value):
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
 
@@ -79,6 +86,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         machines = _repos(cfg, result['errors'])
         rows = disk.read(cfg, reader=runtime.read)
         inventories = set()
+        inventory_id = uuid.uuid4().hex
         for row in rows:
             tracker = next(t for t in cfg['trackers'] if t['name'] == row['name'])
             free = row['free_gb']
@@ -92,7 +100,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                 for side in ('windows', 'wsl'):
                     request = dict(stage=stage, mode=mode, apply=apply and free is not None, now=runtime.now(),
                                    drive=drive, repos=machines, paths=cfg['disk_cleanup'],
-                                   state_dir=str(state_dir), tasks=tasks)
+                                   state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
                     try:
                         answer = _valid_result(runtime.call(side, request))
                         if stage == 6:
@@ -106,7 +114,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                         result['errors'].append(dict(stage=stage, side=side, error=str(error)))
                         if getattr(error, 'termination_confirmed', True) is False:
                             try:
-                                disk_state.save_file(state_dir, 'last-report.json', result)
+                                _save_report(state_dir, result)
                             except OSError:
                                 pass
                             raise
@@ -140,7 +148,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                         if (row['name'], side) in inventories:
                             continue
                         request = dict(stage=6, apply=False, now=runtime.now(), drive=row, repos=budgeted,
-                                       paths=cfg['disk_cleanup'], state_dir=str(state_dir), tasks=tasks)
+                                       paths=cfg['disk_cleanup'], state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
                         try:
                             answer = _valid_result(runtime.call(side, request))
                             result['items'].extend(dict(i, stage=6, side=side) for i in answer['items'])
@@ -149,10 +157,14 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                             result['errors'].append(dict(reason_code='budget_unavailable', side=side, error=str(error)))
                             if getattr(error, 'termination_confirmed', True) is False:
                                 try:
-                                    disk_state.save_file(state_dir, 'last-report.json', result)
+                                    _save_report(state_dir, result)
                                 except OSError:
                                     pass
                                 raise
+        for cache in (state_dir / 'disk').glob('inventory-' + inventory_id + '-*.json'):
+            cache.unlink(missing_ok=True)
+        from .disk_inventory import bound_report
+        bound_report(result)
         # Persist report evidence independently of the short outbox transaction.
         pending = 'pending-notices-' + uuid.uuid4().hex + '.json'
         try:
@@ -167,7 +179,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         else:
             (state_dir / 'disk' / pending).unlink(missing_ok=True)
         try:
-            disk_state.save_file(state_dir, 'last-report.json', result)
+            _save_report(state_dir, result)
         except OSError as error:
             result['errors'].append(dict(reason_code='report_persistence_failed', error=str(error)))
         if not apply and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):

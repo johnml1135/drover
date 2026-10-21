@@ -8,7 +8,21 @@ from . import placement
 
 def serve(request: dict) -> dict:
     request = placement.cleanup_scope(request)
+    from .disk_inventory import Inventory, compact
+    request['_inventory'] = Inventory(request['now'], request)
+    proof = None
+    if request['stage'] in (2, 3, 4, 5):
+        proof = request['_processes'] = placement.cleanup_processes()
     answer = _serve(request)
+    if not request['apply'] and request['stage'] < 6:
+        request['_inventory'].save()
+    answer['items'] = compact(answer['items'], request)
+    if proof:
+        for reason, count, sample in (
+                ('process_out_of_scope', getattr(proof, 'out_of_scope', 0), []),
+                ('process_visibility_unavailable', len(getattr(proof, 'unreadable', [])), getattr(proof, 'unreadable', [])[:20])):
+            if count:
+                answer['items'].append(dict(action='report', reason_code=reason, count=count, sample=sample))
     answer['errors'].extend(request['scope_errors'])
     return answer
 
@@ -37,45 +51,10 @@ def _serve(request):
         return settled(request)
     if stage in (5, 6):
         from .disk_paths import outputs, report
-        answer = outputs(request) if stage == 5 else report(request)
-        if stage == 6:
-            answer['items'].extend(_budgets(request))
-        return answer
+        return outputs(request) if stage == 5 else report(request)
     return dict(items=[], errors=[], reclaimed_bytes=0)
 
 
-
-def _budgets(request):
-    from pathlib import Path
-    from .disk_worktrees import entries
-    from .disk_paths import safe_path
-    answer = []
-    seen = set()
-    def size(path):
-        if placement.cleanup_link(path):
-            return 0
-        if path.is_dir():
-            return sum(size(p) for p in path.iterdir())
-        return path.stat().st_size
-    for machine in request['repos']:
-        if not machine.get('budget_gb'):
-            continue
-        try:
-            for entry in entries(machine['repo']):
-                path = Path(placement.native(entry['worktree']))
-                if not path.is_dir() or placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or not placement.cleanup_contains(request, str(path)):
-                    continue
-                if not safe_path(path):
-                    continue
-                identity = placement.cleanup_path(path)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                answer.append(dict(path=str(path), identity=identity, repo=machine['name'],
-                                   action='report', reason_code='budget_usage', bytes=size(path)))
-        except (OSError, ValueError):
-            continue
-    return answer
 
 if __name__ == '__main__':
     json.dump(serve(json.load(sys.stdin)), sys.stdout)
