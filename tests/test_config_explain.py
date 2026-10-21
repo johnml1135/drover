@@ -34,7 +34,7 @@ class Explain(RepoCase):
         global_path.write_text('[capacity]\nparallel_cap=4\n', encoding='utf-8')
         machine_path = directory / 'AlPhA.toml'
         machine_path.write_text(config.dumps(self.machine), encoding='utf-8')
-        # Selecting alpha must not attempt to parse this unrelated machine file.
+        # Selecting alpha must not attempt to parse this unrelated repo registration.
         (directory / 'invalid.toml').write_text('not TOML [', encoding='utf-8')
         old = self.adopt(brief='older', run={'platforms': ['wsl']})
         new = self.adopt(brief='current', run={'platforms': ['wsl'], 'env': {'A.B': 'repo'}})

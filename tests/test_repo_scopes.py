@@ -1,4 +1,4 @@
-"""Machine facts and transient owner answers through the repository loader."""
+"""Registration facts and transient owner answers through the repository loader."""
 from drover import config, repos
 from tests.test_repo_entry import RepoCase, ENTRY, SCRIPT
 
@@ -6,19 +6,19 @@ from tests.test_repo_entry import RepoCase, ENTRY, SCRIPT
 class Scopes(RepoCase):
     def test_adopted_machine_contract(self):
         self.adopt(run={'env': {'SAME': 'same', 'REPO_ONLY': 'repo'}})
-        machine_file = (self.fix.root / 'private' / 'Mixed.toml').resolve()
+        registration_file = (self.fix.root / 'private' / 'Mixed.toml').resolve()
         facts = {**self.machine, 'worktrees': str(self.fix.root / 'trees'),
                  'remote': 'upstream', 'default_branch': 'trunk', 'run': {'env': {'SAME': 'same', 'LOCAL': 'local'}}}
-        machine_file.parent.mkdir()
-        machine_file.write_text(config.dumps(facts), encoding='utf-8')
-        loaded = self.call(repos.load, facts, machine_path=machine_file)
+        registration_file.parent.mkdir()
+        registration_file.write_text(config.dumps(facts), encoding='utf-8')
+        loaded = self.call(repos.load, facts, machine_path=registration_file)
         self.assertEqual(loaded['remote'], 'upstream')
         self.assertEqual(loaded['default_branch'], 'trunk')
         self.assertEqual(loaded['run']['env'], {'SAME': 'same', 'REPO_ONLY': 'repo', 'LOCAL': 'local'})
         self.assertEqual(loaded['worktrees'], facts['worktrees'])
-        self.assertEqual(loaded['_machine_path'], str(machine_file))
-        all_repos = repos.load_all(machine_file.parent)
-        self.assertEqual(all_repos['alpha']['_machine_path'], str(machine_file))
+        self.assertEqual(loaded['_machine_path'], str(registration_file))
+        all_repos = repos.load_all(registration_file.parent)
+        self.assertEqual(all_repos['alpha']['_machine_path'], str(registration_file))
         forbidden = [({'scripts': {'test': 'scripts/bypass.ps1'}}, 'scripts'),
                      ({'brief': 'override'}, 'brief'), ({'schema_version': 1}, 'schema_version'),
                      ({'gate': {'docs_only': False}}, 'gate'), ({'review': {'model': 'x'}}, 'review'),
@@ -32,8 +32,8 @@ class Scopes(RepoCase):
         for policy, key in forbidden:
             with self.subTest(key=key):
                 with self.assertRaises(repos.RepoError) as caught:
-                    self.call(repos.load, {**facts, **policy}, machine_path=machine_file)
-                self.assertIn(str(machine_file), str(caught.exception))
+                    self.call(repos.load, {**facts, **policy}, machine_path=registration_file)
+                self.assertIn(str(registration_file), str(caught.exception))
                 self.assertIn(key, str(caught.exception))
 
     def test_transient_precedence_across_reloads(self):

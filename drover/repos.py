@@ -237,7 +237,7 @@ def landing_config(prog):
 
 
 def machine_defaults(raw, repo=""):
-    """Saved setup defaults; raw machine files may omit runtime defaults."""
+    """Saved setup defaults; raw repo registrations may omit runtime defaults."""
     raw = raw or {}
     return {"repo": raw.get("repo", repo),
             "push": (raw.get("landing") or {}).get("push", (raw.get("land") or {}).get("push", False))}
@@ -314,7 +314,7 @@ def load_all(directory=None):
 def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=None):
     """Read versioned config at revision, including on reused task worktrees; never read a dirty file.
 
-    A missing .drover/config.toml contributes an empty layer, so migration from machine files uses
+    A missing .drover/config.toml contributes an empty layer, so migration from repo registrations uses
     the same merge. An inaccessible machine checkout leaves its machine layer usable for
     startup, but an exact revision requires a reachable checkout.
     """
@@ -408,7 +408,7 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
             else:
                 forbidden = [f"{key}.{k}" for k in value] if isinstance(value, dict) and value else [key]
             raise RepoError(f"{machine_path}: {', '.join(forbidden)} is not a machine fact; run "
-                            f"python -m drover.config migrate-machine {machine.get('name', machine_path.stem)}")
+                            f"python -m drover.config migrate-registration {machine.get('name', machine_path.stem)}")
     merged = config._merge(versioned, machine)
     if answer is not None and "test" not in versioned.get("scripts", {}):
         merged = config._merge(merged, {"scripts": {"test": answer}})

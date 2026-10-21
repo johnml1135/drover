@@ -20,13 +20,13 @@ exact revisions require a reachable checkout. A present invalid entry always fai
 
 Run `python -m drover config explain capacity.parallel_cap` for machine scope, or
 `python -m drover config explain scripts --repo NAME --revision REV` for a repository at a commit.
-The JSON contains the key, effective value and terminal source labels: default, machine file, committed entry,
+The JSON contains the key, effective value and terminal source labels: default, repo registration, committed entry,
 environment variable, transient owner answer, or derived dependencies. Selectors use numeric list indices;
 escape literal dots and backslashes with a backslash. Sources are diagnostic data and never enter config files.
 
-To migrate, commit the entry and scripts together, then install a backed-up machine file containing only facts.
+To migrate, commit the entry and scripts together, then install a backed-up repo registration containing only facts.
 The wizard resolves all selected repositories before writing any state and never writes into their checkouts.
-Rollback restores both repository and machine-file backups; older commits retain fallback behavior.
+Rollback restores both repository and registration backups; older commits retain fallback behavior.
 Legacy `resources.toml` and legacy resource dictionaries are unsupported. Move load/RAM thresholds to named
 `[[trackers]]`, disk prefixes to named disk trackers, and GPU `vram_fallback_pct` to the vram tracker's
 `fallback_pct` before removing old operational files. No ledger migration is required.
@@ -66,7 +66,7 @@ committed test script > transient owner answer > machine fallback script.
 An answer remains available across commit reloads even while a committed script shadows it. Only the existing
 owner-answer mechanism authorizes it; writing a setting alone cannot authorize a script.
 
-## Machine facts and defaults
+## Registration facts and defaults
 
 The machine's `<state>/repos/<name>.toml` selects `name` and the required checkout `repo` path. Discovery uses
 the filename stem when `name` is omitted. `worktrees` defaults to `<paths.worktrees>/<name>.worktrees` when a
@@ -83,13 +83,13 @@ Machine-global keys, defaults, seat settings and resource tracker thresholds are
 lower layer. Derived values name terminal dependencies; aggregate explanations enumerate their descendants,
 including empty containers. Repository sources name `.drover/config.toml` and the full selected commit SHA.
 
-To adopt an existing machine file, first commit its policy in the repository entry,
-then run `python -m drover.config migrate-machine NAME` with the usual `DROVER_HOME`
+To adopt an existing repo registration, first commit its policy in the repository entry,
+then run `python -m drover.config migrate-registration NAME` (the earlier name `migrate-machine` still works but prints a deprecation notice) with the usual `DROVER_HOME`
 and state-directory configuration. This dry run prints the proposed facts-only
 file, lists policy keys, and reports whether the committed entry already supplies
 them or its defaults match. Any policy difference refuses the migration and names
 the machine and committed values. `--apply` saves a timestamped `.bak-…` file beside
-the machine file before writing the facts-only file. Repeating an applied migration
+the repo registration before writing the facts-only file. Repeating an applied migration
 makes no further backup. Legacy `gate.commands` tables are reported as obsolete:
 the loader already ignores them, and commands come from the committed `scripts.test`.
 Commit the entry and script before applying; rollback restores both the repository

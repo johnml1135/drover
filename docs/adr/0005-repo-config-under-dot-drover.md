@@ -18,7 +18,7 @@ links:
 
 A setting could live in up to four places (the repo's drover.toml, the machine's
 config.toml and repos/<name>.toml, ledger settings, and an app overlay at
-<checkout>/.drover/config.toml). Machine files could override a repo's scripts and
+<checkout>/.drover/config.toml). Repo registrations could override a repo's scripts and
 weaken its checks, and `.drover/` meant different things in different repos.
 
 ## Decision Outcome
@@ -32,7 +32,7 @@ Two scopes, one entry file each:
   `.drover/scripts/*.ps1`.
 * **Machine scope** (state dir): `config.toml` (seats, models, paths, hub),
   `repos/<name>.toml` with machine facts only (path, remote, tool paths, env), and the
-  tuner's `policy.json`. A machine file may not set repo keys once the repo has its
+  tuner's `policy.json`. A repo registration may not set repo keys once the repo has its
   `.drover/config.toml`.
 * Drover's own app overlay is deleted; Drover's repo is configured like any other.
 * Ledger settings are runtime switches (pause, slots, tokens), never configuration.
@@ -41,4 +41,4 @@ Two scopes, one entry file each:
 
 Phase 3b moves Drover's own configuration and scripts to `.drover/` and adds a
 `config explain` command that names the layer each value came from. Other repos keep
-the machine-file fallback until they commit `.drover/config.toml`.
+the registration fallback until they commit `.drover/config.toml`.

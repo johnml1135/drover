@@ -48,7 +48,7 @@ Open `http://127.0.0.1:8765`. For installation at login and remote access, follo
 Re-run `python -m drover init` and select a discovered repo. Alternatively, copy
 [acme-lib.toml](repos/acme-lib.toml) into `<state>/repos/`, then edit its name, repo path,
 worktree path, default branch and remote. [acme-app.toml](repos/acme-app.toml) is another neutral example.
-Machine files hold local facts; repository rules belong in a committed `.drover/config.toml`:
+Repo registrations hold registration facts; repository rules belong in a committed `.drover/config.toml`:
 
 ```toml
 schema_version = 1

@@ -67,6 +67,14 @@ _Avoid_: Host, side, target
 One git repository Drover merges work into, with its own rules for where runs execute, how work is checked and how it merges.
 _Avoid_: Program, project, rig
 
+**Repo registration**:
+The file in the state directory's `repos/` folder (for example `motif.toml`) that records this computer's facts about where one repo lives. It is private to the machine and holds registration facts only.
+_Avoid_: Machine file, machine config, repo file
+
+**Registration facts**:
+What a repo registration holds: the repo's name, checkout path, worktree path, default branch and remote, and optional run environment. They differ from repo policy, which is the repo's rules (scripts, checks, merge behaviour) and lives in the repo's committed `.drover/config.toml`, so it travels with each commit.
+_Avoid_: Machine facts, machine policy
+
 **Task**:
 The single unit of tracked work: one ledger entry with acceptance criteria and a file scope; it writes to at most one repo, its home repo, and merges there as one squashed commit.
 _Avoid_: Slice, bead, ticket, issue
@@ -256,6 +264,7 @@ _Avoid_: Garden deletion
 
 | Old | New |
 |---|---|
+| machine file | repo registration (its contents: registration facts) |
 | workflow level, level (of workflow) | track |
 | plan, implementation plan (for this meaning) | build contract |
 | receipt, gate receipt | CI result |

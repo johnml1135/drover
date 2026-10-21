@@ -712,9 +712,9 @@ def dumps(table, _path=()):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="drover.config")
-    ap.add_argument("action", nargs="?", choices=("sync", "explain", "migrate-machine"))
+    ap.add_argument("action", nargs="?", choices=("sync", "explain", "migrate-registration", "migrate-machine"))
     ap.add_argument("key", nargs="?")
-    ap.add_argument("--apply", action="store_true", help="apply machine migration after backing up the file")
+    ap.add_argument("--apply", action="store_true", help="apply registration migration after backing up the file")
     ap.add_argument("--repo", metavar="NAME")
     ap.add_argument("--revision", metavar="REV")
     ap.add_argument("--json", action="store_true")
@@ -735,10 +735,13 @@ def main(argv=None):
         origins = {}
         cfg = load(sources=origins)
         if a.action == "migrate-machine":
+            print("migrate-machine is deprecated; use migrate-registration.", file=sys.stderr)
+            a.action = "migrate-registration"
+        if a.action == "migrate-registration":
             from datetime import datetime, timezone
             from . import repos
             if not a.key or a.repo or a.revision is not None:
-                raise ConfigError("migrate-machine requires a repository name")
+                raise ConfigError("migrate-registration requires a repository name")
             path = next((p for p in sorted(repos_dir(cfg).glob("*.toml"))
                          if p.stem.lower() == a.key.lower()), None)
             if path is None:
@@ -756,8 +759,8 @@ def main(argv=None):
             use(cfg, sources=origins)
             committed = repos.load(facts, machine_path=path, sources=origins)
             if not committed["_adopted"]:
-                raise ConfigError("commit .drover/config.toml before migrating the machine file")
-            print(f"Machine facts for {path}:\n{dumps(facts)}", end="")
+                raise ConfigError("commit .drover/config.toml before migrating the repo registration")
+            print(f"Registration facts for {path}:\n{dumps(facts)}", end="")
             print("Policy belongs in committed .drover/config.toml:")
             differences = []
             for table, value in raw.items():
@@ -774,7 +777,7 @@ def main(argv=None):
                     try:
                         actual = dig(committed, canonical)
                     except ConfigError:
-                        differences.append(f"{key}: machine={supplied!r}, committed=<absent>")
+                        differences.append(f"{key}: registration={supplied!r}, committed=<absent>")
                         continue
                     # Placement sets have a canonical order in the loader.
                     expected = [p for p in repos.PLATFORMS if p in supplied] if key == "run.platforms" \
@@ -784,7 +787,7 @@ def main(argv=None):
                     else:
                         same = type(expected) is type(actual) and expected == actual
                     if not same:
-                        differences.append(f"{key}: machine={supplied!r}, committed={actual!r}")
+                        differences.append(f"{key}: registration={supplied!r}, committed={actual!r}")
                     else:
                         source = origins.get(canonical, "")
                         present = source.startswith("repo:") or any(
@@ -795,18 +798,18 @@ def main(argv=None):
             if differences:
                 raise ConfigError("policy differs; refusing migration:\n" + "\n".join(differences))
             if raw == facts:
-                print("Machine file is already facts-only.")
+                print("Repo registration is already facts-only.")
             elif a.apply:
                 backup = path.with_name(path.name + ".bak-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
                 with backup.open("xb") as stream:
                     stream.write(original)
                 path.write_text(dumps(facts), encoding="utf-8")
-                print(f"Backup: {backup}\nApplied machine migration.")
+                print(f"Backup: {backup}\nApplied registration migration.")
             else:
                 print("Dry run; use --apply to back up and write the facts-only file.")
             return 0
         if a.apply:
-            raise ConfigError("--apply requires migrate-machine")
+            raise ConfigError("--apply requires migrate-registration")
         if a.action == "explain":
             if not a.key:
                 raise ConfigError("explain requires a key")

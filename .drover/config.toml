@@ -1,6 +1,6 @@
 schema_version = 1
 
-# Repo rules travel with the commit. Machine files supply local facts.
+# Repo rules travel with the commit. Repo registrations supply local facts.
 [scripts]
 test = ".drover/scripts/test.ps1"
 

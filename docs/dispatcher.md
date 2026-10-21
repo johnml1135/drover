@@ -39,7 +39,7 @@ Placement rules:
 - The repo's `[run].platforms` lists allowed platforms; `[run].default` supplies the default.
 - Tasks with no eligible seat or platform go to the owner with a reason naming the constraint.
 
-Repo rules come from `.drover/config.toml` at the task or CI commit, followed by the private machine file's
+Repo rules come from `.drover/config.toml` at the task or CI commit, followed by the private repo registration's
 local facts and env. Adopted repos reject machine policy; absent entries retain machine fallback. Only `drover.repos` loads these keys. `[scripts]` maps action names to relative PowerShell paths.
 Each runs as `pwsh -NoLogo -NoProfile -NonInteractive -File <script>` with the worktree as cwd;
 no command is inferred or rewritten for a platform. The script's exit code and output tail form the result.

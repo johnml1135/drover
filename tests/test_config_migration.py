@@ -33,14 +33,22 @@ class Migration(RepoCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
-    def cli(self, *args):
+    def cli(self, *args, command='migrate-registration'):
         output, errors = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             try:
-                status = config.main(['migrate-machine', 'alpha', *args])
+                status = config.main([command, 'alpha', *args])
             except SystemExit as error:
                 self.fail(f'migration CLI is missing: {error}')
         return status, output.getvalue(), errors.getvalue()
+
+    def test_deprecated_migrate_machine_alias_runs_new_command(self):
+        new = self.cli(command='migrate-registration')
+        old = self.cli(command='migrate-machine')
+        self.assertEqual(old[0], new[0])
+        self.assertEqual(old[1], new[1])
+        self.assertIn('migrate-machine is deprecated; use migrate-registration.', old[2])
+        self.assertNotIn('deprecated', new[2])
 
     def test_dry_run_apply_backup_and_reload(self):
         original = self.path.read_bytes()
@@ -79,7 +87,7 @@ class Migration(RepoCase):
     def test_rejection_names_migration_command(self):
         with self.assertRaises(repos.RepoError) as caught:
             repos.load(self.raw, machine_path=self.path)
-        self.assertIn('python -m drover.config migrate-machine alpha', str(caught.exception))
+        self.assertIn('python -m drover.config migrate-registration alpha', str(caught.exception))
 
     def test_environment_facts_survive(self):
         self.raw['run']['env'] = {'LOCAL.PATH': 'local tools'}
