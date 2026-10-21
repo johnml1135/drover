@@ -127,3 +127,11 @@ canonical relative literal paths, without globs, dot segments or `.git`.
 Machine files cannot override this policy after adoption. Declared outputs
 still require clean, idle worktrees and ignored/untracked containment evidence;
 tracked files and protected or linked targets are retained.
+
+When `[disk_cleanup]` is absent, global `config migrate-machine` proposes editable
+machine defaults before writing: the OS temp directory, `<state>/scratch`, and
+existing agent scratch roots. Only tools detected on PATH receive literal cache
+commands (uv cache prune, pip cache purge, npm cache clean --force, and dotnet
+nuget locals http-cache --clear). Each command records its placement and absolute
+working directory. Existing `[disk_cleanup]` declarations, including empty lists,
+are preserved. Review the dry report before applying the migration or installer.

@@ -793,6 +793,8 @@ def migrate_disk_config(raw):
         rows.append(tracker)
     if "trackers" in proposed:
         proposed["trackers"] = rows
+    if "disk_cleanup" not in proposed:
+        proposed["disk_cleanup"] = placement.detected_cleanup_policy(state_dir(validate(proposed)))
     validate(proposed)
     return proposed
 

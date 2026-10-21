@@ -38,3 +38,9 @@ class Modes(DiskCase):
         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
         self.assertTrue(all(item.get('action') != 'removed' for item in result['items']))
         self.assertTrue(all(not item.get('reclaimed_bytes', 0) for item in result['items']))
+
+    def test_invalid_machine_repo_is_reported_without_authorizing_its_paths(self):
+        bad = self.repos_dir / 'unreadable.toml'
+        bad.write_text('invalid machine bytes')
+        result = self.run_cleanup()
+        self.assertTrue(any(str(bad) in str(error) for error in result['errors']))

@@ -76,3 +76,24 @@ class Policy(unittest.TestCase):
                 with self.subTest(key=key, value=value):
                     with self.assertRaises(config.ConfigError):
                         config.validate({'disk_cleanup': {key: value}})
+
+    def test_detected_machine_defaults_are_editable_and_absent_tools_omitted(self):
+        from drover import placement
+        scratch = self.fix.root / 'agent scratch'
+        scratch.mkdir()
+        with patch.object(placement, 'CLEANUP_SCRATCH_ROOTS', (str(scratch),)), \
+                patch.object(placement.shutil, 'which', side_effect=lambda tool: '/tools/' + tool if tool in ('uv', 'npm') else None), \
+                patch('tempfile.gettempdir', return_value=str(self.fix.root / 'os temp')):
+            raw = {'paths': {'state_dir': str(self.fix.root / 'state')}}
+            seeded = config.migrate_disk_config(raw)
+            policy = seeded['disk_cleanup']
+            self.assertEqual(policy['temp_roots'], [str(self.fix.root / 'os temp'),
+                             str(self.fix.root / 'state' / 'scratch'), str(scratch)])
+            self.assertEqual([item['argv'] for item in policy['caches']],
+                             [['uv', 'cache', 'prune'], ['npm', 'cache', 'clean', '--force']])
+            self.assertTrue(all(item['cwd'] == str(self.fix.root) or item['cwd'] == str(self.fix.root / 'state')
+                                for item in policy['caches']))
+            config.validate(seeded)
+            self.assertEqual(config.migrate_disk_config(seeded), seeded)
+            explicit = {**raw, 'disk_cleanup': {'temp_roots': [], 'report_roots': [], 'caches': []}}
+            self.assertEqual(config.migrate_disk_config(explicit), explicit)

@@ -933,3 +933,107 @@ def default_disk_trackers() -> list[dict]:
     return [{"kind": "disk", "name": name, "enabled": True, "path": path,
              **dict(zip(keys, (60.0, 40.0, 25.0, 15.0) if drive(path) == "C" else (150.0, 100.0, 50.0, 25.0)))}
             for name, path in paths]
+
+
+# Detection is installation data, never stage policy. Existing declarations win.
+CLEANUP_CACHE_COMMANDS = (
+    ('uv', ('uv', 'cache', 'prune')),
+    ('pip', ('pip', 'cache', 'purge')),
+    ('npm', ('npm', 'cache', 'clean', '--force')),
+    ('dotnet', ('dotnet', 'nuget', 'locals', 'http-cache', '--clear')),
+)
+CLEANUP_SCRATCH_ROOTS = ('~/.claude/scratchpad', '~/.codex/scratchpad',)
+
+
+def detected_cleanup_policy(state_dir):
+    """Editable machine defaults for installed tools and existing scratch roots."""
+    import tempfile
+    side = 'windows' if IS_WINDOWS else 'wsl'
+    state = Path(state_dir).expanduser().absolute()
+    roots = [tempfile.gettempdir(), str(state / 'scratch')]
+    roots.extend(str(Path(p).expanduser().absolute()) for p in CLEANUP_SCRATCH_ROOTS
+                 if Path(p).expanduser().is_dir())
+    return dict(temp_roots=list(dict.fromkeys(roots)), report_roots=[], caches=[
+        dict(argv=list(argv), cwd=str(state), placement=side)
+        for tool, argv in CLEANUP_CACHE_COMMANDS if shutil.which(tool)])
+
+
+def trim_argv():
+    """No privilege prompts: Windows runs the pinned WSL distro's root trim."""
+    if IS_WINDOWS:
+        return ['wsl.exe', '-d', distro(), '-u', 'root', '--', 'fstrim', '-v', '/']
+    return ['fstrim', '-v', '/'] if os.geteuid() == 0 else None
+
+
+def cleanup_runtime(cfg):
+    from .disk import _free
+    from .disk_cleanup import CleanupRuntime
+    return CleanupRuntime(time.time, _free, cleanup_call, lambda notice: None)
+
+
+def cleanup_call(side: str, request: dict) -> dict:
+    """Run a fixed JSON worker; only declared paths are translated across sides."""
+    if side not in ('windows', 'wsl'):
+        raise ValueError('invalid cleanup side')
+    if not IS_WINDOWS and side == 'windows':
+        return dict(items=[], errors=[dict(reason_code='side_unavailable')], reclaimed_bytes=0)
+    import copy
+    import tempfile
+    request = copy.deepcopy(request)
+    request['side'] = side
+    root = str(Path(__file__).resolve().parents[1])
+    if IS_WINDOWS and side == 'wsl':
+        convert = to_wsl_path
+        request['state_dir'] = convert(request['state_dir'])
+        for repo in request['repos']:
+            for key in ('repo', 'worktrees'):
+                if repo.get(key):
+                    repo[key] = convert(repo[key])
+        for key in ('temp_roots', 'report_roots'):
+            request['paths'][key] = [convert(p) for p in request['paths'].get(key, [])]
+        for cache in request['paths'].get('caches', []):
+            cache['cwd'] = convert(cache['cwd'])
+        argv = ['wsl.exe', '-d', distro(), '--', 'python3']
+        root = convert(root)
+    else:
+        argv = [sys.executable]
+    # Pin the application root independently of cwd or the hub's environment.
+    code = 'import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module("drover.disk_side",run_name="__main__")'
+    done = subprocess.run([*argv, '-c', code, root], input=json.dumps(request),
+                          capture_output=True, text=True, timeout=600, shell=False)
+    if done.returncode:
+        raise RuntimeError('cleanup worker failed: ' + done.stderr[-2000:])
+    return json.loads(done.stdout)
+
+
+def cleanup_side():
+    return 'windows' if IS_WINDOWS else 'wsl'
+
+
+def cleanup_link(path):
+    """Symlinks, Windows junctions and reparse points never authorize traversal."""
+    import stat
+    info = Path(path).lstat()
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_file_attributes', 0) & 0x400)
+
+
+def cleanup_scope(request):
+    """Keep only this physical drive; path spelling/translation lives here."""
+    import copy
+    import tempfile
+    scoped = copy.deepcopy(request)
+    def belongs(path):
+        host = physical_disk_path(path)
+        declared = request['drive']['path']
+        if declared and Path(path).is_absolute() and Path(path).is_relative_to(Path(declared)):
+            return True
+        return host is not None and str(host).casefold() == str(physical_disk_path(declared)).casefold()
+    scoped['repos'] = [repo for repo in request['repos'] if belongs(repo['repo'])]
+    for name in ('temp_roots', 'report_roots'):
+        roots = request['paths'].get(name, [])
+        if name == 'temp_roots':
+            roots = [*roots, tempfile.gettempdir(), str(Path(request['state_dir']) / 'scratch')]
+        scoped['paths'][name] = list(dict.fromkeys(p for p in roots if belongs(p)))
+    scoped['paths']['caches'] = [entry for entry in request['paths'].get('caches', [])
+                                if entry['placement'] == cleanup_side() and belongs(entry['cwd'])]
+    return scoped
