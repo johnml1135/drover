@@ -28,6 +28,18 @@ ROOT = Path(__file__).resolve().parents[1]
 TIMINGS = Path(tempfile.gettempdir()) / 'drover-test-timings.json'
 MODULE_TIMEOUT_S = 900
 SLOW_MODULE_S = 60
+SHARD_ABOVE_S = 40          # a module whose last run took longer than this is split across workers
+SHARD_SIZE = 12             # tests per shard
+HEAVY = {'tests.test_pipeline', 'tests.test_landing', 'tests.test_replans', 'tests.test_garden', 'tests.test_hub_runtime',
+         'tests.test_waiting_consumers', 'tests.test_platforms', 'tests.test_waiting_characterization'}  # before any timing exists
+LIST_IDS = '''
+import sys, unittest
+def flat(s):
+    for t in s:
+        yield from flat(t) if isinstance(t, unittest.TestSuite) else [t]
+for t in flat(unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])):
+    print(t.id())
+'''
 
 
 def modules():
@@ -47,9 +59,17 @@ def counts(output):
     return (int(ran.group(1)) if ran else 0), (int(skipped.group(1)) if skipped else 0)
 
 
-def run_module(name, env, durations, timeout):
+def test_ids(name, env):
+    """Every test id of a module, or None when it cannot be listed (it then runs whole)."""
+    r = subprocess.run([sys.executable, '-c', LIST_IDS, name], cwd=ROOT, env=env, capture_output=True, text=True,
+                       errors='replace', stdin=subprocess.DEVNULL)
+    ids = r.stdout.split()
+    return ids if r.returncode == 0 and ids else None
+
+
+def run_module(name, env, durations, timeout, ids=None):
     start = time.monotonic()
-    cmd = [sys.executable, '-m', 'unittest', name] + (['--durations', str(durations)] if durations else [])
+    cmd = [sys.executable, '-m', 'unittest', *(ids or [name])] + (['--durations', str(durations)] if durations else [])
     try:
         r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, errors='replace', timeout=timeout,
                            stdin=subprocess.DEVNULL)
@@ -60,6 +80,8 @@ def run_module(name, env, durations, timeout):
     ran, skipped = counts(output)
     if code != 0 and not ran and 'unittest.case.SkipTest' in output:
         code, skipped = 0, 1       # the module skips itself at import (for example hub deps missing); discover reports a skip
+    if ids and not ran and code == 0:
+        code = 1
     return {'module': name, 'code': code, 'ran': ran, 'skipped': skipped, 'seconds': time.monotonic() - start,
             'output': output}
 
@@ -98,11 +120,24 @@ def main(argv=None):
     timings = load_timings()
     chosen.sort(key=lambda m: -timings.get(m, (ROOT / 'tests' / (m.split('.')[-1] + '.py')).stat().st_size / 1000
                                            if (ROOT / 'tests' / (m.split('.')[-1] + '.py')).exists() else 0))
-    print(f'{len(chosen)} modules, {args.jobs} workers, tier={args.tier}, python={sys.executable}', flush=True)
+    jobs = []
+    for name in chosen:
+        ids = None
+        if args.jobs > 1 and (timings.get(name, 0) > SHARD_ABOVE_S or (name not in timings and name in HEAVY)):
+            ids = test_ids(name, env)
+        if ids and len(ids) > SHARD_SIZE:
+            count = -(-len(ids) // SHARD_SIZE)
+            size = -(-len(ids) // count)
+            jobs += [(name, ids[i:i + size]) for i in range(0, len(ids), size)]
+        else:
+            jobs.append((name, None))
+    print(f'{len(chosen)} modules in {len(jobs)} jobs, {args.jobs} workers, tier={args.tier}, python={sys.executable}',
+          flush=True)
     results, lock, start = [], threading.Lock(), time.monotonic()
 
-    def work(name):
-        result = run_module(name, env, args.durations, args.timeout)
+    def work(job):
+        name, ids = job
+        result = run_module(name, env, args.durations, args.timeout, ids)
         with lock:
             results.append(result)
             status = 'ok  ' if result['code'] == 0 else 'FAIL'
@@ -112,13 +147,16 @@ def main(argv=None):
 
     try:
         with ThreadPoolExecutor(args.jobs) as pool:
-            list(pool.map(work, chosen))
+            list(pool.map(work, jobs))
     finally:
         if owned:
             shutil.rmtree(env['DROVER_TEST_TMPDIR'], ignore_errors=True)
     wall = time.monotonic() - start
     try:
-        TIMINGS.write_text(json.dumps({**timings, **{r['module']: r['seconds'] for r in results}}))
+        totals = {}
+        for r in results:
+            totals[r['module']] = totals.get(r['module'], 0) + r['seconds']
+        TIMINGS.write_text(json.dumps({**timings, **totals}))
     except OSError:
         pass
 
@@ -132,7 +170,7 @@ def main(argv=None):
                 print(f"\n--- {r['module']} slowest ---" + tail[1].split('\n\n')[0].rstrip())
     ran, skipped = sum(r['ran'] for r in results), sum(r['skipped'] for r in results)
     slow = [r['module'] for r in results if r['seconds'] > SLOW_MODULE_S]
-    print(f"\nRan {ran} tests ({skipped} skipped) in {len(results)} modules, wall {wall:.1f}s, "
+    print(f"\nRan {ran} tests ({skipped} skipped) in {len({r['module'] for r in results})} modules, wall {wall:.1f}s, "
           f"{len(failed)} failed modules" + (f"; modules over {SLOW_MODULE_S}s: {', '.join(slow)}" if slow else ''))
     if ran == 0 and not failed:
         print('no tests ran')
