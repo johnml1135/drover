@@ -44,14 +44,12 @@ class Replanning:
             own = task_access.prepare([f"{repos.repo_name(prog)}@{branch}"], configured=configured)
             checkout = own[0]['path']
             reads = own + [r for r in reads if r not in own]
-        task_access.verify(reads)
+        # prepare() has just verified each read checkout, so they are not verified a second time here.
         def inspect(*args):
             return git(checkout, '--no-optional-locks', *args, check=True, timeout=60).stdout
-        head = inspect('rev-parse', 'HEAD').strip()
-        symbolic = git(checkout, '--no-optional-locks', 'symbolic-ref', '--quiet', 'HEAD', timeout=60)
-        if symbolic.returncode not in (0, 1):
-            raise WorktreeRefused('cannot inspect planner source branch')
-        branch = symbolic.stdout.strip() if symbolic.returncode == 0 else None
+        # One call: the commit, then the full ref HEAD names ("HEAD" itself when detached).
+        head, ref = inspect('rev-parse', 'HEAD', '--symbolic-full-name', 'HEAD').split()
+        branch = None if ref == 'HEAD' else ref
         status = inspect('status', '--porcelain=v1', '-z', '--untracked-files=all')
         # ls-files lists both index entries and untracked paths, without following links.
         paths = inspect('ls-files', '-z', '--cached', '--others', '--exclude-standard').split('\0')

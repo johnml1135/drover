@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from drover import brief, launch
 from drover import task_access
@@ -83,6 +84,29 @@ class AccessTests(unittest.TestCase):
             task_access.verify(reads)
             (dest / 'extra').write_text('bad')
             with self.assertRaises(ValueError):
+                task_access.verify(reads)
+
+    def test_verify_detects_moved_head_and_ignored_files_in_one_git_call(self):
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        with tempfile.TemporaryDirectory() as tmp:
+            reads = task_access.prepare(['p'], {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}, tmp)
+            dest = Path(reads[0]['path'])
+            real, calls = task_access.placement.git, []
+            def counting(path, *args, **kw):
+                calls.append(args)
+                return real(path, *args, **kw)
+            with patch.object(task_access.placement, 'git', counting):
+                task_access.verify(reads)
+            self.assertEqual(len(calls), 1, calls)
+            (dest / '.git' / 'info' / 'exclude').write_text('hidden\n')
+            (dest / 'hidden').write_text('ignored but present')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                task_access.verify(reads)
+            (dest / 'hidden').unlink()
+            task_access.verify(reads)
+            repo.git('commit', '--allow-empty', '-m', 'later', cwd=dest)
+            with self.assertRaisesRegex(ValueError, 'changed'):
                 task_access.verify(reads)
 
     def test_remote_tracking_only_read_keeps_history(self):

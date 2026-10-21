@@ -437,6 +437,21 @@ class BatchPipelineCase(single.PlannerDispatchCase):
     def planning(self):
         return waiting_tests.require(self, 'drover.replan', 'Replanning')(self.pipe)
 
+    def inspect_once(self):
+        """Inspect each task's checkouts for real once, then reuse that answer for the rest of the test.
+
+        For tests about batching and dispatch whose checkouts never change; every inspection spawns a dozen git
+        processes, which dominates their runtime on Windows.  Tests of freshness do not use it."""
+        from drover.replan import Replanning
+        real, seen = Replanning._inputs, {}
+        def once(replanning, task):
+            if task['id'] not in seen:
+                seen[task['id']] = real(replanning, task)
+            return copy.deepcopy(seen[task['id']])
+        patcher = patch.object(Replanning, '_inputs', once)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def prepare(self, planning, assign=None, now=1000):
         return planning.prepare(assign or (lambda task, inputs: dict(ROUTE)), now=now)
 
@@ -457,6 +472,7 @@ class BatchPipelineCase(single.PlannerDispatchCase):
 
 class Preparation(BatchPipelineCase):
     def test_repo_assignment_partition(self):
+        self.inspect_once()
         planning = self.planning()
         tids, requests = self.queue(9)
         ops.update_task(self.conn, tids[8], repo='P')
@@ -482,6 +498,7 @@ class Preparation(BatchPipelineCase):
         self.assertEqual(tuple(third.task_ids), (q,))
 
     def test_epic_dependency_scope_preference_topology(self):
+        self.inspect_once()
         planning = self.planning()
         epic = ops.create_epic(self.conn, 'p', 'preferred')['id']
         other = ops.create_epic(self.conn, 'p', 'unrelated')['id']
@@ -503,6 +520,7 @@ class Preparation(BatchPipelineCase):
         self.assertEqual(len(set(batch.task_ids) & set(unrelated)), 4)
 
     def test_eight_and_brief_caps(self):
+        self.inspect_once()
         planning = self.planning()
         tids, requests = self.queue(10)
         batch = self.prepare(planning)
@@ -584,6 +602,7 @@ class Preparation(BatchPipelineCase):
 
 class Dispatch(BatchPipelineCase):
     def test_eight_requests_one_process_one_seat(self):
+        self.inspect_once()
         ops.add_policy_version(self.conn, 'batch-cap', {'parallel_cap': 1})
         tids, requests, spec = self.run_batch(8)
         self.d.tick()
@@ -601,6 +620,7 @@ class Dispatch(BatchPipelineCase):
         self.assertTrue(all(self.get(tid)['goal'] == single.REVISE['goal'] for tid in tids))
 
     def test_other_bucket_can_launch(self):
+        self.inspect_once()
         from tests.gitfix import Repo
         other = Repo()
         self.addCleanup(other.cleanup)
@@ -615,6 +635,7 @@ class Dispatch(BatchPipelineCase):
         self.assertNotEqual(attachments[p[0]], attachments[q[0]])
 
     def test_every_member_readonly(self):
+        self.inspect_once()
         tids, requests = self.queue(3)
         sources = [self.pipe.worktree(self.get(tid)) for tid in tids]
         self.d.tick()
@@ -636,6 +657,7 @@ class Dispatch(BatchPipelineCase):
 
     @unittest.skipIf(os.name == 'nt', 'executable stand-ins run on WSL; reviewer checks Windows')
     def test_composed_batch_command(self):
+        self.inspect_once()
         # T4 and T5 gated with T6 for this real composed-command test (erratum 2).
         planning = self.planning()
         executable = Path(self.tmp.name) / 'planner-backend'
@@ -678,6 +700,10 @@ print(json.dumps(payload))
 
 
 class Recovery(BatchPipelineCase):
+    def setUp(self):
+        super().setUp()
+        self.inspect_once()
+
     def test_crash_before_access_event(self):
         planning = self.planning()
         tids, requests = self.queue()
@@ -950,6 +976,10 @@ class BatchRegressions(BatchLedgerCase):
 
 
 class PreparationRegressions(BatchPipelineCase):
+    def setUp(self):
+        super().setUp()
+        self.inspect_once()
+
     def test_exhausted_seed_does_not_starve_other_members(self):
         planning = self.planning()
         tids, _ = self.queue(3)
@@ -963,6 +993,10 @@ class PreparationRegressions(BatchPipelineCase):
 
 
 class EnvelopeRegressions(BatchPipelineCase):
+    def setUp(self):
+        super().setUp()
+        self.inspect_once()
+
     def test_valid_empty_envelope_retries_members_but_finishes_execution(self):
         planning = self.planning()
         tids, _ = self.queue()
@@ -975,6 +1009,10 @@ class EnvelopeRegressions(BatchPipelineCase):
 
 
 class AssignmentRegressions(BatchPipelineCase):
+    def setUp(self):
+        super().setUp()
+        self.inspect_once()
+
     def test_restore_keeps_assignment_before_access_event(self):
         planning = self.planning()
         self.queue()

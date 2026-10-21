@@ -31,10 +31,13 @@ def _git(path, *args):
 
 
 def verify(reads):
+    """One status call carries both the commit (branch.oid header) and any change, including ignored files."""
     for read in reads:
         path = read['path']
-        if _git(path, 'rev-parse', 'HEAD') != read['sha'] or _git(
-                path, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'):
+        lines = _git(path, 'status', '--porcelain=v2', '--branch', '--untracked-files=all',
+                     '--ignored=matching').splitlines()
+        head = next((line.split(' ', 2)[2] for line in lines if line.startswith('# branch.oid ')), None)
+        if head != read['sha'] or any(not line.startswith('# ') for line in lines):
             raise ValueError(f'read-only checkout changed: {path}')
 
 
