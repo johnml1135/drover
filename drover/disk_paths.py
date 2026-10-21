@@ -13,16 +13,16 @@ def within(path, root):
     return path == root or root in path.parents
 
 
-def facts(path, now):
+def facts(path, now, *, ignore_activity=()):
     """Checked tree facts. Any link or enumeration error retains the subtree."""
     path = Path(path)
     if placement.cleanup_link(path):
         raise ValueError('link or reparse point')
     info = path.stat()
-    count, size, newest = (0, 0, info.st_mtime) if path.is_dir() else (1, info.st_size, info.st_mtime)
+    count, size, newest = (0, 0, (0 if path in ignore_activity else info.st_mtime)) if path.is_dir() else (1, info.st_size, info.st_mtime)
     if path.is_dir():
         for child in path.iterdir():
-            child_facts = facts(child, now)
+            child_facts = facts(child, now, ignore_activity=ignore_activity)
             count += child_facts['files']
             size += child_facts['bytes']
             newest = max(newest, now - child_facts['age_s'])
@@ -93,6 +93,9 @@ def caches(request):
     import subprocess
     out = result()
     for entry in request['paths'].get('caches', []):
+        if 'path' in entry:
+            folder_cache(request, entry, out)
+            continue
         row = item(entry['cwd'], request, 'declared_cache')
         row.update(argv=entry['argv'], action='candidate')
         if request['apply']:
@@ -109,81 +112,117 @@ def caches(request):
     return out
 
 
-def output_evidence(request, machine, entry):
+def folder_cache(request, entry, out):
+    root = Path(entry['path'])
+    if not root.is_dir() or not safe_path(root):
+        return
+    aggressive = request.get('mode') != 'daily' and request['drive'].get('level') in ('warn', 'queue', 'hold', 'critical')
+    try:
+        candidates = []
+        for path in root.rglob('*'):
+            if not safe_path(path) or not path.is_file():
+                continue
+            info = path.stat()
+            activity = info.st_atime if info.st_atime > info.st_mtime else info.st_mtime
+            if aggressive or request['now'] - activity > entry.get('max_age_days', 30) * 86400:
+                candidates.append((activity, str(path), path, info))
+        for activity, _, path, info in sorted(candidates):
+            if aggressive and request['apply']:
+                free = placement.cleanup_free(root)
+                if type(free) not in (int, float) or not __import__('math').isfinite(free) or free < 0 or free >= request['drive']['warn_gb']:
+                    break
+            row = item(path, request, 'folder_cache')
+            row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
+            if request['apply'] and safe_path(path) and path.stat() == info and not placement.cleanup_processes().busy(str(path)):
+                path.unlink()
+                row['action'] = 'removed'
+                out['reclaimed_bytes'] += info.st_size
+            out['items'].append(row)
+    except (OSError, ValueError) as error:
+        out['errors'].append(dict(path=str(root), error=str(error)))
+
+
+def disposable_match(relative, declarations):
+    """Match a path or any containing directory against committed relative globs."""
+    import fnmatch
+    parts = Path(relative).parts
+    def match(names, pattern):
+        if not pattern:
+            return not names
+        if pattern[0] == '**':
+            return match(names, pattern[1:]) or bool(names) and match(names[1:], pattern)
+        return bool(names) and fnmatch.fnmatchcase(names[0], pattern[0]) and match(names[1:], pattern[1:])
+    return any(match(parts[:end], tuple(pattern.split('/')))
+               for pattern in declarations for end in range(1, len(parts) + 1))
+
+
+def output_evidence(request, machine, entry, *, touched=()):
     from . import ownership
-    from .disk_worktrees import git, outputs_at, status, task_facts
+    from .disk_worktrees import git, outputs_at
     path = Path(placement.native(entry['worktree']))
     if path == Path(placement.native(machine['repo'])) or not path.is_dir() or not safe_path(path) or \
             placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
             not placement.cleanup_contains(request, entry['worktree']):
         raise ValueError('not an eligible owning-side worktree')
-    tag = ownership.read(str(path))
-    if task_facts(request, path, tag)[0] or placement.cleanup_processes().busy(str(path)):
-        raise ValueError('live worktree')
+    if placement.cleanup_processes().busy(str(path)):
+        raise ValueError('process using worktree')
+    if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched)['age_s'] < 3 * 86400:
+        raise ValueError('worktree idle less than three days')
     head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
-    declarations = outputs_at(machine, head, path)
-    git(path, 'diff', '--quiet', '--')
-    git(path, 'diff', '--cached', '--quiet', '--')
-    dirty, ignored = status(path)
-    roots = [path / rel for rel in declarations]
-    if any(not any(within(Path(name), root) for root in roots) for name in dirty):
-        raise ValueError('dirty worktree')
-    if git(path, 'rev-parse', '--verify', 'HEAD').strip() != head or ownership.read(str(path)) != tag:
-        raise ValueError('worktree identity changed')
-    return path, head, tag, declarations
+    return path, head, ownership.read(str(path)), outputs_at(machine, head, path)
 
 
 def outputs(request: dict) -> dict:
-    """Only committed, untracked, safely contained outputs in clean idle checkouts."""
-    from .disk_worktrees import entries, git, overlaps_worktrees
+    """Remove only declared ignored/untracked files; source edits always survive."""
+    from .disk_worktrees import entries, git, overlaps_worktrees, status
     out = result()
     for machine in request['repos']:
         try:
             listed = entries(machine['repo'])
-        except (OSError, ValueError) as error:
-            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
-            continue
-        for entry in listed:
-            try:
-                path, head, tag, declarations = output_evidence(request, machine, entry)
-                for relative in declarations:
-                    target = path / relative
-                    if not target.exists() and not target.is_symlink():
-                        continue
-                    row = item(target, request, 'declared_output', repo=machine['repo'])
-                    try:
-                        if overlaps_worktrees(request, target, path) or not within(target, path) or not safe_path(target) or \
-                                any(not safe_path(p) for p in target.rglob('*')):
-                            raise ValueError('protected output contents')
-                        if git(path, 'ls-files', '-z', '--', relative):
-                            raise ValueError('output contains tracked files')
-                        row.update(facts(target, request['now']), owner=tag['owner'] if tag else None,
-                                   action='candidate')
+            for entry in listed:
+                try:
+                    evidence = output_evidence(request, machine, entry)
+                    path, head, tag, declarations = evidence
+                    dirty, ignored = status(path)
+                    tracked = set(git(path, 'ls-files', '-z').split('\0'))
+                    touched = set()
+                    for name in dict.fromkeys(dirty + ignored):
+                        target = Path(name)
+                        relative = target.relative_to(path)
+                        if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
+                            continue
+                        if not safe_path(target) or overlaps_worktrees(request, target, path):
+                            continue
+                        row = item(target, request, 'declared_disposable', repo=machine['repo'])
+                        row.update(facts(target, request['now']), owner=tag['owner'] if tag else None, action='candidate')
                         if request['apply']:
                             current = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
-                            if current != entry or output_evidence(request, machine, current) != (path, head, tag, declarations) \
-                                    or facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')} \
-                                    or not safe_path(target) or any(not safe_path(p) for p in target.rglob('*')):
-                                raise ValueError('output evidence changed')
+                            current_dirty, current_ignored = status(path)
+                            if current != entry or output_evidence(request, machine, current, touched=touched) != evidence or \
+                                    name not in current_dirty + current_ignored or \
+                                    git(path, 'ls-files', '-z', '--', str(relative)) or not safe_path(target) or \
+                                    facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
+                                raise ValueError('disposable evidence changed')
                             after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
                             if after != entry or overlaps_worktrees(request, target, path):
-                                raise ValueError('output side marker changed')
-                            shutil.rmtree(target) if target.is_dir() else target.unlink()
+                                raise ValueError('disposable side marker changed')
+                            # status expands ignored directories to leaves; only empty directories reach here.
+                            target.rmdir() if target.is_dir() else target.unlink()
+                            touched.add(target.parent)
                             row['action'] = 'removed'
                             out['reclaimed_bytes'] += row['bytes']
-                    except (OSError, ValueError) as error:
-                        row.update(action='keep', error=str(error))
-                    out['items'].append(row)
-            except (OSError, ValueError):
-                # Stage 4/6 inventories the worktree that cannot authorize output deletion.
-                continue
+                        out['items'].append(row)
+                except (OSError, ValueError, StopIteration):
+                    continue
+        except (OSError, ValueError) as error:
+            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
     return out
 
 
 def report(request: dict) -> dict:
     """Generic inventory, including excluded descendants; this stage never mutates."""
     from . import ownership
-    from .disk_worktrees import entries, status
+    from .disk_worktrees import entries, status, task_facts, merged, git
     out = result()
     def record(path, reason, owner=None):
         row = item(path, request, reason)
@@ -204,10 +243,16 @@ def report(request: dict) -> dict:
                 tag = ownership.read(str(path)) if path.exists() else None
                 owner = tag['owner'] if tag else None
                 record(path, 'worktree_inventory', owner)
+                if tag and tag['owner'].startswith('drover:') and task_facts(request, path, tag)[0] and \
+                        placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side() and \
+                        merged(machine, git(path, 'rev-parse', '--verify', 'HEAD').strip()):
+                    record(path, 'merged_live_task', owner)
+                    out['items'][-1].update(task_id=tag['owner'][len('drover:'):], repo=machine['name'])
                 if placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side():
                     continue
                 try:
                     dirty, ignored = status(path)
+                    touched = set()
                     for name in dict.fromkeys(dirty + ignored):
                         record(Path(name), 'untracked_or_ignored', owner)
                 except (OSError, ValueError):

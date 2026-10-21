@@ -151,16 +151,24 @@ def build_tip(repo, worktree, base_sha, tasks):
     checkpoint = worktree.parent / ('.' + worktree.name + '.merge-group.json')
     identity = {'base': base_sha, 'tasks': [[t['id'], t.get('head') or branch_head(repo, t['branch'])] for t in tasks]}
     saved = ci.read_result(checkpoint)
+    def renew_owner():
+        from . import ownership
+        try:
+            ownership.tag(str(worktree), Path(placement.native(repo)).name,
+                          'session:merge-group:' + worktree.name, time.time() + 86400)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise ci.CIError(f'created {worktree} but could not record ownership: {error}') from error
     if saved and saved.get('identity') == identity and (worktree / '.git').exists():
         if ci.head(worktree) == saved['tip']:
+            renew_owner()
             return saved['tip'], saved['applied'], saved['conflicts']
     if not (worktree / '.git').exists():
-        from .pipeline import add_worktree
-        add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, run=git, error=ci.CIError)
+        placement.add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, run=git, error=ci.CIError)
     else:
         pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
         if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():
             git(repo, 'worktree', 'repair', '--relative-paths', str(worktree))
+    renew_owner()
     git(worktree, 'reset', '-q', '--hard')
     git(worktree, 'checkout', '-q', '--detach', base_sha)
     git(worktree, 'clean', '-fdq')
@@ -454,6 +462,9 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
         raise
     finally:
         if not interrupted:
+            from . import ownership
+            if ownership.owned_by(str(work), 'session:merge-group:' + work.name):
+                placement.unlock_worktree(repo, str(work))
             git(repo, 'worktree', 'remove', '--force', str(work), check=False)
             (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
     storage.record_batch(conn, result)

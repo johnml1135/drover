@@ -35,18 +35,18 @@ DOCS_ONLY_GLOBS = ("docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**")
 def cleanup_config(prog):
     """Validated committed output declarations and an optional machine budget."""
     policy = prog.get("cleanup", {})
-    if not isinstance(policy, dict) or set(policy) - {"build_outputs"}:
-        raise RepoError("cleanup must contain only build_outputs")
-    outputs = policy.get("build_outputs", [])
+    if not isinstance(policy, dict) or set(policy) - {"disposable"}:
+        raise RepoError("cleanup must contain only disposable")
+    outputs = policy.get("disposable", [])
     if not isinstance(outputs, list) or not all(
-            isinstance(path, str) and path and not any(c in path for c in "\\:*?[]\x00")
+            isinstance(path, str) and path and not any(c in path for c in "\\:\x00")
             and not path.startswith("/") and all(part.casefold() not in ("", ".", "..", ".git")
                                                   for part in path.split("/")) for path in outputs):
-        raise RepoError("cleanup.build_outputs must contain canonical relative literal paths outside .git")
+        raise RepoError("cleanup.disposable must contain canonical relative paths or globs outside .git")
     budget = prog.get("budget_gb")
     if budget is not None and (type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0):
         raise RepoError("budget_gb must be finite and positive")
-    return {"build_outputs": list(outputs), "budget_gb": budget}
+    return {"disposable": list(outputs), "budget_gb": budget}
 
 
 def normalize(raw, name=None, *, sources=None):
@@ -145,7 +145,7 @@ def normalize(raw, name=None, *, sources=None):
             g[key] = float(g.get(key) or default_limit)
         except (TypeError, ValueError) as e:
             raise RepoError(f"{name}: gate.{key} must be a number") from e
-    out = {"cleanup": {"build_outputs": cleanup["build_outputs"]}, "budget_gb": cleanup["budget_gb"],
+    out = {"cleanup": {"disposable": cleanup["disposable"]}, "budget_gb": cleanup["budget_gb"],
             "name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
             "default_branch": main,
             "remote": remote,
@@ -163,9 +163,9 @@ def normalize(raw, name=None, *, sources=None):
     if sources is not None:
         origins = config._source_leaves(out, "default")
         origins.update({key: seed[key] for key in origins if key in seed})
-        output_origins = [v for k, v in seed.items() if k.startswith("cleanup.build_outputs")]
+        output_origins = [v for k, v in seed.items() if k.startswith("cleanup.disposable")]
         if output_origins:
-            origins["cleanup.build_outputs"] = output_origins[0]
+            origins["cleanup.disposable"] = output_origins[0]
         if not original.get("name"):
             origins["name"] = "injected"
         def derive(key, *dependencies):
@@ -378,7 +378,7 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
                 "gate": {"platform", "timeout_s", "idle_s", "docs_only", "docs_only_globs"},
                 "review": {"backend", "seat", "model", "effort", "high_risk_model"},
                 "landing": {"mode", "push"}, "land": {"policy", "push"}, "scripts": None,
-                "cleanup": {"build_outputs"},
+                "cleanup": {"disposable"},
             }
             def invalid(key, detail):
                 raise RepoError(f"{entry}@{commit}: {key}: {detail}")

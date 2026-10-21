@@ -942,6 +942,7 @@ CLEANUP_CACHE_COMMANDS = (
     ('npm', ('npm', 'cache', 'clean', '--force')),
     ('dotnet', ('dotnet', 'nuget', 'locals', 'http-cache', '--clear')),
 )
+CLEANUP_CACHE_FOLDERS = (('cargo', 'CARGO_HOME', '~/.cargo', 'registry/cache'),)
 CLEANUP_SCRATCH_ROOTS = ('~/.claude/scratchpad', '~/.codex/scratchpad',)
 
 
@@ -955,7 +956,10 @@ def detected_cleanup_policy(state_dir):
                  if Path(p).expanduser().is_dir())
     return dict(temp_roots=list(dict.fromkeys(roots)), report_roots=[], caches=[
         dict(argv=list(argv), cwd=str(state), placement=side)
-        for tool, argv in CLEANUP_CACHE_COMMANDS if shutil.which(tool)])
+        for tool, argv in CLEANUP_CACHE_COMMANDS if shutil.which(tool)] + [
+        dict(path=str(Path(os.environ.get(variable, fallback)).expanduser().absolute() / suffix),
+             placement=side, max_age_days=30)
+        for tool, variable, fallback, suffix in CLEANUP_CACHE_FOLDERS if shutil.which(tool)])
 
 
 def trim_argv():
@@ -976,7 +980,8 @@ def cleanup_call(side: str, request: dict) -> dict:
     if side not in ('windows', 'wsl'):
         raise ValueError('invalid cleanup side')
     if not IS_WINDOWS and side == 'windows':
-        return dict(items=[], errors=[dict(reason_code='side_unavailable')], reclaimed_bytes=0)
+        errors = [dict(reason_code='side_unavailable')] if os.environ.get('WSL_DISTRO_NAME') else []
+        return dict(items=[], errors=errors, reclaimed_bytes=0)
     import copy
     import tempfile
     request = copy.deepcopy(request)
@@ -998,7 +1003,8 @@ def cleanup_call(side: str, request: dict) -> dict:
         for key in ('temp_roots', 'report_roots'):
             request['paths'][key] = [convert(p) for p in request['paths'].get(key, [])]
         for cache in request['paths'].get('caches', []):
-            cache['cwd'] = convert(cache['cwd'])
+            key = 'path' if 'path' in cache else 'cwd'
+            cache[key] = convert(cache[key])
         argv = ['wsl.exe', '-d', distro(), '--', 'python3']
         root = convert(root)
     else:
@@ -1038,7 +1044,7 @@ def cleanup_scope(request):
             roots = [*roots, tempfile.gettempdir(), str(Path(request['state_dir']) / 'scratch')]
         scoped['paths'][name] = list(dict.fromkeys(p for p in roots if belongs(p)))
     scoped['paths']['caches'] = [entry for entry in request['paths'].get('caches', [])
-                                if entry['placement'] == cleanup_side() and belongs(entry['cwd'])]
+                                if entry['placement'] == cleanup_side() and belongs(entry.get('path', entry.get('cwd')))]
     return scoped
 
 
@@ -1069,8 +1075,11 @@ $nodes.Item(0).InnerText = $n.title
 $nodes.Item(1).InnerText = $n.body
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Drover').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 '''
-    done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                          input=json.dumps(notice), capture_output=True, text=True, timeout=15, shell=False)
+    try:
+        done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                              input=json.dumps(notice), capture_output=True, text=True, timeout=15, shell=False)
+    except subprocess.TimeoutExpired as error:
+        raise OSError('toast delivery timed out') from error
     if done.returncode:
         raise OSError('toast unavailable: ' + done.stderr[-1000:])
 
@@ -1113,3 +1122,127 @@ def cleanup_enqueue(cfg, claim):
     with log.open('ab') as stream:
         proc, _ = detach(argv, os.environ.copy(), stream)
     return dict(identity=cleanup_identity(proc.pid))
+
+
+def cleanup_free(path):
+    """Read the owning side's physical drive, never a virtual filesystem substitute."""
+    physical = physical_disk_path(str(path))
+    if physical is None:
+        return None
+    try:
+        return shutil.disk_usage(physical).free / 1024 ** 3
+    except OSError:
+        return None
+
+
+def add_worktree(repo, dest, *tail, run=None, error=RuntimeError):
+    """Create a worktree; old git may use absolute pointers only on a native filesystem."""
+    if run is None:
+        def run(repo, *args, check=False):
+            return git(repo, *args, timeout=60)
+    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False)
+    rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
+                         r.stderr, re.IGNORECASE)
+    if r.returncode and rejected:
+        if not is_linux_native(dest):
+            raise error('this git has no `worktree add --relative-paths`, and a worktree under '
+                        f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
+        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False)
+    if r.returncode:
+        raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
+
+    lock = run(repo, 'worktree', 'lock', '--reason',
+               'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows', str(dest), check=False)
+    if lock.returncode:
+        raise error(f'created {dest} but could not set placement marker: {lock.stderr.strip()[-300:]}')
+
+
+def disk_schedule_plan(cfg: dict, *, apply: bool = False) -> dict:
+    """Generate only: pin interpreter, import root, machine home and shared state."""
+    if not IS_WINDOWS and os.environ.get('WSL_DISTRO_NAME'):
+        raise ValueError('Install disk schedules using native Windows Python so the physical reader survives WSL shutdown')
+    from . import config
+    import datetime
+    import getpass
+    import xml.etree.ElementTree as ET
+    files, commands = {}, []
+    root = str(Path(__file__).resolve().parents[1])
+    home, state = str(config.home().absolute()), str(config.state_dir(cfg).absolute())
+    code = ('import os,runpy,sys;sys.path.insert(0,sys.argv[1]);'
+            'os.environ["DROVER_HOME"]=sys.argv[2];'
+            'os.environ["DROVER_PATHS_STATE_DIR"]=sys.argv[3];'
+            'sys.argv=["drover",*sys.argv[4:]];runpy.run_module("drover",run_name="__main__")')
+    mode = '--apply' if apply else '--dry-run'
+    actions = [('DroverDiskTracker', 'drover-disk-tracker', ['disk-tracker', 'tick', mode]),
+               ('DroverDiskCleanup', 'drover-disk-cleanup', ['disk-cleanup', '--mode', 'daily', mode])]
+    for name, unit, args in actions:
+        argv = [str(Path(sys.executable).absolute()), '-c', code, root, home, state, *args]
+        if IS_WINDOWS:
+            ns = 'http://schemas.microsoft.com/windows/2004/02/mit/task'
+            ET.register_namespace('', ns)
+            def node(parent, tag, text=None, **attributes):
+                element = ET.SubElement(parent, '{' + ns + '}' + tag, attributes)
+                element.text = text
+                return element
+            task = ET.Element('{' + ns + '}Task', version='1.4')
+            triggers = node(task, 'Triggers')
+            start = datetime.datetime.now().date().isoformat() + 'T03:00:00'
+            if unit.endswith('tracker'):
+                trigger = node(triggers, 'TimeTrigger')
+                repetition = node(trigger, 'Repetition')
+                node(repetition, 'Interval', 'PT15M')
+                node(repetition, 'StopAtDurationEnd', 'false')
+            else:
+                trigger = node(triggers, 'CalendarTrigger')
+            node(trigger, 'StartBoundary', start)
+            node(trigger, 'Enabled', 'true')
+            if not unit.endswith('tracker'):
+                node(node(trigger, 'ScheduleByDay'), 'DaysInterval', '1')
+            user = os.environ.get('USERNAME') or getpass.getuser()
+            domain = os.environ.get('USERDOMAIN')
+            user = domain + chr(92) + user if domain else user
+            principal = node(node(task, 'Principals'), 'Principal', id='CurrentUser')
+            node(principal, 'UserId', user)
+            node(principal, 'LogonType', 'InteractiveToken')
+            node(principal, 'RunLevel', 'LeastPrivilege')
+            settings = node(task, 'Settings')
+            for key, value in [('MultipleInstancesPolicy', 'IgnoreNew'), ('StartWhenAvailable', 'true'),
+                               ('DisallowStartIfOnBatteries', 'false'), ('StopIfGoingOnBatteries', 'false'),
+                               ('ExecutionTimeLimit', 'PT0S')]:
+                node(settings, key, value)
+            action = node(node(task, 'Actions', Context='CurrentUser'), 'Exec')
+            node(action, 'Command', argv[0])
+            node(action, 'Arguments', subprocess.list2cmdline(argv[1:]))
+            node(action, 'WorkingDirectory', root)
+            path = str(Path(state) / 'disk' / (name + '.xml'))
+            files[path] = ET.tostring(task, encoding='unicode', xml_declaration=True)
+            commands.append(['schtasks.exe', '/Create', '/TN', name, '/XML', path, '/F'])
+        else:
+            directory = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'systemd' / 'user'
+            def quote(value):
+                # systemd performs its own percent and dollar expansion, without a shell.
+                return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$').replace('\n', '\\n').replace('\r', '\\r') + '"'
+            command = ' '.join(quote(value) for value in argv)
+            files[str(directory / (unit + '.service'))] = (
+                '[Unit]\nDescription=' + name + '\n[Service]\nType=oneshot\nExecStart=' + command + '\n')
+            calendar = '*-*-* *:0/15:00' if unit.endswith('tracker') else '*-*-* 03:00:00'
+            files[str(directory / (unit + '.timer'))] = (
+                '[Unit]\nDescription=' + name + '\n[Timer]\nOnCalendar=' + calendar +
+                '\nPersistent=true\n[Install]\nWantedBy=timers.target\n')
+    if not IS_WINDOWS:
+        commands = [['systemctl', '--user', 'daemon-reload'],
+                    ['systemctl', '--user', 'enable', '--now', 'drover-disk-tracker.timer', 'drover-disk-cleanup.timer']]
+    return dict(files=files, argv=commands)
+
+
+def unlock_worktree(repo, path):
+    """Release only this creator's side marker; owner notes remain locked."""
+    expected = 'wsl' if routes_through_wsl(path) or not IS_WINDOWS else 'windows'
+    listed = git(repo, 'worktree', 'list', '--porcelain', '-z', timeout=60)
+    if listed.returncode:
+        return
+    for block in listed.stdout.split('\0\0'):
+        fields = dict(field.partition(' ')[::2] for field in block.split('\0') if field)
+        windows = IS_WINDOWS and not routes_through_wsl(path)
+        if fields.get('worktree') and _cleanup_path(fields['worktree'], windows) == _cleanup_path(path, windows) and fields.get('locked') == expected:
+            git(repo, 'worktree', 'unlock', str(path), timeout=60)

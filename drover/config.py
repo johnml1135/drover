@@ -371,14 +371,23 @@ def _cleanup_policy(raw):
     out["caches"] = []
     for i, entry in enumerate(caches):
         path = ["disk_cleanup", "caches", i]
-        _unknown(entry, {"argv", "cwd", "placement"}, path)
-        argv = _strs(entry.get("argv"), path + ["argv"])
-        if not argv or not all(arg and "\x00" not in arg for arg in argv):
-            raise ConfigError(f"{_where(path)}.argv must contain nonempty literal arguments")
-        if not _absolute_machine_path(entry.get("cwd")):
-            raise ConfigError(f"{_where(path)}.cwd must be absolute")
+        folder = "path" in entry
+        _unknown(entry, {"path", "placement", "max_age_days"} if folder else {"argv", "cwd", "placement"}, path)
         side = _choice(entry.get("placement"), PLACEMENTS, path + ["placement"])
-        out["caches"].append({"argv": argv, "cwd": entry["cwd"], "placement": side})
+        if folder:
+            if not _absolute_machine_path(entry["path"]):
+                raise ConfigError(f"{_where(path)}.path must be absolute")
+            age = entry.get("max_age_days", 30)
+            if type(age) not in (int, float) or not math.isfinite(age) or age <= 0:
+                raise ConfigError(f"{_where(path)}.max_age_days must be finite and positive")
+            out["caches"].append(dict(path=entry["path"], placement=side, max_age_days=age))
+        else:
+            argv = _strs(entry.get("argv"), path + ["argv"])
+            if not argv or not all(arg and "\x00" not in arg for arg in argv):
+                raise ConfigError(f"{_where(path)}.argv must contain nonempty literal arguments")
+            if not _absolute_machine_path(entry.get("cwd")):
+                raise ConfigError(f"{_where(path)}.cwd must be absolute")
+            out["caches"].append(dict(argv=argv, cwd=entry["cwd"], placement=side))
     return out
 
 

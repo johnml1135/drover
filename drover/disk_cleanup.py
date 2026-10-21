@@ -89,7 +89,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                     break
                 result['stages'].append(dict(drive=row['name'], stage=stage))
                 for side in ('windows', 'wsl'):
-                    request = dict(stage=stage, apply=apply and free is not None, now=runtime.now(),
+                    request = dict(stage=stage, mode=mode, apply=apply and free is not None, now=runtime.now(),
                                    drive=drive, repos=machines, paths=cfg['disk_cleanup'],
                                    state_dir=str(state_dir), tasks=tasks)
                     try:
@@ -103,6 +103,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                         result['errors'].append(dict(stage=stage, side=side, error=str(error)))
                 free = _reading(runtime.read(row['path'])) if row['path'] is not None else None
                 drive['post_free_gb'] = free
+                drive['level'] = next((level for level in ('critical', 'hold', 'queue', 'warn')
+                                       if free is not None and free < tracker[level + '_gb']), 'ok' if free is not None else 'unknown')
             result['exhausted'] |= bool(apply and mode != 'daily' and free is not None and
                                         free < tracker['warn_gb'] and stage == 6)
         if mode == 'triggered':
@@ -247,3 +249,51 @@ def retry_notices(cfg):
         except BlockingIOError:
             return
         path.unlink(missing_ok=True)
+
+
+def main(argv=None):
+    import argparse
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['lock']:
+        command = argv[1:]
+        if command[:1] == ['--']:
+            command = command[1:]
+        return locked_command(config.get(), command)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mode', choices=('daily', 'on-demand', 'triggered'), default='on-demand')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--apply', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        answer = run(mode=args.mode, apply=args.apply)
+        if args.json:
+            print(json.dumps(answer, indent=2))
+        else:
+            print(f"Disk cleanup {answer['mode']}: {'applied' if answer['applied'] else 'report only'}")
+            for row in answer['items']:
+                print(f"{row.get('side', '')} stage {row.get('stage', '')}: {row.get('action', '')} "
+                      f"{row.get('path', '')} ({row.get('reason_code', '')})")
+            for error in answer['errors']:
+                print(json.dumps(error))
+        return 0
+    except (OSError, ValueError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+def locked_command(cfg: dict, argv: list[str], *, runner=None) -> int:
+    """Hold the shared machine lock for the entire unmodified external command."""
+    import subprocess
+    import sys
+    if not argv or not all(isinstance(arg, str) and '\x00' not in arg for arg in argv):
+        print('disk-cleanup lock requires literal command argv', file=sys.stderr)
+        return 2
+    try:
+        with disk_state.CleanupLock(config.state_dir(cfg)):
+            return (runner or subprocess.run)(list(argv), shell=False).returncode
+    except BlockingIOError as error:
+        print(f'disk cleanup is already locked: {error}', file=sys.stderr)
+        return 75

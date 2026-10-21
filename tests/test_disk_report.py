@@ -38,3 +38,19 @@ class Report(WorktreeCase):
         self.assertEqual({str(p): p.read_bytes() for p in paths}, before)
         self.assertEqual(self.registrations(), registrations)
         self.assertEqual(result.get('applied'), False)
+
+    def test_r8_merged_live_task_is_structured_and_retained(self):
+        from drover import ownership
+        wt = self.worktree('merged open task')
+        self.r.commit('done.txt', cwd=wt)
+        self.merge(wt)
+        ownership.tag(str(wt), 'alpha', 'drover:open-task', self.now + 86400, now=self.now)
+        self.tasks = dict(at=self.now, active_worktrees=[], tasks=[
+            dict(id='open-task', live=True, terminal=False, worktree=str(wt))])
+        self.cleanup()
+        result = self.cleanup(apply=True)
+        self.assertTrue(wt.exists())
+        rows = [i for i in result['items'] if i.get('reason_code') == 'merged_live_task']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['task_id'], 'open-task')
+        self.assertEqual(rows[0]['path'], str(wt))

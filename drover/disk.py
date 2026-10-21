@@ -156,3 +156,37 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dic
         except BlockingIOError:
             pass
     return result
+
+
+def main(argv=None):
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('read', 'tick', 'install'))
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--apply', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'install':
+            from .disk_schedule import install
+            answer = install(apply=args.apply, dry_run=args.dry_run)
+        elif args.command == 'read':
+            answer = read()
+        else:
+            cfg = config.get()
+            enqueue = None
+            if args.apply or args.dry_run:
+                def enqueue():
+                    if args.apply:
+                        from .disk_cleanup import scope_key
+                        from . import disk_state
+                        if disk_state.read(config.state_dir(cfg)).get('report_scope') != scope_key(cfg):
+                            raise ValueError('complete a dry report for the same cleanup scope before apply')
+                    return placement.cleanup_enqueue(cfg, {'applied': args.apply, 'id': 'scheduled'})
+            answer = tick(cfg, enqueue=enqueue)
+        print(json.dumps(answer, indent=2))
+        return 0
+    except (OSError, ValueError, RuntimeError) as error:
+        print(str(error), file=__import__('sys').stderr)
+        return 1

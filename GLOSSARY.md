@@ -53,6 +53,10 @@ _Avoid_: Disk check, space monitor
 The staged reclaim of disk space across the machine's repositories and declared paths, run daily, on demand, and whenever a disk tracker drops below its warn level. Each cleanup stage runs only while the drive is still below warn. It removes only what can be regenerated or restored, and lists everything else for the owner.
 _Avoid_: Garden, sweep, prune, tend
 
+**Disposable path**:
+A path in a worktree that can be deleted without losing work or hindering anyone picking it back up, because it is regenerated or no longer needed; the repo declares them.
+_Avoid_: build output, temp, ephemeral
+
 **Ownership tag**:
 The record on a worktree of who owns it (a task, a lane or a session) and until when. A worktree without a current tag is an orphan: it is quarantined, then removed after a grace period if it is still clean.
 _Avoid_: Lease file, marker, claim

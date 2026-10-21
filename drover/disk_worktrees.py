@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 
 from . import ownership, placement, repos
-from .disk_paths import facts, item, result, safe_path, within
+from .disk_paths import facts, item, result, safe_path, within, disposable_match
 
 
 def git(repo, *args, env=None):
@@ -27,7 +27,7 @@ def entries(repo):
 
 
 def outputs_at(machine, head, path):
-    return repos.cleanup_config(repos.load(machine, revision=head, checkout=str(path)))['build_outputs']
+    return repos.cleanup_config(repos.load(machine, revision=head, checkout=str(path)))['disposable']
 
 
 def status(path):
@@ -171,9 +171,8 @@ def settled(request: dict) -> dict:
 
 
 def ignored_outside(path, ignored, declarations):
-    roots = [path / rel for rel in declarations]
     return [name for name in ignored if not safe_path(Path(name)) or
-            not any(within(Path(name), root) for root in roots)]
+            not disposable_match(Path(name).relative_to(path), declarations)]
 
 
 def remove(request: dict, selected: dict) -> dict:

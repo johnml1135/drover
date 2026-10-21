@@ -240,8 +240,12 @@ allowed_emails = []
 remote = ""                  # optional private git remote URL; it MUST be private
 auto_push = true             # push after local configuration/decision commits; failure is nonfatal
 
-# Only declared scopes and literal commands are eligible; no tool defaults.
+# Explicit machine declarations win; install proposes editable defaults when this table is absent.
 [disk_cleanup]
 temp_roots = []
 report_roots = []
-caches = [] # entries: {argv = ["executable", "argument"], cwd = "/absolute/path", placement = "wsl"}
+caches = []
+# A cache is either {argv = ["executable", "argument"], cwd = "/absolute/path", placement = "wsl"}
+# or {path = "/absolute/cache", placement = "wsl", max_age_days = 30}.
+# Daily uses access age (mtime fallback); low-space cleanup uses oldest access first until warn.
+# Repo .drover/config.toml owns [cleanup] disposable = ["literal/path", "*.log", "**/generated"].

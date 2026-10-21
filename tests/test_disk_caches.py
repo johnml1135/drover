@@ -40,3 +40,43 @@ class Caches(DiskCase):
         self.assertFalse(second.exists())
         self.assertTrue(any(item['stage'] == 3 for item in result['items']))
         self.assertFalse(result['applied'])
+
+    def test_r8_folder_routine_age_and_aggressive_lru_stop(self):
+        folder = self.root / 'folder cache'
+        old = self.file(folder / 'old', age=31 * 86400)
+        young = self.file(folder / 'young', age=2 * 86400)
+        self.cfg['disk_cleanup']['caches'] = [
+            dict(path=str(folder), placement='wsl', max_age_days=30)]
+        self.approve_report()
+        self.run_cleanup(apply=True, mode='daily')
+        self.assertFalse(old.exists())
+        self.assertTrue(young.exists())
+        oldest = self.file(folder / 'oldest', age=5 * 86400)
+        newer = self.file(folder / 'newer', age=86400)
+        self.approve_report()
+        runtime = self.runtime(real=True)
+        from drover import disk_cleanup, placement
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        def read(path):
+            return 80 if oldest.exists() else 150
+        from drover.disk_cleanup import CleanupRuntime
+        with patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=self.busy)),                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)),                 patch.object(placement, 'cleanup_free', side_effect=read), \
+                patch('tempfile.gettempdir', return_value=str(self.temp_root)):
+            result = disk_cleanup.run(self.cfg, apply=True,
+                runtime=CleanupRuntime(runtime.now, read, runtime.call, runtime.toast))
+        self.assertFalse(oldest.exists())
+        self.assertTrue(young.exists())
+        self.assertTrue(newer.exists())
+        self.assertFalse(result['exhausted'])
+
+    def test_r8_folder_atime_and_mtime_fallback(self):
+        folder = self.root / 'cache clocks'
+        fallback = self.file(folder / 'fallback', age=31 * 86400)
+        used = self.file(folder / 'used', age=40 * 86400)
+        os.utime(used, (self.now - 86400, self.now - 40 * 86400))
+        self.cfg['disk_cleanup']['caches'] = [dict(path=str(folder), placement='wsl')]
+        self.approve_report()
+        self.run_cleanup(apply=True, mode='daily')
+        self.assertFalse(fallback.exists())
+        self.assertTrue(used.exists())

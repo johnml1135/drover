@@ -639,7 +639,7 @@ class RunTests(LandingCase):
         self.r.commit('late.txt', cwd=wt)
         self.r.git('worktree', 'remove', '--force', wt)
         tip, applied, _ = landing.build_tip(self.r.repo, self.work, self.r.git('rev-parse', 'origin/main'), [t])
-        self.addCleanup(self.r.git, 'worktree', 'remove', '--force', str(self.work))
+        self.addCleanup(self.r.git, 'worktree', 'remove', '--force', '--force', str(self.work))
         files = self.r.git('ls-tree', '-r', '--name-only', tip).split()
         self.assertIn('a.txt', files)
         self.assertNotIn('late.txt', files)
@@ -649,7 +649,7 @@ class RunTests(LandingCase):
         tasks = landing.form_batch(self.conn, self.r.repo, 'main', 1)
         base = self.r.git('rev-parse', 'main')
         first = landing.build_tip(self.r.repo, self.work, base, tasks)
-        self.addCleanup(self.r.git, 'worktree', 'remove', '--force', str(self.work))
+        self.addCleanup(self.r.git, 'worktree', 'remove', '--force', '--force', str(self.work))
         with patch.dict('os.environ', {'GIT_COMMITTER_DATE': '2001-01-01T00:00:00Z'}):
             resumed = landing.build_tip(self.r.repo, self.work, base, tasks)
         self.assertEqual(resumed, first)

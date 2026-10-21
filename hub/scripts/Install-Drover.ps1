@@ -92,9 +92,13 @@ if ($PSCmdlet.ShouldProcess($HubDir, "$Uv sync --project")) {
     if ($LASTEXITCODE -ne 0) { throw "uv sync failed ($LASTEXITCODE)" }
 }
 
-Step 5 "per-user scheduled task 'DroverHub'"
+Step 5 "per-user hub and report-only disk schedules"
 if ($PSCmdlet.ShouldProcess('DroverHub', 'register the scheduled task (Install-DroverHub.ps1)')) {
     & (Join-Path $PSScriptRoot 'Install-DroverHub.ps1') -HubDir $HubDir -Uv $Uv -Root $Root
+}
+
+if ($PSCmdlet.ShouldProcess('DroverDiskTracker and DroverDiskCleanup', 'register report-only disk schedules')) {
+    Invoke-Drover @('disk-tracker', 'install')
 }
 
 Step 6 "tailscale serve for the UI"

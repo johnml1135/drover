@@ -174,3 +174,17 @@ class Notices(DiskCase):
         self.free = 80
         disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
         self.assertEqual(len(self.toasts), 2)
+
+    def test_windows_toast_timeout_preserves_durable_delivery(self):
+        import subprocess
+        from drover import disk_cleanup, placement
+        self.approve_report()
+        rt = self.runtime()
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired(['powershell.exe'], 15)):
+            answer = disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
+                rt.now, rt.read, rt.call, placement.disk_toast))
+        self.assertTrue(answer['exhausted'])
+        self.assertEqual(len(self.durable_notices()), 1)
+        from drover import disk_state
+        self.assertFalse(next(iter(disk_state.read(self.state)['outbox'].values()))['toasted'])

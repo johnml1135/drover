@@ -53,19 +53,6 @@ def join_cfg(base, name):
     return base.rstrip("\\/") + ("\\" if "\\" in base else "/") + name
 
 
-def add_worktree(repo, dest, *tail, run=None, error=WorktreeRefused):
-    run = run or git
-    """Create a worktree; old git may use absolute pointers only on a native filesystem."""
-    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False)
-    rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
-                         r.stderr, re.IGNORECASE)
-    if r.returncode and rejected:
-        if not placement.is_linux_native(dest):
-            raise error('this git has no `worktree add --relative-paths`, and a worktree under '
-                        f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
-        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False)
-    if r.returncode:
-        raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
 
 
 class Pipeline:
@@ -313,7 +300,7 @@ class Pipeline:
             tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
         else:
             tail = ["-b", branch, str(dest), base]
-        add_worktree(repo, dest, *tail)
+        placement.add_worktree(repo, dest, *tail, run=git, error=WorktreeRefused)
 
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):

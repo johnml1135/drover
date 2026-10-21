@@ -82,3 +82,45 @@ class Add(DiskCase):
                                         '--owner', owner, '--lease-until', lease])
             self.assertEqual(status, 2)
             self.assertFalse(absent.exists())
+
+
+from tests.test_landing import LandingCase
+
+
+class MergeGroupCleanup(LandingCase):
+    def test_completed_group_removes_owned_side_locked_checkout(self):
+        self.task('completed-topic', {'finished.txt': 'done'})
+        self.land()
+        self.assertFalse(self.work.exists())
+        self.assertNotIn(str(self.work), self.r.git('worktree', 'list', '--porcelain'))
+
+
+class MarkerRelease(DiskCase):
+    def test_windows_path_spelling_releases_only_own_side_marker(self):
+        import subprocess
+        from drover import placement
+        for marker, releases in (('windows', True), ('owner reviewing', False), ('wsl', False)):
+            called = []
+            def git(repo, *args, **kwargs):
+                called.append(args)
+                return subprocess.CompletedProcess(args, 0,
+                    'worktree C:/Temp/Group\x00HEAD abc\x00locked ' + marker + '\x00\x00', '')
+            with patch.object(placement, 'IS_WINDOWS', True), patch.object(placement, 'git', side_effect=git):
+                placement.unlock_worktree('C:/repo', r'c:\temp\group')
+            self.assertEqual(any(args[:2] == ('worktree', 'unlock') for args in called), releases)
+
+
+class RelativePaths(DiskCase):
+    def test_relative_checkout_is_created_and_tagged_at_callers_path(self):
+        from contextlib import chdir
+        from drover import worktree, ownership
+        fixture = Repo()
+        self.addCleanup(fixture.cleanup)
+        fixture.git('branch', 'relative-topic')
+        with chdir(fixture.root):
+            path = worktree.add(str(fixture.repo), 'relative checkout', 'relative-topic',
+                                owner='session:relative', lease_until=time.time() + 86400)
+        expected = fixture.root / 'relative checkout'
+        self.assertEqual(Path(path), expected)
+        self.assertEqual(ownership.read(str(expected))['owner'], 'session:relative')
+        self.assertFalse((fixture.repo / 'relative checkout').exists())

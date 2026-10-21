@@ -58,7 +58,7 @@ in the committed entry are rejected. The defaults below describe omitted values;
 | `landing.mode` | Defaults to `local`; `pr` is reserved and not implemented. |
 | `landing.push` | Boolean, defaults to `false` unless legacy `land.push` supplies it. |
 | `land.policy` | `batch` or `single`; defaults to `batch`. |
-| `cleanup.build_outputs` | Declared disposable output paths; defaults to `[]`. Canonical relative literal paths only. |
+| `cleanup.disposable` | Declared disposable output paths; defaults to `[]`. Relative literal paths or globs, matched only to ignored or untracked files. |
 | `land.push` | Legacy push alias; defaults to `false` and loses to explicit `landing.push`. |
 
 `gate.unknown` and `gate.hint` are derived output fields, not accepted repository settings. A missing `test`
@@ -117,21 +117,73 @@ VHDX sources to physical paths; unresolved paths refuse migration. The existing
 `migrate-machine NAME` migrates repository machine facts separately.
 
 Machine `[disk_cleanup]` accepts only `temp_roots = []`, `report_roots = []`
-(absolute paths) and `caches = []`. Each cache entry has literal `argv`, an
-absolute `cwd`, and `placement = "windows"` or `"wsl"`. There are no default
-cache commands. Repository machine files may declare a finite positive
+(absolute paths) and `caches = []`. A cache entry has either literal `argv`
+and absolute `cwd`, or an absolute folder `path`; both require
+`placement = "windows"` or `"wsl"`. Folder entries accept `max_age_days`
+(default 30). Daily cleanup removes older files using owning-side access time,
+falling back to modification time when access time is not later. Below warn,
+folder cleanup removes least recently used files first and stops at warn. Repository machine files may declare a finite positive
 `budget_gb` for an advisory budget.
 
-Committed `.drover/config.toml` may declare `[cleanup] build_outputs = []`:
-canonical relative literal paths, without globs, dot segments or `.git`.
-Machine files cannot override this policy after adoption. Declared outputs
-still require clean, idle worktrees and ignored/untracked containment evidence;
-tracked files and protected or linked targets are retained.
+Committed `.drover/config.toml` may declare `[cleanup] disposable = []`:
+relative literal paths or globs such as `*.log` and `**/obj`, without dot
+segments, absolute paths or `.git`. Machine files cannot override this policy
+after adoption. Stage 5 removes only matching ignored/untracked files. At warn
+or queue, a worktree must have no process using it and be idle at least three
+days; at hold or critical, any age qualifies. Dirty worktrees may qualify;
+tracked files, source edits, protected paths and linked targets are retained.
+Stage 6 reports merged worktrees with live tasks as `merged_live_task` items;
+cleanup never closes those tasks or removes their worktrees.
 
 When `[disk_cleanup]` is absent, global `config migrate-machine` proposes editable
 machine defaults before writing: the OS temp directory, `<state>/scratch`, and
 existing agent scratch roots. Only tools detected on PATH receive literal cache
 commands (uv cache prune, pip cache purge, npm cache clean --force, and dotnet
 nuget locals http-cache --clear). Each command records its placement and absolute
-working directory. Existing `[disk_cleanup]` declarations, including empty lists,
+working directory. Tools without a prune command may receive folder entries
+(for example Cargo's registry cache); no folder is seeded for a tool with a
+prune command. Existing `[disk_cleanup]` declarations, including empty lists,
 are preserved. Review the dry report before applying the migration or installer.
+
+
+Disk automation rollout uses the same configuration and state directory on both
+placements. Run `python -m drover config migrate-machine` to inspect the proposal;
+`--apply` saves a byte-exact timestamped backup before atomic replacement.
+Inspect declared paths, then run `python -m drover disk-cleanup --dry-run --json`.
+A completed report saves a receipt for that exact machine and scope. Changed
+declarations require another report before any `--apply`.
+
+`python -m drover disk-tracker install --dry-run` prints schedules and proposed
+defaults without writing or registering anything. Plain `install` registers
+report-only schedules; `install --apply` enables applied automation after the
+matching report. A one-off `disk-cleanup --apply` changes only that run.
+Install from native Windows Python on WSL hosts; installation from WSL refuses
+to create Linux timers that would disappear with the reader.
+Windows schedules run as the current interactive user with LeastPrivilege,
+every 15 minutes and daily at 03:00. Linux-only machines use persistent systemd
+user timers. These require the user session/user manager; they do not promise
+pre-login coverage. Both pin interpreter, import root, config home and state.
+
+Before enabling applied automation, wrap every external cleaner invocation:
+`python -m drover disk-cleanup lock -- EXECUTABLE ARGUMENTS...`.
+Native and WSL callers must map the same state directory. The wrapper holds the
+shared directory lock for the entire child and returns its status. A hard-killed
+holder leaves diagnostics for deliberate inspection; age never steals a lock.
+Drover never edits external cleaner scripts or retires them.
+
+Keep herdr until the owner records seven consecutive calendar days of successful
+applied daily reports for the same scope, without cleanup errors or protected
+mutations. A missing, failed or scope-changed day restarts that release evidence.
+The owner reviews the reports and decides retirement separately.
+
+Restore removed checkouts using exact owning-side argv in
+`disk-cleanup-manifest.jsonl`; branches survive and detached commits have rescue
+refs. To roll back automation, disable its two schedules, retain disk state and
+the journal for inspection, restore the configuration backup and previous code.
+VHDX compaction remains a separate manual owner operation; cleanup never schedules it.
+
+Windows review must verify interpreter/import-root availability after updates,
+task XML quoting and current-user identity, physical-drive readings with WSL down,
+toast failure with durable Inbox replay, cross-kernel lock contention, root trim
+argv/distro pinning, junction protection and long paths, and capacity-hold release
+while saved CI runners still recover.

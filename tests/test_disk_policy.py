@@ -20,23 +20,23 @@ class Policy(unittest.TestCase):
 
     def adopt(self, outputs):
         return self.fix.commit('.drover/config.toml', config.dumps({
-            'schema_version': 1, 'cleanup': {'build_outputs': outputs}}))
+            'schema_version': 1, 'cleanup': {'disposable': outputs}}))
 
     def test_committed_outputs_and_machine_facts(self):
         cleanup_config = repos.cleanup_config
         old = self.adopt(['build output', 'artifacts/reproducible'])
         self.adopt(['new-output'])
-        (self.fix.repo / '.drover/config.toml').write_text('schema_version=1\n[cleanup]\nbuild_outputs=["dirty"]\n')
+        (self.fix.repo / '.drover/config.toml').write_text('schema_version=1\n[cleanup]\ndisposable=["dirty"]\n')
         sources = {}
         prog = repos.load(self.machine, old, sources=sources)
-        self.assertEqual(cleanup_config(prog), {'build_outputs': ['build output', 'artifacts/reproducible'], 'budget_gb': 12.5})
-        self.assertIn('repo:.drover/config.toml@' + old, sources['cleanup.build_outputs'])
+        self.assertEqual(cleanup_config(prog), {'disposable': ['build output', 'artifacts/reproducible'], 'budget_gb': 12.5})
+        self.assertIn('repo:.drover/config.toml@' + old, sources['cleanup.disposable'])
         self.assertTrue(sources['budget_gb'].startswith('machine:'))
-        self.assertEqual(cleanup_config(repos.load(self.machine))['build_outputs'], ['new-output'])
+        self.assertEqual(cleanup_config(repos.load(self.machine))['disposable'], ['new-output'])
         with self.assertRaises(repos.RepoError):
-            repos.load({**self.machine, 'cleanup': {'build_outputs': ['machine-injection']}})
+            repos.load({**self.machine, 'cleanup': {'disposable': ['machine-injection']}})
         self.assertEqual(cleanup_config(repos.normalize({'name': 'empty', 'repo': str(self.fix.repo)})),
-                         {'build_outputs': [], 'budget_gb': None})
+                         {'disposable': [], 'budget_gb': None})
         for bad in (0, -1, True, float('nan'), float('inf'), '12'):
             with self.subTest(budget=bad):
                 with self.assertRaises(repos.RepoError):
@@ -59,7 +59,7 @@ class Policy(unittest.TestCase):
     def test_rejects_escape_and_invalid_cache_argv(self):
         cleanup_config = repos.cleanup_config
         for path in ('../outside', '/absolute', 'C:/drive', 'a/../b', 'a/./b', './a', '.',
-                     'a//b', 'a/', '.git', '.git/config', '.GIT', 'build/.Git/config', 'a/*', 'a/?', 'a/[x]', r'a\b'):
+                     'a//b', 'a/', '.git', '.git/config', '.GIT', 'build/.Git/config', r'a\b'):
             with self.subTest(path=path):
                 revision = self.adopt([path])
                 with self.assertRaises(repos.RepoError):
@@ -97,3 +97,26 @@ class Policy(unittest.TestCase):
             self.assertEqual(config.migrate_disk_config(seeded), seeded)
             explicit = {**raw, 'disk_cleanup': {'temp_roots': [], 'report_roots': [], 'caches': []}}
             self.assertEqual(config.migrate_disk_config(explicit), explicit)
+
+    def test_r8_disposable_globs_and_folder_cache_schema(self):
+        revision = self.fix.commit('.drover/config.toml', config.dumps({
+            'schema_version': 1, 'cleanup': {'disposable': ['*.log', '**/obj', 'literal path']}}))
+        self.assertEqual(repos.cleanup_config(repos.load(self.machine, revision))['disposable'],
+                         ['*.log', '**/obj', 'literal path'])
+        entry = dict(path=str(self.fix.root / 'cache'), placement='wsl')
+        cfg = config.validate({'disk_cleanup': {'caches': [entry]}})
+        self.assertEqual(cfg['disk_cleanup']['caches'][0], dict(entry, max_age_days=30))
+        for extra in ({'max_age_days': 0}, {'max_age_days': True}, {'max_age_days': float('inf')},
+                      {'argv': ['mixed']}, {'path': '../escape'}):
+            with self.subTest(extra=extra), self.assertRaises(config.ConfigError):
+                config.validate({'disk_cleanup': {'caches': [{**entry, **extra}]}})
+
+    def test_r8_detected_folder_only_for_tool_without_prune(self):
+        from drover import placement
+        cache = self.fix.root / 'cargo-cache'
+        cache.mkdir()
+        with patch.object(placement.shutil, 'which', side_effect=lambda tool: '/tools/cargo' if tool == 'cargo' else None), \
+                patch.dict(os.environ, {'CARGO_HOME': str(cache)}):
+            policy = placement.detected_cleanup_policy(self.fix.root / 'state')
+        self.assertEqual(policy['caches'], [
+            dict(path=str(cache / 'registry' / 'cache'), placement=placement.cleanup_side(), max_age_days=30)])

@@ -17,7 +17,7 @@ class WorktreeCase(DiskCase):
         self.tree_count = 0
         self.trees = self.r.root / 'alpha.worktrees'
         self.r.commit('.drover/config.toml', config.dumps({
-            'schema_version': 1, 'cleanup': {'build_outputs': ['generated']}}))
+            'schema_version': 1, 'cleanup': {'disposable': ['generated']}}))
         self.r.git('push', '-q', 'origin', 'HEAD:main')
         self.r.git('fetch', '-q', 'origin')
         self.register(self.r, 'alpha', self.trees)

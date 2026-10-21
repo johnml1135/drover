@@ -37,3 +37,26 @@ class Linux(DiskCase):
             self.assertEqual(calls, plan['argv'])
             for path, body in plan['files'].items():
                 self.assertEqual(__import__('pathlib').Path(path).read_text(), body)
+
+    def test_linux_without_windows_scope_can_complete_report_and_install_apply(self):
+        from drover import placement, disk_cleanup, disk_schedule
+        rt = self.runtime()
+        def call(side, request):
+            return placement.cleanup_call(side, request) if side == 'windows' else {
+                'items': [], 'errors': [], 'reclaimed_bytes': 0}
+        from drover.disk_cleanup import CleanupRuntime
+        with patch.dict(os.environ, {'WSL_DISTRO_NAME': '', 'WSL_INTEROP': '',
+                                    'XDG_CONFIG_HOME': str(self.root / 'xdg')}), \
+                patch.object(placement, 'IS_WINDOWS', False), \
+                patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
+            report = disk_cleanup.run(self.cfg, runtime=CleanupRuntime(rt.now, rt.read, call, rt.toast))
+            self.assertFalse(report['errors'])
+            disk_schedule.install(self.cfg, apply=True,
+                runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+
+    def test_wsl_install_requires_native_windows_reader(self):
+        from drover import placement
+        with patch.dict(os.environ, {'WSL_DISTRO_NAME': 'FixtureDistro'}), \
+                patch.object(placement, 'IS_WINDOWS', False):
+            with self.assertRaisesRegex(ValueError, 'Windows'):
+                placement.disk_schedule_plan(self.cfg)

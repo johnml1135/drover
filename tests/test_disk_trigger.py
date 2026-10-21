@@ -17,7 +17,8 @@ class Trigger(DiskCase):
 
     def activate(self):
         from drover import disk_schedule
-        context = patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'xdg')})
+        context = patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'xdg'),
+                                         'WSL_DISTRO_NAME': '', 'WSL_INTEROP': ''})
         context.start()
         self.addCleanup(context.stop)
         self.approve_report()

@@ -46,13 +46,15 @@ class Outputs(WorktreeCase):
         self.busy_paths.add(str(paths['busy']))
         # Dirty declarations cannot widen the committed cleanup scope.
         policy = paths['uncommitted-policy'] / '.drover/config.toml'
-        policy.write_text('schema_version=1\n[cleanup]\nbuild_outputs=["data"]\n')
+        policy.write_text('schema_version=1\n[cleanup]\ndisposable=["data"]\n')
         uncommitted = paths['uncommitted-policy'] / 'data' / 'keep'
         uncommitted.parent.mkdir()
         uncommitted.write_text('not authorized')
         self.cleanup()
         self.cleanup(apply=True)
-        for name in ('dirty', 'tracked', 'linked', 'busy'):
+        self.assertFalse((paths['dirty'] / 'generated' / 'result').exists(), 'R8 permits disposable files in dirty worktrees')
+        self.assertEqual((paths['dirty'] / 'pending.txt').read_text(), 'uncommitted edit')
+        for name in ('tracked', 'linked', 'busy'):
             self.assertTrue((paths[name] / 'generated' / 'result').exists(), name)
         self.assertEqual(uncommitted.read_text(), 'not authorized')
         self.assertEqual((outside / 'keep').read_text(), 'link target')
@@ -106,10 +108,65 @@ class Outputs(WorktreeCase):
         data.write_text('not in original report')
         self.cleanup()
         self.r.commit('.drover/config.toml', config.dumps({
-            'schema_version': 1, 'cleanup': {'build_outputs': ['data']}}), cwd=wt)
+            'schema_version': 1, 'cleanup': {'disposable': ['data']}}), cwd=wt)
         with self.assertRaisesRegex(ValueError, 'dry report'):
             self.cleanup(apply=True)
         self.assertEqual(data.read_text(), 'not in original report')
         self.cleanup()
         self.cleanup(apply=True)
         self.assertFalse(data.exists())
+
+    def test_r8_pressure_age_dirty_and_globs(self):
+        from drover import config
+        wt = self.worktree('disposable pressure')
+        self.r.commit('.drover/config.toml', config.dumps({
+            'schema_version': 1, 'cleanup': {'disposable': ['**/obj', '*.log']}}), cwd=wt)
+        source = wt / 'source.txt'
+        self.r.commit('source.txt', 'committed', cwd=wt)
+        source.write_text('owner edit')
+        log = wt / 'recent.log'
+        log.write_text('declared untracked')
+        nested = wt / 'src' / 'obj' / 'result'
+        nested.parent.mkdir(parents=True)
+        nested.write_text('regenerated')
+        tracked = wt / 'tracked.log'
+        self.r.commit('tracked.log', 'tracked', cwd=wt)
+        tracked.write_text('tracked edit')
+        keep = wt / 'precious'
+        keep.write_text('undeclared')
+        self.free = 120
+        self.age(wt, 2 * 86400)
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertTrue(log.exists())
+        self.age(wt, 3 * 86400)
+        self.cleanup(apply=True)
+        self.assertFalse(log.exists())
+        self.assertFalse(nested.exists())
+        self.assertEqual(source.read_text(), 'owner edit')
+        self.assertEqual(tracked.read_text(), 'tracked edit')
+        self.assertEqual(keep.read_text(), 'undeclared')
+        log.write_text('young under hold')
+        self.age(wt, 0)
+        self.free = 40
+        self.busy_paths.add(str(wt))
+        self.cleanup(apply=True)
+        self.assertTrue(log.exists())
+        self.busy_paths.clear()
+        self.cleanup(apply=True)
+        self.assertFalse(log.exists())
+
+    def test_warn_removes_multiple_disposable_files_without_resetting_own_idle_age(self):
+        import time
+        self.now = time.time()
+        wt = self.worktree('real clock idle')
+        self.r.commit('unmerged.txt', cwd=wt)
+        paths = [wt / 'generated' / name for name in ('first', 'second')]
+        for path in paths:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('regenerated')
+        self.age(wt, 4 * 86400)
+        self.free = 120
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertTrue(all(not path.exists() for path in paths))

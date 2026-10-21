@@ -56,7 +56,8 @@ class Boundaries(DiskCase):
                     if fullname == 'sqlite3' or fullname == 'hub' or fullname.startswith(('sqlite3.', 'hub.', 'drover.ledger')):
                         raise AssertionError('standalone reader imported ' + fullname)
             sys.meta_path.insert(0, Guard())
-            from drover import disk
+            from drover import disk, placement
+            placement.physical_disk_path = lambda path: path
             import subprocess
             def forbid_spawn(*args, **kwargs):
                 raise AssertionError('healthy tracker spawned a process')
@@ -84,7 +85,8 @@ class Boundaries(DiskCase):
                                 env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('healthy standalone read and tick', result.stdout)
-        with patch.object(subprocess, 'run', side_effect=AssertionError('healthy tick performed process/WSL inventory')), \
+        with patch('drover.placement.physical_disk_path', return_value=str(self.root)), \
+             patch.object(subprocess, 'run', side_effect=AssertionError('healthy tick performed process/WSL inventory')), \
              patch.object(subprocess, 'Popen', side_effect=AssertionError('healthy tick detached a side worker')):
             result = disk.tick(self.cfg, now=self.now, reader=lambda p: 180,
                                enqueue=lambda *a, **kw: self.fail('healthy cleanup queued'))
