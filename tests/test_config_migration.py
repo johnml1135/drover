@@ -122,3 +122,29 @@ class Migration(RepoCase):
                 self.assertEqual(status, 2)
                 self.assertEqual(self.path.read_bytes(), original)
                 self.assertEqual(list(self.path.parent.glob('*.bak*')), [])
+
+    def test_migration_reads_configured_default_branch_with_feature_or_detached_head(self):
+        committed = self.fix.git('rev-parse', 'main')
+        base = self.fix.git('rev-parse', 'main~1')
+        for checkout in ('feature', 'detached'):
+            with self.subTest(checkout=checkout):
+                self.fix.git('checkout', '--detach', base)
+                if checkout == 'feature':
+                    self.fix.git('checkout', '-B', 'unrelated-feature')
+                before = self.fix.git('rev-parse', 'HEAD')
+                status, _, errors = self.cli()
+                self.assertEqual(status, 0, errors)
+                self.assertEqual(self.fix.git('rev-parse', 'HEAD'), before)
+        # Explicit revisions override the configured branch without moving HEAD.
+        self.fix.git('branch', 'entry-copy', committed)
+        raw = dict(self.raw, default_branch='nonexistent')
+        self.path.write_text(config.dumps(raw), encoding='utf-8')
+        status, _, errors = self.cli('--revision', 'refs/heads/entry-copy')
+        self.assertEqual(status, 0, errors)
+        self.assertEqual(self.fix.git('rev-parse', 'HEAD'), before)
+
+    def test_invalid_default_branch_is_reported_without_crashing(self):
+        self.path.write_text(config.dumps(dict(self.raw, default_branch=7)), encoding='utf-8')
+        status, _, errors = self.cli()
+        self.assertEqual(status, 2)
+        self.assertIn('default_branch', errors)

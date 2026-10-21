@@ -29,7 +29,7 @@ def _repos(cfg, errors=None):
         except (OSError, ValueError) as error:
             if errors is not None:
                 errors.append(dict(path=str(path), reason_code='excluded_repo', error=str(error),
-                                   owner_action=f'commit .drover/config.toml, then drover config migrate-repo {path.stem}'))
+                                   owner_action=f'commit .drover/config.toml, then drover config migrate-machine {path.stem}'))
     return answer
 
 
@@ -76,7 +76,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
     if mode not in ('on-demand', 'triggered', 'daily'):
         raise ValueError('unknown cleanup mode')
     runtime = placement.cleanup_runtime(cfg) if runtime is None else runtime
-    result = dict(mode=mode, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False)
+    result = dict(mode=mode, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False, peak_intermediate_bytes=0)
     state_dir = config.state_dir(cfg)
     tasks = _task_snapshot(state_dir)
     with disk_state.CleanupLock(state_dir):
@@ -104,6 +104,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                    state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
                     try:
                         answer = _valid_result(runtime.call(side, request))
+                        result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
                         if stage == 6:
                             inventories.add((row['name'], side))
                         result['items'].extend(dict(item, stage=stage, side=side) for item in answer['items'])
@@ -152,6 +153,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                        paths=cfg['disk_cleanup'], state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
                         try:
                             answer = _valid_result(runtime.call(side, request))
+                            result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
                             result['items'].extend(dict(i, stage=6, side=side) for i in answer['items'])
                             result['errors'].extend(dict(i, stage=6, side=side) for i in answer['errors'])
                         except (OSError, ValueError, RuntimeError) as error:
@@ -164,7 +166,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                 raise
         for cache in (state_dir / 'disk').glob('inventory-' + inventory_id + '-*.json'):
             cache.unlink(missing_ok=True)
-        for cache in (state_dir / 'disk').glob('processes-' + inventory_id + '.json'):
+        for cache in (state_dir / 'disk').glob('processes-' + inventory_id + '*.json'):
             cache.unlink(missing_ok=True)
         from .disk_inventory import bound_report
         bound_report(result)
@@ -198,7 +200,7 @@ def remove_approved(cfg: dict, repo: str, path: str, *, runtime=None) -> dict:
         with disk_state.CleanupLock(config.state_dir(cfg)):
             if disk_state.read(config.state_dir(cfg)).get('report_scope') != scope_key(cfg):
                 raise ValueError('complete a dry report for the same cleanup scope before apply')
-            machines = [m for m in _repos(cfg, out['errors']) if m['repo'] == repo]
+            machines = [m for m in _repos(cfg, out['errors']) if placement.cleanup_parts(m['repo']) == placement.cleanup_parts(repo)]
             if not machines:
                 raise ValueError('repository is outside configured cleanup scope')
             for drive in disk.read(cfg, reader=runtime.read):
@@ -211,7 +213,7 @@ def remove_approved(cfg: dict, repo: str, path: str, *, runtime=None) -> dict:
                     answer = _valid_result(runtime.call(side, request))
                     out['items'].extend(answer['items'])
                     out['errors'].extend(answer['errors'])
-            out['ok'] = any(i['path'] == path and i['action'] == 'removed' for i in out['items'])
+            out['ok'] = any(placement.cleanup_parts(i['path']) == placement.cleanup_parts(path) and i['action'] == 'removed' for i in out['items'])
     except (OSError, ValueError, RuntimeError) as error:
         out['errors'].append(dict(path=path, error=str(error)))
     return out

@@ -84,8 +84,8 @@ def canonical(path):
 
 def path_parts(path):
     """Resolved components for overlap checks, respecting drive-mount case insensitivity."""
-    path = Path(native(path)).resolve()
-    return tuple(p.casefold() for p in path.parts) if IS_WINDOWS or MNT_RE.match(str(path)) else path.parts
+    resolved = path if routes_through_wsl(path) else Path(native(path)).resolve()
+    return cleanup_parts(resolved)
 
 
 def config_path(path, reference):
@@ -781,27 +781,49 @@ def physical_disk_path(path: str) -> str | None:
 
 
 def linux_mount(path):
-    import posixpath
     from pathlib import PurePosixPath
-    target = PurePosixPath(posixpath.normpath(str(path)))
+    target = PurePosixPath(cleanup_normalize(path, False))
     try:
         mounts = []
         for line in Path('/proc/self/mountinfo').read_text().splitlines():
             encoded = line.split()[4]
             mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), encoded)
-            if target.is_relative_to(PurePosixPath(mount)):
+            if target.is_relative_to(PurePosixPath(cleanup_normalize(mount, False))):
                 mounts.append(mount)
         return max(mounts, key=len) if mounts else None
     except (OSError, ValueError, IndexError):
         return None
 
 
-def _cleanup_path(path, windows):
-    text = str(path).strip().strip('"\'')
+def cleanup_normalize(path, windows=None):
+    """Canonical safety identity for either placement; keep raw paths for link checks."""
+    import ntpath
+    text = str(path)
+    windows = bool(drive(text) or text.startswith(('\\\\', '//')) or
+                   (IS_WINDOWS and not is_linux_native(text))) if windows is None else windows
     if windows:
-        import ntpath
+        text = to_windows_path(text).replace('/', '\\')
+        if text.lower().startswith('\\\\?\\unc\\'):
+            text = '\\\\' + text[8:]
+        elif text.startswith('\\\\?\\'):
+            text = text[4:]
         return ntpath.normpath(text).replace('\\', '/').rstrip('/').casefold()
-    return str(Path(text).resolve()).rstrip('/') or '/'
+    import posixpath
+    # Only the owning Linux worker can resolve Linux links; the Windows
+    # coordinator preserves their case and leaves link validation to that worker.
+    return posixpath.normpath(text) if IS_WINDOWS else posixpath.realpath(text)
+
+
+def _process_os_location(exe, windows):
+    if not exe:
+        return True
+    roots = ([os.environ.get('SystemRoot', r'C:\Windows'),
+              os.environ.get('ProgramFiles', r'C:\Program Files'),
+              os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+              os.environ.get('ProgramData', r'C:\ProgramData') + r'\Microsoft',
+              r'C:\Windows\SystemApps'] if windows else ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/opt'])
+    path = cleanup_normalize(exe, windows)
+    return any(path.startswith(cleanup_normalize(root, windows).rstrip('/') + '/') for root in roots)
 
 
 _PROCESS_IGNORE_R11_WINDOWS = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
@@ -813,25 +835,16 @@ def default_process_ignore():
     """Owner-editable non-workspace helpers; shells are deliberately excluded."""
     return [*_PROCESS_IGNORE_R11_WINDOWS,
             'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
-            'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', *_PROCESS_IGNORE_WSL]
+            'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe', *_PROCESS_IGNORE_WSL]
 
 
 def seed_cleanup_process_policy(policy):
     """Upgrade the exact prior factory list; preserve every owner-modified list."""
-    if 'process_ignore' not in policy or policy['process_ignore'] == _PROCESS_IGNORE_R11_WINDOWS + _PROCESS_IGNORE_WSL:
+    previous = [name for name in default_process_ignore() if name != 'remoting_desktop.exe']
+    if 'process_ignore' not in policy or policy['process_ignore'] in (
+            _PROCESS_IGNORE_R11_WINDOWS + _PROCESS_IGNORE_WSL, previous):
         policy['process_ignore'] = default_process_ignore()
     policy.setdefault('process_query_timeout_s', 240)
-
-
-def _cleanup_process_roots(request):
-    roots = list(request.get('_process_roots', []))
-    for machine in request.get('repos', []):
-        roots.extend(machine[key] for key in ('repo', 'worktrees') if machine.get(key))
-    paths = request.get('paths', {})
-    roots.extend(p for key in ('temp_roots', 'report_roots') for p in paths.get(key, []))
-    roots.extend(c.get('path', c.get('cwd')) for c in paths.get('caches', []))
-    roots.extend(request[key] for key in ('approved_path',) if request.get(key))
-    return [root for root in roots if root]
 
 
 @contextmanager
@@ -1006,12 +1019,16 @@ def _windows_processes():
 
 
 def _cleanup_cim(request, current=None):
-    """Cache one narrow process query for this cleanup run, across drives/workers."""
+    """Cache one narrow process query per stage/drive decision; rechecks verify identity."""
     from . import disk_state
     request = request or {}
     cache = None
     if request.get('_inventory_id'):
-        cache = 'processes-' + request['_inventory_id'] + '.json'
+        suffix = ''
+        if 'stage' in request:
+            import hashlib
+            suffix = '-' + hashlib.sha256(json.dumps([request['stage'], request.get('drive')], sort_keys=True).encode()).hexdigest()[:16]
+        cache = 'processes-' + request['_inventory_id'] + suffix + '.json'
         try:
             return json.loads((Path(request['state_dir']) / 'disk' / cache).read_text(encoding='utf-8'))
         except FileNotFoundError:
@@ -1039,7 +1056,6 @@ class _CleanupProcesses:
         self.ignored = {name.casefold() if self.windows else name for name in self.ignored}
         self.query_failure = None
         self.request = request or {}
-        self.roots = _cleanup_process_roots(self.request)
         if self.windows:
             try:
                 current = _windows_processes() if not cim and request else None
@@ -1047,7 +1063,7 @@ class _CleanupProcesses:
                 answer = dict(rows=cim()) if cim else _cleanup_cim(request, current)
                 self.query_failure = {k: v for k, v in answer.items() if k not in ('rows', 'identities')} or None
                 rows = answer['rows']
-                self.unknown = not rows or bool(self.query_failure)
+                self.unknown = bool(self.query_failure) or (not rows and current is None)
                 if current is not None:
                     known = {str(row['pid']): row for row in rows}
                     baseline = answer.get('identities') or {}
@@ -1055,14 +1071,7 @@ class _CleanupProcesses:
                     for pid, identity in current.items():
                         if pid in known and identity[1] and baseline.get(pid) == identity:
                             continue
-                        cwd = self._own_cwd(int(pid))
-                        if cwd:
-                            known[pid] = dict(pid=int(pid), name=identity[0], same_user=True, cwd=cwd, cmd='')
-                        elif pid in known:
-                            refresh.append(pid)
-                        else:
-                            self.unknown = True
-                            self._unreadable(int(pid), identity[0], evidence='process_started_after_snapshot')
+                        refresh.append(pid)
                     rows = list(known.values())
                     if refresh:
                         # Never inherit ownership/argv from a PID whose birth is unknown or changed.
@@ -1076,6 +1085,13 @@ class _CleanupProcesses:
                                 reason_code='process_query_timeout' if isinstance(error, subprocess.TimeoutExpired)
                                 else 'process_visibility_unavailable')
                         rows = [row for row in rows if str(row['pid']) not in refresh]
+                        try:
+                            after = _windows_processes()
+                        except OSError as error:
+                            after = {}
+                            self.query_failure = dict(reason_code='process_visibility_unavailable', error=str(error))
+                        fresh = {pid: row for pid, row in fresh.items()
+                                 if pid in refresh and after.get(pid) == current.get(pid)}
                         rows.extend(fresh.values())
                         for pid in refresh:
                             if pid not in fresh:
@@ -1107,7 +1123,7 @@ class _CleanupProcesses:
                 if not entry.exists():
                     continue
             try:
-                cmd = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+                cmd = [arg.decode(errors='replace') for arg in (entry / 'cmdline').read_bytes().split(b'\0') if arg]
             except OSError:
                 cmd = None
             command_unreadable = cmd is None
@@ -1129,8 +1145,10 @@ class _CleanupProcesses:
                          exe=exe, command_unreadable=command_unreadable)
 
     def _unreadable(self, pid, name, **extra):
-        self.unreadable.append(dict(pid=pid, name=name, **extra,
-                                    owner_action=f'close {name} (pid {pid}) or add it to [disk_cleanup] process_ignore'))
+        row = dict(pid=pid, name=name, **extra)
+        if extra.get('evidence') in (None, 'owner') and extra.get('cwd_unreadable', True):
+            row['owner_action'] = f'close {name} (pid {pid}) or add it to [disk_cleanup] process_ignore'
+        self.unreadable.append(row)
 
     def _record(self, *, pid, name, same_user, cwd, cmd, session_id=None, exe=None, command_unreadable=False):
         command_unreadable = command_unreadable or cmd is None
@@ -1139,26 +1157,23 @@ class _CleanupProcesses:
             cwd, same_user = cwd or own_cwd, True
         image = re.split(r'[/\\]', name or '')[-1]
         image = image.casefold() if self.windows else image
-        ignored = image in self.ignored and not (exe and any(
-            _cleanup_path(exe, self.windows) == _cleanup_path(root, self.windows) or
-            _cleanup_path(exe, self.windows).startswith(_cleanup_path(root, self.windows).rstrip('/') + '/')
-            for root in self.roots))
+        ignored = image in self.ignored and _process_os_location(exe, self.windows)
         foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
         if ignored and (same_user is None or not cwd):
             self.out_of_scope += 1
         elif self.windows and same_user is None and not foreign:
             self.unknown = True
-            self._unreadable(pid, name, evidence='owner')
+            self._unreadable(pid, name, evidence='owner', cwd_unreadable=not bool(cwd))
         elif not cwd:
             if foreign:
                 self.out_of_scope += 1
             else:
                 self.unknown = True
                 self._unreadable(pid, name)
-        elif command_unreadable and not foreign and not own_cwd:
+        elif command_unreadable and not foreign:
             self.unknown = True
             self._unreadable(pid, name, evidence='command_line')
-        self.rows.append((cwd, ' '.join(filter(None, (cmd, exe)))))
+        self.rows.append((cwd, cmd, exe))
 
     def _own_cwd(self, pid):
         if not self.request.get('state_dir'):
@@ -1188,15 +1203,21 @@ class _CleanupProcesses:
     def busy(self, worktree):
         if self.unknown:
             return True
-        worktree = _cleanup_path(worktree, self.windows)
-        for cwd, cmd in self.rows:
-            if cwd and (_cleanup_path(cwd, self.windows) == worktree or _cleanup_path(cwd, self.windows).startswith(worktree + '/')):
+        worktree = cleanup_normalize(worktree, self.windows)
+        def names(path):
+            value = cleanup_normalize(path, self.windows)
+            return value == worktree or value.startswith(worktree.rstrip('/') + '/')
+        for cwd, cmd, exe in self.rows:
+            if any(names(path) for path in (cwd, exe) if path):
                 return True
-            if cmd:
-                text = cmd.replace('\\', '/')
-                text = text.casefold() if self.windows else text
-                if re.search(r"(?:^|[\s\"'=])" + re.escape(worktree) + r'(?=$|[/\s"\'])', text):
-                    return True
+            # Preserve quoted paths with spaces and option=value paths. Every path
+            # goes through the same identity normalization as cwd and executable.
+            tokens = cmd if isinstance(cmd, list) else [next(value for value in match.groups() if value is not None)
+                for match in re.finditer(r"\"([^\"]*)\"|'([^']*)'|([^\s\"']+)", cmd or '')]
+            for token in tokens:
+                for value in (token, token.partition('=')[2]):
+                    if value and (drive(value) or value.startswith(('/', '\\\\'))) and names(value):
+                        return True
         return False
 
 
@@ -1290,6 +1311,66 @@ def detected_cleanup_policy(state_dir):
         dict(path=str(Path(os.environ.get(variable, fallback)).expanduser().absolute() / suffix),
              placement=side, max_age_days=30)
         for tool, variable, fallback, suffix in CLEANUP_CACHE_FOLDERS if shutil.which(tool)])
+
+
+def _wsl_vhdx_paths():
+    """Registered distro disks; registry access does not require elevation."""
+    import ntpath
+    import winreg
+    paths = {}
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Lxss') as key:
+        for index in range(winreg.QueryInfoKey(key)[0]):
+            with winreg.OpenKey(key, winreg.EnumKey(key, index)) as sub:
+                try:
+                    name = winreg.QueryValueEx(sub, 'DistributionName')[0]
+                    base = winreg.ExpandEnvironmentStrings(winreg.QueryValueEx(sub, 'BasePath')[0])
+                    paths[name] = ntpath.join(base, 'ext4.vhdx')
+                except OSError:
+                    continue
+    return paths
+
+
+def _vhdx_reading(path):
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.GetFileAttributesW.argtypes = [w.LPCWSTR]
+    kernel.GetFileAttributesW.restype = w.DWORD
+    attributes = kernel.GetFileAttributesW(path)
+    if attributes == 0xffffffff:
+        raise c.WinError(c.get_last_error())
+    kernel.GetCompressedFileSizeW.argtypes = [w.LPCWSTR, c.POINTER(w.DWORD)]
+    kernel.GetCompressedFileSizeW.restype = w.DWORD
+    high = w.DWORD()
+    c.set_last_error(0)
+    low = kernel.GetCompressedFileSizeW(path, c.byref(high))
+    if low == 0xffffffff and c.get_last_error():
+        raise c.WinError(c.get_last_error())
+    return dict(sparse=bool(attributes & 0x200), allocated_bytes=(high.value << 32) | low,
+                apparent_bytes=os.stat(path).st_size)
+
+
+def cleanup_vhdx_report(*, paths=None, read=None):
+    """Report sparse/allocated disk facts and owner actions; never modify a VHDX."""
+    if paths is None and not IS_WINDOWS:
+        return []
+    try:
+        paths = _wsl_vhdx_paths() if paths is None else paths
+    except OSError as error:
+        return [dict(action='report', reason_code='wsl_vhdx_unavailable', error=str(error))]
+    rows = []
+    for name, path in paths.items():
+        row = dict(action='report', reason_code='wsl_vhdx', distro=name, path=path)
+        try:
+            row.update((read or _vhdx_reading)(path))
+            if row['sparse'] is False:
+                distro_arg = subprocess.list2cmdline([name])
+                row['owner_action'] = (f'wsl --shutdown, then wsl --manage {distro_arg} --set-sparse true '
+                                       '(and compact once with Optimize-VHD)')
+        except OSError as error:
+            row['error'] = str(error)
+        rows.append(row)
+    return rows
 
 
 def trim_argv():
@@ -1549,10 +1630,8 @@ def cleanup_path(path):
 
 
 def cleanup_parts(path):
-    # Compare lexical containment without following registered links. Keep the raw
-    # administrative path separately so safe_path still sees every link component.
-    path = Path(os.path.normpath(cleanup_path(path)))
-    return tuple(p.casefold() for p in path.parts) if IS_WINDOWS or drive(path) else path.parts
+    from pathlib import PurePosixPath
+    return PurePosixPath(cleanup_normalize(path)).parts
 
 
 def cleanup_link(path):
@@ -1566,7 +1645,6 @@ def cleanup_scope(request):
     """Keep only this physical drive; path spelling/translation lives here."""
     import copy
     scoped = copy.deepcopy(request)
-    scoped['_process_roots'] = _cleanup_process_roots(request)
     scoped['scope_errors'] = []
     if physical_disk_path(request['drive']['path']) is None:
         scoped['scope_errors'].append(dict(path=request['drive']['path'], reason_code='physical_disk_unknown'))
@@ -1600,9 +1678,7 @@ def cleanup_contains(request, path):
     host = physical_disk_path(path)
     drive_host = physical_disk_path(declared) if declared is not None else None
     if host is not None and drive_host is not None:
-        if drive(host) and drive(drive_host):
-            return drive(host) == drive(drive_host)
-        return str(host) == str(drive_host)
+        return cleanup_normalize(host) == cleanup_normalize(drive_host)
     return False
 
 
@@ -1800,6 +1876,5 @@ def unlock_worktree(repo, path):
         return
     for block in listed.stdout.split('\0\0'):
         fields = dict(field.partition(' ')[::2] for field in block.split('\0') if field)
-        windows = IS_WINDOWS and not routes_through_wsl(path)
-        if fields.get('worktree') and _cleanup_path(fields['worktree'], windows) == _cleanup_path(path, windows) and fields.get('locked') == expected:
+        if fields.get('worktree') and cleanup_normalize(fields['worktree']) == cleanup_normalize(path) and fields.get('locked') == expected:
             git(repo, 'worktree', 'unlock', str(path), timeout=60)

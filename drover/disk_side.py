@@ -16,6 +16,7 @@ def serve(request: dict) -> dict:
     answer = _serve(request)
     if not request['apply'] and request['stage'] < 6:
         request['_inventory'].save()
+    answer['peak_intermediate_bytes'] = request['_inventory'].peak_intermediate_bytes
     answer['items'] = compact(answer['items'], request)
     if proof:
         foreign = getattr(proof, 'out_of_scope', 0)
@@ -37,7 +38,7 @@ def _serve(request):
     stage = request['stage']
     if stage == 1:
         argv = placement.trim_argv()
-        result = dict(items=[], errors=[], reclaimed_bytes=0)
+        result = dict(items=placement.cleanup_vhdx_report(), errors=[], reclaimed_bytes=0)
         if request['apply'] and argv:
             try:
                 done = subprocess.run(argv, capture_output=True, text=True, timeout=120, shell=False)

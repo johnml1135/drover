@@ -914,7 +914,7 @@ def main(argv=None):
         if a.action == "migrate-registration":
             from datetime import datetime, timezone
             from . import repos
-            if not a.key or a.repo or a.revision is not None:
+            if not a.key or a.repo:
                 raise ConfigError("migrate-registration requires a repository name")
             path = next((p for p in sorted(repos_dir(cfg).glob("*.toml"))
                          if p.stem.lower() == a.key.lower()), None)
@@ -931,7 +931,11 @@ def main(argv=None):
                 facts["run"] = {"env": raw["run"]["env"]}
             facts.setdefault("name", path.stem)
             use(cfg, sources=origins)
-            committed = repos.load(facts, machine_path=path, sources=origins)
+            branch = facts.get("default_branch", "main")
+            if not isinstance(branch, str) or not branch.strip():
+                raise ConfigError("default_branch must be a non-empty git branch name")
+            revision = a.revision or "refs/heads/" + branch.removeprefix("refs/heads/")
+            committed = repos.load(facts, revision=revision, machine_path=path, sources=origins)
             if not committed["_adopted"]:
                 raise ConfigError("commit .drover/config.toml before migrating the repo registration")
             print(f"Registration facts for {path}:\n{dumps(facts)}", end="")

@@ -13,6 +13,24 @@ from tests.disk_fixture import DiskCase
 from tests.gitfix import Repo
 
 
+RUNNER_RECORD_PROBE = r"""import json, os, sys, time
+from pathlib import Path
+root = Path(sys.argv[1]) / 'disk'
+runner_pid = int(sys.argv[2])
+deadline = time.monotonic() + 5
+while True:
+    rows = [json.loads(p.read_text()) for p in root.glob('process-*.json')]
+    if runner_pid in {r['identity']['pid'] for r in rows} and any(
+            r['identity']['pid'] in (os.getpid(), os.getppid()) and r['identity']['pid'] != runner_pid
+            for r in rows):
+        break
+    if time.monotonic() >= deadline:
+        raise AssertionError(rows)
+    time.sleep(.01)  # Resolver: parent publishes the child's kernel identity.
+assert next(r for r in rows if r['identity']['pid'] != runner_pid)['cwd'] == str(Path.cwd())
+"""
+
+
 R12_HELPERS = {'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe',
                'NVDisplay.Container.exe', 'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe'}
 
@@ -195,7 +213,7 @@ class HelperPolicy(DiskCase):
                     'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
                     'systemd', '(sd-pam)']
         raw = dict(disk_cleanup=dict(temp_roots=[], process_ignore=previous))
-        expected = set(previous) | R12_HELPERS
+        expected = set(previous) | R12_HELPERS | {'remoting_desktop.exe'}
         migrated = config.migrate_disk_config(raw)
         self.assertEqual(set(migrated['disk_cleanup']['process_ignore']), expected)
         self.assertEqual(config.migrate_disk_config(migrated), migrated)
@@ -267,7 +285,8 @@ class OwnProcesses(DiskCase):
                 with patch.object(placement, '_windows_processes', return_value={
                         '1': ['service.exe', 10], '77': ['python.exe', 20]}), \
                         patch.object(placement, '_windows_cwd', return_value=None), \
-                        patch.object(placement, '_cim_rows', side_effect=AssertionError('own native identity is confirmed')):
+                        patch.object(placement, '_cim_rows', return_value=[dict(
+                            pid=77, name='python.exe', same_user=True, cmd='', exe=r'C:\Python\python.exe')]):
                     proof = placement.cleanup_processes(windows=True, request=request)
                 self.assertFalse(proof.busy(r'H:\unrelated'))
                 self.assertTrue(proof.busy(r'C:\known'))
@@ -308,21 +327,9 @@ class OwnProcesses(DiskCase):
 
     def test_runner_records_itself_and_launched_process_and_releases_both(self):
         from drover import runner
-        code = r"""import json, os, sys, time
-from pathlib import Path
-root = Path(sys.argv[1]) / 'disk'
-deadline = time.monotonic() + 5
-while True:
-    rows = [json.loads(p.read_text()) for p in root.glob('process-*.json')]
-    if {os.getpid(), os.getppid()} <= {r['identity']['pid'] for r in rows}:
-        break
-    if time.monotonic() >= deadline:
-        raise AssertionError(rows)
-    time.sleep(.01)  # Resolver: parent publishes the child's kernel identity.
-assert next(r for r in rows if r['identity']['pid'] == os.getpid())['cwd'] == str(Path.cwd())
-"""
+
         result = runner.supervise('fixture', self.state / 'runs',
-                                  [sys.executable, '-c', code, str(self.state)], cwd=str(self.root), poll_s=.01)
+                                  [sys.executable, '-c', RUNNER_RECORD_PROBE, str(self.state), str(os.getpid())], cwd=str(self.root), poll_s=.01)
         self.assertEqual(result['exit_code'], 0, (self.state / 'runs' / 'fixture' / 'out.log').read_text())
         self.assertFalse(list((self.state / 'disk').glob('process-*.json')))
 

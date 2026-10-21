@@ -244,7 +244,7 @@ class BoundedReport(WorktreeCase):
         entry.write_text(entry.read_text() + '\n# uncommitted migration preparation\n')
         result = self.cleanup()
         row = next(e for e in result['errors'] if e.get('reason_code') == 'excluded_repo')
-        self.assertEqual(row['owner_action'], 'commit .drover/config.toml, then drover config migrate-repo alpha')
+        self.assertEqual(row['owner_action'], 'commit .drover/config.toml, then drover config migrate-machine alpha')
 
 
 class Timeout(DiskCase):

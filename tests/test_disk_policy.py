@@ -12,7 +12,7 @@ from tests.gitfix import Repo
 PROCESS_IGNORE = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
                   'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
                   'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
-                  'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe',
+                  'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe',
                   'systemd', '(sd-pam)']
 
 

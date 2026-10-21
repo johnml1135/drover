@@ -27,6 +27,12 @@ def entries(repo):
     return rows
 
 
+def registration_identity(entry):
+    """Compare administrative evidence using canonical identities for its paths."""
+    return {key: placement.cleanup_parts(value) if key in ('worktree', 'gitdir') and value else value
+            for key, value in entry.items()}
+
+
 def outputs_at(machine, head, path):
     return repos.cleanup_config(repos.load(machine, revision=head, checkout=str(path)))['disposable']
 
@@ -109,7 +115,7 @@ def inspect(request, machine, entry):
     if not placement.cleanup_contains(request, entry['worktree']):
         row['reason_code'] = 'other_drive'
         return row
-    if path == Path(placement.native(machine['repo'])):
+    if placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo']):
         row['reason_code'] = 'main_checkout'
         return row
     proof = request.get('_processes') or placement.cleanup_processes(request=request)
@@ -161,7 +167,7 @@ def settled(request: dict) -> dict:
                 if request['apply']:
                     quarantine(request, machine, row)
             if request.get('approved_path'):
-                if row['path'] != request['approved_path']:
+                if placement.cleanup_parts(row['path']) != placement.cleanup_parts(request['approved_path']):
                     continue
                 if row['reason_code'] in ('unsettled', 'orphan'):
                     row['action'] = 'candidate'
@@ -190,17 +196,17 @@ def remove(request: dict, selected: dict) -> dict:
     import uuid
     from . import disk_state
     row = dict(selected)
-    machine = next(m for m in request['repos'] if m['repo'] == row['repo'])
+    machine = next(m for m in request['repos'] if placement.cleanup_parts(m['repo']) == placement.cleanup_parts(row['repo']))
     path = Path(row['path'])
     record, unlocked = None, False
     try:
         entry = next((e for e in entries(machine['repo'])
-                      if str(Path(placement.native(e['worktree']))) == str(path)), None)
+                      if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(path)), None)
         if row.get('unlisted'):
             if entry is not None or snapshot(machine, path, request=request) != row['head']:
                 raise ValueError('snapshot changed')
             fingerprint = identity(path) + repr((row.get('head'), row.get('tag'), row.get('branch'),
-                                               row.get('gitdir'), row.get('side_lock')))
+                                               placement.cleanup_parts(row['gitdir']) if row.get('gitdir') else None, row.get('side_lock')))
             if fingerprint != row['quarantine_identity']:
                 raise ValueError('snapshot activity changed')
             current = dict(row)
@@ -210,18 +216,19 @@ def remove(request: dict, selected: dict) -> dict:
             current = inspect({k: v for k, v in request.items() if k != '_processes'}, machine, entry)
             if row['reason_code'] == 'quarantine_elapsed' and current['reason_code'] == 'orphan':
                 fingerprint = identity(path) + repr((current.get('head'), current.get('tag'), current.get('branch'),
-                                                   current.get('gitdir'), current.get('side_lock')))
+                                                   placement.cleanup_parts(current['gitdir']) if current.get('gitdir') else None, current.get('side_lock')))
                 if fingerprint == row['quarantine_identity']:
                     current.update(action='candidate', reason_code='quarantine_elapsed')
-        if request.get('approved_path') == str(path) and current['reason_code'] in ('unsettled', 'orphan'):
+        if request.get('approved_path') and placement.cleanup_parts(request['approved_path']) == placement.cleanup_parts(path) and current['reason_code'] in ('unsettled', 'orphan'):
             current['action'] = 'candidate'
         after = next((e for e in entries(machine['repo'])
-                      if str(Path(placement.native(e['worktree']))) == str(path)), None)
-        if after != entry or (path.exists() and ownership.read(str(path)) != current.get('tag')):
+                      if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(path)), None)
+        if registration_identity(after or {}) != registration_identity(entry or {}) or (path.exists() and ownership.read(str(path)) != current.get('tag')):
             current.update(action='keep', reason_code='identity_changed')
             return quarantine(request, machine, current) if row.get('unlisted') else current
         keys = ('head', 'branch', 'side_lock', 'gitdir', 'tag')
-        if current['action'] != 'candidate' or any(current.get(k) != row.get(k) for k in keys):
+        fresh_identity, selected_identity = registration_identity(current), registration_identity(row)
+        if current['action'] != 'candidate' or any(fresh_identity.get(k) != selected_identity.get(k) for k in keys):
             return dict(current, action='keep', reason_code='revalidation_changed')
         if overlaps_worktrees(request, path, path):
             return dict(current, action='keep', reason_code='nested_worktree')
@@ -303,7 +310,7 @@ def quarantine(request, machine, row):
             row.update(reason_code='ignored_content', excluded=excluded)
             eligible = False
     fingerprint = (identity(Path(row['path'])) + repr((row.get('head'), row.get('tag'),
-                    row.get('branch'), row.get('gitdir'), row.get('side_lock')))) if eligible else None
+                    row.get('branch'), placement.cleanup_parts(row['gitdir']) if row.get('gitdir') else None, row.get('side_lock')))) if eligible else None
     def observe(state):
         records = state.setdefault('quarantine', {})
         previous = records.get(key)

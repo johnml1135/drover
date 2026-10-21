@@ -12,7 +12,8 @@ def result():
 
 
 def within(path, root):
-    return path == root or root in path.parents
+    parts, parent = placement.cleanup_parts(path), placement.cleanup_parts(root)
+    return parts[:len(parent)] == parent
 
 
 def facts(path, now, *, ignore_activity=(), request=None):
@@ -84,7 +85,7 @@ def repository_tree(path, *, boundary=None):
     """
     path = Path(path).absolute()
     for parent in (path, *path.parents):
-        if parent == boundary:
+        if boundary is not None and placement.cleanup_parts(parent) == placement.cleanup_parts(boundary):
             break
         if not safe_path(parent) or repository_root(parent):
             return True
@@ -293,7 +294,7 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     from . import ownership
     from .disk_worktrees import git, outputs_at
     path = Path(placement.native(entry['worktree']))
-    if path == Path(placement.native(machine['repo'])) or not path.is_dir() or not safe_path(path) or \
+    if placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo']) or not path.is_dir() or not safe_path(path) or \
             placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
             not placement.cleanup_contains(request, entry['worktree']):
         raise ValueError('not an eligible owning-side worktree')
@@ -307,7 +308,7 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
 
 def outputs(request: dict) -> dict:
     """Remove only declared ignored/untracked files; source edits always survive."""
-    from .disk_worktrees import entries, git, overlaps_worktrees, status
+    from .disk_worktrees import registration_identity, entries, git, overlaps_worktrees, status
     out = result()
     for machine in request['repos']:
         try:
@@ -339,15 +340,19 @@ def outputs(request: dict) -> dict:
                             else:
                                 row.update(facts(target, request['now'], request=request), owner=tag['owner'] if tag else None, action='candidate')
                                 if request['apply']:
-                                    current = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
+                                    current = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
                                     current_dirty, current_ignored = status(path)
-                                    if current != entry or output_evidence(request, machine, current, touched=touched, fresh=True) != evidence or \
+                                    if registration_identity(current) != registration_identity(entry):
+                                        raise ValueError('disposable registration changed')
+                                    fresh_evidence = output_evidence(request, machine, current, touched=touched, fresh=True)
+                                    if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
+                                            fresh_evidence[1:] != evidence[1:] or \
                                             name not in current_dirty + current_ignored or \
                                             git(path, 'ls-files', '-z', '--', str(relative)) or \
                                             facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
                                         raise ValueError('disposable evidence changed')
-                                    after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
-                                    if after != entry or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
+                                    after = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
+                                    if registration_identity(after) != registration_identity(entry) or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
                                             not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
                                         raise ValueError('disposable side marker changed')
                                     # status expands ignored directories to leaves; only empty directories reach here.

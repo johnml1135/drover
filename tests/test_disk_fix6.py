@@ -84,7 +84,7 @@ class ProcessPolicy(DiskCase):
         expected = {'ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
                     'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
                     'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
-                    'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe',
+                    'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe',
                     'systemd', '(sd-pam)'}
         migrated = config.migrate_disk_config(dict(disk_cleanup=dict(temp_roots=[])))
         self.assertEqual(set(migrated['disk_cleanup']['process_ignore']), expected)
@@ -134,10 +134,10 @@ class ProcessQuery(DiskCase):
                 patch.object(placement, '_windows_processes', return_value={}), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
                 patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('cim', 300)) as query, \
-                patch.object(placement.time, 'monotonic', side_effect=[10., 310.25]):
+                patch.object(placement.time, 'monotonic', side_effect=[10., 310.25, 400., 700.25]):
             first = serve(request)
             second = serve(dict(request, stage=3))
-        self.assertEqual(query.call_count, 1)
+        self.assertEqual(query.call_count, 2)
         self.assertEqual(query.call_args.kwargs['timeout'], 300)
         for answer in (first, second):
             row = next(r for r in answer['items'] if r['reason_code'] == 'process_query_timeout')
@@ -147,7 +147,7 @@ class ProcessQuery(DiskCase):
         bound_report(report)
         self.assertEqual(len([r for r in report['items'] if r['reason_code'] == 'process_query_timeout']), 1)
 
-    def test_one_narrow_query_per_run_across_drives_and_stages(self):
+    def test_one_narrow_query_per_stage_and_drive(self):
         rows = [dict(ProcessId=123456789, ParentProcessId=42, Name='service.exe', SessionId=0,
                      ExecutablePath=r'H:\candidate\tool.exe', CommandLine='', OwnerSid=None)]
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=rows)), '')
@@ -159,7 +159,7 @@ class ProcessQuery(DiskCase):
                 proof = placement.cleanup_processes(windows=True, request=dict(request, stage=stage, drive=dict(path=drive)))
                 self.assertTrue(proof.busy(r'H:\candidate'))
                 self.assertFalse(proof.busy(r'H:\unrelated'))
-        self.assertEqual(query.call_count, 1)
+        self.assertEqual(query.call_count, 3)
         script = query.call_args.args[0][-1]
         self.assertIn('-Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,SessionId', script)
         self.assertEqual(query.call_args.kwargs['timeout'], 240)
@@ -196,13 +196,15 @@ class ReviewRegressions(DiskCase):
         with patch.object(subprocess, 'run', return_value=done) as query, \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
                 patch.object(placement, '_windows_processes', create=True,
-                             side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]}]):
+                             side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
+                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]):
             first = placement.cleanup_processes(windows=True, request=request)
             second = placement.cleanup_processes(windows=True, request=request)
         self.assertFalse(first.busy(r'C:\candidate'))
         self.assertTrue(second.busy(r'C:\candidate'))
-        self.assertEqual(query.call_count, 1)
+        self.assertEqual(query.call_count, 2)
         self.assertEqual(second.unreadable[0]['pid'], 202)
+        self.assertNotIn('owner_action', second.unreadable[0])
 
     def test_unknown_owner_nonzero_session_is_conservative_even_with_cwd(self):
         proof = placement.cleanup_processes(windows=True, cim=lambda: [dict(
@@ -242,7 +244,8 @@ class ReviewRegressions(DiskCase):
                 patch.object(subprocess, 'run', return_value=done), \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
                 patch.object(placement, '_windows_processes',
-                             side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]}]):
+                             side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
+                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]):
             answer = serve(request)
         self.assertTrue(old.exists())
         row = next(r for r in answer['items'] if r['reason_code'] == 'process_visibility_unavailable' and r['action'] == 'report')

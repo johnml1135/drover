@@ -4,7 +4,7 @@ import sys
 USAGE = """usage: python -m drover init [--defaults] [--answers FILE.toml] [--state-dir DIR]
        python -m drover config [sync [--json]] [--show] [--get KEY] [--check FILE]
        python -m drover config explain KEY [--repo NAME] [--revision REV]
-       python -m drover config migrate-registration NAME [--apply]
+       python -m drover config migrate-registration NAME [--revision REV] [--apply]
        python -m drover worktree add PATH REF --repo REPO --owner OWNER --lease-until ISO8601
        python -m drover disk-tracker read|tick|install [--dry-run|--apply]
        python -m drover disk-cleanup [--mode daily|on-demand|triggered] [--dry-run|--apply] [--json]"""

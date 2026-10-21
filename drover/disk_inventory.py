@@ -8,26 +8,44 @@ from pathlib import Path
 from . import disk_state, placement
 
 LIMIT = 20
+CACHE_LIMIT_BYTES = 4 * 1024 * 1024
 
 
 class Inventory:
     """One tree traversal per root across report stages, with bounded directory summaries."""
 
     def __init__(self, now, request=None, *, ignore_activity=()):
-        self.now, self.ignore_activity = now, ignore_activity
+        self.now = now
+        self.ignore_activity = {placement.cleanup_parts(path) for path in ignore_activity}
         self.directories, self.cache = {}, None
+        self.peak_intermediate_bytes = 0
         if request and request.get('_inventory_id'):
             suffix = hashlib.sha256(json.dumps([request.get('side', placement.cleanup_side()),
                                                 request['drive']['path']]).encode()).hexdigest()[:16]
             self.cache = (request['state_dir'], 'inventory-' + request['_inventory_id'] + '-' + suffix + '.json')
             try:
-                self.directories = json.loads((Path(self.cache[0]) / 'disk' / self.cache[1]).read_text(encoding='utf-8'))
+                cache_path = Path(self.cache[0]) / 'disk' / self.cache[1]
+                if cache_path.stat().st_size <= CACHE_LIMIT_BYTES:
+                    self.directories = json.loads(cache_path.read_text(encoding='utf-8'))
+                    self.peak_intermediate_bytes = cache_path.stat().st_size
             except FileNotFoundError:
                 pass
 
     def save(self):
         if self.cache:
-            disk_state.save_file(*self.cache, self.directories)
+            # Keep a bounded subset of complete summaries. A cache miss rescans;
+            # no partial tree measurement can become deletion evidence.
+            bounded, size = {}, 2
+            for key in sorted(self.directories, key=lambda path: len(Path(path).parts)):
+                row = self.directories[key]
+                length = len(json.dumps({key: row}, ensure_ascii=True).encode('utf-8'))
+                if size + length > CACHE_LIMIT_BYTES:
+                    continue
+                bounded[key] = row
+                size += length
+            disk_state.save_file(*self.cache, bounded)
+            actual = (Path(self.cache[0]) / 'disk' / self.cache[1]).stat().st_size
+            self.peak_intermediate_bytes = max(self.peak_intermediate_bytes, actual)
 
     def measure(self, path, *, strict=False):
         row = self._scan(Path(path))
@@ -46,7 +64,7 @@ class Inventory:
             if placement.cleanup_link(path):
                 raise ValueError('link or reparse point: ' + key)
             info = path.stat()
-            row['newest'] = 0 if path in self.ignore_activity else info.st_mtime
+            row['newest'] = 0 if placement.cleanup_parts(path) in self.ignore_activity else info.st_mtime
             if stat.S_ISDIR(info.st_mode):
                 from .disk_paths import repository_root
                 row['repository'] = path.name.casefold() in ('.git', '.venv') or repository_root(path)
@@ -100,7 +118,7 @@ def compact(items, request):
                 row[key + '_count'] = len(row[key])
                 row[key] = row[key][:LIMIT]
         if row.get('reason_code') in ('worktree_inventory', 'untracked_or_ignored', 'budget_usage',
-                                       'merged_live_task', 'process_out_of_scope', 'process_visibility_unavailable', 'temp_root_elapsed'):
+                                       'merged_live_task', 'process_out_of_scope', 'process_visibility_unavailable', 'temp_root_elapsed', 'wsl_vhdx', 'wsl_vhdx_unavailable'):
             answer.append(row)
             continue
         path = Path(row['path'])
