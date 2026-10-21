@@ -31,7 +31,8 @@ SLOW_MODULE_S = 60
 SHARD_ABOVE_S = 40          # a module whose last run took longer than this is split across workers
 SHARD_SIZE = 12             # tests per shard
 HEAVY = {'tests.test_pipeline', 'tests.test_landing', 'tests.test_replans', 'tests.test_garden', 'tests.test_hub_runtime',
-         'tests.test_waiting_consumers', 'tests.test_platforms', 'tests.test_waiting_characterization'}  # before any timing exists
+         'tests.test_waiting_consumers', 'tests.test_platforms', 'tests.test_waiting_characterization',
+         'tests.test_replan_batches', 'tests.test_ci', 'tests.test_repo_entry'}  # before any timing exists
 LIST_IDS = '''
 import sys, unittest
 def flat(s):
