@@ -100,7 +100,7 @@ def compact(items, request):
                 row[key + '_count'] = len(row[key])
                 row[key] = row[key][:LIMIT]
         if row.get('reason_code') in ('worktree_inventory', 'untracked_or_ignored', 'budget_usage',
-                                       'merged_live_task', 'process_out_of_scope', 'process_visibility_unavailable'):
+                                       'merged_live_task', 'process_out_of_scope', 'process_visibility_unavailable', 'temp_root_elapsed'):
             answer.append(row)
             continue
         path = Path(row['path'])
@@ -120,19 +120,29 @@ def compact(items, request):
 
 def bound_report(report):
     """Reduce samples, never totals, to reserve space below the 5 MB report budget."""
-    foreign, unreadable, items = {}, {}, []
+    foreign, unreadable, queries, items = {}, {}, {}, []
     for row in report['items']:
         reason = row.get('reason_code')
         if row.get('action') == 'report' and reason == 'process_out_of_scope':
             for side, count in (row.get('placements') or {row['side']: row['count']}).items():
                 foreign[side] = max(foreign.get(side, 0), count)
-        elif row.get('action') == 'report' and reason == 'process_visibility_unavailable':
+        elif row.get('action') == 'report' and reason == 'process_visibility_unavailable' and 'count' in row:
             side = row['side']
-            if row['count'] > unreadable.get(side, {}).get('count', -1):
-                unreadable[side] = row
+            previous = unreadable.get(side)
+            if previous is None:
+                unreadable[side] = dict(row)
+            elif 'processes' in previous or 'processes' in row:
+                processes = {(p['pid'], p.get('name')): p for source in (previous, row)
+                             for p in source.get('processes', [])}
+                previous.update(processes=list(processes.values()), count=len(processes))
+            elif row['count'] > previous['count']:
+                unreadable[side] = dict(row)
+        elif row.get('action') == 'report' and reason in ('process_query_timeout', 'process_visibility_unavailable'):
+            queries[row['side']] = row
         else:
             items.append(row)
     items.extend(unreadable.values())
+    items.extend(queries.values())
     if foreign:
         items.append(dict(action='report', reason_code='process_out_of_scope',
                           count=sum(foreign.values()), placements=foreign))

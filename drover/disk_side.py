@@ -12,17 +12,23 @@ def serve(request: dict) -> dict:
     request['_inventory'] = Inventory(request['now'], request)
     proof = None
     if request['stage'] in (2, 3, 4, 5):
-        proof = request['_processes'] = placement.cleanup_processes()
+        proof = request['_processes'] = placement.cleanup_processes(request=request)
     answer = _serve(request)
     if not request['apply'] and request['stage'] < 6:
         request['_inventory'].save()
     answer['items'] = compact(answer['items'], request)
     if proof:
-        for reason, count, sample in (
-                ('process_out_of_scope', getattr(proof, 'out_of_scope', 0), []),
-                ('process_visibility_unavailable', len(getattr(proof, 'unreadable', [])), getattr(proof, 'unreadable', [])[:20])):
-            if count:
-                answer['items'].append(dict(action='report', reason_code=reason, count=count, sample=sample))
+        foreign = getattr(proof, 'out_of_scope', 0)
+        if foreign:
+            answer['items'].append(dict(action='report', reason_code='process_out_of_scope', count=foreign))
+        processes = list(request['_process_diagnostics'].values()) if '_process_diagnostics' in request else getattr(proof, 'unreadable', [])
+        if processes:
+            answer['items'].append(dict(action='report', reason_code='process_visibility_unavailable',
+                                        count=len(processes), processes=processes))
+        failures = request.get('_process_query_failures', [])
+        if not failures and getattr(proof, 'query_failure', None):
+            failures = [proof.query_failure]
+        answer['items'].extend(dict(action='report', **failure) for failure in failures)
     answer['errors'].extend(request['scope_errors'])
     return answer
 

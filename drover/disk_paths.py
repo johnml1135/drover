@@ -1,6 +1,7 @@
 """Safe declared path stages. No inferred tool, repository or language policy."""
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from . import placement
@@ -119,28 +120,66 @@ def protected_path(path, request):
 
 
 def temp_facts(path, request):
-    if protected_path(path, request):
+    """Prove safety and measure in one pass; stop at the first protected descendant."""
+    roots = [Path(request['state_dir']).absolute()]
+    roots += [Path(placement.native(repo[key])).absolute() for repo in request['repos']
+              for key in ('repo', 'worktrees') if repo.get(key)]
+    if not safe_path(path) or live_tree(path, request) or \
+            any(within(path, root) or within(root, path) for root in roots) or \
+            any(repository_root(parent) for parent in path.parents):
         raise ValueError('protected subtree')
-    def prove(parent):
-        for child in parent.iterdir():
-            if protected_path(child, request):
-                raise ValueError('protected descendant')
-            if child.is_dir():
-                prove(child)
-    if path.is_dir():
-        prove(path)
-    return facts(path, request['now'], request=request)
+    cached = request.setdefault('_temp_facts', {})
+    children = request.setdefault('_temp_children', {})
+    declared = {Path(p).absolute() for p in request['paths'].get('temp_roots', [])}
+    def visit(current):
+        if current in cached:
+            value = cached[current]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        try:
+            value = scan(current)
+        except (OSError, ValueError) as error:
+            cached[current] = error
+            raise
+        if current.is_dir():
+            cached[current] = value
+        return value
+    def scan(current):
+        if placement.cleanup_link(current) or current.name.casefold() in ('.git', '.venv') or \
+                not placement.cleanup_contains(request, str(current)) or repository_root(current):
+            raise ValueError('protected descendant')
+        info = current.stat()
+        files, size, newest = 0, 0, info.st_mtime
+        if current.is_dir():
+            entries = list(current.iterdir()) if current in declared else current.iterdir()
+            if current in declared:
+                children[current] = entries
+            for child in entries:
+                count, length, activity = visit(child)
+                files += count
+                size += length
+                newest = max(newest, activity)
+        else:
+            files, size = 1, info.st_size
+        return files, size, newest
+    files, size, newest = visit(path)
+    return dict(files=files, bytes=size, age_s=max(0, request['now'] - newest))
 
 
 def temporary(request):
     out = result()
-    proof = request.get('_processes') or placement.cleanup_processes()
-    for root_text in request['paths'].get('temp_roots', []):
-        root = Path(root_text).absolute()
+    proof = request.get('_processes') or placement.cleanup_processes(request=request)
+    request['_temp_facts'], request['_temp_children'] = {}, {}
+    for root in sorted({Path(p).absolute() for p in request['paths'].get('temp_roots', [])}, key=lambda p: len(p.parts)):
+        started = time.monotonic()
         try:
             if not root.is_dir() or not safe_path(root):
                 continue
-            for path in root.iterdir():
+            children = request['_temp_children']
+            if root not in children:
+                children[root] = list(root.iterdir())
+            for path in children[root]:
                 row = item(path, request, 'temp_retained')
                 try:
                     row.update(temp_facts(path, request))
@@ -150,10 +189,10 @@ def temporary(request):
                         else:
                             row.update(action='candidate', reason_code='stale_temp')
                             if request['apply']:
-                                current = placement.cleanup_processes()
+                                current = placement.cleanup_processes(request=request)
                                 if current.busy(str(path)):
                                     row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
-                                elif temp_facts(path, request) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request, str(path)):
+                                elif temp_facts(path, dict(request, _temp_facts={}, _temp_children={})) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request, str(path)):
                                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                                     row['action'] = 'removed'
                                     out['reclaimed_bytes'] += row['bytes']
@@ -162,6 +201,9 @@ def temporary(request):
                 out['items'].append(row)
         except OSError as error:
             out['errors'].append(dict(path=str(root), error=str(error)))
+        finally:
+            out['items'].append(dict(path=str(root), action='report', reason_code='temp_root_elapsed',
+                                     elapsed_s=time.monotonic() - started))
     return out
 
 
@@ -219,7 +261,7 @@ def folder_cache(request, entry, out):
             row = item(path, request, 'folder_cache')
             row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
             if request['apply']:
-                proof = placement.cleanup_processes()
+                proof = placement.cleanup_processes(request=request)
                 if proof.busy(str(path)):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
                 elif protected_path(path, request):
@@ -255,7 +297,7 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
             placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
             not placement.cleanup_contains(request, entry['worktree']):
         raise ValueError('not an eligible owning-side worktree')
-    if (placement.cleanup_processes() if fresh else request.get('_processes') or placement.cleanup_processes()).busy(str(path)):
+    if (placement.cleanup_processes(request=request) if fresh else request.get('_processes') or placement.cleanup_processes(request=request)).busy(str(path)):
         raise ValueError('process using worktree')
     if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < 3 * 86400:
         raise ValueError('worktree idle less than three days')

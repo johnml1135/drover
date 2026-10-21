@@ -163,6 +163,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                 raise
         for cache in (state_dir / 'disk').glob('inventory-' + inventory_id + '-*.json'):
             cache.unlink(missing_ok=True)
+        for cache in (state_dir / 'disk').glob('processes-' + inventory_id + '.json'):
+            cache.unlink(missing_ok=True)
         from .disk_inventory import bound_report
         bound_report(result)
         # Persist report evidence independently of the short outbox transaction.
@@ -250,6 +252,14 @@ def _notices(cfg, result, runtime, machines):
                     pending.append(dict(id=previous['id'], kind='exhaustion', drive=name,
                                         title=f"Disk cleanup exhausted: {name}",
                                         body=f"{free:.1f} GiB free after all cleanup stages; review retained items."))
+        actions = list(dict.fromkeys(p['owner_action'] for row in result['items']
+                                     if row.get('reason_code') == 'process_visibility_unavailable'
+                                     for p in row.get('processes', []) if p.get('owner_action')))
+        if actions:
+            for notice in pending:
+                drive = next(d for d in result['drives'] if d['name'] == notice['drive'])
+                if drive['level'] == 'critical':
+                    notice['body'] += '\n' + '\n'.join(actions)
         budgets = state.setdefault('budget_episodes', {})
         for machine in machines:
             if not machine.get('budget_gb'):

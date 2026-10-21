@@ -180,14 +180,14 @@ class WSL:
         name = distro(self.default)
         if not re.fullmatch(r"[A-Za-z0-9._-]+", str(name)) or name.startswith("-"):
             raise ValueError(f"bad WSL distro name {name!r}")
-        prefix = wsl_control(["-d", name])
+        prefix = ["-d", name]
         if cd:
             prefix += ["--cd", self.path(cd)]
         if env:
             if any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(k)) for k in env):
                 raise ValueError("bad environment variable name")
             argv = ["/usr/bin/env", *[f"{k}={self.path(v)}" for k, v in env.items()], *argv]
-        return prefix + ["--exec", *argv]
+        return wsl_control(prefix + ["--exec", *argv])
 
     def spawn(self, argv, **kw):
         proc = subprocess.Popen(argv, start_new_session=True, **kw)
@@ -195,7 +195,10 @@ class WSL:
 
 
 def wsl_control(args):
-    return ["wsl.exe", *args]
+    command = ["wsl.exe", *args]
+    if len(subprocess.list2cmdline(command).encode('utf-16-le')) >= 8192:
+        raise ValueError('WSL command exceeds 8 KB; pass payloads through stdin or files')
+    return command
 
 
 # Arguments that follow these are paths; subcommand positionals of `worktree add|repair|remove|move` are too.
@@ -733,7 +736,7 @@ def recover_ci_children(platform, status, drover_dir, distro_name=None):
     if IS_WINDOWS and platform == 'wsl':
         code = ('import json,sys; from drover.placement import stop_ci_children; '
                 'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
-        command = WSL(distro_name).command(['python3', '-c', code, json.dumps(status)], cd=drover_dir)
+        command = WSL(distro_name).command(['python3', '-c', code, json.dumps({key: status.get(key) for key in ('pid', 'runner_pid', 'run_id')})], cd=drover_dir)
         result = subprocess.run(command, capture_output=True, timeout=90,
                                 stdin=subprocess.DEVNULL, **NO_WINDOW)
         if result.returncode not in (0, 1):
@@ -800,9 +803,23 @@ def _cleanup_path(path, windows):
     return str(Path(text).resolve()).rstrip('/') or '/'
 
 
-def cleanup_processes(*, proc_root=None, cim=None, windows=None):
+def default_process_ignore():
+    """Owner-editable non-workspace helpers; shells are deliberately excluded."""
+    return ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
+            'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
+            'systemd', '(sd-pam)']
+
+
+def cleanup_processes(*, proc_root=None, cim=None, windows=None, request=None):
     """Snapshot invoking-user visibility; foreign processes still contribute path evidence."""
-    return _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows)
+    proof = _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows, request=request)
+    if request is not None:
+        diagnostics = request.setdefault('_process_diagnostics', {})
+        for row in proof.unreadable:
+            diagnostics[(row['pid'], row['name'])] = row
+        if proof.query_failure:
+            request.setdefault('_process_query_failures', []).append(proof.query_failure)
+    return proof
 
 
 def _windows_cwd(pid):
@@ -851,46 +868,130 @@ def _windows_cwd(pid):
         kernel.CloseHandle(handle)
 
 
-def _cim_rows():
+def _cim_rows(timeout=240):
     """One CIM query supplies owner SIDs alongside argv/exe evidence."""
     script = r'''$ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$rows = @(Get-CimInstance Win32_Process | ForEach-Object {
+$rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,SessionId | ForEach-Object {
     $ownerSid = $null
     try { $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
           if ($owner.ReturnValue -eq 0) { $ownerSid = $owner.Sid } } catch {}
     [pscustomobject]@{ProcessId=$_.ProcessId; Name=$_.Name; ExecutablePath=$_.ExecutablePath;
-                     CommandLine=$_.CommandLine; OwnerSid=$ownerSid}
+                     CommandLine=$_.CommandLine; SessionId=$_.SessionId; OwnerSid=$ownerSid}
 })
 @{sid=$sid; processes=$rows} | ConvertTo-Json -Compress -Depth 4
 '''
     out = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                         capture_output=True, text=True, timeout=30, errors='replace', **NO_WINDOW)
+                         capture_output=True, text=True, timeout=timeout, errors='replace', **NO_WINDOW)
     if out.returncode or not out.stdout.strip():
         raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
     data = json.loads(out.stdout)
     if not data.get('sid') or not isinstance(data.get('processes'), list):
         raise ValueError('CIM ownership unavailable')
-    return [dict(pid=d['ProcessId'], name=d.get('Name'), cwd=_windows_cwd(d['ProcessId']),
+    return [dict(pid=d['ProcessId'], name=d.get('Name'), session_id=d.get('SessionId'),
                  same_user=d.get('OwnerSid') == data['sid'] if d.get('OwnerSid') else None,
                  cmd=' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')])))
             for d in data['processes'] if d.get('ProcessId') != os.getpid()]
 
 
+def _windows_processes():
+    """Cheap native identities catch processes started or reused after the single CIM query."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    class Entry(c.Structure):
+        _fields_ = [('size', w.DWORD), ('usage', w.DWORD), ('pid', w.DWORD),
+                    ('heap', c.c_size_t), ('module', w.DWORD), ('threads', w.DWORD),
+                    ('parent', w.DWORD), ('priority', w.LONG), ('flags', w.DWORD),
+                    ('image', w.WCHAR * 260)]
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = w.HANDLE
+    kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [w.HANDLE, c.POINTER(Entry)]
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.GetProcessTimes.argtypes = [w.HANDLE, *([c.POINTER(w.FILETIME)] * 4)]
+    snapshot = kernel.CreateToolhelp32Snapshot(2, 0)
+    if snapshot == c.c_void_p(-1).value:
+        raise c.WinError(c.get_last_error())
+    rows, entry = {}, Entry()
+    entry.size = c.sizeof(entry)
+    try:
+        more = kernel.Process32FirstW(snapshot, c.byref(entry))
+        while more:
+            if entry.pid and entry.pid != os.getpid():
+                created = None
+                handle = kernel.OpenProcess(0x1000, False, entry.pid)
+                if handle:
+                    try:
+                        times = [w.FILETIME() for _ in range(4)]
+                        if kernel.GetProcessTimes(handle, *(c.byref(t) for t in times)):
+                            created = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+                    finally:
+                        kernel.CloseHandle(handle)
+                rows[str(entry.pid)] = [entry.image, created]
+            more = kernel.Process32NextW(snapshot, c.byref(entry))
+        if c.get_last_error() != 18:  # ERROR_NO_MORE_FILES is the only complete enumeration.
+            raise c.WinError(c.get_last_error())
+        return rows
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
+def _cleanup_cim(request, current=None):
+    """Cache one narrow process query for this cleanup run, across drives/workers."""
+    from . import disk_state
+    request = request or {}
+    cache = None
+    if request.get('_inventory_id'):
+        cache = 'processes-' + request['_inventory_id'] + '.json'
+        try:
+            return json.loads((Path(request['state_dir']) / 'disk' / cache).read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            pass
+    timeout = request.get('paths', {}).get('process_query_timeout_s', 240)
+    started = time.monotonic()
+    try:
+        answer = dict(rows=_cim_rows(timeout), identities=current)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        answer = dict(rows=[], error=str(error), elapsed_s=time.monotonic() - started,
+                      reason_code='process_query_timeout' if isinstance(error, subprocess.TimeoutExpired)
+                      else 'process_visibility_unavailable')
+    if cache:
+        disk_state.save_file(request['state_dir'], cache, answer)
+    return answer
+
+
 class _CleanupProcesses:
     """One invoking-user snapshot. Unknown ownership fails closed; foreign argv still retains named paths."""
 
-    def __init__(self, proc_root=None, windows=None, cim=None):
+    def __init__(self, proc_root=None, windows=None, cim=None, request=None):
         self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
         self.windows = IS_WINDOWS if windows is None else windows
+        self.ignored = (request or {}).get('paths', {}).get('process_ignore', default_process_ignore())
+        self.ignored = {name.casefold() if self.windows else name for name in self.ignored}
+        self.query_failure = None
         if self.windows:
             try:
-                rows = (cim or _cim_rows)()
-                self.unknown = not rows
+                current = _windows_processes() if not cim and request and request.get('apply') else None
+                answer = dict(rows=cim()) if cim else _cleanup_cim(request, current)
+                self.query_failure = {k: v for k, v in answer.items() if k not in ('rows', 'identities')} or None
+                rows = answer['rows']
+                self.unknown = not rows or bool(self.query_failure)
+                if current is not None:
+                    known = {str(row['pid']): row for row in rows}
+                    baseline = answer.get('identities') or {}
+                    for pid, identity in current.items():
+                        if pid not in known or baseline.get(pid) != identity:
+                            self.unknown = True
+                            self._unreadable(int(pid), identity[0], evidence='process_started_after_snapshot')
+                    rows = [row for row in rows if str(row['pid']) in current]
                 for row in rows:
-                    self._record(**row)
-            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    # Refresh readable cwd evidence even when reusing the run's CIM snapshot.
+                    self._record(**dict(row, cwd=row.get('cwd') if 'cwd' in row else _windows_cwd(row['pid'])))
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 self.unknown = True
+                self.query_failure = dict(reason_code='process_visibility_unavailable', error=str(error))
             return
         root = Path(proc_root if proc_root is not None else '/proc')
         try:
@@ -927,19 +1028,29 @@ class _CleanupProcesses:
                 # Kernel threads have no userspace cwd/argv. A known foreign UID
                 # can be excluded; unknown ownership remains conservative.
                 cwd = None
-            if command_unreadable and same_user is not False:
+            if command_unreadable and same_user is not False and not (not cwd and same_user and name in self.ignored):
                 self.unknown = True
                 if cwd:
-                    self.unreadable.append(dict(pid=int(entry.name), name=name, evidence='command_line'))
+                    self._unreadable(int(entry.name), name, evidence='command_line')
             self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd)
 
-    def _record(self, *, pid, name, same_user, cwd, cmd):
-        if not cwd:
-            if same_user is False:
+    def _unreadable(self, pid, name, **extra):
+        self.unreadable.append(dict(pid=pid, name=name, **extra,
+                                    owner_action=f'close {name} (pid {pid}) or add it to [disk_cleanup] process_ignore'))
+
+    def _record(self, *, pid, name, same_user, cwd, cmd, session_id=None):
+        image = re.split(r'[/\\]', name or '')[-1]
+        image = image.casefold() if self.windows else image
+        foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
+        if self.windows and same_user is None and not foreign:
+            self.unknown = True
+            self._unreadable(pid, name, evidence='owner')
+        elif not cwd:
+            if foreign or (same_user is True and image in self.ignored):
                 self.out_of_scope += 1
             else:
                 self.unknown = True
-                self.unreadable.append(dict(pid=pid, name=name))
+                self._unreadable(pid, name)
         self.rows.append((cwd, cmd))
 
     @property
@@ -1044,7 +1155,8 @@ def detected_cleanup_policy(state_dir):
     roots = [tempfile.gettempdir(), str(state / 'scratch')]
     roots.extend(str(Path(p).expanduser().absolute()) for p in CLEANUP_SCRATCH_ROOTS
                  if Path(p).expanduser().is_dir())
-    return dict(temp_roots=list(dict.fromkeys(roots)), report_roots=[], caches=[
+    return dict(temp_roots=list(dict.fromkeys(roots)), report_roots=[],
+                process_ignore=default_process_ignore(), process_query_timeout_s=240, caches=[
         dict(argv=list(argv), cwd=str(state), placement=side)
         for tool, argv in CLEANUP_CACHE_COMMANDS if shutil.which(tool)] + [
         dict(path=str(Path(os.environ.get(variable, fallback)).expanduser().absolute() / suffix),
@@ -1055,7 +1167,7 @@ def detected_cleanup_policy(state_dir):
 def trim_argv():
     """No privilege prompts: Windows runs the pinned WSL distro's root trim."""
     if IS_WINDOWS:
-        return ['wsl.exe', '-d', distro(), '-u', 'root', '--', 'fstrim', '-v', '/']
+        return wsl_control(['-d', distro(), '-u', 'root', '--', 'fstrim', '-v', '/'])
     return ['fstrim', '-v', '/'] if os.geteuid() == 0 else None
 
 
@@ -1200,7 +1312,7 @@ def cleanup_call(side: str, request: dict) -> dict:
         for cache in request['paths'].get('caches', []):
             key = 'path' if 'path' in cache else 'cwd'
             cache[key] = convert(cache[key])
-        argv = ['wsl.exe', '-d', distro(), '--', 'env', 'DROVER_RUN_ID=' + token, 'python3']
+        argv = wsl_control(['-d', distro(), '--', 'env', 'DROVER_RUN_ID=' + token, 'python3'])
         root = convert(root)
     else:
         argv = [sys.executable]
@@ -1215,7 +1327,10 @@ def cleanup_call(side: str, request: dict) -> dict:
         return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
     try:
         job = _CleanupJob(token) if IS_WINDOWS and side == 'windows' else None
-        done = subprocess.run([*argv, '-c', code, root, token], input=json.dumps(request),
+        command = [*argv, '-c', code, root, token]
+        if IS_WINDOWS and side == 'wsl':
+            command = wsl_control(command[1:])
+        done = subprocess.run(command, input=json.dumps(request),
                               capture_output=True, text=True, timeout=request['paths'].get('worker_timeout_s', 1800), shell=False,
                               env={**os.environ, 'DROVER_RUN_ID': token})
         output, detail = done.stdout, text(done.stderr)

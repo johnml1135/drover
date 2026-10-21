@@ -22,6 +22,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from . import placement
+
 BACKENDS = ("claude", "codex")
 PLACEMENTS = ("windows", "wsl")
 TRACKER_KINDS = ("ram", "disk", "load", "vram", "wsl")
@@ -49,7 +51,8 @@ DEFAULT_TRACKERS = [
     {"kind": "wsl", "name": "wsl-up", "enabled": True, "distro": "", "queue_mem_pct": 0.0, "hold_mem_pct": 0.0},
 ]
 DEFAULTS = {
-    "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": [], "worker_timeout_s": 1800},
+    "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": [], "worker_timeout_s": 1800,
+                     "process_ignore": placement.default_process_ignore(), "process_query_timeout_s": 240},
     "repos_dir": "",
     "config_sync": {"remote": "", "auto_push": True},
     "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": ""},
@@ -359,10 +362,15 @@ def _absolute_machine_path(value):
 def _cleanup_policy(raw):
     defaults = DEFAULTS["disk_cleanup"]
     _unknown(raw, defaults, ["disk_cleanup"])
-    timeout = raw.get("worker_timeout_s", defaults["worker_timeout_s"])
-    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
-        raise ConfigError("disk_cleanup.worker_timeout_s must be finite and positive")
-    out = {"worker_timeout_s": timeout}
+    out = {}
+    for key in ('worker_timeout_s', 'process_query_timeout_s'):
+        timeout = raw.get(key, defaults[key])
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ConfigError(f"disk_cleanup.{key} must be finite and positive")
+        out[key] = timeout
+    out['process_ignore'] = _strs(raw.get('process_ignore', defaults['process_ignore']), ['disk_cleanup', 'process_ignore'])
+    if any(not name or any(char in name for char in '/\\\0') for name in out['process_ignore']):
+        raise ConfigError('disk_cleanup.process_ignore must contain image basenames')
     for key in ("temp_roots", "report_roots"):
         paths = _strs(raw.get(key, []), ["disk_cleanup", key])
         if not all(_absolute_machine_path(path) for path in paths):
@@ -831,6 +839,8 @@ def migrate_disk_config(raw):
         proposed["trackers"] = rows
     if "disk_cleanup" not in proposed:
         proposed["disk_cleanup"] = placement.detected_cleanup_policy(state_dir(validate(proposed)))
+    for key in ('process_ignore', 'process_query_timeout_s'):
+        proposed['disk_cleanup'].setdefault(key, copy.deepcopy(DEFAULTS['disk_cleanup'][key]))
     validate(proposed)
     return proposed
 

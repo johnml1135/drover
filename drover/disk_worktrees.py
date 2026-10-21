@@ -112,7 +112,7 @@ def inspect(request, machine, entry):
     if path == Path(placement.native(machine['repo'])):
         row['reason_code'] = 'main_checkout'
         return row
-    proof = request.get('_processes') or placement.cleanup_processes()
+    proof = request.get('_processes') or placement.cleanup_processes(request=request)
     if task_facts(request, path, None)[0] or proof.busy(str(path)):
         row['reason_code'] = getattr(proof, 'reason', None) or 'busy'
         return row
@@ -197,7 +197,7 @@ def remove(request: dict, selected: dict) -> dict:
         entry = next((e for e in entries(machine['repo'])
                       if str(Path(placement.native(e['worktree']))) == str(path)), None)
         if row.get('unlisted'):
-            if entry is not None or snapshot(machine, path) != row['head']:
+            if entry is not None or snapshot(machine, path, request=request) != row['head']:
                 raise ValueError('snapshot changed')
             fingerprint = identity(path) + repr((row.get('head'), row.get('tag'), row.get('branch'),
                                                row.get('gitdir'), row.get('side_lock')))
@@ -320,13 +320,13 @@ def quarantine(request, machine, row):
     return row
 
 
-def snapshot(machine, path):
+def snapshot(machine, path, request=None):
     """Prove an unlisted directory equals this repo's HEAD, using a disposable index."""
     import os
     import tempfile
     if not safe_path(path) or any(p.name == '.git' for p in path.rglob('*')):
         raise ValueError('independent or broken git metadata')
-    if placement.cleanup_processes().busy(str(path)):
+    if placement.cleanup_processes(request=request).busy(str(path)):
         raise ValueError('snapshot busy')
     head = git(machine['repo'], 'rev-parse', '--verify', 'HEAD^{commit}').strip()
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:
@@ -365,7 +365,7 @@ def unlisted(request, machine, listed):
                 quarantine(request, machine, row)
                 out.append(row)
                 continue
-            head = snapshot(machine, path)
+            head = snapshot(machine, path, request=request)
             row.update(head=head, branch=None, side_lock=None, unlisted=True, ignored=[],
                        tag=None, reason_code='orphan', **facts(path, request['now'], request=request))
             row = quarantine(request, machine, row)

@@ -13,9 +13,14 @@ def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None)
     cfg = copy.deepcopy(cfg)
     path = config.home() / 'config.toml'
     raw = config._read(path)
-    seeded = raw is not None and 'disk_cleanup' not in raw
-    if seeded:
-        raw['disk_cleanup'] = placement.detected_cleanup_policy(config.state_dir(cfg))
+    seeded = False
+    if raw is not None:
+        original = copy.deepcopy(raw)
+        if 'disk_cleanup' not in raw:
+            raw['disk_cleanup'] = placement.detected_cleanup_policy(config.state_dir(cfg))
+        for key in ('process_ignore', 'process_query_timeout_s'):
+            raw['disk_cleanup'].setdefault(key, copy.deepcopy(config.DEFAULTS['disk_cleanup'][key]))
+        seeded = raw != original
         config.validate(raw)
         cfg['disk_cleanup'] = raw['disk_cleanup']
     plan = placement.disk_schedule_plan(cfg, apply=apply)

@@ -9,6 +9,10 @@ from unittest.mock import patch
 from drover import config, repos
 from tests.gitfix import Repo
 
+PROCESS_IGNORE = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
+                  'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
+                  'systemd', '(sd-pam)']
+
 
 class Policy(unittest.TestCase):
     def setUp(self):
@@ -48,8 +52,10 @@ class Policy(unittest.TestCase):
         policy = {'temp_roots': [root + '/temp'], 'report_roots': [root + '/inventory'],
                   'caches': [{'argv': ['fixture-tool', '--literal', 'a b;$(echo nope)'],
                               'cwd': root, 'placement': 'wsl'}]}
-        self.assertEqual(config.validate({'disk_cleanup': policy})['disk_cleanup'], dict(policy, worker_timeout_s=1800))
-        self.assertEqual(config.validate({})['disk_cleanup'], {'temp_roots': [], 'report_roots': [], 'caches': [], 'worker_timeout_s': 1800})
+        self.assertEqual(config.validate({'disk_cleanup': policy})['disk_cleanup'], dict(
+            policy, worker_timeout_s=1800, process_query_timeout_s=240, process_ignore=PROCESS_IGNORE))
+        self.assertEqual(config.validate({})['disk_cleanup'], {'temp_roots': [], 'report_roots': [], 'caches': [],
+                         'worker_timeout_s': 1800, 'process_query_timeout_s': 240, 'process_ignore': PROCESS_IGNORE})
         state = self.fix.root / 'state'
         machine_file = state / 'repos' / 'alpha.toml'
         machine_file.parent.mkdir(parents=True)
@@ -99,7 +105,8 @@ class Policy(unittest.TestCase):
             config.validate(seeded)
             self.assertEqual(config.migrate_disk_config(seeded), seeded)
             explicit = {**raw, 'disk_cleanup': {'temp_roots': [], 'report_roots': [], 'caches': []}}
-            self.assertEqual(config.migrate_disk_config(explicit), explicit)
+            self.assertEqual(config.migrate_disk_config(explicit), {**explicit, 'disk_cleanup': {
+                **explicit['disk_cleanup'], 'process_ignore': PROCESS_IGNORE, 'process_query_timeout_s': 240}})
 
     def test_r8_disposable_globs_and_folder_cache_schema(self):
         revision = self.fix.commit('.drover/config.toml', config.dumps({
