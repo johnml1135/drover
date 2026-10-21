@@ -1,4 +1,5 @@
 """The owner's per-repo dispatch filter: claims, gates, reviews, planners, landing and the CLI."""
+import contextlib
 import io
 import json
 import tempfile
@@ -12,7 +13,10 @@ from tests import test_replans as tr
 
 
 def only(conn, *names):
-    dispatch_repos.store(conn, names)
+    if names:
+        dispatch_repos.store(conn, names)
+    else:
+        dispatch_repos.clear(conn)
 
 
 class Filter(tp.Base):
@@ -23,8 +27,39 @@ class Filter(tp.Base):
     def test_unset_and_empty_mean_all_repos(self):
         a, b = self.task(repo="p"), self.task(repo="q")
         self.assertEqual(set(self.d.tick()["launched"]), {a, b})
-        for raw in ("", "[]", "not json", "{}"):
-            self.assertIsNone(dispatch_repos.allowed(lambda k, d=None, raw=raw: raw))
+        self.assertIsNone(dispatch_repos.allowed(lambda k, d=None: d))     # only an absent key means all repos
+
+    def test_an_invalid_value_blocks_every_repo_and_logs(self):
+        a, b = self.task(repo="p"), self.task(repo="q")
+        for raw in ("not json", '"motif"', "motif", "[]", "{}", '[""]', "[1]", ""):
+            ops.set_setting(self.conn, "dispatch_repos", raw)
+            with self.assertLogs("drover.dispatch_repos", "ERROR"):
+                out = self.d.tick()
+            self.assertEqual(out["launched"], [], raw)
+            self.assertEqual((self.status(a), self.status(b)), ("ready", "ready"), raw)
+        self.conn.execute("DELETE FROM settings WHERE key='dispatch_repos'")
+        self.assertEqual(set(self.d.tick()["launched"]), {a, b})
+
+    def test_the_ledger_claim_itself_is_filtered_and_an_invalid_value_never_means_unfiltered(self):
+        a, b = self.task(repo="p"), self.task(repo="q")
+        only(self.conn, "q")
+        self.assertEqual(ops.claim_next(self.conn, {})["id"], b)
+        self.assertIsNone(ops.claim_next(self.conn, {}))
+        ops.set_setting(self.conn, "dispatch_repos", "p")          # bare string
+        with self.assertLogs("drover.dispatch_repos", "ERROR"):
+            self.assertIsNone(ops.claim_next(self.conn, {"repo": "p"}))
+        self.assertEqual(self.status(a), "ready")
+
+    def test_ledger_cli_claim_obeys_the_filter(self):
+        from drover.ledger import cli
+        a, b = self.task(repo="p"), self.task(repo="q")
+        db = str(self.conn.execute("PRAGMA database_list").fetchone()[2])
+        only(self.conn, "q")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["--db", db, "--json", "claim"]), 0)
+            self.assertEqual(cli.main(["--db", db, "--json", "claim"]), 3)
+        self.assertEqual((self.status(a), self.status(b)), ("ready", "claimed"))
 
     def test_a_list_claims_only_those_repos_and_matches_case_insensitively(self):
         only(self.conn, "P")
@@ -130,14 +165,59 @@ class Cli(unittest.TestCase):
             self.assertEqual(dispatch_repos.main(["--db", db, *argv], out=out), 0)
             return out.getvalue().strip()
         self.assertEqual(run("show"), "dispatch_repos: all repos")
-        self.assertEqual(run("set", "motif"), "dispatch_repos: motif")
+        self.assertEqual(run("set", "--force", "motif"), "dispatch_repos: motif")
         self.assertEqual(run("show"), "dispatch_repos: motif")
         conn = connect(db)
         self.addCleanup(conn.close)
         self.assertEqual(json.loads(ops.get_setting(conn, "dispatch_repos")), ["motif"])
         self.assertEqual(len(ops.events(conn, kind="dispatch.repos")), 1)
         self.assertEqual(run("clear"), "dispatch_repos: all repos")
+        self.assertIsNone(ops.get_setting(conn, "dispatch_repos"))          # clear deletes the key
         self.assertEqual(run("show"), "dispatch_repos: all repos")
+
+    def test_set_rejects_an_unknown_repo_unless_forced_and_show_flags_an_invalid_value(self):
+        from unittest import mock
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        db = str(Path(tmp.name) / "l.db")
+        err = io.StringIO()
+        with mock.patch("drover.repos.load_all", return_value={"motif": {}}):
+            self.assertEqual(dispatch_repos.main(["--db", db, "set", "mtoif"], out=io.StringIO(), err=err), 2)
+            self.assertIn("unknown repo", err.getvalue())
+            self.assertEqual(dispatch_repos.main(["--db", db, "set", "Motif"], out=io.StringIO(), err=err), 0)
+        conn = connect(db)
+        self.addCleanup(conn.close)
+        ops.set_setting(conn, "dispatch_repos", "motif")
+        out = io.StringIO()
+        self.assertEqual(dispatch_repos.main(["--db", db, "show"], out=out), 1)
+        self.assertIn("INVALID", out.getvalue())
+
+
+class HubClaim(unittest.TestCase):
+    def test_store_and_http_claim_obey_the_filter(self):
+        try:
+            from tests import test_hub_api as th
+        except ImportError:
+            self.skipTest("hub dependencies missing")
+        if not hasattr(th, "TestClient"):
+            self.skipTest("fastapi missing")
+        tmp, app = th.make()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(app.state.store.close)
+        c = th.TestClient(app)
+        store = app.state.store
+        ids = {}
+        for repo in ("p", "q"):
+            t = c.post("/api/v1/tasks", json={"title": repo, "repo": repo}, headers=th.AUTH).json()["id"]
+            store.approve(t)
+            ids[repo] = t
+        only(store.conn, "q")
+        r = c.post("/api/v1/tasks/claim", json={}, headers=th.AUTH)
+        self.assertEqual(r.json()["task"]["id"], ids["q"])
+        self.assertIsNone(c.post("/api/v1/tasks/claim", json={}, headers=th.AUTH).json()["task"])
+        ops.set_setting(store.conn, "dispatch_repos", "p")
+        with self.assertLogs("drover.dispatch_repos", "ERROR"):
+            self.assertIsNone(c.post("/api/v1/tasks/claim", json={}, headers=th.AUTH).json()["task"])
 
 
 if __name__ == "__main__":

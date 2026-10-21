@@ -183,7 +183,9 @@ class Base(unittest.TestCase):
 
     def worker_commits(self, tid, name="work.txt"):
         """What the worker did: a commit in the task's worktree. Returns the sha."""
-        return self.fix.commit(name, "x\n", cwd=repos.native(self.get(tid)["worktree"]))
+        worktree = self.get(tid)["worktree"]
+        self.assertIsNotNone(worktree, f"{tid} has no worktree: it was never launched")
+        return self.fix.commit(name, "x\n", cwd=repos.native(worktree))
 
     def run_worker(self, tid, sha):
         rid = next(sp["run_id"] for sp in reversed(self.fl.of("worker")) if sp["task"]["id"] == tid)

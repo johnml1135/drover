@@ -74,6 +74,8 @@ def to_windows_path(path):
 
 
 def native(path):
+    if path is None:
+        raise TypeError("native(None): no path (a missing worktree must not become the string 'None')")
     path = os.path.expanduser(str(path))
     return to_windows_path(path) if IS_WINDOWS else to_wsl_path(path)
 

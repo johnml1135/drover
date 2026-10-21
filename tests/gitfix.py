@@ -114,6 +114,8 @@ class Repo:
 
     def commit(self, name, text=None, cwd=None, msg=None):
         where = Path(cwd or self.repo)
+        if not where.is_absolute():
+            raise ValueError(f'commit cwd must be absolute, got {where}')
         p = where / name
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text if text is not None else name + '\n')

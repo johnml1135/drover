@@ -26,10 +26,13 @@ Every dispatcher requires a `Pipeline`; workers finish into checks, then review,
 `--no-gate-dry-run` CLI flag and synchronous `gate_fn` mode have been removed. To observe recovery without admitting
 work, keep `dispatch_enabled` false; paused dispatch still reaps and adopts runs.
 
-`dispatch_repos` (ledger setting, JSON list; unset or empty means every repo) limits dispatch to the named repos
+`dispatch_repos` (ledger setting, JSON list; an absent key means every repo) limits dispatch to the named repos
 (matched case-insensitively). Every other repo stays idle: no claims, gates, reviews, replan planners or landing
 batches, including for work already finished (it waits, as under pause, and resumes when the filter clears).
-`dispatch_enabled` false still pauses everything. Runs already in flight are still reaped and adopted. Owner-only:
+`dispatch_enabled` false still pauses everything. The filter fails closed: an invalid value (bad JSON, a bare string, an
+empty list) blocks every repo and logs an error each tick; only `clear` (which deletes the key) restores all repos.
+`ops.claim_next` reads it itself, so the hub claim route and the ledger CLI obey it too. Tasks already claimed or
+running when it is set keep running and are reaped; their gates and reviews wait as described above. Owner-only:
 the token settings route refuses the `dispatch_` prefix, so set it with
 `python -m drover.dispatch_repos [--db PATH] show | set REPO... | clear`; the hub header shows "only <repos>".
 

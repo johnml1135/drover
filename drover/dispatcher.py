@@ -1354,7 +1354,7 @@ class Dispatcher:
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
         while slots > 0:
-            task = p.claim_next({"repos": list(dispatch_repos.get(p.get_setting))}, exclude=skip)
+            task = p.claim_next({}, exclude=skip)
             if task is None:
                 break
             assert task["status"] == "claimed"

@@ -535,7 +535,7 @@ def claim_next(conn, worker=None, now=None, exclude=()):
 
     `exclude` is a collection of task ids to pass over (the dispatcher's skip list for the tick).
 
-    worker keys: owner_kind, model, branch, worktree, actor, repo, repo_path (filters), repos (allowed repo names), policy_version.
+    worker keys: owner_kind, model, branch, worktree, actor, repo, repo_path (filters), policy_version. The ledger's `dispatch_repos` setting always applies.
     """
     worker = worker or {}
     actor = worker.get("actor") or worker.get("owner_kind") or "worker"
@@ -543,9 +543,10 @@ def claim_next(conn, worker=None, now=None, exclude=()):
         skip = set(exclude or ())
         from .waiting import Waiting
         waiting, runs = Waiting(conn, actor), None
-        only = {str(n).strip().casefold() for n in worker.get("repos") or ()}
+        from .. import dispatch_repos      # the owner's repo filter binds every claimer: dispatcher, hub API, CLI
+        allow = dispatch_repos.allowed(lambda k, d=None: get_setting(conn, k, d))
         for cand in ready_tasks(conn, worker.get("repo"), worker.get("repo_path"), now):
-            if cand["id"] in skip or (only and str(cand["repo"] or "").strip().casefold() not in only):
+            if cand["id"] in skip or not dispatch_repos.permits(allow, cand["repo"]):
                 continue
             runs = waiting.replan_runs() if runs is None else runs     # one snapshot per call (inside tx)
             if waiting.replan_busy(cand["id"], runs):
