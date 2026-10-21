@@ -124,8 +124,8 @@ Run checks from the checkout root:
 pwsh -NoLogo -NoProfile -NonInteractive -File .drover/scripts/test.ps1
 ```
 
-The script selects the platform's Python, runs `python -m unittest discover -s tests -t .`,
-cleans up its temporary fixtures, and prints thread stacks if the suite stalls. Install the hub dependencies
+The script selects the platform's Python and runs `scripts/test.py --tier integration` (see below), which runs
+the test modules in parallel, cleans up its temporary fixtures, and fails any module that stalls past 15 minutes. Install the hub dependencies
 with `uv sync --project hub` and use that environment to include hub tests.
 
 ### Test tiers and the parallel runner
