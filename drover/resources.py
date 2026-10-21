@@ -3,7 +3,8 @@
 check() returns {verdict: go|queue|hold, reasons, facts, slots, wsl: {verdict, reasons}}. Unknown facts never block.
 The wsl tracker never feeds the global verdict (a Windows task must not wait for WSL): the dispatcher consults
 result['wsl'] only for work that needs WSL. Runs on WSL (full) and on Windows (no /proc: load is unknown, RAM via
-GlobalMemoryStatusEx).
+GlobalMemoryStatusEx). With seats placed in WSL the Windows hub also reads WSL's /proc/meminfo
+(wsl_ram_available_gb): RAM queues or holds only when every side that has a seat is short.
 Tests inject facts through the DROVER_RESOURCES_FAKE env var or the `fake` argument, a JSON object:
   platform "wsl"|"windows", load5, cores, ram_available_gb, ollama_ram_gb,
   disk_free_gb {tracker name: GB} (null or missing = unknown), vram [used_mb, total_mb] or null, read_only bool,
@@ -24,6 +25,7 @@ from . import config as config_mod
 from . import disk
 
 GB = 1024 ** 3
+WSL_READ_TIMEOUT_S = 8
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
 
 
@@ -160,6 +162,35 @@ def wsl_running(default, run=subprocess.run):
     return r.returncode == 0 and placement.distro(default).lower() in [x.strip().lower() for x in names]
 
 
+def parse_meminfo_available_gb(text):
+    for line in (text or '').splitlines():
+        if line.startswith('MemAvailable:'):
+            try:
+                return int(line.split()[1]) * 1024 / GB
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def read_wsl_ram_gb(distro, run=subprocess.run):
+    """Available RAM inside WSL (where its workers run), seen from Windows; None when WSL is down or slow.
+    Never starts the distro."""
+    if not wsl_running(distro):
+        return None
+    try:
+        out = run(placement.WSL(distro).command(['cat', '/proc/meminfo']), text=True, capture_output=True,
+                  timeout=WSL_READ_TIMEOUT_S, **placement.NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_meminfo_available_gb(out.stdout)
+
+
+def seat_sides(config=None):
+    """Sides (windows/wsl) where enabled seats place their work."""
+    cfg = config_mod.get() if config is None else config
+    return {s.get('placement') for s in cfg.get('seats', [])}
+
+
 def read_wsl(distro, windows, mem_wanted):
     """(wsl_up, {'used_gb','cap_gb'} or None). Memory is read only when a threshold asks for it and WSL is already up."""
     if windows:
@@ -195,7 +226,7 @@ def read_wsl(distro, windows, mem_wanted):
     return up, mem
 
 
-def gather(fake=None, trackers=None, with_wsl_memory=False):
+def gather(fake=None, trackers=None, with_wsl_memory=False, config=None):
     """Facts from the machine, or from the fake when one is given."""
     if fake is None:
         raw = os.environ.get('DROVER_RESOURCES_FAKE')
@@ -210,14 +241,17 @@ def gather(fake=None, trackers=None, with_wsl_memory=False):
                 'ollama_ram_gb': fake.get('ollama_ram_gb', 0.0) if windows else 0.0,
                 'disk_free_gb': {k: (fake.get('disk_free_gb') or {}).get(k) for k in names},
                 'vram': fake.get('vram'), 'read_only': fake.get('read_only'),
-                'wsl_up': fake.get('wsl_up', True), 'wsl_mem': fake.get('wsl_mem')}
+                'wsl_up': fake.get('wsl_up', True), 'wsl_mem': fake.get('wsl_mem'),
+                'wsl_ram_available_gb': fake.get('wsl_ram_available_gb')}
     windows = is_windows()
     load = read_load()
     facts = {'platform': 'windows' if windows else 'wsl', 'load5': load[0] if load else None,
              'cores': load[1] if load else os.cpu_count() or 1, 'ram_available_gb': read_ram_gb(),
              'ollama_ram_gb': read_ollama_ram_gb(), 'disk_free_gb': {r['name']: r['free_gb'] for r in disk.read({'trackers': trackers})},
              'vram': read_vram(), 'read_only': None if windows else read_only_mount(),
-             'wsl_up': True, 'wsl_mem': None}
+             'wsl_up': True, 'wsl_mem': None, 'wsl_ram_available_gb': None}
+    if windows and 'wsl' in seat_sides(config):
+        facts['wsl_ram_available_gb'] = read_wsl_ram_gb(placement.distro(wsl_t['distro'] or None) if wsl_t else None)
     if wsl_t:
         distro = placement.distro(wsl_t['distro'] or None)
         facts['wsl_up'], facts['wsl_mem'] = read_wsl(
@@ -252,7 +286,7 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     by_kind = {}
     for t in trackers:
         by_kind.setdefault(t['kind'], []).append(t)
-    facts = gather(fake, trackers, with_wsl_memory=with_wsl_memory)
+    facts = gather(fake, trackers, with_wsl_memory=with_wsl_memory, config=config)
     hold, queue = [], []
     disk_hold = False
     load5, cores = facts['load5'], max(facts['cores'] or 1, 1)
@@ -264,16 +298,36 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
             hold.append('load %.2f per core > %g' % (per_core, load_t['hold_per_core']))
         elif per_core > load_t['queue_per_core']:
             queue.append('load %.2f per core > %g' % (per_core, load_t['queue_per_core']))
-    ram = facts['ram_available_gb']
     ram_t = (by_kind.get('ram') or [{'queue_base_gb': 0.0, 'queue_per_worker_gb': 0.0, 'hold_gb': 0.0}])[0]
-    base = ram_t['queue_base_gb'] + (facts['ollama_ram_gb'] or 0)
-    need = base + ram_t['queue_per_worker_gb'] * new_workers
-    if ram is not None and 'ram' in by_kind:
-        facts['ram_queue_below_gb'] = round(need, 2)
-        if ram < ram_t['hold_gb']:
-            hold.append('RAM available %.1f GB < %g GB' % (ram, ram_t['hold_gb']))
-        elif ram < need:
-            queue.append('RAM available %.1f GB < %.1f GB needed for %d new worker(s)' % (ram, need, new_workers))
+    # Memory is judged on the side(s) where seats place work. The next claim may land on any such side, so RAM
+    # holds or queues only when every measured seat side is short; an unmeasured side is ignored.
+    cfg_seats = seat_sides(config)
+    own = facts['platform']
+    readings = {own: facts['ram_available_gb']}
+    if own == 'windows':
+        readings['wsl'] = facts.get('wsl_ram_available_gb')
+    sides = {side: gb for side, gb in readings.items() if gb is not None and side in cfg_seats}
+    if not sides and readings[own] is not None:
+        sides = {own: readings[own]}  # no seat side was measured: the hub's own side is the best evidence
+    ollama = (facts['ollama_ram_gb'] or 0) if own == 'windows' else 0
+    levels = []  # (rank, reason, slots) per side; rank 0 go, 1 queue, 2 hold
+    bases = {}
+    for side, gb in sides.items():
+        base = ram_t['queue_base_gb'] + (ollama if side == 'windows' else 0)
+        need = base + ram_t['queue_per_worker_gb'] * new_workers
+        bases[side] = base
+        tag = f'{side} ' if len(sides) > 1 else ''
+        if side == own:
+            facts['ram_queue_below_gb'] = round(need, 2)
+        if gb < ram_t['hold_gb']:
+            levels.append((2, '%sRAM available %.1f GB < %g GB' % (tag, gb, ram_t['hold_gb'])))
+        elif gb < need:
+            levels.append((1, '%sRAM available %.1f GB < %.1f GB needed for %d new worker(s)' % (tag, gb, need, new_workers)))
+        else:
+            levels.append((0, ''))
+    if sides and 'ram' in by_kind and all(rank for rank, _ in levels):
+        floor = min(rank for rank, _ in levels)
+        (hold if floor == 2 else queue).extend(reason for rank, reason in levels if rank == floor)
     disk_rows = [row for t in by_kind.get('disk', [])
                  for row in disk.read({'trackers': [t]},
                                       reader=lambda path, t=t: facts['disk_free_gb'].get(t['name']))]
@@ -309,8 +363,10 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     if disk_hold:
         result['cleanup_hint'] = 'drover disk-cleanup'
     if verdict == 'go':
-        result['slots'] = 1 if ram is None or not math.isfinite(ram) else max(
-            0, math.floor((ram - base) / ram_t['queue_per_worker_gb'] + 1e-9)) if ram_t['queue_per_worker_gb'] else 1
+        per = ram_t['queue_per_worker_gb']
+        fits = [max(0, math.floor((gb - bases[side]) / per + 1e-9)) for side, gb in sides.items()
+                if math.isfinite(gb)] if per else []
+        result['slots'] = max(fits) if fits else 1
     return result
 
 
@@ -318,7 +374,7 @@ def tick(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     """One disk observation feeds resource admission and the independent tracker."""
     cfg = config_mod.get() if config is None else config
     tracked = disk.tick(cfg)
-    facts = gather(fake, [t for t in trackers_of(cfg) if t['kind'] != 'disk'], with_wsl_memory)
+    facts = gather(fake, [t for t in trackers_of(cfg) if t['kind'] != 'disk'], with_wsl_memory, cfg)
     facts['disk_free_gb'] = {row['name']: row['free_gb'] for row in tracked['drives']}
     result = check(new_workers, facts, cfg, with_wsl_memory)
     result.update(pause=tracked['pause'], critical_tokens=tracked['critical_tokens'])

@@ -117,7 +117,7 @@ Workers start at a suitable model level for task size and risk.
 Cheap workers handle small tasks, initial review and routine triage where effective.
 Retries escalate through the configured escalation levels rather than retrying indefinitely.
 The router considers eligible seats, placement, allowance headroom and reset time.
-Trackers measure load, available RAM, disk space, WSL health and VRAM.
+Trackers measure load, available RAM, disk space, WSL health and VRAM. RAM is measured where seats place work (a Windows hub also reads WSL's MemAvailable when a seat places in WSL) and holds or queues only when every such side is short; an unreadable side is ignored.
 Queue thresholds admit no new work; hold thresholds stop work.
 The setup wizard scales resource thresholds to the detected machine.
 Per-seat worker limits and the global parallel cap both apply.

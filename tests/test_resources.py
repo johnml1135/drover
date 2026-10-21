@@ -325,3 +325,56 @@ class Cli(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RamWhereWorkRuns(unittest.TestCase):
+    """Windows hub, WSL workers: the side that would run the next claim decides the RAM verdict."""
+
+    def cfg(self, *placements):
+        cfg = {'trackers': config.DEFAULTS['trackers']}
+        cfg['seats'] = [dict(name=f's{i}', placement=p) for i, p in enumerate(placements)]
+        cfg['decider'] = config.DEFAULTS['decider']
+        return cfg
+
+    def check(self, win_gb, wsl_gb, *placements):
+        fake = {'platform': 'windows', 'ram_available_gb': win_gb, 'wsl_ram_available_gb': wsl_gb,
+                'disk_free_gb': {'h': 200, 'wsl': 200, 'c': 200}}
+        return resources.check(fake=fake, config=self.cfg(*placements))
+
+    def test_wsl_seats_ignore_starved_windows(self):
+        r = self.check(1.4, 25.0, 'wsl')
+        self.assertEqual(r['verdict'], 'go')
+        self.assertEqual(r['facts']['wsl_ram_available_gb'], 25.0)
+
+    def test_wsl_seats_hold_when_wsl_is_short(self):
+        self.assertEqual(self.check(30.0, 1.0, 'wsl')['verdict'], 'hold')
+
+    def test_windows_seats_still_use_windows(self):
+        self.assertEqual(self.check(1.4, 25.0, 'windows')['verdict'], 'hold')
+
+    def test_mixed_seats_hold_only_when_every_side_is_short(self):
+        self.assertEqual(self.check(1.4, 25.0, 'windows', 'wsl')['verdict'], 'go')
+        self.assertEqual(self.check(30.0, 1.0, 'windows', 'wsl')['verdict'], 'go')
+        self.assertEqual(self.check(1.4, 1.0, 'windows', 'wsl')['verdict'], 'hold')
+
+    def test_unreadable_wsl_falls_back_to_windows(self):
+        self.assertEqual(self.check(1.4, None, 'wsl')['verdict'], 'hold')
+
+    def test_wsl_ram_read_uses_the_exec_helper_with_a_short_timeout(self):
+        seen = {}
+        def run(argv, **kw):
+            seen.update(kw, argv=argv)
+            return mock.Mock(stdout='MemTotal: 33554432 kB\nMemAvailable: 26214400 kB\n', returncode=0)
+        with mock.patch.object(resources, 'wsl_running', return_value=True):
+            gb = resources.read_wsl_ram_gb('Ubuntu', run=run)
+        self.assertAlmostEqual(gb, 25.0)
+        self.assertLessEqual(seen['timeout'], 10)
+        self.assertIn('/proc/meminfo', seen['argv'])
+
+    def test_wsl_ram_read_is_unknown_when_down_or_slow(self):
+        with mock.patch.object(resources, 'wsl_running', return_value=False):
+            self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu'))
+        def slow(argv, **kw):
+            raise __import__('subprocess').TimeoutExpired(argv, 5)
+        with mock.patch.object(resources, 'wsl_running', return_value=True):
+            self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu', run=slow))
