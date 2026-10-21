@@ -182,6 +182,22 @@ class StaleLock(DiskCase):
             with self.assertRaises(BlockingIOError):
                 CleanupLock(self.state).__enter__()
 
+    def test_old_format_owner_without_side_or_birth_is_never_reclaimed(self):
+        """A run started by code that predates side/birth may be alive: it stays locked, even if its pid is gone."""
+        from drover.disk_state import CleanupLock, holder_dead, lock_blocker
+        lock = self.state / 'disk-cleanup.lock'
+        lock.mkdir()
+        old = dict(token='old-token', pid=424242, host=__import__('socket').gethostname(), created=1.0)
+        (lock / 'owner.json').write_text(json.dumps(old), encoding='utf-8')
+        self.assertFalse(holder_dead(old))
+        for identity in ('absent', 'boot:1'):
+            with patch('drover.placement.cleanup_identity', self.identity(identity)):
+                with self.assertRaises(BlockingIOError):
+                    CleanupLock(self.state).__enter__()
+        self.assertEqual(lock_blocker(self.state)['token'], 'old-token')
+        self.assertEqual(json.loads((lock / 'owner.json').read_text())['token'], 'old-token')
+        self.assertEqual([p.name for p in self.state.iterdir() if 'stale' in p.name or p.name.endswith('.reclaim')], [])
+
     def holder(self):
         return json.loads((self.state / 'disk-cleanup.lock' / 'owner.json').read_text())['token']
 
