@@ -49,7 +49,7 @@ The example TOML documents every supported key.
 One repo is one git repository with its own execution, checks and merge rules.
 The target repo's committed `.drover/config.toml` owns its rules and action script paths.
 The one repo loader reads that file from the commit being worked or checked, then merges
-`<state>/repos/<name>.toml` registration facts. After adoption, machine policy is rejected. The repo registration names checkout paths, worktree paths, default branch,
+`<state>/repos/<name>.toml` registration facts. After adoption, registration policy is rejected. The repo registration names checkout paths, worktree paths, default branch,
 remote and machine environment. An explicitly configured directory may replace the private location.
 A missing versioned file contributes an empty layer during migration; the merge is the same.
 A legacy `programs/` directory is read only if `repos/` is missing and emits a deprecation warning.

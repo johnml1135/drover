@@ -50,6 +50,22 @@ class Migration(RepoCase):
         self.assertIn('migrate-machine is deprecated; use migrate-registration.', old[2])
         self.assertNotIn('deprecated', new[2])
 
+    def test_deprecated_alias_apply_and_error_path(self):
+        status, _, errors = self.cli('--apply', command='migrate-machine')
+        self.assertEqual(status, 0, errors)
+        self.assertIn('deprecated', errors)
+        self.assertEqual(len(list(self.path.parent.glob('*.bak*'))), 1)
+        self.assertEqual(set(repos.read_machine(self.path)),
+                         {'name', 'repo', 'worktrees', 'remote', 'default_branch'})
+        self.path.write_text(config.dumps({**self.raw, 'review': {**self.policy['review'], 'model': 'different'}}),
+                             encoding='utf-8')
+        original = self.path.read_bytes()
+        status, output, errors = self.cli('--apply', command='migrate-machine')
+        self.assertEqual(status, 2)
+        self.assertIn('deprecated', errors)
+        self.assertIn('review.model', output + errors)
+        self.assertEqual(self.path.read_bytes(), original)
+
     def test_dry_run_apply_backup_and_reload(self):
         original = self.path.read_bytes()
         status, output, errors = self.cli()

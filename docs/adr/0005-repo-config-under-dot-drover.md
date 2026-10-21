@@ -31,7 +31,7 @@ Two scopes, one entry file each:
   names them. Workflows are YAML (`.drover/workflows/*.yaml`); scripts are
   `.drover/scripts/*.ps1`.
 * **Machine scope** (state dir): `config.toml` (seats, models, paths, hub),
-  `repos/<name>.toml` with machine facts only (path, remote, tool paths, env), and the
+  `repos/<name>.toml` with registration facts only (path, remote, tool paths, env), and the
   tuner's `policy.json`. A repo registration may not set repo keys once the repo has its
   `.drover/config.toml`.
 * Drover's own app overlay is deleted; Drover's repo is configured like any other.

@@ -713,7 +713,7 @@ def _saved_repo(state, name):
 
 
 def _resolve_repo(name, repo, base, state):
-    """Resolve the selected checkout using the actual saved repo registrationname."""
+    """Resolve the selected checkout using the actual saved repo registration name."""
     path = _inside(state, Path(config.native(state)) / "repos" / f"{name}.toml")
     return repos.load({**(base or {}), "name": str(name), "repo": str(repo)}, machine_path=path)
 

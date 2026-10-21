@@ -244,7 +244,7 @@ def machine_defaults(raw, repo=""):
 
 
 def machine_overrides(name, repo, trees, *, base=None, push=None, adopted=False):
-    """Serialize machine facts after adoption, preserving complete policy during fallback."""
+    """Serialize registration facts after adoption, preserving complete policy during fallback."""
     base = base or {}
     canonical = base if "_machine" in base else normalize({**base, "name": name, "repo": repo})
     saved = base.get("_machine", base)

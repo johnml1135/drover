@@ -18,7 +18,7 @@
 repos_dir = ""
 
 # Repo configuration has two layers: the target repo's .drover/config.toml at the selected commit,
-# then <state>/repos/<name>.toml with machine facts. One loader merges and validates both.
+# then <state>/repos/<name>.toml with registration facts. One loader merges and validates both.
 # After adoption all machine policy is rejected; absent entries retain complete machine fallback.
 # A repo registration names the repo, worktrees, default branch and remote; it may set [run.env]
 # for machine tool paths. Commit repo rules and action scripts with the code they describe.

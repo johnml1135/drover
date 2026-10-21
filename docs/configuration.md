@@ -33,7 +33,7 @@ Legacy `resources.toml` and legacy resource dictionaries are unsupported. Move l
 
 ## Repository key reference
 
-Every repository key is listed below. Tables must have the documented shape; unlisted keys and machine facts
+Every repository key is listed below. Tables must have the documented shape; unlisted keys and registration facts
 in the committed entry are rejected. The defaults below describe omitted values; a missing `test` action remains unknown.
 
 | Key | Meaning and default |
@@ -84,8 +84,9 @@ lower layer. Derived values name terminal dependencies; aggregate explanations e
 including empty containers. Repository sources name `.drover/config.toml` and the full selected commit SHA.
 
 To adopt an existing repo registration, first commit its policy in the repository entry,
-then run `python -m drover.config migrate-registration NAME` (the earlier name `migrate-machine` still works but prints a deprecation notice) with the usual `DROVER_HOME`
-and state-directory configuration. This dry run prints the proposed facts-only
+then run `python -m drover.config migrate-registration NAME` with the usual `DROVER_HOME`
+and state-directory configuration (the earlier name `migrate-machine` still works but prints a
+deprecation notice). This dry run prints the proposed facts-only
 file, lists policy keys, and reports whether the committed entry already supplies
 them or its defaults match. Any policy difference refuses the migration and names
 the machine and committed values. `--apply` saves a timestamped `.bak-…` file beside

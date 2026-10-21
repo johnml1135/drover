@@ -52,7 +52,7 @@ filesystem they are fast and their space is reclaimable with the distro's VHDX.
 
 - One history, one landing path, one fetch. Disk cleanup reclaims worktrees and their build output on both sides from
   one registration list.
-- Repo machine facts carry the Windows repository path plus a worktree root per placement; the WSL root defaults to
+- Repo registration facts carry the Windows repository path plus a worktree root per placement; the WSL root defaults to
   `~/work/<name>.worktrees`. Config validation refuses a WSL worktree root outside the WSL filesystem.
 - WSL work needs the Windows drive mounted in WSL. If WSL is down, WSL worktrees are unavailable (the existing
   `wsl-down` wait applies).

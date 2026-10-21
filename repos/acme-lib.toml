@@ -1,4 +1,4 @@
-# Fictional machine facts. Commit .drover/config.toml and .drover/scripts/test.ps1 in this repo.
+# Fictional registration facts. Commit .drover/config.toml and .drover/scripts/test.ps1 in this repo.
 name = "acme-lib"
 repo = "~/repos/acme-lib"
 worktrees = "~/repos/acme-lib.worktrees"
