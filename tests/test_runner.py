@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from drover import runner
+from tests.tiers import integration
 
 PKG_ROOT = str(Path(runner.__file__).resolve().parents[1])
 ENV = {k: v for k, v in os.environ.items() if k != "DROVER_DETACHED_IN_JOB"}
@@ -125,6 +126,7 @@ class Base(unittest.TestCase):
 
 
 @unittest.skipIf(runner.IS_WINDOWS, "WSL scratch lifecycle runs on Linux")
+@integration
 class ScratchTests(Base):
     def scratch(self):
         root = Path('/tmp/drover-scratch')
@@ -241,6 +243,7 @@ scratch.symlink_to({str(outside)!r}, target_is_directory=True)
         self.assertEqual(marker.read_text(), 'keep')
 
 
+@integration
 class RunTests(Base):
     def test_codex_final_message_preserves_ready_to_commit_subject_and_body(self):
         message = "Finish work\n\nExplain why."
@@ -455,6 +458,7 @@ class RunTests(Base):
         self.assertTrue(wait_for(lambda: not alive(gc), 10), "straggler survived")
 
 
+@integration
 class DetachTests(Base):
     def test_detach_returns_at_once_and_runs(self):
         cmd = self.cmd("d1", "import time;time.sleep(1);print('late')", extra=["--detach"])
@@ -563,6 +567,7 @@ class DetachTests(Base):
         self.assertIn("error", info)
 
 
+@integration
 class FindTests(Base):
     def test_find_matches_only_marker_processes(self):
         # Discovery scans the host, so concurrent gates must not share a run id.
@@ -639,6 +644,7 @@ def default_distro(exe):
     return next((n for n in names if not n.startswith("docker-desktop") and re.fullmatch(r"[A-Za-z0-9._-]+", n)), None)
 
 
+@integration
 class WslTests(unittest.TestCase):
     def test_wsl_argv_maps_paths_only_in_runner_options(self):
         a = RunnerLauncher("unused", distro="Ubuntu-24.04").runner_argv( ["--run-id", "x", "--runs-dir", "C:\\drover\\runs", "--stdin-file",
@@ -684,6 +690,7 @@ if __name__ == "__main__":
 
 
 @unittest.skipIf(runner.IS_WINDOWS, 'configured writable roots use the Linux temporary filesystem')
+@integration
 class ConfiguredEnvironmentTests(Base):
     def test_runner_prepares_configured_roots_and_passes_environment(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -710,6 +717,7 @@ class ConfiguredEnvironmentTests(Base):
                     self.assertIsNone(status['exit_code'])
 
 
+@integration
 class NativeWindowsEnvironmentTests(Base):
     @unittest.skipUnless(runner.IS_WINDOWS, 'native Windows runner contract')
     def test_configured_linux_roots_do_not_prevent_native_workers(self):
