@@ -116,6 +116,9 @@ atomic replacement. This removes virtual disk trackers and resolves legacy
 VHDX sources to physical paths; unresolved paths refuse migration. The existing
 `migrate-machine NAME` migrates repository machine facts separately.
 
+Global `[disk_cleanup]` `temp_root_budget_s` (default 300) bounds the scan of each temp root. When it is
+exceeded the root is reported as `temp_root_partial`, scanning stops, and nothing unscanned is removed.
+
 Machine `[disk_cleanup]` accepts only `temp_roots = []`, `report_roots = []`
 (absolute paths) and `caches = []`. A cache entry has either literal `argv`
 and absolute `cwd`, or an absolute folder `path`; both require

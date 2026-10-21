@@ -52,7 +52,7 @@ DEFAULT_TRACKERS = [
 ]
 DEFAULTS = {
     "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": [], "worker_timeout_s": 1800,
-                     "process_ignore": placement.default_process_ignore(), "process_query_timeout_s": 240},
+                     "process_ignore": placement.default_process_ignore(), "process_query_timeout_s": 240, "temp_root_budget_s": 300},
     "repos_dir": "",
     "config_sync": {"remote": "", "auto_push": True},
     "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": ""},
@@ -363,7 +363,7 @@ def _cleanup_policy(raw):
     defaults = DEFAULTS["disk_cleanup"]
     _unknown(raw, defaults, ["disk_cleanup"])
     out = {}
-    for key in ('worker_timeout_s', 'process_query_timeout_s'):
+    for key in ('worker_timeout_s', 'process_query_timeout_s', 'temp_root_budget_s'):
         timeout = raw.get(key, defaults[key])
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ConfigError(f"disk_cleanup.{key} must be finite and positive")

@@ -120,6 +120,10 @@ def protected_path(path, request):
         repository_tree(path)
 
 
+class TempBudgetExceeded(ValueError):
+    """A temp root used up its scan budget; whatever it did not reach stays unproven and is kept."""
+
+
 def temp_facts(path, request):
     """Prove safety and measure in one pass; stop at the first protected descendant."""
     roots = [Path(request['state_dir']).absolute()]
@@ -140,6 +144,8 @@ def temp_facts(path, request):
             return value
         try:
             value = scan(current)
+        except TempBudgetExceeded:
+            raise  # a budget stop is not a fact about this path; never cache it
         except (OSError, ValueError) as error:
             cached[current] = error
             raise
@@ -147,6 +153,9 @@ def temp_facts(path, request):
             cached[current] = value
         return value
     def scan(current):
+        deadline = request.get('_temp_deadline')
+        if deadline is not None and time.monotonic() > deadline:
+            raise TempBudgetExceeded('temp root scan budget exceeded')
         if placement.cleanup_link(current) or current.name.casefold() in ('.git', '.venv') or \
                 not placement.cleanup_contains(request, str(current)) or repository_root(current):
             raise ValueError('protected descendant')
@@ -174,6 +183,8 @@ def temporary(request):
     request['_temp_facts'], request['_temp_children'] = {}, {}
     for root in sorted({Path(p).absolute() for p in request['paths'].get('temp_roots', [])}, key=lambda p: len(p.parts)):
         started = time.monotonic()
+        request['_temp_deadline'] = started + request['paths'].get('temp_root_budget_s', 300)
+        partial = False
         try:
             if not root.is_dir() or not safe_path(root):
                 continue
@@ -197,12 +208,20 @@ def temporary(request):
                                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                                     row['action'] = 'removed'
                                     out['reclaimed_bytes'] += row['bytes']
+                except TempBudgetExceeded:
+                    partial = True
+                    row.update(action='keep', reason_code='temp_root_partial')
                 except (OSError, ValueError) as error:
                     row.update(action='keep', reason_code='protected', error=str(error))
                 out['items'].append(row)
+                if partial:
+                    break
         except OSError as error:
             out['errors'].append(dict(path=str(root), error=str(error)))
         finally:
+            if partial:
+                out['items'].append(dict(path=str(root), action='report', reason_code='temp_root_partial',
+                                         budget_s=request['paths'].get('temp_root_budget_s', 300)))
             out['items'].append(dict(path=str(root), action='report', reason_code='temp_root_elapsed',
                                      elapsed_s=time.monotonic() - started))
     return out

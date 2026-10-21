@@ -579,8 +579,18 @@ LXSS = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss'
 REG = native(r'C:\Windows\System32\reg.exe')
 
 
+_VHDX_CACHE = {}
+
+
 def vhdx_dir():
-    """WSL path of the directory holding this distro's ext4.vhdx, or None."""
+    """WSL path of the directory holding this distro's ext4.vhdx, or None (one registry query per process)."""
+    key = (os.environ.get('DROVER_VHDX_DIR'), os.environ.get('WSL_DISTRO_NAME'), REG)
+    if key not in _VHDX_CACHE:
+        _VHDX_CACHE[key] = _vhdx_dir()
+    return _VHDX_CACHE[key]
+
+
+def _vhdx_dir():
     override = os.environ.get('DROVER_VHDX_DIR')
     if override:
         return override
@@ -1118,6 +1128,7 @@ class _CleanupProcesses:
 
     def __init__(self, proc_root=None, windows=None, cim=None, request=None):
         self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
+        self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
         self.ignored = (request or {}).get('paths', {}).get('process_ignore', default_process_ignore())
         self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
@@ -1268,18 +1279,27 @@ class _CleanupProcesses:
     def reason(self):
         return 'process visibility unavailable' if self.unknown else None
 
-    def busy(self, worktree):
-        if self.unknown:
-            return True
-        if self.windows and windows_fold_uncertain(str(worktree)):
-            return True  # identity cannot be proven; unknown evidence retains
-        worktree = cleanup_normalize(worktree, self.windows)
-        def names(path):
-            value = cleanup_normalize(path, self.windows)
-            return value == worktree or value.startswith(worktree.rstrip('/') + '/')
+    def _index(self):
+        """Every ancestor prefix of every path the processes name, built once per snapshot, so a lookup is
+        a set test instead of a re-parse of every command line for every candidate."""
+        if self._indexed == len(self.rows):
+            return self._prefixes
+        prefixes, bare = set(), False
+
+        def add(value):
+            nonlocal bare
+            value = cleanup_normalize(value, self.windows)
+            bare |= value.startswith('/')
+            prefixes.add(value)
+            prefixes.add(value.rstrip('/'))
+            at = value.find('/', 1)
+            while at != -1:
+                prefixes.add(value[:at])
+                at = value.find('/', at + 1)
         for cwd, cmd, exe in self.rows:
-            if any(names(path) for path in (cwd, exe) if path):
-                return True
+            for path in (cwd, exe):
+                if path:
+                    add(path)
             # Preserve quoted paths with spaces and option=value paths. Every path
             # goes through the same identity normalization as cwd and executable.
             if isinstance(cmd, list):
@@ -1291,10 +1311,21 @@ class _CleanupProcesses:
                           for match in re.finditer(r"\"([^\"]*)\"|'([^']*)'|([^\s\"']+)", cmd or '')]
             for token in tokens:
                 for value in (token, token.partition('=')[2]):
-                    if value and (drive(value) or value.startswith(('/', '\\\\'))) and names(value):
-                        return True
-        return False
+                    if value and (drive(value) or value.startswith(('/', '\\\\'))):
+                        add(value)
+        self._prefixes, self._indexed = (prefixes, bare), len(self.rows)
+        return self._prefixes
 
+    def busy(self, worktree):
+        if self.unknown:
+            return True
+        if self.windows and windows_fold_uncertain(str(worktree)):
+            return True  # identity cannot be proven; unknown evidence retains
+        prefixes, bare = self._index()
+        worktree = cleanup_normalize(worktree, self.windows)
+        stem = worktree.rstrip('/')
+        # An empty stem is the filesystem root: it contains every absolute path.
+        return worktree in prefixes or stem in prefixes or (not stem and bare)
 
 
 _METADATA_IO = r'''
