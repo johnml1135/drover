@@ -64,11 +64,13 @@ def task_facts(request, path, tag):
     fresh = type(at) in (float, int) and 0 <= request['now'] - at <= 900
     if not fresh:
         return bool(tag and tag['owner'].startswith('drover:')), False
-    live = str(path) in snapshot.get('active_worktrees', [])
+    live = any(placement.cleanup_parts(p) == placement.cleanup_parts(path)
+               for p in snapshot.get('active_worktrees', []))
     terminal = False
     found = False
     for task in snapshot.get('tasks', []):
-        if tag and tag['owner'] == 'drover:' + str(task.get('id')):
+        if (tag and tag['owner'] == 'drover:' + str(task.get('id'))) or \
+                (task.get('worktree') and placement.cleanup_parts(task['worktree']) == placement.cleanup_parts(path)):
             found = True
             live |= task.get('terminal') is not True or task.get('live') is True
             terminal |= task.get('terminal') is True and task.get('live') is False
@@ -214,7 +216,8 @@ def remove(request: dict, selected: dict) -> dict:
         after = next((e for e in entries(machine['repo'])
                       if str(Path(placement.native(e['worktree']))) == str(path)), None)
         if after != entry or (path.exists() and ownership.read(str(path)) != current.get('tag')):
-            return dict(current, action='keep', reason_code='identity_changed')
+            current.update(action='keep', reason_code='identity_changed')
+            return quarantine(request, machine, current) if row.get('unlisted') else current
         keys = ('head', 'branch', 'side_lock', 'gitdir', 'tag')
         if current['action'] != 'candidate' or any(current.get(k) != row.get(k) for k in keys):
             return dict(current, action='keep', reason_code='revalidation_changed')
@@ -238,8 +241,13 @@ def remove(request: dict, selected: dict) -> dict:
             git(machine['repo'], 'update-ref', rescue, row['head'], '')
             if git(machine['repo'], 'rev-parse', rescue).strip() != row['head']:
                 raise ValueError('rescue ref verification failed')
-        if not safe_path(path):
+        if not safe_path(path) or not placement.cleanup_contains(request, str(path)):
             raise ValueError('worktree path became linked or protected')
+        if row.get('unlisted') and unlisted_live(request, path):
+            row.update(action='keep', reason_code='live_owner')
+            quarantine(request, machine, row)
+            disk_state.append_manifest(request['state_dir'], dict(record, phase='failed'))
+            return row
         if row.get('side_lock'):
             git(machine['repo'], 'worktree', 'unlock', '--', path)
             unlocked = True
@@ -283,6 +291,8 @@ def identity(path):
 def quarantine(request, machine, row):
     from . import disk_state
     key = repr((placement.cleanup_parts(machine['repo']), placement.cleanup_parts(row['path'])))
+    if row.get('unlisted') and unlisted_live(request, Path(row['path'])):
+        row.update(action='keep', reason_code='live_owner')
     eligible = row['reason_code'] == 'orphan'
     if eligible:
         excluded = ignored_outside(Path(row['path']), row['ignored'],
@@ -327,6 +337,12 @@ def snapshot(machine, path):
     return head
 
 
+def unlisted_live(request, path):
+    tag = ownership.read(str(path))
+    return task_facts(request, path, tag)[0] or bool(
+        tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
+
+
 def unlisted(request, machine, listed):
     out = []
     root = Path(placement.native(machine['worktrees']))
@@ -342,6 +358,11 @@ def unlisted(request, machine, listed):
                 raise ValueError('not a checkout directory')
             if placement.worktree_side(str(path)) != placement.cleanup_side():
                 raise ValueError('snapshot side unavailable')
+            if unlisted_live(request, path):
+                row.update(reason_code='live_owner')
+                quarantine(request, machine, row)
+                out.append(row)
+                continue
             head = snapshot(machine, path)
             row.update(head=head, branch=None, side_lock=None, unlisted=True, ignored=[],
                        tag=None, reason_code='orphan', **facts(path, request['now']))

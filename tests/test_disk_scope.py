@@ -105,12 +105,15 @@ class Scope(WorktreeCase):
             if side != self.side or request['stage'] == 1:
                 return {'items': [], 'errors': [], 'reclaimed_bytes': 0}
             return disk_side.serve(request)
-        runtime = disk_cleanup.CleanupRuntime(runtime.now, lambda path: 180 if path == str(other) else 80,
+        runtime = disk_cleanup.CleanupRuntime(runtime.now, lambda path: 180 if path == '/simulated/other' else 80,
                                                call, runtime.toast)
         def physical(path):
             from pathlib import Path
+            if str(path) == '/simulated/other':
+                return '/simulated/other'
             path = Path(path)
-            return str(other) if path == wt or wt in path.parents or path == other else str(self.root)
+            # Distinct physical drives, even when both fixtures live on Windows C:.
+            return '/simulated/other' if path == wt or wt in path.parents or path == other else '/simulated/primary'
         idle = type('Idle', (), {'busy': lambda _, p: False})()
         with mock.patch.object(placement, 'physical_disk_path', side_effect=physical), \
              mock.patch.object(placement, 'cleanup_processes', return_value=idle), \

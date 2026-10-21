@@ -54,7 +54,8 @@ def repository_tree(path, *, boundary=None):
     A worktree's own gitfile is allowed only at the output stage's checked boundary.
     Never follow links while looking for evidence; unreadable trees fail closed.
     """
-    import re
+    import os
+    import subprocess
     path = Path(path).absolute()
     def root(candidate):
         marker = candidate / '.git'
@@ -65,13 +66,27 @@ def repository_tree(path, *, boundary=None):
             return True
         except (FileNotFoundError, NotADirectoryError):
             pass
-        if (candidate / 'HEAD').is_file() and (candidate / 'objects').is_dir() and (candidate / 'refs').is_dir():
+        # Even partial administrative layouts may contain unpublished objects.
+        if any((candidate / name).exists() for name in ('HEAD', 'objects', 'refs')):
             return True
         cfg = candidate / 'config'
-        if cfg.is_file():
-            text = cfg.read_text(encoding='utf-8')
-            if re.search(r'(?ims)^[ \t]*\[core\][ \t]*(?:[#;][^\n]*)?\r?\n(?:(?!^\s*\[).)*?^\s*bare\s*(?:=|$)', text):
-                return True
+        if cfg.exists():
+            try:
+                env = dict(os.environ, GIT_DIR=str(candidate))
+                bare = placement.git(candidate, 'rev-parse', '--is-bare-repository',
+                                     env=env, timeout=60)
+                if bare.returncode == 0 and bare.stdout.strip() in ('true', 'false'):
+                    return True
+                # Git owns its config grammar (BOM, quoting, comments, casing).
+                parsed = placement.git(candidate, 'config', '--file', str(cfg), '--list',
+                                       env=env, timeout=60)
+                if parsed.returncode or parsed.stderr:
+                    return True
+                keys = [line.partition('=')[0].casefold() for line in parsed.stdout.splitlines()]
+                if any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys):
+                    return True
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return True  # No certain parse, including unavailable Git: retain.
         return False
     for parent in (path, *path.parents):
         if parent == boundary:
@@ -85,12 +100,27 @@ def repository_tree(path, *, boundary=None):
     return False
 
 
+def live_tree(path, request):
+    """Fresh live paths protect both containing trees and their descendants."""
+    from .disk_worktrees import task_facts
+    snapshot = request.get('tasks') or {}
+    owners = list(snapshot.get('active_worktrees', []))
+    owners += [t['worktree'] for t in snapshot.get('tasks', []) if t.get('worktree')]
+    parts = placement.cleanup_parts(path)
+    for owner in owners:
+        other = placement.cleanup_parts(owner)
+        if (parts[:len(other)] == other or other[:len(parts)] == parts) and \
+                task_facts(request, Path(placement.native(owner)), None)[0]:
+            return True
+    return False
+
+
 def protected_path(path, request):
     path = Path(path).absolute()
     roots = [Path(request['state_dir']).absolute()]
     roots += [Path(placement.native(repo[key])).absolute() for repo in request['repos']
               for key in ('repo', 'worktrees') if repo.get(key)]
-    return not placement.cleanup_contains(request, str(path)) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
+    return not placement.cleanup_contains(request, str(path)) or live_tree(path, request) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
         repository_tree(path)
 
 
@@ -129,7 +159,7 @@ def temporary(request):
                                 current = placement.cleanup_processes()
                                 if current.busy(str(path)):
                                     row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
-                                elif temp_facts(path, request) == {k: row[k] for k in ('files', 'bytes', 'age_s')}:
+                                elif temp_facts(path, request) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request, str(path)):
                                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                                     row['action'] = 'removed'
                                     out['reclaimed_bytes'] += row['bytes']
@@ -201,7 +231,7 @@ def folder_cache(request, entry, out):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
                 elif protected_path(path, request):
                     row.update(action='keep', reason_code='protected')
-                elif path.stat() == info:
+                elif path.stat() == info and placement.cleanup_contains(request, str(path)):
                     path.unlink()
                     row['action'] = 'removed'
                     out['reclaimed_bytes'] += info.st_size
@@ -259,7 +289,7 @@ def outputs(request: dict) -> dict:
                         relative = target.relative_to(path)
                         if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
                             continue
-                        if repository_tree(target, boundary=path) or overlaps_worktrees(request, target, path):
+                        if not placement.cleanup_contains(request, str(target)) or live_tree(target, request) or repository_tree(target, boundary=path) or overlaps_worktrees(request, target, path):
                             continue
                         row = item(target, request, 'declared_disposable', repo=machine['repo'])
                         row.update(facts(target, request['now']), owner=tag['owner'] if tag else None, action='candidate')
@@ -272,7 +302,8 @@ def outputs(request: dict) -> dict:
                                     facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
                                 raise ValueError('disposable evidence changed')
                             after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
-                            if after != entry or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path):
+                            if after != entry or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
+                                    not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
                                 raise ValueError('disposable side marker changed')
                             # status expands ignored directories to leaves; only empty directories reach here.
                             target.rmdir() if target.is_dir() else target.unlink()

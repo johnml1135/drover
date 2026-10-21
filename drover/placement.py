@@ -778,13 +778,14 @@ def physical_disk_path(path: str) -> str | None:
 
 def linux_mount(path):
     import posixpath
-    target = Path(posixpath.normpath(str(path)))
+    from pathlib import PurePosixPath
+    target = PurePosixPath(posixpath.normpath(str(path)))
     try:
         mounts = []
         for line in Path('/proc/self/mountinfo').read_text().splitlines():
             encoded = line.split()[4]
             mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), encoded)
-            if target.is_relative_to(Path(mount)):
+            if target.is_relative_to(PurePosixPath(mount)):
                 mounts.append(mount)
         return max(mounts, key=len) if mounts else None
     except (OSError, ValueError, IndexError):
@@ -1156,50 +1157,72 @@ def cleanup_call(side: str, request: dict) -> dict:
     # Pin the application root independently of cwd or the hub's environment.
     code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
             'from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))')
-    job = _CleanupJob(token) if IS_WINDOWS and side == 'windows' else None
-    answer = None
+    job, done, status, answer, pending = None, None, None, None, None
+    evidence = {}
+    reason, output, detail = 'worker_failed', '', ''
+    confirmed = False
+    def text(value):
+        return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
     try:
+        job = _CleanupJob(token) if IS_WINDOWS and side == 'windows' else None
         done = subprocess.run([*argv, '-c', code, root, token], input=json.dumps(request),
                               capture_output=True, text=True, timeout=600, shell=False,
                               env={**os.environ, 'DROVER_RUN_ID': token})
+        output, detail = done.stdout, text(done.stderr)
         if not done.returncode:
             answer = json.loads(done.stdout)
             if not isinstance(answer, dict):
                 answer = None
                 raise ValueError('invalid cleanup worker result')
-        reason, output, detail = 'worker_failed', done.stdout, done.stderr
     except subprocess.TimeoutExpired as error:
-        reason, output, detail = 'worker_timeout', error.stdout, error.stderr
+        reason, output, detail = 'worker_timeout', error.stdout, text(error.stderr)
     except OSError as error:
-        reason, output, detail = 'worker_unavailable', '', str(error)
-    except ValueError as error:
-        reason, output, detail = 'worker_failed', done.stdout, str(error)
-    def text(value):
-        return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
-    evidence = dict(reason_code=reason, output=text(output)[-4000:], error=text(detail)[-4000:])
-    try:
-        status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text())
-        if not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
-                status.get('run_id') != token:
-            raise ValueError('worker identity unavailable')
-        confirmed = job.terminate() if job else recover_ci_children(
-            side, status, str(Path(__file__).resolve().parents[1]))
-    except (OSError, ValueError, KeyError, TypeError, ScanError, subprocess.SubprocessError):
-        confirmed = False
+        reason, detail = 'worker_unavailable', str(error)
+    except BaseException as error:
+        detail = str(error) or type(error).__name__
+        # Invalid JSON remains an ordinary worker failure; cancellation and decode
+        # failures propagate only after the containment has been drained.
+        if not isinstance(error, ValueError) or isinstance(error, UnicodeError):
+            pending = error
     finally:
-        if job:
-            job.close()
-    if confirmed and answer is not None:
-        return answer
+        try:
+            try:
+                status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text())
+                if not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
+                        status.get('run_id') != token:
+                    raise ValueError('worker identity unavailable')
+            finally:
+                # Drain the job even if reading worker identity is interrupted.
+                if job:
+                    confirmed = job.terminate()
+            if not job:
+                confirmed = recover_ci_children(side, status, str(Path(__file__).resolve().parents[1]))
+        except BaseException as error:
+            confirmed = False
+            detail += '; termination: ' + (str(error) or type(error).__name__)
+        finally:
+            if job:
+                try:
+                    job.close()
+                except BaseException as error:
+                    confirmed = False
+                    detail += '; job close: ' + (str(error) or type(error).__name__)
+        if not confirmed or answer is None or pending is not None:
+            evidence = dict(reason_code='worker_termination_unconfirmed' if answer is not None else reason,
+                            output=text(output)[-4000:], error=text(detail)[-4000:],
+                            termination_confirmed=confirmed)
+            try:
+                disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
+            except BaseException as error:
+                evidence['persistence_error'] = str(error) or type(error).__name__
+                if confirmed and not isinstance(error, OSError):
+                    raise
+            if not confirmed:
+                raise CleanupWorkerError(json.dumps(evidence))
+    if pending is not None:
+        raise pending
     if answer is not None:
-        evidence['reason_code'] = 'worker_termination_unconfirmed'
-    evidence['termination_confirmed'] = confirmed
-    try:
-        disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
-    except OSError as error:
-        evidence['persistence_error'] = str(error)
-    if not confirmed:
-        raise CleanupWorkerError(json.dumps(evidence))
+        return answer
     return dict(items=[], errors=[evidence], reclaimed_bytes=0)
 
 

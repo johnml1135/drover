@@ -171,8 +171,9 @@ class PlacementSafety(DiskCase):
         self.cfg['disk_cleanup']['caches'] = [dict(path=str(cached.parents[1]), placement=self.side)]
         def physical(path):
             path = Path(path)
-            return str(self.root / 'other drive') if any(
-                path == p or p in path.parents for p in (temp.parent, cached.parent)) else str(self.root)
+            # Physical identities are simulated independently of the fixture's host drive.
+            return '/simulated/other' if any(
+                path == p or p in path.parents for p in (temp.parent, cached.parent)) else '/simulated/primary'
         with patch.object(placement, 'physical_disk_path', side_effect=physical), \
                 patch.object(placement, 'cleanup_free', return_value=80), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
