@@ -57,12 +57,21 @@ LOCK_BACKOFF_S = 30 * 60
 
 def _lock_wait(state, blocker, directory, now):
     """Track how long one lock has blocked cleanup; past the back-off raise one owner-visible notice per lock."""
-    if blocker is None:
-        state.pop('lock_wait', None)
-        return
-    token = blocker.get('token') or 'unreadable'
+    token = None if blocker is None else blocker.get('token') or 'unreadable'
     wait = state.get('lock_wait')
-    if not wait or wait.get('token') != token:
+    if wait and wait.get('token') != token:
+        # The lock this notice named is gone or changed: withdraw it (an undelivered one simply disappears).
+        outbox = state.setdefault('outbox', {})
+        entry = outbox.get('lock:' + wait['token'])
+        if entry is not None and not entry['acknowledged']:
+            del outbox['lock:' + wait['token']]
+        elif entry is not None:
+            entry['retracted'] = True
+        state.pop('lock_wait', None)
+    if blocker is None:
+        return
+    wait = state.get('lock_wait')
+    if not wait:
         wait = state['lock_wait'] = dict(token=token, since=now)
     if now - wait['since'] < LOCK_BACKOFF_S:
         return

@@ -19,6 +19,15 @@ def publish(conn, notice: dict) -> int:
         return question
 
 
+def retract(conn, notice_id: str) -> None:
+    """Close the Inbox question of a notice whose cause has cleared."""
+    for event in ops.events(conn, kind='disk.notice'):
+        if event['data']['notice']['id'] == notice_id:
+            question = ops.get_question(conn, event['data']['question'])
+            if question['status'] == 'open':
+                ops.answer_question(conn, question['id'], choice='Acknowledge', actor='disk')
+
+
 def replay(conn, cfg, now):
     """Publish hub facts and acknowledge durable notices only after ledger commit."""
     from .. import config, disk_state, ownership
@@ -50,9 +59,21 @@ def replay(conn, cfg, now):
                 reports.append(ident)
     except (OSError, ValueError):
         pass
+    retracted = [ident for ident, entry in state.get('outbox', {}).items()
+                 if entry.get('retracted') and entry['acknowledged']]
+    for ident in retracted:
+        retract(conn, ident)
+    if retracted:
+        def forget(state):
+            for ident in retracted:
+                state['outbox'].pop(ident, None)
+        try:
+            disk_state.update(state_dir, forget)
+        except BlockingIOError:
+            pass
     delivered = []
     for ident, entry in state.get('outbox', {}).items():
-        if not entry['acknowledged']:
+        if not entry['acknowledged'] and not entry.get('retracted'):
             publish(conn, entry['notice'])
             delivered.append(ident)
     if delivered:

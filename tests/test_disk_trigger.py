@@ -255,6 +255,37 @@ class LockBackoff(DiskCase):
         self.tick(lambda: launches.append(1) or {})
         self.assertEqual(launches, [1])
 
+    def test_notice_is_withdrawn_once_the_lock_clears(self):
+        lock = self.plant()
+        self.free = 60
+        self.tick(lambda: {})
+        self.now += 31 * 60
+        self.tick(lambda: {})
+        self.assertEqual(len(self.outbox()), 1)
+        (lock / 'owner.json').unlink()
+        lock.rmdir()
+        self.tick(lambda: {})
+        self.assertEqual(self.outbox(), {})  # delivered nothing yet, so it simply disappears
+
+    def test_delivered_notice_question_is_closed_when_the_lock_clears(self):
+        from drover import disk_state
+        from drover.ledger import connect, ops, disk_notices
+        conn = connect(self.root / 'hub.db')
+        self.addCleanup(conn.close)
+        lock = self.plant()
+        self.free = 60
+        self.tick(lambda: {})
+        self.now += 31 * 60
+        self.tick(lambda: {})
+        disk_notices.replay(conn, self.cfg, self.now)
+        self.assertEqual(len(ops.open_questions(conn)), 1)
+        (lock / 'owner.json').unlink()
+        lock.rmdir()
+        self.tick(lambda: {})
+        disk_notices.replay(conn, self.cfg, self.now)
+        self.assertEqual(ops.open_questions(conn), [])
+        self.assertEqual(self.outbox(), {})
+
     def test_reclaimable_lock_does_not_block_launch(self):
         launches = []
         self.plant(side=self.side, birth='boot:1')
