@@ -194,10 +194,11 @@ def _tail(path, lines=40):
 
 
 class CI:
-    def __init__(self, runs_dir, launcher=None):
+    def __init__(self, runs_dir, launcher=None, poll_s=0.25):
         from .launch import RunnerLauncher
         self.runs_dir = str(runs_dir)
         self.launcher = launcher or RunnerLauncher(runs_dir=self.runs_dir)
+        self.poll_s = poll_s       # how often run() polls a runner and a slot queue; tests inject a short one
         self._resumed = {}
 
     def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2'):
@@ -323,7 +324,7 @@ class CI:
                         except slots.SlotExpired:
                             ticket = None
                             continue
-                        time.sleep(0.25)
+                        time.sleep(self.poll_s)
                 status = runner.read_status(self.runs_dir, spec['run_id'])
                 following = True  # launch may start execution even if returning a handle fails
                 handle = self.launcher.adopt(spec) if status else self.launcher.launch(spec)
@@ -356,7 +357,7 @@ class CI:
                                                               'ended': now(), 'reason': 'runner disappeared'})
                                     handle.cancel()
                                     raise CIError('CI runner disappeared before writing its result; retry CI')
-                    time.sleep(0.25)
+                    time.sleep(self.poll_s)
                 evaluated = self.result(spec['run_id'], execution)
                 receipt = evaluated['receipt']
                 if receipt is None or evaluated['infra']:

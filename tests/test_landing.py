@@ -13,7 +13,9 @@ from drover.ledger import ci as slots
 from drover.ledger import landing as landing_storage
 from drover.ledger import db as ledger_db
 from drover.ledger import ops
+from tests.fakeci import InProcessLauncher
 from tests.gitfix import Repo
+from tests.tiers import integration
 
 SCRIPT = """\
 import pathlib, sys
@@ -58,9 +60,13 @@ class LandingCase(unittest.TestCase):
         self.r.git('fetch', '-q', 'origin')
         self.prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo),
                                      'scripts': {'test': '.drover/scripts/check.ps1'}, 'gate': {'docs_only': False}})
-        self.ci = ci.CI(self.r.root / 'receipts')
+        self.ci = self.make_ci(self.r.root / 'receipts')
         self.gate = lambda checkout, commit, tasks: self.ci.run(self.prog, checkout, commit, base='origin/main')
         self.work = self.r.root / 'batch-wt'
+
+    def make_ci(self, runs):
+        """The gate runs in-process (tests/fakeci.py); RealRunnerLandingTests overrides this to use the real runner."""
+        return ci.CI(runs, InProcessLauncher(runs))
 
     def task(self, name, files, priority='P2', review='LAND'):
         self.r.branch(name, files)
@@ -521,6 +527,7 @@ class RunTests(LandingCase):
         self.assertEqual(cache.base_status(self.conn, name, sha), 'green')
         self.assertEqual(cache.base_status(self.conn, 'other', sha), 'red')
 
+    @integration    # the hub's own CI service starts a real detached runner and adopts it after an interruption
     def test_hub_retry_adopts_interrupted_ci_and_runs_script_once(self):
         from hub.dispatch import LandingService
         from hub.settings import Settings
@@ -676,3 +683,17 @@ class RunTests(LandingCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@integration
+class RealRunnerLandingTests(LandingCase):
+    """The same landing scenarios as RunTests, but each gate goes through the real drover.runner and its polling.
+    One green, one red and one bisecting path keep the runner/landing wiring covered; RunTests covers the rest."""
+
+    def make_ci(self, runs):
+        return ci.CI(runs, poll_s=0.05)
+
+    test_green_batch_lands_ff_only_and_marks_tasks = RunTests.test_green_batch_lands_ff_only_and_marks_tasks
+    test_whole_batch_red_requeues_all = RunTests.test_whole_batch_red_requeues_all
+    test_below_tau_bisects_to_the_culprit = RunTests.test_below_tau_bisects_to_the_culprit
+    test_base_red_blames_nobody_holds_landing_and_alerts_owner = RunTests.test_base_red_blames_nobody_holds_landing_and_alerts_owner

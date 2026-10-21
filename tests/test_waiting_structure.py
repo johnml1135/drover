@@ -1,6 +1,7 @@
 """Executable retirement and dependency rules for the Waiting boundary."""
 import ast
 import inspect
+import os
 import unittest
 from pathlib import Path
 
@@ -11,9 +12,14 @@ SKIPPED_DIRS = {'.venv', 'venv', 'env', 'node_modules', 'build', 'dist', 'site-p
 
 
 def production():
-    # Vendored environments and build output are not production source (hub/.venv alone is ~500 files).
-    found = [*ROOT.joinpath('drover').rglob('*.py'), *ROOT.joinpath('hub').rglob('*.py')]
-    return sorted(p for p in found if not SKIPPED_DIRS.intersection(p.relative_to(ROOT).parts))
+    # Vendored environments and build output are not production source (hub/.venv alone is ~500 files), and
+    # walking them is slow on /mnt drives, so they are pruned rather than globbed and filtered.
+    found = []
+    for top in ('drover', 'hub'):
+        for folder, dirs, files in os.walk(ROOT / top):
+            dirs[:] = [d for d in dirs if d not in SKIPPED_DIRS]
+            found += [Path(folder, f) for f in files if f.endswith('.py')]
+    return sorted(found)
 
 
 class Retired(unittest.TestCase):

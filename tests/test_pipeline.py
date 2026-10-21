@@ -17,6 +17,7 @@ from drover.port import DirectPort
 from hub.dispatch import DispatcherService, LandingService
 from hub.settings import Settings
 from hub.store import Store
+from tests.fakeci import execute_gate
 from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
 
@@ -67,7 +68,7 @@ class FakeHandle:
 
 
 class FakeLauncher:
-    """Workers and reviews wait for the test to finish them; CI runs execute through the real runner."""
+    """Workers and reviews wait for the test to finish them; CI gates run their plan in-process (tests/fakeci.py)."""
 
     def __init__(self, runs_dir):
         self.specs, self.handles, self.runs_dir, self.gate_script = [], {}, runs_dir, []
@@ -81,14 +82,7 @@ class FakeLauncher:
                             "timeout": "no output for 600s" if status == "timeout" else None,
                             "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0}})
         elif spec.get("role") == "gate":
-            r = subprocess.run([sys.executable, '-m', 'drover.runner', '--run-id', str(spec['run_id']),
-                                '--runs-dir', str(self.runs_dir), '--cwd', str(spec['cwd']),
-                                '--run-config', json.dumps(spec.get('run_config', {})), '--', *spec['argv']],
-                               capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1])
-            out = runner.run_dir(self.runs_dir, spec["run_id"]) / runner.OUT_FILE
-            h = FakeHandle({"status": "done" if r.returncode == 0 else "error", "record": None, "text": "", "handoff": None,
-                            "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0},
-                            "returncode": r.returncode, "timeout": None})
+            h = FakeHandle(execute_gate(spec, self.runs_dir))      # the gate script runs for real, in-process
         else:
             h = FakeHandle()
         self.handles[spec["run_id"]] = h
