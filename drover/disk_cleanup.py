@@ -24,7 +24,8 @@ def _repos(cfg, errors=None):
     for path in sorted(config.repos_dir(cfg).glob('*.toml')):
         try:
             raw = repos.read_machine(path)
-            answer.append(repos.load({**raw, 'name': raw.get('name') or path.stem}, machine_path=path))
+            answer.append(repos.machine_config(repos.load(
+                {**raw, 'name': raw.get('name') or path.stem}, machine_path=path)))
         except (OSError, ValueError) as error:
             if errors is not None:
                 errors.append(dict(path=str(path), reason_code='excluded_repo', error=str(error),

@@ -18,8 +18,7 @@ def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None)
         original = copy.deepcopy(raw)
         if 'disk_cleanup' not in raw:
             raw['disk_cleanup'] = placement.detected_cleanup_policy(config.state_dir(cfg))
-        for key in ('process_ignore', 'process_query_timeout_s'):
-            raw['disk_cleanup'].setdefault(key, copy.deepcopy(config.DEFAULTS['disk_cleanup'][key]))
+        placement.seed_cleanup_process_policy(raw['disk_cleanup'])
         seeded = raw != original
         config.validate(raw)
         cfg['disk_cleanup'] = raw['disk_cleanup']

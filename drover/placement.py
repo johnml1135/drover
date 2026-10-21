@@ -12,6 +12,7 @@ import json
 import signal
 import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 KILL_AFTER_S = 15
@@ -680,7 +681,7 @@ def stop_ci_children(status):
     Return False when process ownership or termination cannot be confirmed. Zombies
     cannot execute or touch the checkout and need no further signalling.
     """
-    if not status.get('pid'):
+    if not status.get('pid') or not status.get('run_id'):
         return False  # no recorded child identity: termination remains unknown
     deadline = time.monotonic() + 3
     signalled = False
@@ -803,11 +804,63 @@ def _cleanup_path(path, windows):
     return str(Path(text).resolve()).rstrip('/') or '/'
 
 
+_PROCESS_IGNORE_R11_WINDOWS = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
+                               'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe']
+_PROCESS_IGNORE_WSL = ['systemd', '(sd-pam)']
+
+
 def default_process_ignore():
     """Owner-editable non-workspace helpers; shells are deliberately excluded."""
-    return ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
-            'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
-            'systemd', '(sd-pam)']
+    return [*_PROCESS_IGNORE_R11_WINDOWS,
+            'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
+            'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', *_PROCESS_IGNORE_WSL]
+
+
+def seed_cleanup_process_policy(policy):
+    """Upgrade the exact prior factory list; preserve every owner-modified list."""
+    if 'process_ignore' not in policy or policy['process_ignore'] == _PROCESS_IGNORE_R11_WINDOWS + _PROCESS_IGNORE_WSL:
+        policy['process_ignore'] = default_process_ignore()
+    policy.setdefault('process_query_timeout_s', 240)
+
+
+def _cleanup_process_roots(request):
+    roots = list(request.get('_process_roots', []))
+    for machine in request.get('repos', []):
+        roots.extend(machine[key] for key in ('repo', 'worktrees') if machine.get(key))
+    paths = request.get('paths', {})
+    roots.extend(p for key in ('temp_roots', 'report_roots') for p in paths.get(key, []))
+    roots.extend(c.get('path', c.get('cwd')) for c in paths.get('caches', []))
+    roots.extend(request[key] for key in ('approved_path',) if request.get(key))
+    return [root for root in roots if root]
+
+
+@contextmanager
+def cleanup_process_record(state_dir, cwd=None, pid=None):
+    """Publish a Drover process's kernel identity and known cwd for its lifetime."""
+    from . import disk_state
+    pid = os.getpid() if pid is None else pid
+    if IS_WINDOWS:
+        birth = _windows_birth(pid)
+        identity = dict(pid=pid, side='windows', birth=str(birth) if birth else None)
+    else:
+        identity = cleanup_identity(pid)
+    path = Path(state_dir) / 'disk' / f"process-{identity['side']}-{identity['pid']}.json"
+    recorded = False
+    try:
+        if identity.get('birth') not in (None, '', 'absent'):
+            try:
+                disk_state.save_file(state_dir, path.name,
+                                     dict(identity=identity, cwd=str(Path(cwd or Path.cwd()).absolute())))
+                recorded = True
+            except OSError:
+                pass  # Cleanup remains conservative when the record cannot be published.
+        yield
+    finally:
+        if recorded:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass  # A stale record still requires a matching kernel identity.
 
 
 def cleanup_processes(*, proc_root=None, cim=None, windows=None, request=None):
@@ -868,7 +921,7 @@ def _windows_cwd(pid):
         kernel.CloseHandle(handle)
 
 
-def _cim_rows(timeout=240):
+def _cim_rows(timeout=240, pids=None):
     """One CIM query supplies owner SIDs alongside argv/exe evidence."""
     script = r'''$ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -881,6 +934,10 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name
 })
 @{sid=$sid; processes=$rows} | ConvertTo-Json -Compress -Depth 4
 '''
+    if pids is not None:
+        filters = ' OR '.join(f'ProcessId={int(pid)}' for pid in pids)
+        script = script.replace('Get-CimInstance Win32_Process -Property',
+                                f"Get-CimInstance Win32_Process -Filter '{filters}' -Property")
     out = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
                          capture_output=True, text=True, timeout=timeout, errors='replace', **NO_WINDOW)
     if out.returncode or not out.stdout.strip():
@@ -889,9 +946,31 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name
     if not data.get('sid') or not isinstance(data.get('processes'), list):
         raise ValueError('CIM ownership unavailable')
     return [dict(pid=d['ProcessId'], name=d.get('Name'), session_id=d.get('SessionId'),
+                 exe=d.get('ExecutablePath'),
+                 command_unreadable=d.get('CommandLine') is None,
                  same_user=d.get('OwnerSid') == data['sid'] if d.get('OwnerSid') else None,
                  cmd=' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')])))
             for d in data['processes'] if d.get('ProcessId') != os.getpid()]
+
+
+def _windows_birth(pid):
+    """Native FILETIME, shared by process records and cache identity checks."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.GetProcessTimes.argtypes = [w.HANDLE, *([c.POINTER(w.FILETIME)] * 4)]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        times = [w.FILETIME() for _ in range(4)]
+        if kernel.GetProcessTimes(handle, *(c.byref(t) for t in times)):
+            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _windows_processes():
@@ -908,9 +987,6 @@ def _windows_processes():
     kernel.CreateToolhelp32Snapshot.restype = w.HANDLE
     kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [w.HANDLE, c.POINTER(Entry)]
     kernel.CloseHandle.argtypes = [w.HANDLE]
-    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
-    kernel.OpenProcess.restype = w.HANDLE
-    kernel.GetProcessTimes.argtypes = [w.HANDLE, *([c.POINTER(w.FILETIME)] * 4)]
     snapshot = kernel.CreateToolhelp32Snapshot(2, 0)
     if snapshot == c.c_void_p(-1).value:
         raise c.WinError(c.get_last_error())
@@ -920,16 +996,7 @@ def _windows_processes():
         more = kernel.Process32FirstW(snapshot, c.byref(entry))
         while more:
             if entry.pid and entry.pid != os.getpid():
-                created = None
-                handle = kernel.OpenProcess(0x1000, False, entry.pid)
-                if handle:
-                    try:
-                        times = [w.FILETIME() for _ in range(4)]
-                        if kernel.GetProcessTimes(handle, *(c.byref(t) for t in times)):
-                            created = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
-                    finally:
-                        kernel.CloseHandle(handle)
-                rows[str(entry.pid)] = [entry.image, created]
+                rows[str(entry.pid)] = [entry.image, _windows_birth(entry.pid)]
             more = kernel.Process32NextW(snapshot, c.byref(entry))
         if c.get_last_error() != 18:  # ERROR_NO_MORE_FILES is the only complete enumeration.
             raise c.WinError(c.get_last_error())
@@ -971,9 +1038,12 @@ class _CleanupProcesses:
         self.ignored = (request or {}).get('paths', {}).get('process_ignore', default_process_ignore())
         self.ignored = {name.casefold() if self.windows else name for name in self.ignored}
         self.query_failure = None
+        self.request = request or {}
+        self.roots = _cleanup_process_roots(self.request)
         if self.windows:
             try:
-                current = _windows_processes() if not cim and request and request.get('apply') else None
+                current = _windows_processes() if not cim and request else None
+                self.current = current
                 answer = dict(rows=cim()) if cim else _cleanup_cim(request, current)
                 self.query_failure = {k: v for k, v in answer.items() if k not in ('rows', 'identities')} or None
                 rows = answer['rows']
@@ -981,10 +1051,36 @@ class _CleanupProcesses:
                 if current is not None:
                     known = {str(row['pid']): row for row in rows}
                     baseline = answer.get('identities') or {}
+                    refresh = []
                     for pid, identity in current.items():
-                        if pid not in known or baseline.get(pid) != identity:
+                        if pid in known and identity[1] and baseline.get(pid) == identity:
+                            continue
+                        cwd = self._own_cwd(int(pid))
+                        if cwd:
+                            known[pid] = dict(pid=int(pid), name=identity[0], same_user=True, cwd=cwd, cmd='')
+                        elif pid in known:
+                            refresh.append(pid)
+                        else:
                             self.unknown = True
                             self._unreadable(int(pid), identity[0], evidence='process_started_after_snapshot')
+                    rows = list(known.values())
+                    if refresh:
+                        # Never inherit ownership/argv from a PID whose birth is unknown or changed.
+                        started = time.monotonic()
+                        try:
+                            fresh = {str(row['pid']): row for row in _cim_rows(
+                                self.request.get('paths', {}).get('process_query_timeout_s', 240), refresh)}
+                        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                            fresh = {}
+                            self.query_failure = dict(error=str(error), elapsed_s=time.monotonic() - started,
+                                reason_code='process_query_timeout' if isinstance(error, subprocess.TimeoutExpired)
+                                else 'process_visibility_unavailable')
+                        rows = [row for row in rows if str(row['pid']) not in refresh]
+                        rows.extend(fresh.values())
+                        for pid in refresh:
+                            if pid not in fresh:
+                                self.unknown = True
+                                self._unreadable(int(pid), current[pid][0], evidence='process_identity_unavailable')
                     rows = [row for row in rows if str(row['pid']) in current]
                 for row in rows:
                     # Refresh readable cwd evidence even when reusing the run's CIM snapshot.
@@ -1016,8 +1112,9 @@ class _CleanupProcesses:
                 cmd = None
             command_unreadable = cmd is None
             cmd = cmd or ''
+            exe = None
             try:
-                cmd += ' ' + str((entry / 'exe').resolve(strict=True))
+                exe = str((entry / 'exe').resolve(strict=True))
             except OSError:
                 pass
             try:
@@ -1028,30 +1125,61 @@ class _CleanupProcesses:
                 # Kernel threads have no userspace cwd/argv. A known foreign UID
                 # can be excluded; unknown ownership remains conservative.
                 cwd = None
-            if command_unreadable and same_user is not False and not (not cwd and same_user and name in self.ignored):
-                self.unknown = True
-                if cwd:
-                    self._unreadable(int(entry.name), name, evidence='command_line')
-            self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd)
+            self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd,
+                         exe=exe, command_unreadable=command_unreadable)
 
     def _unreadable(self, pid, name, **extra):
         self.unreadable.append(dict(pid=pid, name=name, **extra,
                                     owner_action=f'close {name} (pid {pid}) or add it to [disk_cleanup] process_ignore'))
 
-    def _record(self, *, pid, name, same_user, cwd, cmd, session_id=None):
+    def _record(self, *, pid, name, same_user, cwd, cmd, session_id=None, exe=None, command_unreadable=False):
+        command_unreadable = command_unreadable or cmd is None
+        own_cwd = self._own_cwd(pid) if not cwd or same_user is None or command_unreadable else None
+        if own_cwd:
+            cwd, same_user = cwd or own_cwd, True
         image = re.split(r'[/\\]', name or '')[-1]
         image = image.casefold() if self.windows else image
+        ignored = image in self.ignored and not (exe and any(
+            _cleanup_path(exe, self.windows) == _cleanup_path(root, self.windows) or
+            _cleanup_path(exe, self.windows).startswith(_cleanup_path(root, self.windows).rstrip('/') + '/')
+            for root in self.roots))
         foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
-        if self.windows and same_user is None and not foreign:
+        if ignored and (same_user is None or not cwd):
+            self.out_of_scope += 1
+        elif self.windows and same_user is None and not foreign:
             self.unknown = True
             self._unreadable(pid, name, evidence='owner')
         elif not cwd:
-            if foreign or (same_user is True and image in self.ignored):
+            if foreign:
                 self.out_of_scope += 1
             else:
                 self.unknown = True
                 self._unreadable(pid, name)
-        self.rows.append((cwd, cmd))
+        elif command_unreadable and not foreign and not own_cwd:
+            self.unknown = True
+            self._unreadable(pid, name, evidence='command_line')
+        self.rows.append((cwd, ' '.join(filter(None, (cmd, exe)))))
+
+    def _own_cwd(self, pid):
+        if not self.request.get('state_dir'):
+            return None
+        side = 'windows' if self.windows else 'wsl'
+        path = Path(self.request['state_dir']) / 'disk' / f'process-{side}-{pid}.json'
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+            identity = record['identity']
+            if self.windows and getattr(self, 'current', None) is not None:
+                birth = (self.current.get(str(pid)) or [None, None])[1]
+                current = dict(pid=pid, side=side, birth=str(birth) if birth else None)
+            else:
+                current = cleanup_identity(pid)
+            if (identity.get('pid') == pid and identity.get('side') == side
+                    and identity.get('birth') not in (None, '', 'absent')
+                    and current == identity):
+                return record['cwd']
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            pass
+        return None
 
     @property
     def reason(self):
@@ -1438,6 +1566,7 @@ def cleanup_scope(request):
     """Keep only this physical drive; path spelling/translation lives here."""
     import copy
     scoped = copy.deepcopy(request)
+    scoped['_process_roots'] = _cleanup_process_roots(request)
     scoped['scope_errors'] = []
     if physical_disk_path(request['drive']['path']) is None:
         scoped['scope_errors'].append(dict(path=request['drive']['path'], reason_code='physical_disk_unknown'))
@@ -1511,17 +1640,28 @@ def cleanup_identity(pid=None):
         birth = done.stdout.strip() if not done.returncode else None
     else:
         try:
-            birth = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+            started = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
         except FileNotFoundError:
             birth = 'absent'
-        except OSError:
+        except (OSError, IndexError):
             birth = None
+        else:
+            try:
+                boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+                birth = f'{boot}:{started}' if boot and started else None
+            except OSError:
+                birth = None
     return dict(pid=pid, birth=birth, side=cleanup_side())
 
 
 def cleanup_claim_alive(identity):
-    if identity.get('side') != cleanup_side() or not identity.get('birth'):
+    if (identity.get('side') != cleanup_side() or type(identity.get('pid')) is not int
+            or identity['pid'] <= 0 or not identity.get('birth')):
         return None
+    if identity.get('birth') == 'absent':
+        return False
+    if identity['side'] == 'wsl' and ':' not in identity['birth']:
+        return None  # Old start ticks without boot identity cannot prove a process dead.
     current = cleanup_identity(identity['pid'])
     return None if not current['birth'] else current['birth'] == identity['birth']
 

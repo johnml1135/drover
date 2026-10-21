@@ -377,8 +377,9 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
             except (OSError, ValueError) as e:
                 st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
                 return st.d
-        return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason,
-                          scratch, watch_globs, run_config)
+        with placement.cleanup_process_record(Path(runs_dir).parent):
+            return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason,
+                              scratch, watch_globs, run_config)
     finally:
         if scratch is not None:
             _cleanup_scratch(scratch)
@@ -429,41 +430,42 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     peaks = Peaks(tree.metrics)
     watch = None
     try:
-        st.set(state="running", pid=proc.pid)
-        watch = open(out, "rb")        # an open handle's size is exact on Windows, where stat() can lag
-        t0 = last_change = time.monotonic()
-        size, outcome, watched = 0, None, ()
-        while proc.poll() is None:
-            now = time.monotonic()
-            if peaks.last is None or now - peaks.last[0] >= 1:
-                st.set(peaks=dict(peaks.sample()), heartbeat=now_iso())
-            watch.seek(0, 2)
-            if watch.tell() != size:
-                size, last_change = watch.tell(), now
-            seen = _watched_sizes(d, watch_globs)
-            if seen != watched:
-                watched, last_change = seen, now
-            stop = read_stop(d, nonce) or (sig_reason[0] if sig_reason else None)
-            if stop:
-                outcome = ("killed", stop)
-            elif wall_s and now - t0 > wall_s:
-                outcome = ("timeout", f"wall-clock limit {wall_s:g}s")
-            elif idle_s and now - last_change > idle_s:
-                steps = [m.group(1) for name, _ in watched for m in [re.search(r"\.(step\d+)\.log$", name)] if m]
-                step = max(steps, key=lambda n: int(n[4:]), default=None)
-                outcome = ("timeout", f"no output for {idle_s:g}s" + (f" (stalled in {step})" if step else ""))
-            if outcome:
-                tree.kill(kill_after)
-                break
-            time.sleep(poll_s)
-        else:
-            tree.reap_stragglers()
-        rc = proc.wait()
-        state, reason = outcome or ("exited", None)
-        rec = scan_record(out)
-        if rec:
-            write_json_atomic(d / RECORD_FILE, rec)
-        st.set(state=state, reason=reason, exit_code=rc, ended=now_iso(), peaks=dict(peaks.sample()))
+        with placement.cleanup_process_record(d.parent.parent, cwd, pid=proc.pid):
+            st.set(state="running", pid=proc.pid)
+            watch = open(out, "rb")        # an open handle's size is exact on Windows, where stat() can lag
+            t0 = last_change = time.monotonic()
+            size, outcome, watched = 0, None, ()
+            while proc.poll() is None:
+                now = time.monotonic()
+                if peaks.last is None or now - peaks.last[0] >= 1:
+                    st.set(peaks=dict(peaks.sample()), heartbeat=now_iso())
+                watch.seek(0, 2)
+                if watch.tell() != size:
+                    size, last_change = watch.tell(), now
+                seen = _watched_sizes(d, watch_globs)
+                if seen != watched:
+                    watched, last_change = seen, now
+                stop = read_stop(d, nonce) or (sig_reason[0] if sig_reason else None)
+                if stop:
+                    outcome = ("killed", stop)
+                elif wall_s and now - t0 > wall_s:
+                    outcome = ("timeout", f"wall-clock limit {wall_s:g}s")
+                elif idle_s and now - last_change > idle_s:
+                    steps = [m.group(1) for name, _ in watched for m in [re.search(r"\.(step\d+)\.log$", name)] if m]
+                    step = max(steps, key=lambda n: int(n[4:]), default=None)
+                    outcome = ("timeout", f"no output for {idle_s:g}s" + (f" (stalled in {step})" if step else ""))
+                if outcome:
+                    tree.kill(kill_after)
+                    break
+                time.sleep(poll_s)
+            else:
+                tree.reap_stragglers()
+            rc = proc.wait()
+            state, reason = outcome or ("exited", None)
+            rec = scan_record(out)
+            if rec:
+                write_json_atomic(d / RECORD_FILE, rec)
+            st.set(state=state, reason=reason, exit_code=rc, ended=now_iso(), peaks=dict(peaks.sample()))
     except BaseException:
         try:
             tree.kill(min(kill_after, 3))       # never leave the worker running unsupervised

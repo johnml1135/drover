@@ -12,6 +12,7 @@ import uvicorn
 from hub.app import create_app
 from hub.settings import Settings
 from drover.placement import NO_WINDOW
+from drover import placement
 
 log = logging.getLogger("hub")
 
@@ -115,11 +116,12 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO)
     settings = Settings(run_dispatcher=True, run_services=True)
     app = create_app(settings.ledger_path, settings)
-    app.state.start_background()
-    try:
-        asyncio.run(serve(app, settings))
-    finally:
-        app.state.shutdown()
+    with placement.cleanup_process_record(settings.runs_dir.parent):
+        app.state.start_background()
+        try:
+            asyncio.run(serve(app, settings))
+        finally:
+            app.state.shutdown()
 
 
 if __name__ == "__main__":

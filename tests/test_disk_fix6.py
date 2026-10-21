@@ -83,6 +83,8 @@ class ProcessPolicy(DiskCase):
     def test_defaults_migrate_partial_config_idempotently_and_preserve_edits(self):
         expected = {'ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
                     'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
+                    'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
+                    'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe',
                     'systemd', '(sd-pam)'}
         migrated = config.migrate_disk_config(dict(disk_cleanup=dict(temp_roots=[])))
         self.assertEqual(set(migrated['disk_cleanup']['process_ignore']), expected)
@@ -129,6 +131,7 @@ class ProcessQuery(DiskCase):
         request = dict(stage=2, apply=False, now=self.now, paths=dict(process_query_timeout_s=300),
                        state_dir=str(self.state), repos=[], drive=dict(path=str(self.root)), _inventory_id='fixture')
         with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, '_windows_processes', return_value={}), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
                 patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('cim', 300)) as query, \
                 patch.object(placement.time, 'monotonic', side_effect=[10., 310.25]):
@@ -150,6 +153,7 @@ class ProcessQuery(DiskCase):
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=rows)), '')
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='fixture')
         with patch.object(subprocess, 'run', return_value=done) as query, \
+                patch.object(placement, '_windows_processes', return_value={'123456789': ['service.exe', 1]}), \
                 patch.object(placement, '_windows_cwd', return_value=None):
             for stage, drive in ((2, 'H:/'), (4, 'H:/'), (5, 'C:/')):
                 proof = placement.cleanup_processes(windows=True, request=dict(request, stage=stage, drive=dict(path=drive)))
@@ -188,7 +192,7 @@ class ReviewRegressions(DiskCase):
     def test_new_process_after_cim_snapshot_blocks_apply_recheck(self):
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='fixture', apply=True)
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
-            ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1)])), '')
+            ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1, CommandLine='old.exe')])), '')
         with patch.object(subprocess, 'run', return_value=done) as query, \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
                 patch.object(placement, '_windows_processes', create=True,
@@ -231,7 +235,7 @@ class ReviewRegressions(DiskCase):
         request = dict(stage=2, apply=True, now=self.now, repos=[], state_dir=str(self.state),
                        drive=dict(path=str(self.root)), paths=self.cfg['disk_cleanup'], _inventory_id='fixture')
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
-            ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1)])), '')
+            ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1, CommandLine='old.exe')])), '')
         with patch.object(placement, 'IS_WINDOWS', True), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \

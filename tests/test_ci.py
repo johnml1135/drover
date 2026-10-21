@@ -39,6 +39,13 @@ class CITests(unittest.TestCase):
         cfg['paths']['state_dir'] = str(self.repo.root / 'state')
         cfg['repos_dir'] = str(self.repo.root / 'state' / 'repos')
         config.use(cfg)
+        # Detached callers cannot inherit the parent's disk.read mock. Give them
+        # the same unrestricted fixture admission without consulting live drives.
+        state = self.repo.root / 'state'
+        state.mkdir()
+        (state / 'config.toml').write_text(config.dumps({'trackers': [
+            {'kind': 'disk', 'name': tracker['name'], 'enabled': False}
+            for tracker in cfg['trackers'] if tracker['kind'] == 'disk']}), encoding='utf-8')
         for context in (patch.object(disk, 'read', return_value=[dict(name='fixture', path=str(self.repo.root), free_gb=1000., level='ok')]),):
             context.start()
             self.addCleanup(context.stop)

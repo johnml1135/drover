@@ -29,6 +29,18 @@ class _ResolvedRepo(dict):
     """In-process loader result; serialized dictionaries cannot confer this trust."""
 
 
+def machine_config(prog):
+    """Serializable machine facts, with normalized locations and branch defaults.
+
+    Loader metadata is never a machine-file key. Keep legacy fallback policy from
+    the original machine layer, so a worker can reload the commit on its own side.
+    """
+    if not isinstance(prog, _ResolvedRepo):
+        raise RepoError('machine_config requires a loaded repo')
+    return {**prog['_machine'], **{key: prog[key] for key in
+                                  ('name', 'repo', 'worktrees', 'remote', 'default_branch')}}
+
+
 DOCS_ONLY_GLOBS = ("docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**")
 
 

@@ -14,6 +14,12 @@ from tests.gitfix import Repo
 
 
 class PlacementTests(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise placement/CI, independently of the host's free space.
+        readings = patch('drover.disk.read', return_value=[])
+        readings.start()
+        self.addCleanup(readings.stop)
+
     def test_ledger_distro_changes_reach_git_and_runner_together(self):
         settings = {'wsl_distro': 'UI-choice'}
         previous = placement.bind_settings(lambda: settings)

@@ -839,8 +839,7 @@ def migrate_disk_config(raw):
         proposed["trackers"] = rows
     if "disk_cleanup" not in proposed:
         proposed["disk_cleanup"] = placement.detected_cleanup_policy(state_dir(validate(proposed)))
-    for key in ('process_ignore', 'process_query_timeout_s'):
-        proposed['disk_cleanup'].setdefault(key, copy.deepcopy(DEFAULTS['disk_cleanup'][key]))
+    placement.seed_cleanup_process_policy(proposed['disk_cleanup'])
     validate(proposed)
     return proposed
 
