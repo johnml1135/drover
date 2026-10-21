@@ -687,9 +687,9 @@ class Dispatcher:
             return {**route, 'seat': seat['name'] if seat else None,
                     'effort': effort_for(route['model'], route.get('effort')),
                     'harness': route.get('harness', route['backend']), 'placement': placement}
-        started = []
+        started, inspected = [], {}                  # inspections are cached for this tick only
         for _ in range(slots):
-            batch = self.replanning.prepare(assign, now=self.now())
+            batch = self.replanning.prepare(assign, now=self.now(), inspected=inspected)
             if batch is None:
                 break
             launched = self._spawn({**batch.task, 'write': False, 'read_checkouts': batch.read_checkouts,

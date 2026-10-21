@@ -75,8 +75,11 @@ class Replanning:
         self.port.waiting.delay(request['task_id'], 'planner', 'replan-inputs', now, minutes=1)
         self.port.append_event('replan-deferred', {'request': request['id'], 'reason': str(exc)[:300]}, request['task_id'])
 
-    def prepare(self, assign, *, now):
+    def prepare(self, assign, *, now, inspected=None):
+        """`inspected` is a per-tick cache of source inspections, keyed by task id."""
         p = self.port
+        inspected = {} if inspected is None else inspected
+        runs = p.waiting.replan_runs()
         requests = p.waiting.replans()
         candidates = []
         triggers = {e['id']: e['data'] for e in p.events('replan-request')}
@@ -84,10 +87,14 @@ class Replanning:
             task = request['task']
             if (request['state'] != contract.REPLAN_QUEUED or request['active_run'] or task['archived']
                     or task['status'] in (*states.ACTIVE, *states.TERMINAL)
-                    or any(r['kind'] != REPLAN for r in request['pending']) or p.waiting.replan_busy(task['id'])):
+                    or any(r['kind'] != REPLAN for r in request['pending']) or p.waiting.replan_busy(task['id'], runs)):
                 continue
+            if task['id'] in inspected and isinstance(inspected[task['id']], Exception):
+                continue                             # already deferred this tick
             try:
-                inputs = self._inputs(task)
+                if task['id'] not in inspected:
+                    inspected[task['id']] = self._inputs(task)
+                inputs = inspected[task['id']]
                 assignment = assign(task, inputs)
                 if assignment is None:
                     continue
@@ -97,6 +104,7 @@ class Replanning:
                             trigger=triggers.get(request['requesting_event']))
                 candidates.append((request, assignment, identity, item))
             except (OSError, ValueError, WorktreeRefused) as exc:
+                inspected[task['id']] = exc
                 self._defer(request, exc, now)
         for seed in list(candidates):
             if seed not in candidates:

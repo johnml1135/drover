@@ -541,9 +541,13 @@ def claim_next(conn, worker=None, now=None, exclude=()):
     actor = worker.get("actor") or worker.get("owner_kind") or "worker"
     with tx(conn):
         skip = set(exclude or ())
+        from .waiting import Waiting
+        waiting, runs = Waiting(conn, actor), None
         for cand in ready_tasks(conn, worker.get("repo"), worker.get("repo_path"), now):
-            from .waiting import Waiting
-            if cand["id"] in skip or Waiting(conn, actor).replan_busy(cand["id"]):
+            if cand["id"] in skip:
+                continue
+            runs = waiting.replan_runs() if runs is None else runs     # one snapshot per call (inside tx)
+            if waiting.replan_busy(cand["id"], runs):
                 continue
             row = conn.execute(
                 "UPDATE tasks SET status='claimed', owner_kind=?, model=?, branch=COALESCE(?,branch), "

@@ -848,9 +848,12 @@ class Waiting:
             for source in sources}).static_order())}
         return followers, order
 
-    def replan_busy(self, task_id):
-        """An open or uncertain physical run protects every member, including resolved requests."""
-        return any(any(m['task_id'] == task_id for m in batch['members']) for batch in self.replan_runs())
+    def replan_busy(self, task_id, runs=None):
+        """An open or uncertain physical run protects every member, including resolved requests.
+
+        `runs` is a replan_runs() snapshot a caller reuses across many tasks."""
+        runs = self.replan_runs() if runs is None else runs
+        return any(any(m['task_id'] == task_id for m in batch['members']) for batch in runs)
 
     def _replan_eligible(self, request, enrolled, followers, order):
         from . import ops

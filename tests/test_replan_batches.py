@@ -999,3 +999,47 @@ class EnrollmentRegressions(BatchPipelineCase):
         self.assertEqual(self.get(tids[0])['goal'], 'Owner edit before enrollment')
         retry = self.prepare(planning)
         self.assertIn('Owner edit before enrollment', retry.brief['user_prompt'])
+
+
+class PlannerInspectionCache(BatchPipelineCase):
+    def test_each_candidate_inspected_once_per_tick_across_slots(self):
+        from drover.replan import Replanning
+        planning = self.planning()
+        tids, _ = self.queue(3)
+        routes = {tid: {**ROUTE, 'seat': f'seat{i}'} for i, tid in enumerate(tids)}   # three separate batches
+        calls = []
+        real = Replanning._inputs
+        def counting(replanning, task):
+            calls.append(task['id'])
+            return real(replanning, task)
+        inspected = {}
+        with patch.object(Replanning, '_inputs', counting):
+            batches = [planning.prepare(lambda task, inputs: routes[task['id']], now=1000, inspected=inspected)
+                       for _ in range(3)]
+        self.assertTrue(all(batches))
+        # One inspection per candidate, plus the one post-enrollment freshness check per started member.
+        self.assertEqual(sorted(calls), sorted(tids * 2))
+        self.assertEqual(set(inspected), set(tids))
+
+
+class ReadOnlyShellAuthority(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        subprocess.run(['git', 'init', '-q', self.dir.name], check=True)
+
+    def tools(self, role, **extra):
+        argv, _ = launch.build_argv(dict(role=role, write=False, backend='claude', model='opus-5.5', effort='high',
+                                         cwd=self.dir.name, placement='wsl', system_append='p', user_prompt='u', **extra))
+        settings = json.loads(argv[argv.index('--settings') + 1])
+        return argv[argv.index('--tools') + 1].split(','), settings['permissions']['deny']
+
+    def test_only_planner_loses_bash_on_wsl(self):
+        for role in ('review', 'investigator', 'researcher'):
+            tools, deny = self.tools(role)
+            self.assertIn('Bash', tools, role)
+            self.assertNotIn('Bash', deny, role)
+        tools, deny = self.tools('planner')
+        self.assertNotIn('Bash', tools)
+        self.assertIn('Bash', deny)
