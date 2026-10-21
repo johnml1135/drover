@@ -163,7 +163,7 @@ class Removal(WorktreeCase):
             result = disk_cleanup.remove_approved(self.cfg, str(self.r.repo), str(approved),
                                                   runtime=self.runtime(real=True))
         self.assertTrue(approved.exists())
-        self.assertIn(str(approved), json.dumps(result))
+        self.assertIn(str(approved), [item['path'] for item in result['items']])
 
     def test_dry_run_then_apply_selected_path_never_prunes(self):
         selected = self.worktree('selected')

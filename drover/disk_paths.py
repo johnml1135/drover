@@ -39,7 +39,50 @@ def safe_path(path):
     path = Path(path).absolute()
     if any(part.casefold() in ('.git', '.venv') for part in path.parts):
         return False
-    return all(not placement.cleanup_link(parent) for parent in (path, *path.parents) if parent.exists() or parent.is_symlink())
+    for parent in (path, *path.parents):
+        try:
+            if placement.cleanup_link(parent):
+                return False
+        except FileNotFoundError:
+            continue
+    return True
+
+
+def repository_tree(path, *, boundary=None):
+    """Repository evidence protects even damaged, unregistered and bare trees.
+
+    A worktree's own gitfile is allowed only at the output stage's checked boundary.
+    Never follow links while looking for evidence; unreadable trees fail closed.
+    """
+    import re
+    path = Path(path).absolute()
+    def root(candidate):
+        marker = candidate / '.git'
+        if candidate.name == '.git':
+            return True
+        try:
+            marker.lstat()
+            return True
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        if (candidate / 'HEAD').is_file() and (candidate / 'objects').is_dir() and (candidate / 'refs').is_dir():
+            return True
+        cfg = candidate / 'config'
+        if cfg.is_file():
+            text = cfg.read_text(encoding='utf-8')
+            if re.search(r'(?ims)^[ \t]*\[core\][ \t]*(?:[#;][^\n]*)?\r?\n(?:(?!^\s*\[).)*?^\s*bare\s*(?:=|$)', text):
+                return True
+        return False
+    for parent in (path, *path.parents):
+        if parent == boundary:
+            break
+        if not safe_path(parent) or root(parent):
+            return True
+    if path.is_dir():
+        for child in path.iterdir():
+            if not safe_path(child) or root(child) or child.is_dir() and repository_tree(child, boundary=path):
+                return True
+    return False
 
 
 def protected_path(path, request):
@@ -48,8 +91,7 @@ def protected_path(path, request):
     roots += [Path(placement.native(repo[key])).absolute() for repo in request['repos']
               for key in ('repo', 'worktrees') if repo.get(key)]
     return not placement.cleanup_contains(request, str(path)) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
-        (path / '.git').exists() or any((parent / '.git' / 'HEAD').exists() or
-            (parent / '.git').is_file() for parent in path.parents)
+        repository_tree(path)
 
 
 def temp_facts(path, request):
@@ -133,9 +175,15 @@ def folder_cache(request, entry, out):
     aggressive = request.get('mode') != 'daily' and request['drive'].get('level') in ('warn', 'queue', 'hold', 'critical')
     try:
         candidates = []
-        for path in root.rglob('*'):
-            if protected_path(path, request) or not path.is_file():
-                continue
+        def leaves(parent):
+            for path in parent.iterdir():
+                if protected_path(path, request):
+                    out['items'].append(item(path, request, 'protected'))
+                elif path.is_dir():
+                    yield from leaves(path)
+                elif path.is_file():
+                    yield path
+        for path in leaves(root):
             info = path.stat()
             activity = info.st_atime if info.st_atime > info.st_mtime else info.st_mtime
             if aggressive or request['now'] - activity > entry.get('max_age_days', 30) * 86400:
@@ -151,7 +199,9 @@ def folder_cache(request, entry, out):
                 proof = placement.cleanup_processes()
                 if proof.busy(str(path)):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
-                elif not protected_path(path, request) and path.stat() == info:
+                elif protected_path(path, request):
+                    row.update(action='keep', reason_code='protected')
+                elif path.stat() == info:
                     path.unlink()
                     row['action'] = 'removed'
                     out['reclaimed_bytes'] += info.st_size
@@ -209,7 +259,7 @@ def outputs(request: dict) -> dict:
                         relative = target.relative_to(path)
                         if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
                             continue
-                        if not safe_path(target) or overlaps_worktrees(request, target, path):
+                        if repository_tree(target, boundary=path) or overlaps_worktrees(request, target, path):
                             continue
                         row = item(target, request, 'declared_disposable', repo=machine['repo'])
                         row.update(facts(target, request['now']), owner=tag['owner'] if tag else None, action='candidate')
@@ -218,11 +268,11 @@ def outputs(request: dict) -> dict:
                             current_dirty, current_ignored = status(path)
                             if current != entry or output_evidence(request, machine, current, touched=touched) != evidence or \
                                     name not in current_dirty + current_ignored or \
-                                    git(path, 'ls-files', '-z', '--', str(relative)) or not safe_path(target) or \
+                                    git(path, 'ls-files', '-z', '--', str(relative)) or \
                                     facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
                                 raise ValueError('disposable evidence changed')
                             after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
-                            if after != entry or overlaps_worktrees(request, target, path):
+                            if after != entry or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path):
                                 raise ValueError('disposable side marker changed')
                             # status expands ignored directories to leaves; only empty directories reach here.
                             target.rmdir() if target.is_dir() else target.unlink()

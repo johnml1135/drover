@@ -136,16 +136,20 @@ class Hub(DiskCase):
     def test_snapshot_worktree_paths_are_translated_for_side_worker(self):
         import subprocess
         from drover import placement
-        request = dict(stage=4, apply=False, state_dir=r'H:\state', repos=[], paths={},
+        request = dict(stage=4, apply=False, state_dir=str(self.state), repos=[], paths={},
                        tasks=dict(at=self.now, active_worktrees=[r'H:\trees\active'],
                                   tasks=[dict(id='T-1', state='irrelevant', terminal=False, live=True,
                                               worktree=r'H:\trees\active')]))
         captured = []
         def execute(argv, **kwargs):
             captured.append(json.loads(kwargs['input']))
+            from drover.disk_state import save_file
+            save_file(self.state, 'worker-' + captured[-1]['_worker_id'] + '.json', dict(
+                pid=123456789, run_id=captured[-1]['_worker_id']))
             return subprocess.CompletedProcess(argv, 0, '{"items":[],"errors":[],"reclaimed_bytes":0}', '')
         with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=execute):
-            placement.cleanup_call('wsl', request)
+            with patch.object(placement, 'recover_ci_children', return_value=True):
+                placement.cleanup_call('wsl', request)
         snapshot = captured[0]['tasks']
         self.assertEqual(snapshot['active_worktrees'], ['/mnt/h/trees/active'])
         self.assertEqual(snapshot['tasks'][0]['worktree'], '/mnt/h/trees/active')

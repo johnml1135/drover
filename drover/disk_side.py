@@ -8,6 +8,12 @@ from . import placement
 
 def serve(request: dict) -> dict:
     request = placement.cleanup_scope(request)
+    answer = _serve(request)
+    answer['errors'].extend(request['scope_errors'])
+    return answer
+
+
+def _serve(request):
     stage = request['stage']
     if stage == 1:
         argv = placement.trim_argv()
@@ -42,6 +48,7 @@ def serve(request: dict) -> dict:
 def _budgets(request):
     from pathlib import Path
     from .disk_worktrees import entries
+    from .disk_paths import safe_path
     answer = []
     seen = set()
     def size(path):
@@ -58,7 +65,9 @@ def _budgets(request):
                 path = Path(placement.native(entry['worktree']))
                 if not path.is_dir() or placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or not placement.cleanup_contains(request, str(path)):
                     continue
-                identity = str(path.resolve())
+                if not safe_path(path):
+                    continue
+                identity = placement.cleanup_path(path)
                 if identity in seen:
                     continue
                 seen.add(identity)

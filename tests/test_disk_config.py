@@ -47,6 +47,16 @@ class Levels(unittest.TestCase):
 
 
 class Migration(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='disk-migration-')
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        for context in (patch.dict(os.environ, {'DROVER_HOME': str(root / 'state')}),
+                        patch.object(placement, 'detected_cleanup_policy', return_value=dict(
+                            temp_roots=[str(root / 'temp')], report_roots=[], caches=[]))):
+            context.start()
+            self.addCleanup(context.stop)
+
     def test_global_dry_run_backup_and_idempotence(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)

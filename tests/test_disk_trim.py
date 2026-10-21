@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from unittest.mock import patch
@@ -50,7 +51,8 @@ class Trim(DiskCase):
             self.assertNotIn('fstrim', [str(a).lower() for a in argv])
             seen.append(list(argv))
             return original(argv, *args, **kwargs)
-        with patch.object(subprocess, 'run', side_effect=execute):
+        with patch.object(subprocess, 'run', side_effect=execute), \
+                patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
             result = placement.cleanup_call(self.side, request)
         self.assertTrue(seen)
         self.assertEqual(json.loads(marker.read_text()), [literal, str(self.temp_root)])

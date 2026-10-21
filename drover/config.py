@@ -414,6 +414,7 @@ def validate(raw):
     folders = [c['path'] for c in cfg['disk_cleanup']['caches'] if 'path' in c]
     if folders:
         from . import placement, repos
+        from .disk_paths import repository_tree
         protected = [str(state_dir(cfg)), cfg['paths']['repos_root'], cfg['paths']['worktrees']]
         try:
             for machine_file in repos_dir(cfg).glob('*.toml'):
@@ -423,14 +424,13 @@ def validate(raw):
                     protected.append(machine['repo'].rstrip('\\/') + '.worktrees')
             for folder in folders:
                 concrete = Path(placement.native(folder))
-                if (concrete / '.git').exists() or any((p / '.git' / 'HEAD').exists() or
-                        (p / '.git').is_file() for p in concrete.parents):
+                if repository_tree(concrete):
                     raise ConfigError('folder cache overlaps protected repository')
-                parts = placement.path_parts(folder)
+                parts = placement.cleanup_parts(folder)
                 if any(part in ('.git', '.venv') for part in parts):
                     raise ConfigError('folder cache overlaps protected path')
                 for root in filter(None, protected):
-                    other = placement.path_parts(root)
+                    other = placement.cleanup_parts(root)
                     if parts[:len(other)] == other or other[:len(parts)] == parts:
                         raise ConfigError('folder cache overlaps protected repository, worktree or state path')
         except (OSError, ValueError) as error:

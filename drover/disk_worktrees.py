@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 
 from . import ownership, placement, repos
-from .disk_paths import facts, item, result, safe_path, within, disposable_match
+from .disk_paths import facts, item, result, safe_path, within, disposable_match, repository_tree
 
 
 def git(repo, *args, env=None):
@@ -22,7 +22,7 @@ def entries(repo):
             if key:
                 row[key] = value
         if 'worktree' in row:
-            row['worktree'] = placement.canonical(row['worktree'])
+            row['worktree'] = placement.cleanup_path(row['worktree'])
             rows.append(row)
     return rows
 
@@ -112,11 +112,11 @@ def inspect(request, machine, entry):
     if task_facts(request, path, None)[0] or proof.busy(str(path)):
         row['reason_code'] = getattr(proof, 'reason', None) or 'busy'
         return row
-    if not path.exists():
-        row.update(action='candidate', reason_code='missing')
-        return row
     if not safe_path(path):
         row['reason_code'] = 'protected'
+        return row
+    if not path.exists():
+        row.update(action='candidate', reason_code='missing')
         return row
     tag = ownership.read(str(path))
     row.update(tag=tag, owner=tag['owner'] if tag else None)
@@ -177,7 +177,7 @@ def settled(request: dict) -> dict:
 
 
 def ignored_outside(path, ignored, declarations):
-    return [name for name in ignored if not safe_path(Path(name)) or
+    return [name for name in ignored if repository_tree(Path(name), boundary=path) or
             not disposable_match(Path(name).relative_to(path), declarations)]
 
 
@@ -238,6 +238,8 @@ def remove(request: dict, selected: dict) -> dict:
             git(machine['repo'], 'update-ref', rescue, row['head'], '')
             if git(machine['repo'], 'rev-parse', rescue).strip() != row['head']:
                 raise ValueError('rescue ref verification failed')
+        if not safe_path(path):
+            raise ValueError('worktree path became linked or protected')
         if row.get('side_lock'):
             git(machine['repo'], 'worktree', 'unlock', '--', path)
             unlocked = True
@@ -280,7 +282,7 @@ def identity(path):
 
 def quarantine(request, machine, row):
     from . import disk_state
-    key = repr((placement.path_parts(machine['repo']), placement.path_parts(row['path'])))
+    key = repr((placement.cleanup_parts(machine['repo']), placement.cleanup_parts(row['path'])))
     eligible = row['reason_code'] == 'orphan'
     if eligible:
         excluded = ignored_outside(Path(row['path']), row['ignored'],
@@ -355,11 +357,11 @@ def unlisted(request, machine, listed):
 
 def overlaps_worktrees(request, target, own):
     """Registrations protect descendants even when their pointer or folder is broken."""
-    target_parts = placement.path_parts(str(target))
-    own_parts = placement.path_parts(str(own))
+    target_parts = placement.cleanup_parts(str(target))
+    own_parts = placement.cleanup_parts(str(own))
     for machine in request['repos']:
         for entry in entries(machine['repo']):
-            other = placement.path_parts(entry['worktree'])
+            other = placement.cleanup_parts(entry['worktree'])
             if other != own_parts and (other[:len(target_parts)] == target_parts or
                                        target_parts[:len(other)] == other):
                 return True

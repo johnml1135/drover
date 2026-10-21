@@ -351,6 +351,8 @@ if IS_WINDOWS:
     _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _k32.CreateJobObjectW.restype = wintypes.HANDLE
     _k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    _k32.OpenJobObjectW.restype = wintypes.HANDLE
+    _k32.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     _k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
     _k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -1045,13 +1047,57 @@ class CleanupWorkerError(RuntimeError):
     termination_confirmed = False
 
 
+class _CleanupJob:
+    """Parent-held Windows job: retain ownership until active membership is zero."""
+
+    def __init__(self, token):
+        self.handle = _k32.CreateJobObjectW(None, 'DroverCleanup-' + token)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not _k32.SetInformationJobObject(self.handle, JOB_EXTENDED_LIMIT_CLASS,
+                                          ctypes.byref(info), ctypes.sizeof(info)):
+            error = ctypes.WinError(ctypes.get_last_error())
+            self.close()
+            raise error
+
+    def terminate(self):
+        if not _k32.TerminateJobObject(self.handle, 1):
+            raise ctypes.WinError(ctypes.get_last_error())
+        class Accounting(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_int64) for n in ('user', 'kernel', 'period_user', 'period_kernel')] + [
+                (n, wintypes.DWORD) for n in ('faults', 'total', 'active', 'terminated')]
+        deadline = time.monotonic() + 3
+        while True:
+            info = Accounting()
+            if not _k32.QueryInformationJobObject(self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not info.active:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            # Resolver: Windows completes termination of every job member.
+            time.sleep(.05)
+
+    def close(self):
+        _k32.CloseHandle(self.handle)
+
+
 def cleanup_worker(request):
     """Own the worker group/job before any stage can spawn children."""
     from . import disk_side, disk_state
     if IS_WINDOWS:
-        from types import SimpleNamespace
-        # The handle remains open until exit, so client loss kills the job's children.
-        job = WindowsTree._make_job(SimpleNamespace(_handle=-1))
+        # The caller holds this named job until every member has exited. Join before
+        # executing the stage, so no deletion subprocess can escape containment.
+        job = _k32.OpenJobObjectW(1, False, 'DroverCleanup-' + request['_worker_id'])
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not _k32.AssignProcessToJobObject(job, -1):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            _k32.CloseHandle(job)
     else:
         os.setsid()
     status = dict(pid=os.getpid(), runner_pid=os.getpid(), run_id=request['_worker_id'])
@@ -1110,17 +1156,24 @@ def cleanup_call(side: str, request: dict) -> dict:
     # Pin the application root independently of cwd or the hub's environment.
     code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
             'from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))')
+    job = _CleanupJob(token) if IS_WINDOWS and side == 'windows' else None
+    answer = None
     try:
         done = subprocess.run([*argv, '-c', code, root, token], input=json.dumps(request),
                               capture_output=True, text=True, timeout=600, shell=False,
                               env={**os.environ, 'DROVER_RUN_ID': token})
         if not done.returncode:
-            return json.loads(done.stdout)
+            answer = json.loads(done.stdout)
+            if not isinstance(answer, dict):
+                answer = None
+                raise ValueError('invalid cleanup worker result')
         reason, output, detail = 'worker_failed', done.stdout, done.stderr
     except subprocess.TimeoutExpired as error:
         reason, output, detail = 'worker_timeout', error.stdout, error.stderr
     except OSError as error:
-        return dict(items=[], errors=[dict(reason_code='worker_unavailable', error=str(error))], reclaimed_bytes=0)
+        reason, output, detail = 'worker_unavailable', '', str(error)
+    except ValueError as error:
+        reason, output, detail = 'worker_failed', done.stdout, str(error)
     def text(value):
         return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
     evidence = dict(reason_code=reason, output=text(output)[-4000:], error=text(detail)[-4000:])
@@ -1129,15 +1182,17 @@ def cleanup_call(side: str, request: dict) -> dict:
         if not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
                 status.get('run_id') != token:
             raise ValueError('worker identity unavailable')
-        if IS_WINDOWS and side == 'windows':
-            for pid, args, *_ in process_cmdlines():
-                if pid == status['pid'] and token in args:
-                    subprocess.run(['taskkill.exe', '/PID', str(pid), '/T', '/F'],
-                                   capture_output=True, timeout=30, **NO_WINDOW)
-                    break
-        confirmed = recover_ci_children(side, status, str(Path(__file__).resolve().parents[1]))
+        confirmed = job.terminate() if job else recover_ci_children(
+            side, status, str(Path(__file__).resolve().parents[1]))
     except (OSError, ValueError, KeyError, TypeError, ScanError, subprocess.SubprocessError):
         confirmed = False
+    finally:
+        if job:
+            job.close()
+    if confirmed and answer is not None:
+        return answer
+    if answer is not None:
+        evidence['reason_code'] = 'worker_termination_unconfirmed'
     evidence['termination_confirmed'] = confirmed
     try:
         disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
@@ -1152,6 +1207,18 @@ def cleanup_side():
     return 'windows' if IS_WINDOWS else 'wsl'
 
 
+def cleanup_path(path):
+    """Administrative spelling only: preserve links and even link/.. components."""
+    return str(path) if routes_through_wsl(path) else str(Path(native(path)).absolute())
+
+
+def cleanup_parts(path):
+    # Compare lexical containment without following registered links. Keep the raw
+    # administrative path separately so safe_path still sees every link component.
+    path = Path(os.path.normpath(cleanup_path(path)))
+    return tuple(p.casefold() for p in path.parts) if IS_WINDOWS or drive(path) else path.parts
+
+
 def cleanup_link(path):
     """Symlinks, Windows junctions and reparse points never authorize traversal."""
     import stat
@@ -1163,7 +1230,13 @@ def cleanup_scope(request):
     """Keep only this physical drive; path spelling/translation lives here."""
     import copy
     scoped = copy.deepcopy(request)
+    scoped['scope_errors'] = []
+    if physical_disk_path(request['drive']['path']) is None:
+        scoped['scope_errors'].append(dict(path=request['drive']['path'], reason_code='physical_disk_unknown'))
     def belongs(path):
+        if physical_disk_path(path) is None or physical_disk_path(request['drive']['path']) is None:
+            scoped['scope_errors'].append(dict(path=str(path), reason_code='physical_disk_unknown'))
+            return False
         return cleanup_contains(request, path)
     # Repositories may have worktrees on another drive. Stages scope every candidate,
     # rather than dropping the repository that owns that drive's registrations.
@@ -1190,10 +1263,10 @@ def cleanup_contains(request, path):
     host = physical_disk_path(path)
     drive_host = physical_disk_path(declared) if declared is not None else None
     if host is not None and drive_host is not None:
-        return str(host).casefold() == str(drive_host).casefold()
-    # A parent may provide an exact native scope (also used by hermetic workers).
-    # A known different physical mapping always wins over lexical containment.
-    return bool(declared and Path(path).is_absolute() and Path(path).is_relative_to(Path(declared)))
+        if drive(host) and drive(drive_host):
+            return drive(host) == drive(drive_host)
+        return str(host) == str(drive_host)
+    return False
 
 
 def disk_toast(notice: dict) -> None:

@@ -1,5 +1,7 @@
 """Safety regressions through Placement and the cleanup public interfaces."""
 import json
+import os
+from types import SimpleNamespace
 import subprocess
 import sys
 from unittest.mock import patch
@@ -18,9 +20,14 @@ class PlacementSafety(DiskCase):
         observed = []
         def execute(argv, **kwargs):
             observed.append(json.loads(kwargs['input']))
+            from drover.disk_state import save_file
+            payload = observed[-1]
+            save_file(self.state, 'worker-' + payload['_worker_id'] + '.json', dict(
+                pid=123456789, run_id=payload['_worker_id']))
             return subprocess.CompletedProcess(argv, 0, json.dumps(empty_result()), '')
         with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=execute):
-            placement.cleanup_call('wsl', self.request())
+            with patch.object(placement, 'recover_ci_children', return_value=True):
+                placement.cleanup_call('wsl', self.request())
         self.assertEqual(observed[0]['paths']['temp_roots'], ['/home/user/temp'])
 
     def test_empty_temp_policy_stays_empty(self):
@@ -71,7 +78,9 @@ class PlacementSafety(DiskCase):
         with patch.object(subprocess, 'run', side_effect=timeout), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch.object(placement, 'process_cmdlines', return_value=[]), \
-                patch.object(placement, 'recover_ci_children', side_effect=confirm):
+                patch.object(placement, 'recover_ci_children', side_effect=confirm), \
+                patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
+                    terminate=confirm, close=lambda: None)):
             result = disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
                 rt.now, rt.read, placement.cleanup_call, rt.toast))
         self.assertTrue(confirmed)
@@ -104,7 +113,8 @@ class PlacementSafety(DiskCase):
             if 'cleanup_worker' in ' '.join(map(str, argv)):
                 kwargs['timeout'] = 3 if self.side == 'windows' else 1
             return execute(argv, **kwargs)
-        with patch.object(subprocess, 'run', side_effect=bounded):
+        with patch.object(subprocess, 'run', side_effect=bounded), \
+                patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
             result = placement.cleanup_call(self.side, request)
         self.assertEqual(result['errors'][0]['reason_code'], 'worker_timeout')
         self.assertTrue(result['errors'][0]['termination_confirmed'])
@@ -128,6 +138,8 @@ class PlacementSafety(DiskCase):
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch.object(placement, 'process_cmdlines', return_value=[]), \
                 patch.object(placement, 'recover_ci_children', side_effect=placement.ScanError('scan unavailable')), \
+                patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
+                    terminate=lambda: False, close=lambda: None)), \
                 patch.object(disk_state, 'save_file', side_effect=no_evidence):
             with self.assertRaises(placement.CleanupWorkerError):
                 disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
