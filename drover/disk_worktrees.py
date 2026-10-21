@@ -33,8 +33,14 @@ def registration_identity(entry):
             for key, value in entry.items()}
 
 
-def outputs_at(machine, head, path):
-    return repos.cleanup_config(repos.load(machine, revision=head, checkout=str(path)))['disposable']
+def outputs_at(machine, path):
+    """Only the committed default branch may authorize disposal, on every branch."""
+    branch = machine.get('default_branch', 'main')
+    if not isinstance(branch, str) or not branch.strip():
+        raise ValueError('default_branch must be a non-empty git branch name')
+    revision = 'refs/heads/' + branch.removeprefix('refs/heads/')
+    committed = repos.load(machine, revision=revision, checkout=str(path))
+    return repos.cleanup_config(committed)['disposable'] if committed['_adopted'] else []
 
 
 def status(path, *, expand=True):
@@ -233,7 +239,7 @@ def remove(request: dict, selected: dict) -> dict:
         if overlaps_worktrees(request, path, path):
             return dict(current, action='keep', reason_code='nested_worktree')
         if current['reason_code'] != 'missing':
-            excluded = ignored_outside(path, current['ignored'], outputs_at(machine, current['head'], machine['repo'] if row.get('unlisted') else path))
+            excluded = ignored_outside(path, current['ignored'], outputs_at(machine, machine['repo'] if row.get('unlisted') else path))
             if excluded:
                 return dict(current, action='keep', reason_code='ignored_content', excluded=excluded)
         rescue = 'refs/drover/disk-rescue/' + uuid.uuid4().hex if not row.get('branch') else None
@@ -305,7 +311,7 @@ def quarantine(request, machine, row):
     eligible = row['reason_code'] == 'orphan'
     if eligible:
         excluded = ignored_outside(Path(row['path']), row['ignored'],
-                                   outputs_at(machine, row['head'], machine['repo'] if row.get('unlisted') else row['path']))
+                                   outputs_at(machine, machine['repo'] if row.get('unlisted') else row['path']))
         if excluded:
             row.update(reason_code='ignored_content', excluded=excluded)
             eligible = False

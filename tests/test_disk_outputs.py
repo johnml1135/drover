@@ -100,7 +100,7 @@ class Outputs(WorktreeCase):
         self.assertIn(str(inner), self.registrations())
         self.assertIn('locked ' + self.other_side, self.registrations())
 
-    def test_changed_branch_output_scope_requires_another_report(self):
+    def test_changed_default_branch_output_scope_requires_another_report(self):
         from drover import config
         wt = self.worktree('changed output scope')
         self.r.commit('unmerged.txt', cwd=wt)
@@ -109,7 +109,7 @@ class Outputs(WorktreeCase):
         data.write_text('not in original report')
         self.cleanup()
         self.r.commit('.drover/config.toml', config.dumps({
-            'schema_version': 1, 'cleanup': {'disposable': ['data']}}), cwd=wt)
+            'schema_version': 1, 'cleanup': {'disposable': ['data']}}))
         with self.assertRaisesRegex(ValueError, 'dry report'):
             self.cleanup(apply=True)
         self.assertEqual(data.read_text(), 'not in original report')
@@ -121,7 +121,7 @@ class Outputs(WorktreeCase):
         from drover import config
         wt = self.worktree('disposable pressure')
         self.r.commit('.drover/config.toml', config.dumps({
-            'schema_version': 1, 'cleanup': {'disposable': ['**/obj', '*.log']}}), cwd=wt)
+            'schema_version': 1, 'cleanup': {'disposable': ['**/obj', '*.log']}}))
         source = wt / 'source.txt'
         self.r.commit('source.txt', 'committed', cwd=wt)
         source.write_text('owner edit')

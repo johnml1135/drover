@@ -127,8 +127,13 @@ folder cleanup removes least recently used files first and stops at warn. Reposi
 
 Committed `.drover/config.toml` may declare `[cleanup] disposable = []`:
 relative literal paths or globs such as `*.log` and `**/obj`, without dot
-segments, absolute paths or `.git`. Machine files cannot override this policy
-after adoption. Stage 5 removes only matching ignored/untracked files. At warn
+segments, absolute paths or `.git`. Cleanup reads these declarations from the
+committed local default branch configured by the machine's `default_branch`
+(`refs/heads/<branch>`, as in `migrate-machine`), including for older worktrees.
+Worktree branches and machine files cannot widen the declarations. If the default
+branch cannot be resolved or read, cleanup retains the affected content and
+reports the unavailable evidence. Stage 5 removes only matching ignored/untracked
+files, checking tracked files against each worktree's own index. At warn
 or queue, a worktree must have no process using it and be idle at least three
 days; at hold or critical, any age qualifies. Dirty worktrees may qualify;
 tracked files, source edits, protected paths and linked targets are retained.

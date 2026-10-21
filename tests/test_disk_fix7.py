@@ -353,7 +353,7 @@ class MachineTransport(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         transported = json.loads(json.dumps(loaded))[0]
         self.assertFalse(any(k.startswith('_') for k in transported))
-        self.assertEqual(outputs_at(transported, head, fixture.repo), ['out'])
+        self.assertEqual(outputs_at(transported, fixture.repo), ['out'])
         self.assertEqual(path.read_text(), config.dumps(machine))
         with self.assertRaises(repos.RepoError):
             repos.load(json.loads(json.dumps(repos.load(machine))))

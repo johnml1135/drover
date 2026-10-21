@@ -303,7 +303,7 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < 3 * 86400:
         raise ValueError('worktree idle less than three days')
     head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
-    return path, head, ownership.read(str(path)), outputs_at(machine, head, path)
+    return path, head, ownership.read(str(path)), outputs_at(machine, path)
 
 
 def outputs(request: dict) -> dict:

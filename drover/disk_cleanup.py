@@ -35,15 +35,13 @@ def _repos(cfg, errors=None):
 
 def scope_key(cfg):
     """A report authorizes this machine and these exact configured scopes only."""
-    from .disk_worktrees import entries, outputs_at
+    from .disk_worktrees import outputs_at
     machines = _repos(cfg)
     policies = {}
     for machine in machines:
         values = set()
         try:
-            for entry in entries(machine['repo']):
-                if entry.get('HEAD'):
-                    values.add(tuple(outputs_at(machine, entry['HEAD'], machine['repo'])))
+            values.add(tuple(outputs_at(machine, machine['repo'])))
         except (OSError, ValueError):
             values.add(('<unavailable>',))
         policies[machine['name']] = sorted(values)

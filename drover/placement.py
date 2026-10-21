@@ -458,6 +458,40 @@ def _proc_cmdlines_linux():
 
 
 def _split_windows_cmdline(line):
+    if sys.platform != 'win32':
+        # CommandLineToArgvW quoting for Windows evidence inspected from WSL.
+        # Apostrophes are ordinary characters; only backslashes before a double
+        # quote are escapes. Native Windows uses the OS parser below.
+        args, token, quoted, index = [], [], False, 0
+        if line[:1] in (' ', '\t'):
+            args.append('')
+        while index < len(line):
+            if line[index] in ' \t' and not quoted:
+                index += 1
+                continue
+            token = []
+            while index < len(line) and (quoted or line[index] not in ' \t'):
+                slashes = 0
+                while index < len(line) and line[index] == '\\':
+                    slashes += 1
+                    index += 1
+                if index < len(line) and line[index] == '"':
+                    token.extend('\\' * (slashes // 2))
+                    if slashes % 2:
+                        token.append('"')
+                    elif quoted and line[index:index + 2] == '""':
+                        token.append('"')
+                        index += 1
+                    else:
+                        quoted = not quoted
+                else:
+                    token.extend('\\' * slashes)
+                    if index == len(line) or (not quoted and line[index] in ' \t'):
+                        break
+                    token.append(line[index])
+                index += 1
+            args.append(''.join(token))
+        return args
     n = ctypes.c_int()
     shell32 = ctypes.WinDLL("shell32")
     shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
@@ -795,6 +829,37 @@ def linux_mount(path):
         return None
 
 
+def _ordinal_char(char):
+    """NTFS-style fold: BMP only, 1:1, and never a non-ASCII character onto ASCII."""
+    upper = char.upper()
+    if len(upper) != 1 or ord(char) > 0xFFFF or ord(upper) > 0xFFFF or (ord(char) > 0x7F and ord(upper) < 0x80):
+        return char
+    return upper
+
+
+def _ordinal_case(text):
+    """Windows character case mapping without Unicode multi-character expansion."""
+    return ''.join(map(_ordinal_char, text))
+
+
+def windows_fold_uncertain(text):
+    """True if Python's case rules differ from ours for a character NTFS may or may not fold.
+
+    Fail-closed direction: identity is used for the "is this worktree in use / registered"
+    evidence.  Over-folding would only make distinct paths look equal (retain); UNDER-folding
+    could make a registered or busy worktree look unrelated, i.e. deletable.  We under-fold
+    exactly these characters (non-ASCII mapping to ASCII such as dotless i, long s, Kelvin
+    sign, and astral letters), so a path containing one yields unknown evidence -> retain.
+    Plain multi-character expansions (sharp s, ligatures) are left alone: NTFS never folds them.
+    """
+    for char in text:
+        upper = char.upper()
+        if upper != char and _ordinal_char(char) == char and (
+                len(upper) == 1 or ord(char) > 0xFFFF):
+            return True
+    return False
+
+
 def cleanup_normalize(path, windows=None):
     """Canonical safety identity for either placement; keep raw paths for link checks."""
     import ntpath
@@ -807,7 +872,7 @@ def cleanup_normalize(path, windows=None):
             text = '\\\\' + text[8:]
         elif text.startswith('\\\\?\\'):
             text = text[4:]
-        return ntpath.normpath(text).replace('\\', '/').rstrip('/').casefold()
+        return _ordinal_case(ntpath.normpath(text).replace('\\', '/').rstrip('/'))
     import posixpath
     # Only the owning Linux worker can resolve Linux links; the Windows
     # coordinator preserves their case and leaves link validation to that worker.
@@ -1053,7 +1118,7 @@ class _CleanupProcesses:
         self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
         self.windows = IS_WINDOWS if windows is None else windows
         self.ignored = (request or {}).get('paths', {}).get('process_ignore', default_process_ignore())
-        self.ignored = {name.casefold() if self.windows else name for name in self.ignored}
+        self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
         self.query_failure = None
         self.request = request or {}
         if self.windows:
@@ -1091,7 +1156,8 @@ class _CleanupProcesses:
                             after = {}
                             self.query_failure = dict(reason_code='process_visibility_unavailable', error=str(error))
                         fresh = {pid: row for pid, row in fresh.items()
-                                 if pid in refresh and after.get(pid) == current.get(pid)}
+                                 if pid in refresh and current[pid][1]
+                                 and after.get(pid) == current[pid]}
                         rows.extend(fresh.values())
                         for pid in refresh:
                             if pid not in fresh:
@@ -1156,7 +1222,7 @@ class _CleanupProcesses:
         if own_cwd:
             cwd, same_user = cwd or own_cwd, True
         image = re.split(r'[/\\]', name or '')[-1]
-        image = image.casefold() if self.windows else image
+        image = _ordinal_case(image) if self.windows else image
         ignored = image in self.ignored and _process_os_location(exe, self.windows)
         foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
         if ignored and (same_user is None or not cwd):
@@ -1203,6 +1269,8 @@ class _CleanupProcesses:
     def busy(self, worktree):
         if self.unknown:
             return True
+        if self.windows and windows_fold_uncertain(str(worktree)):
+            return True  # identity cannot be proven; unknown evidence retains
         worktree = cleanup_normalize(worktree, self.windows)
         def names(path):
             value = cleanup_normalize(path, self.windows)
@@ -1212,8 +1280,13 @@ class _CleanupProcesses:
                 return True
             # Preserve quoted paths with spaces and option=value paths. Every path
             # goes through the same identity normalization as cwd and executable.
-            tokens = cmd if isinstance(cmd, list) else [next(value for value in match.groups() if value is not None)
-                for match in re.finditer(r"\"([^\"]*)\"|'([^']*)'|([^\s\"']+)", cmd or '')]
+            if isinstance(cmd, list):
+                tokens = cmd
+            elif self.windows:
+                tokens = _split_windows_cmdline(cmd) if cmd else []
+            else:
+                tokens = [next(value for value in match.groups() if value is not None)
+                          for match in re.finditer(r"\"([^\"]*)\"|'([^']*)'|([^\s\"']+)", cmd or '')]
             for token in tokens:
                 for value in (token, token.partition('=')[2]):
                     if value and (drive(value) or value.startswith(('/', '\\\\'))) and names(value):
