@@ -125,6 +125,62 @@ class Startup(DiskCase):
             other.wait()
             sys.argv = saved
 
+    @unittest.skipIf(os.name == 'nt', 'reads /proc')
+    def test_startup_proof_walks_ancestry_when_environ_is_unreadable(self):
+        token = 'tok-' + os.urandom(4).hex()
+        real_bytes, real_text, real_iterdir = Path.read_bytes, Path.read_text, Path.iterdir
+
+        def proof(only_pid, stat_error_pid=None):
+            def read_bytes(path):
+                if path.name == 'environ':
+                    raise PermissionError(errno.EACCES, 'denied')
+                return real_bytes(path)
+            def read_text(path, *a, **k):
+                if path.name == 'stat' and path.parent.name == str(stat_error_pid):
+                    raise OSError(errno.EIO, 'unknown')
+                return real_text(path, *a, **k)
+            def iterdir(path):  # scan only the process under test, so only the ancestry walk can reach its parent
+                return iter([Path('/proc') / str(only_pid)]) if str(path) == '/proc' else real_iterdir(path)
+            saved = sys.argv
+            sys.argv = ['proof', token]
+            try:
+                with patch.object(Path, 'read_bytes', read_bytes), patch.object(Path, 'read_text', read_text), \
+                        patch.object(Path, 'iterdir', iterdir):
+                    exec(placement._CLEANUP_STARTUP_PROOF, {'__name__': 'proof'})
+            except SystemExit as stop:
+                return stop.code
+            finally:
+                sys.argv = saved
+            return 0
+
+        # The parent carries the token in argv; its child (no token, unreadable environ) was started by Drover.
+        def family(*extra):
+            parent = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys, time\n'
+                                       'c = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])\n'
+                                       'print(c.pid, flush=True); time.sleep(30)', *extra], stdout=subprocess.PIPE, text=True)
+            return parent, int(parent.stdout.readline())
+        parent, child_pid = family(token)
+        try:
+            self.assertEqual(proof(child_pid), 1)
+        finally:
+            parent.kill()
+            parent.wait()
+        # A token-less parent whose stat cannot be read leaves the chain unknown: fail closed.
+        parent, child_pid = family()
+        try:
+            self.assertEqual(proof(child_pid), 0)
+            self.assertEqual(proof(child_pid, stat_error_pid=parent.pid), 2)
+        finally:
+            parent.kill()
+            parent.wait()
+        # No Drover ancestor anywhere: skipped.
+        lone = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            self.assertEqual(proof(lone.pid), 0)
+        finally:
+            lone.kill()
+            lone.wait()
+
     def test_remote_startup_requires_wsl_process_absence_before_unlock(self):
         self.cfg['paths']['wsl_distro'] = 'Fixture'
         for absent in (False, True):

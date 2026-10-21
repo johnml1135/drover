@@ -1539,13 +1539,34 @@ def cleanup_worker(request):
 _CLEANUP_STARTUP_PROOF = r'''import os, sys
 from pathlib import Path
 token = sys.argv[1].encode()
+me = os.getpid()
+def marked(pid):
+    # True when this process carries the token in argv or the marker in a readable environ.
+    base = Path('/proc') / str(pid)
+    if token in (base / 'cmdline').read_bytes().split(b'\0'):
+        return True
+    try:
+        return b'DROVER_RUN_ID=' + token in (base / 'environ').read_bytes().split(b'\0')
+    except PermissionError:
+        return False
+def started_by_drover(stat_text):
+    # Walk ppid to init (bounded); an unreadable or vanished link is unknown and fails closed (OSError).
+    ppid = int(stat_text.rsplit(')', 1)[1].split()[1])
+    for _ in range(64):
+        if ppid <= 1:
+            return False
+        if ppid != me and marked(ppid):
+            return True
+        ppid = int((Path('/proc') / str(ppid) / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+    return False
 for entry in Path('/proc').iterdir():
     if not entry.name.isdigit() or int(entry.name) == os.getpid():
         continue
     try:
         if entry.stat().st_uid != os.getuid():
             continue
-        if (entry / 'stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z':
+        stat_text = (entry / 'stat').read_text()
+        if stat_text.rsplit(')', 1)[1].split()[0] == 'Z':
             continue
         if token in (entry / 'cmdline').read_bytes().split(b'\0'):
             sys.exit(1)
@@ -1553,7 +1574,9 @@ for entry in Path('/proc').iterdir():
             if b'DROVER_RUN_ID=' + token in (entry / 'environ').read_bytes().split(b'\0'):
                 sys.exit(1)
         except PermissionError:
-            continue  # unreadable environ and no token in argv: not Drover's own
+            # Unreadable environ and no token in argv: Drover's own only if a Drover process started it.
+            if started_by_drover(stat_text):
+                sys.exit(1)
     except FileNotFoundError:
         continue
     except OSError:
