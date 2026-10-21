@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import brief, config, contract, launch, pipeline, repos
-from drover.ledger import connect, db, ops
+from drover.ledger import connect, db, ops, states
 from drover.port import DirectPort
 from tests.test_waiting import LedgerCase, logical, require
 from tests.test_pipeline import Base as PipelineBase, result
@@ -615,6 +615,105 @@ class PlannerSplitBounds(LedgerCase):
             w.finish_replan(request['id'], started['run_id'], contract.DONE, record, snapshot=self.inputs())
             self.assertEqual({t['id'] for t in ops.list_tasks(self.conn)}, before)
             self.assertNotEqual(self.status(tid), 'cancelled')
+
+
+class SingletonCharacterization(LedgerCase):
+    """Freeze request semantics before replacing the singleton execution path."""
+    inputs = Replans.inputs
+    request = Replans.request
+    start = Replans.start
+
+    def test_three_actions_preserve_approval_and_authority(self):
+        for record, expected in ((REVISE, states.READY), (SPLIT, states.CANCELLED),
+                                 (OWNER, states.NEEDS_OWNER)):
+            with self.subTest(action=record['action']):
+                w, tid, request = self.request()
+                approved = ops.get_task(self.conn, tid)['approved_at']
+                started = self.start(w, request)
+                out = w.finish_replan(request['id'], started['run_id'], contract.DONE,
+                                      record, snapshot=self.inputs(), now=1001)
+                self.assertEqual(self.status(tid), expected)
+                self.assertEqual(ops.get_task(self.conn, tid)['approved_at'], approved)
+                self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 1)
+                if record['action'] == 'split':
+                    self.assertEqual(len(out['children']), 2)
+                    for child in out['children']:
+                        self.assertEqual(self.status(child), states.PROPOSED)
+                        self.assertIsNone(ops.get_task(self.conn, child)['approved_at'])
+                elif record['action'] == 'revise':
+                    self.assertEqual(ops.get_task(self.conn, tid)['goal'], REVISE['goal'])
+                else:
+                    question, = [q for q in ops.open_questions(self.conn) if q['target_id'] == tid]
+                    self.assertEqual(question['title'], OWNER['question'])
+
+    def test_malformed_output_is_charged_and_limit_requires_owner(self):
+        w, tid, request = self.request()
+        ops.set_setting(self.conn, 'replan_limit', '1')
+        self.assertIsNone(contract.parse_replan_record('{"action":"revise"'))
+        started = self.start(w, request)
+        w.finish_replan(request['id'], started['run_id'], contract.NO_RECORD,
+                        snapshot=self.inputs(), now=1001)
+        self.assertEqual(ops.get_task(self.conn, tid)['goal'], 'Original')
+        self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 1)
+        self.assertIsNone(w.start_replan(request['id'], ROUTE, self.inputs(), now=1002))
+        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
+        question, = ops.open_questions(self.conn)
+        ops.answer_question(self.conn, question['id'], text='Try the supported interface')
+        self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 0)
+
+    def test_neutral_backoff_is_released_only_by_its_deadline(self):
+        w, tid, request = self.request()
+        for now, outcome, deadline in ((1000, contract.PROVIDER_ERROR, 1060),
+                                       (1060, contract.LAUNCH_ERROR, 1180),
+                                       (1180, contract.ORPHANED, 1420)):
+            started = self.start(w, request, now)
+            w.finish_replan(request['id'], started['run_id'], outcome,
+                            snapshot=self.inputs(), now=now)
+            self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 0)
+            self.assertEqual([r['timeout_at'] for r in w.pending(('task', tid))
+                              if r['kind'] == 'deadline'], [deadline])
+            w.expire(deadline - 1)
+            self.assertIsNone(w.start_replan(request['id'], ROUTE, self.inputs(), now=deadline - 1))
+            w.expire(deadline)
+            self.assertFalse(any(r['kind'] == 'deadline' for r in w.pending(('task', tid))))
+
+    def test_changed_snapshot_never_applies_late_revision(self):
+        for field, value in (('head', 'c' * 40), ('branch', 'refs/heads/other'),
+                             ('dirty_digest', 'd' * 64), ('read_checkouts', [
+                                 {'entry': {'repo': 'p'}, 'path': self.tmp.name, 'sha': 'e' * 40}])):
+            with self.subTest(field=field):
+                w, tid, request = self.request()
+                started = self.start(w, request)
+                w.finish_replan(request['id'], started['run_id'], contract.DONE, REVISE,
+                                snapshot={**self.inputs(), field: value}, now=1001)
+                self.assertEqual(ops.get_task(self.conn, tid)['goal'], 'Original')
+                self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 0)
+                self.assertEqual(ops.list_runs(self.conn, tid)[0]['outcome'], contract.UNVERIFIED)
+
+    def test_cancelled_request_reaps_without_revision(self):
+        w, tid, request = self.request()
+        started = self.start(w, request)
+        ops.set_status(self.conn, tid, states.CANCELLED, actor='owner')
+        w.finish_replan(request['id'], started['run_id'], contract.DONE, REVISE,
+                        snapshot=self.inputs(), now=1001)
+        self.assertEqual(self.status(tid), states.CANCELLED)
+        self.assertEqual(ops.get_task(self.conn, tid)['goal'], 'Original')
+        self.assertIsNotNone(ops.list_runs(self.conn, tid)[0]['ended'])
+        self.assertEqual(w.pending(('task', tid)), [])
+
+    def test_replay_preserves_children_events_counters_and_usage(self):
+        w, tid, request = self.request()
+        started = self.start(w, request)
+        usage = dict(tokens_in=101, tokens_out=37, tokens_cached=11)
+        first = w.finish_replan(request['id'], started['run_id'], contract.DONE, SPLIT,
+                                usage, snapshot=self.inputs(), now=1001)
+        before = logical(self.conn)
+        second = w.finish_replan(request['id'], started['run_id'], contract.DONE, SPLIT,
+                                 usage, snapshot=self.inputs(), now=1002)
+        self.assertEqual(second, first)
+        self.assertEqual(logical(self.conn), before)
+        run, = ops.list_runs(self.conn, tid)
+        self.assertEqual((run['tokens_in'], run['tokens_out'], run['tokens_cached']), (101, 37, 11))
 
 class PlannerPredecessors(PlannerDispatchCase):
     def test_worker_error_during_request_is_superseded_without_retry(self):
