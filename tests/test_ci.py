@@ -1,4 +1,7 @@
-"""CI's public interface, using repo scripts and the real composed runner command."""
+"""CI's public interface, using repo scripts and the real composed runner command.
+
+Tests that start the real runner are in the integration tier (tests/tiers.py); InProcessCITests runs the ones whose
+assertions do not depend on the runner on the in-process launcher so the default tier still exercises CI.run."""
 import json
 import os
 import shutil
@@ -6,13 +9,16 @@ import sqlite3
 from pathlib import Path
 import subprocess
 import sys
+import inspect
 import time
 import unittest
 from unittest.mock import patch
 
 from drover import ci, config, repos, runner
 from drover.ledger import db, ci as slots
+from tests.fakeci import InProcessLauncher
 from tests.gitfix import Repo
+from tests.tiers import integration
 
 PLATFORM = 'windows' if os.name == 'nt' else 'wsl'
 
@@ -39,6 +45,7 @@ class CITests(unittest.TestCase):
         self.repo.git('checkout', '-b', 'topic')
         return repos.load(self.machine)
 
+    @integration
     def test_composed_wsl_command_runs_a_tiny_unittest_project_verbatim(self):
         exe = sys.executable.replace("'", "''")
         self.repo.commit('.drover/scripts/check action.ps1',
@@ -66,6 +73,7 @@ class CITests(unittest.TestCase):
         self.assertEqual((status['state'], status['exit_code']), ('exited', 0))
         self.assertIn('heartbeat', status)
 
+    @integration
     def test_exit_code_and_clean_tree_determine_the_result(self):
         prog = self.configure('print("PASSED summary"); raise SystemExit(7)')
         commit = self.repo.commit('source.txt', 'changed')
@@ -77,6 +85,7 @@ class CITests(unittest.TestCase):
         result = self.service.run(prog, self.repo.repo, commit)
         self.assertEqual((result['exit_code'], result['tree_unchanged'], result['passed']), (0, False, False))
 
+    @integration
     def test_a_passing_result_does_not_authorize_cancelled_execution(self):
         from drover.launch import RunnerLauncher
         class CancelledAfterResult(RunnerLauncher):
@@ -95,6 +104,7 @@ class CITests(unittest.TestCase):
                 with self.assertRaises(ci.CIError):
                     service.run(prog, self.repo.repo, commit)
 
+    @integration
     def test_docs_classification_is_shared_by_checks_and_full_ci(self):
         prog = self.configure('raise SystemExit(7)', docs=True)
         commit = self.repo.commit('docs/readme.md', 'documentation\n')
@@ -149,6 +159,7 @@ class CITests(unittest.TestCase):
         context = self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-remove')
         self.assertEqual(context['kind'], 'checks')
 
+    @integration
     def test_docs_markdown_hard_breaks_pass_the_composed_command(self):
         prog = self.configure('raise SystemExit(99)', docs=True)
         commit = self.repo.commit('docs/readme.md', 'line with hard break  \nnext line\n')
@@ -156,6 +167,7 @@ class CITests(unittest.TestCase):
         self.assertTrue(result['passed'])
         self.assertEqual(result['kind'], 'docs')
 
+    @integration
     def test_heartbeat_failure_keeps_the_live_runner_for_adoption(self):
         from drover.launch import RunnerLauncher
         count, release = self.repo.root / 'count', self.repo.root / 'release'
@@ -197,6 +209,7 @@ class CITests(unittest.TestCase):
         self.assertEqual(slots.lease_queue(conn), [])
         self.assertFalse(list(self.runs.glob('ci-*.json')))
 
+    @integration
     def test_dead_runner_is_finalized_on_resume_and_retry_finishes(self):
         from drover.launch import RunnerLauncher
         count, pulse = self.repo.root / 'count', self.repo.root / 'pulse'
@@ -250,6 +263,7 @@ class CITests(unittest.TestCase):
         self.assertEqual(count.read_text(), '2')
         self.assertEqual(slots.lease_queue(conn), [])
 
+    @integration
     def test_docs_script_cannot_bypass_diff_check(self):
         self.configure('raise SystemExit(99)', docs=True)
         self.repo.commit('.drover/scripts/docs.ps1', 'Write-Output "docs script ran"\nexit 0\n')
@@ -268,6 +282,7 @@ class CITests(unittest.TestCase):
                     self.assertNotIn('docs script ran', result['log_tail'])
 
     @unittest.skipIf(os.name == 'nt', 'Linux resource scope')
+    @integration
     def test_priority_controls_surround_the_verbatim_script_in_the_runner(self):
         # A machine executable stand-in lets the composed command run even where
         # the sandbox cannot access the systemd user bus. It execs the real script.
@@ -326,6 +341,7 @@ class CITests(unittest.TestCase):
         self.assertIn('unwrapped', result['log_tail'])
         self.assertFalse(calls.exists())
 
+    @integration
     def test_wall_timeout_stops_a_script_that_keeps_printing(self):
         self.configure('import time; exec("while True: print(1,flush=True); time.sleep(.05)")')
         self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False, 'timeout_s': 1}))
@@ -339,6 +355,7 @@ class CITests(unittest.TestCase):
         self.assertEqual(slots.lease_queue(conn), [])
 
     @unittest.skipIf(os.name == 'nt', 'both composed entrypoints execute locally on WSL')
+    @integration
     def test_full_ci_requires_each_platform_and_stops_at_first_failure(self):
         from drover.launch import RunnerLauncher
         prog = self.configure('import os; print("placement:"+os.environ["FIXTURE_PLACEMENT"]); '
@@ -363,6 +380,7 @@ class CITests(unittest.TestCase):
                 self.assertEqual(result['passed'], all(code == 0 for code in outcomes.values()))
                 self.assertEqual(result['platform'], 'windows+wsl' if result['passed'] else expected[-1])
 
+    @integration
     def test_dirty_tree_is_refused_and_releases_its_ci_runner(self):
         prog = self.configure('raise AssertionError("must not execute")')
         commit = self.repo.commit('source.txt', 'changed')
@@ -373,6 +391,7 @@ class CITests(unittest.TestCase):
             self.service.run(prog, self.repo.repo, commit, conn=conn)
         self.assertEqual(slots.lease_queue(conn), [])
 
+    @integration
     def test_silent_script_times_out_and_releases_its_ci_runner(self):
         prog = self.configure('import time; time.sleep(60)')
         self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False, 'idle_s': .4}))
@@ -385,6 +404,7 @@ class CITests(unittest.TestCase):
             self.service.run(prog, self.repo.repo, commit, conn=conn)
         self.assertEqual(slots.lease_queue(conn), [])
 
+    @integration
     def test_new_hub_adopts_full_ci_without_starting_the_script_twice(self):
         count, release = self.repo.root / 'count', self.repo.root / 'release'
         code = ('import os,pathlib,time; p=pathlib.Path(os.environ["COUNT_FILE"]); '
@@ -416,3 +436,20 @@ class CITests(unittest.TestCase):
         self.assertEqual(count.read_text(), 'start\n')
         self.assertEqual(json.loads(status_file.read_text())['runner_pid'], original['runner_pid'])
         self.assertFalse(list(self.runs.glob('ci-*.json')))
+
+
+class InProcessCITests(CITests):
+    """The CITests whose assertions only need the gate's verdict, run with the gate executed in-process."""
+    FAST = ('test_exit_code_and_clean_tree_determine_the_result', 'test_docs_classification_is_shared_by_checks_and_full_ci',
+            'test_docs_markdown_hard_breaks_pass_the_composed_command', 'test_docs_script_cannot_bypass_diff_check',
+            'test_dirty_tree_is_refused_and_releases_its_ci_runner')
+
+    def setUp(self):
+        super().setUp()
+        self.service = ci.CI(self.runs, InProcessLauncher(self.runs))
+
+
+for _name in dir(CITests):
+    if _name.startswith('test'):
+        setattr(InProcessCITests, _name,
+                inspect.unwrap(getattr(CITests, _name)) if _name in InProcessCITests.FAST else None)
