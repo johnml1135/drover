@@ -924,3 +924,12 @@ def worktree_metadata(worktree: str, filename: str, content: str | None = None) 
         if content is not None:
             raise
         return None
+
+
+def default_disk_trackers() -> list[dict]:
+    """Physical disks for a Windows host (including WSL), or the Linux root."""
+    paths = [("h", "H:/"), ("c", "C:/")] if IS_WINDOWS or os.environ.get("WSL_DISTRO_NAME") else [("root", "/")]
+    keys = ("warn_gb", "queue_gb", "hold_gb", "critical_gb")
+    return [{"kind": "disk", "name": name, "enabled": True, "path": path,
+             **dict(zip(keys, (60.0, 40.0, 25.0, 15.0) if drive(path) == "C" else (150.0, 100.0, 50.0, 25.0)))}
+            for name, path in paths]

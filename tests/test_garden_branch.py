@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import cleanup
+from drover import cleanup, config
 from tests.gitfix import Repo, sh
 
 NOW = 1_792_000_000  # a fixed day
@@ -17,6 +17,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.r = Repo()
         self.addCleanup(self.r.cleanup)
+        self.addCleanup(config.reset)
+        config.use(config.validate({"paths": {"state_dir": str(self.r.root / "state")}}))
         self.r.git("remote", "set-head", "origin", "main")
         self.events = []
         self.out = self.r.root / "rescue"

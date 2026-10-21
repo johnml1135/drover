@@ -116,7 +116,7 @@ class Sources(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.toml'
             path.write_text('[[trackers]]\nname="ram"\nkind="ram"\nenabled=false\nqueue_base_gb=9.0\n'
-                            '[[trackers]]\nname="ram"\nkind="disk"\nqueue_gb=200.0\n', encoding='utf-8')
+                            '[[trackers]]\nname="ram"\nkind="disk"\nwarn_gb=250.0\nqueue_gb=200.0\n', encoding='utf-8')
             sources = {}
             cfg = self.call('load', home_path=directory, env={}, sources=sources)
             self.assertEqual(cfg['trackers'][1]['kind'], 'disk')

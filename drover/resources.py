@@ -16,16 +16,15 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from . import config as config_mod
+from . import disk
 
 GB = 1024 ** 3
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
-VHDX_WARNING = 'cannot locate VHDX host drive; set DROVER_VHDX_DIR'
 
 
 def trackers_of(config=None):
@@ -81,35 +80,6 @@ def read_ram_gb():
         except (OSError, AttributeError):
             return None
     return None
-
-
-def _free_gb(path):
-    try:
-        return shutil.disk_usage(path).free / GB
-    except OSError:
-        return None
-
-
-def disk_path(tracker, windows):
-    """Where to measure a disk tracker: a path, or None when this side cannot see it."""
-    if windows:
-        return config_mod.native(tracker['path']) if tracker['wsl_source'] != 'home' and tracker['path'] else None
-    if tracker['wsl_source'] == 'vhdx':
-        host = placement.vhdx_dir()
-        return host if host and os.path.exists(host) else None
-    if tracker['wsl_source'] == 'home':
-        return str(Path.home())
-    return config_mod.native(tracker['path']) if tracker['path'] else None
-
-
-def read_disks(windows, trackers=None):
-    """{tracker name: free GB} for each disk tracker; None where unknown. The default 'h' is the VHDX host drive on WSL."""
-    trackers = [t for t in (trackers if trackers is not None else trackers_of()) if t['kind'] == 'disk']
-    out = {}
-    for t in trackers:
-        path = disk_path(t, windows)
-        out[t['name']] = _free_gb(path) if path else None
-    return out
 
 
 def read_vram():
@@ -245,7 +215,7 @@ def gather(fake=None, trackers=None, with_wsl_memory=False):
     load = read_load()
     facts = {'platform': 'windows' if windows else 'wsl', 'load5': load[0] if load else None,
              'cores': load[1] if load else os.cpu_count() or 1, 'ram_available_gb': read_ram_gb(),
-             'ollama_ram_gb': read_ollama_ram_gb(), 'disk_free_gb': read_disks(windows, trackers),
+             'ollama_ram_gb': read_ollama_ram_gb(), 'disk_free_gb': {r['name']: r['free_gb'] for r in disk.read({'trackers': trackers})},
              'vram': read_vram(), 'read_only': None if windows else read_only_mount(),
              'wsl_up': True, 'wsl_mem': None}
     if wsl_t:
@@ -256,13 +226,6 @@ def gather(fake=None, trackers=None, with_wsl_memory=False):
 
 
 # ---- verdict ------------------------------------------------------------------------------------------------
-
-def _disk_label(tracker, platform):
-    if tracker['wsl_source'] == 'home':
-        return 'WSL ext4'
-    drive = tracker['path'].rstrip('\\/') or tracker['name']
-    return f'{drive} (VHDX host)' if tracker['wsl_source'] == 'vhdx' and platform == 'wsl' else drive
-
 
 def _wsl_state(tracker, facts):
     """The wsl tracker's own verdict: {verdict, reasons}. It never joins the global verdict."""
@@ -311,16 +274,16 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
             hold.append('RAM available %.1f GB < %g GB' % (ram, ram_t['hold_gb']))
         elif ram < need:
             queue.append('RAM available %.1f GB < %.1f GB needed for %d new worker(s)' % (ram, need, new_workers))
-    for t in by_kind.get('disk', []):
-        free = facts['disk_free_gb'].get(t['name'])
-        if free is None:
-            continue
-        label = _disk_label(t, facts['platform'])
-        if free < t['hold_gb']:
-            hold.append('%s free %.1f GB < %g GB' % (label, free, t['hold_gb']))
-            disk_hold = True
-        elif free < t['queue_gb']:
-            queue.append('%s free %.1f GB < %g GB' % (label, free, t['queue_gb']))
+    disk_rows = [row for t in by_kind.get('disk', [])
+                 for row in disk.read({'trackers': [t]},
+                                      reader=lambda path, t=t: facts['disk_free_gb'].get(t['name']))]
+    disk_result = disk.admission(disk_rows)
+    facts['disks'] = disk_rows
+    disk_hold = disk_result['verdict'] == 'hold'
+    if disk_hold:
+        hold.extend(disk_result['reasons'])
+    elif disk_result['verdict'] == 'queue':
+        queue.extend(disk_result['reasons'])
     if facts['read_only']:
         hold.append('filesystem is read-only')
     vram_t = (by_kind.get('vram') or [None])[0]
@@ -334,10 +297,6 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     verdict = 'hold' if hold else 'queue' if queue else 'go'
     result = {'verdict': verdict, 'reasons': hold + queue, 'facts': facts, 'slots': 0,
               'wsl': _wsl_state((by_kind.get('wsl') or [None])[0], facts)}
-    vhdx_t = [t for t in by_kind.get('disk', []) if t['wsl_source'] == 'vhdx']
-    if facts['platform'] == 'wsl' and vhdx_t and facts['disk_free_gb'].get(vhdx_t[0]['name']) is None:
-        result['warnings'] = [VHDX_WARNING]
-        result['reasons'].append(VHDX_WARNING)
     if vram_t and vram and vram[1] > 0 and 100.0 * vram[0] / vram[1] > vram_t['fallback_pct']:
         device = (config or {}).get('decider', {}).get('device') or config_mod.get()['decider']['device']
         result['decider'] = {'auto': 'decider-cpu', 'cpu': None}.get(device, 'decider-fallback')
@@ -348,7 +307,7 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
         else:
             del result['decider']
     if disk_hold:
-        result['cleanup_hint'] = 'run garden'
+        result['cleanup_hint'] = 'drover disk-cleanup'
     if verdict == 'go':
         result['slots'] = 1 if ram is None or not math.isfinite(ram) else max(
             0, math.floor((ram - base) / ram_t['queue_per_worker_gb'] + 1e-9)) if ram_t['queue_per_worker_gb'] else 1

@@ -125,3 +125,19 @@ class Migration(unittest.TestCase):
                 self.assertEqual(cli('--apply')[0], 2)
             self.assertEqual(path.read_bytes(), unresolved_bytes)
             self.assertEqual(list(state.glob('*bak*')), backups)
+
+    def test_native_windows_virtual_source_delegates_host_resolution(self):
+        raw = {'trackers': [disk('legacy', '~/repos', wsl_source='vhdx', queue_gb=95, hold_gb=35)]}
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}), \
+                patch.object(placement, 'distro', return_value='Fixture'), \
+                patch.object(placement, 'vhdx_dir', side_effect=AssertionError('WSL-only helper')):
+            row = config.migrate_disk_config(raw)['trackers'][0]
+        self.assertEqual(placement.drive(row['path']), 'H')
+        self.assertEqual(levels(row), (150, 95, 35, 25))
+
+    def test_malformed_legacy_levels_refuse_as_configuration_errors(self):
+        for tracker in (disk(wsl_source='unknown'), disk(wsl_source='path', queue_gb='95'), 'not a table'):
+            with self.subTest(tracker=tracker):
+                with self.assertRaises(config.ConfigError):
+                    config.migrate_disk_config({'trackers': [tracker]})

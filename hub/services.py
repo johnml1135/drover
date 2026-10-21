@@ -43,10 +43,8 @@ def repo_path(name):
 
 
 def real_disks():
-    from drover import resources
-    free = resources.read_disks(resources.is_windows())
-    return {t["path"] or t["name"]: free.get(t["name"]) for t in config.get()["trackers"]
-            if t["kind"] == "disk" and t["enabled"]}
+    from drover import disk
+    return {row['path'] or row['name']: row['free_gb'] for row in disk.read()}
 
 
 def real_ollama(url, timeout=1.5):

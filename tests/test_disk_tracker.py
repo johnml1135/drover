@@ -18,6 +18,8 @@ class Reading(DiskCase):
 
     def test_level_actions_and_exact_edges(self):
         from drover import disk
+        # The temp fixture is a declared fake physical disk, not a live WSL host probe.
+        self.enterContext(patch('drover.placement.physical_disk_path', return_value=str(self.root)))
         for levels in ((150, 100, 50, 25), (60, 40, 25, 15)):
             self.cfg['trackers'][0].update(zip(('warn_gb', 'queue_gb', 'hold_gb', 'critical_gb'), levels))
             warn, queue, hold, critical = levels
@@ -36,6 +38,7 @@ class Reading(DiskCase):
 
     def test_unknown_never_blocks(self):
         from drover import disk
+        self.enterContext(patch('drover.placement.physical_disk_path', return_value=str(self.root)))
         for value in (None, float('nan'), float('inf'), -1, True, '100'):
             with self.subTest(value=value):
                 rows = disk.read(self.cfg, reader=lambda path: value)
@@ -43,3 +46,15 @@ class Reading(DiskCase):
                 self.assertIsNone(rows[0]['free_gb'])
                 self.assertEqual(disk.admission(rows)['verdict'], 'go')
                 self.assertFalse(disk.admission(rows)['pause'])
+
+    def test_default_reader_uses_placement_physical_root(self):
+        from drover import disk, placement
+        from types import SimpleNamespace
+        self.cfg['trackers'][0]['path'] = str(self.root / 'inside-virtual-filesystem')
+        with patch.object(placement, 'physical_disk_path', return_value=str(self.root)) as physical, \
+                patch.object(disk.shutil, 'disk_usage', return_value=SimpleNamespace(free=151 * 1024 ** 3)) as usage:
+            rows = disk.read(self.cfg)
+        physical.assert_called_once_with(self.cfg['trackers'][0]['path'])
+        usage.assert_called_once_with(str(self.root))
+        self.assertEqual(rows[0]['path'], str(self.root))
+        self.assertEqual(rows[0]['level'], 'ok')

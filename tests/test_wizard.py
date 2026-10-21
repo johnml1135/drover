@@ -281,7 +281,7 @@ class Writing(Base):
             "trackers": [{"kind": "vram", "name": "vram", "fallback_pct": 66, "enabled": False},
                          {"kind": "ram", "name": "ram", "queue_per_worker_gb": 2},
                          {"kind": "disk", "name": "archive", "path": "D:\\acme-lib", "queue_gb": 20,
-                          "hold_gb": 10, "enabled": False}]})
+                          "hold_gb": 10, "critical_gb": 5, "enabled": False}]})
         self.state.mkdir()
         (self.state / "config.toml").write_text(config.dumps(old))
         self.run_wizard(defaults=True, answers={"ui_port": 7002, "seat_claude_priority": 3})
@@ -336,8 +336,8 @@ class Detections(Base):
                                               {"path": "R:\\", "free_gb": 500.0, "total_gb": 931.3}], 40.0, {"R"})
         t = {x["name"]: x for x in ts}
         self.assertEqual((t["ram"]["queue_base_gb"], t["ram"]["queue_per_worker_gb"], t["ram"]["hold_gb"]), (6.0, 0.5, 4.0))
-        self.assertEqual((t["c"]["queue_gb"], t["c"]["hold_gb"], t["c"]["wsl_source"]), (50.0, 25.0, "path"))
-        self.assertEqual((t["r"]["queue_gb"], t["r"]["hold_gb"], t["r"]["wsl_source"]), (75.0, 25.0, "vhdx"))
+        self.assertEqual((t["c"]["queue_gb"], t["c"]["hold_gb"]), (40.0, 25.0))
+        self.assertEqual((t["r"]["queue_gb"], t["r"]["hold_gb"]), (100.0, 50.0))
         self.assertEqual((t["wsl-up"]["queue_mem_pct"], t["wsl-up"]["hold_mem_pct"]), (85.0, 95.0))
         self.assertTrue(any(".wslconfig" in n for n in notes))
         config.validate({"trackers": ts})
@@ -347,14 +347,14 @@ class Detections(Base):
                                            {"path": "D:\\", "free_gb": 900.0, "total_gb": 1862.0}], None, set())
         t = {x["name"]: x for x in ts}
         self.assertEqual((t["ram"]["queue_base_gb"], t["ram"]["hold_gb"]), (12.0, 8.0))
-        self.assertEqual((t["c"]["queue_gb"], t["c"]["hold_gb"]), (100.0, 50.0))
-        self.assertEqual((t["d"]["queue_gb"], t["d"]["hold_gb"]), (150.0, 50.0))
+        self.assertEqual((t["c"]["queue_gb"], t["c"]["hold_gb"]), (40.0, 25.0))
+        self.assertEqual((t["d"]["queue_gb"], t["d"]["hold_gb"]), (100.0, 50.0))
         self.assertEqual(t["wsl-up"]["queue_mem_pct"], 0.0)                  # no .wslconfig cap known: memory check off
 
     def test_a_nearly_full_drive_is_warned_about_and_not_given_lower_levels(self):
         ts, notes = wizard.scale_levels(64.0, [{"path": "R:\\", "free_gb": 40.0, "total_gb": 931.0}], None, {"R"})
         h = next(x for x in ts if x["name"] == "r" and x.get("queue_gb"))
-        self.assertEqual((h["queue_gb"], h["hold_gb"]), (75.0, 25.0))
+        self.assertEqual((h["queue_gb"], h["hold_gb"]), (100.0, 50.0))
         self.assertTrue(any(n.startswith("WARNING: R:\\ has only 40 GB free") for n in notes))
 
     def test_only_the_drives_drover_uses_are_tracked(self):

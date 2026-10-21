@@ -7,7 +7,8 @@ import re
 import time
 from pathlib import Path
 
-from . import placement
+from . import config, placement
+from .disk_state import CleanupLock
 
 
 def git(cwd, *args, check=False):
@@ -95,7 +96,8 @@ def delete_branch(repo, branch, approved_row, log=None, now=None, rescue_root=No
         return {'ok': False, 'reason': reason, 'steps': steps}
 
     try:
-        return _delete_branch(repo, branch, approved_row, step, refuse, steps, now, rescue_root, bundle)
+        with CleanupLock(config.state_dir()):
+            return _delete_branch(repo, branch, approved_row, step, refuse, steps, now, rescue_root, bundle)
     except (GitError, OSError) as e:
         return refuse('git error, nothing deleted: %s' % e)
 

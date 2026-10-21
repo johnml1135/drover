@@ -39,3 +39,20 @@ class ApprovedBranch(unittest.TestCase):
                      ((isinstance(node.func, ast.Name) and node.func.id == 'delete_branch') or
                       (isinstance(node.func, ast.Attribute) and node.func.attr == 'delete_branch'))]
             self.assertEqual(calls, [], f'{path.name} must never perform branch disposition')
+
+    def test_cleanup_lock_refuses_branch_mutation(self):
+        from drover import cleanup, disk_state
+        fix = Repo()
+        self.addCleanup(fix.cleanup)
+        self.addCleanup(config.reset)
+        state = fix.root / 'state'
+        config.use(config.validate({'paths': {'state_dir': str(state)}}))
+        fix.git('remote', 'set-head', 'origin', 'main')
+        fix.branch('locked/topic', {'only.txt': 'preserve\n'})
+        before = fix.git('for-each-ref')
+        with disk_state.CleanupLock(state):
+            result = cleanup.delete_branch(fix.repo, 'locked/topic',
+                {'branch': 'locked/topic', 'disposition': 'propose-delete'})
+        self.assertFalse(result['ok'], result)
+        self.assertIn('lock busy', result['reason'])
+        self.assertEqual(fix.git('for-each-ref'), before)

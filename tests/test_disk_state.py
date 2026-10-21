@@ -75,3 +75,42 @@ except BlockingIOError:
         if journal.exists():
             self.assertFalse(any(json.loads(line)['phase'] == 'completed'
                                  for line in journal.read_text().splitlines()))
+
+    def test_state_transactions_versions_and_durable_journal(self):
+        from drover import disk_state
+        self.assertEqual(disk_state.read(self.state), {'v': 1})
+        disk_state.write(self.state, {'v': 1, 'readings': {'drive': 90}})
+        changed = disk_state.read(self.state)
+        changed['readings']['drive'] = 80
+        disk_state.write(self.state, changed)
+        self.assertEqual(disk_state.read(self.state)['readings'], {'drive': 80})
+        journal = self.state / 'disk-cleanup-manifest.jsonl'
+        with patch('os.fsync', side_effect=OSError('fsync refused')):
+            with self.assertRaises(OSError):
+                disk_state.append_manifest(self.state, {'v': 1, 'phase': 'planned'})
+        disk_state.append_manifest(self.state, {'v': 1, 'phase': 'failed'})
+        self.assertEqual(json.loads(journal.read_text().splitlines()[-1])['phase'], 'failed')
+        path = self.state / 'disk' / 'state.json'
+        for payload in ('{bad', '{"v":2}', '{"v":true}'):
+            path.write_text(payload)
+            with self.assertRaises(ValueError):
+                disk_state.read(self.state)
+            with self.assertRaises(ValueError):
+                disk_state.write(self.state, {'v': 1})
+            self.assertEqual(path.read_text(), payload)
+
+    def test_partial_holder_diagnostic_failure_releases_lock(self):
+        from drover import disk_state
+        original = Path.write_text
+
+        def fail_after_creation(path, *args, **kwargs):
+            original(path, '', encoding='utf-8')
+            raise OSError('disk full')
+
+        with patch.object(Path, 'write_text', fail_after_creation):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                with disk_state.CleanupLock(self.state):
+                    self.fail('unacquired lock must not enter body')
+        self.assertFalse((self.state / 'disk-cleanup.lock').exists())
+        with disk_state.CleanupLock(self.state):
+            pass

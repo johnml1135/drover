@@ -14,6 +14,8 @@ starting value only.
 import copy
 import json
 import logging
+import math
+import tempfile
 import os
 import re
 import sys
@@ -26,7 +28,7 @@ TRACKER_KINDS = ("ram", "disk", "load", "vram", "wsl")
 DEVICES = ("auto", "gpu", "cpu")
 AUTH_MODES = ("tailscale",)
 SIZES = ("S", "M", "L")
-from .placement import native
+from .placement import native, default_disk_trackers
 NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 ENV_ALIASES = {"DROVER_OLLAMA_URL": "decider.url", "DROVER_REPOS_DIR": "paths.repos_root",
                "DROVER_WSL_USER": "paths.wsl_user", "DROVER_WSL_DISTRO": "paths.wsl_distro"}
@@ -42,13 +44,12 @@ SEAT_DEFAULTS = {"priority": 1, "max_workers": 0, "reserve_pct": 10.0, "director
 DEFAULT_TRACKERS = [
     {"kind": "load", "name": "load", "enabled": True, "queue_per_core": 2.5, "hold_per_core": 3.5},
     {"kind": "ram", "name": "ram", "enabled": True, "queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0},
-    {"kind": "disk", "name": "h", "enabled": True, "path": "~/repos", "wsl_source": "vhdx", "queue_gb": 75.0, "hold_gb": 25.0},
-    {"kind": "disk", "name": "wsl", "enabled": True, "path": "", "wsl_source": "home", "queue_gb": 75.0, "hold_gb": 25.0},
-    {"kind": "disk", "name": "c", "enabled": True, "path": "C:\\", "wsl_source": "path", "queue_gb": 50.0, "hold_gb": 25.0},
+    *default_disk_trackers(),
     {"kind": "vram", "name": "vram", "enabled": True, "fallback_pct": 80.0, "queue_pct": 0.0, "hold_pct": 0.0},
     {"kind": "wsl", "name": "wsl-up", "enabled": True, "distro": "", "queue_mem_pct": 0.0, "hold_mem_pct": 0.0},
 ]
 DEFAULTS = {
+    "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": []},
     "repos_dir": "",
     "config_sync": {"remote": "", "auto_push": True},
     "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": ""},
@@ -269,11 +270,16 @@ def _seats(raw_seats):
 TRACKER_FIELDS = {
     "load": {"queue_per_core": 2.5, "hold_per_core": 3.5},
     "ram": {"queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0},
-    "disk": {"path": "", "wsl_source": "path", "queue_gb": 75.0, "hold_gb": 25.0},
+    "disk": {"path": "", "warn_gb": 150.0, "queue_gb": 100.0, "hold_gb": 50.0, "critical_gb": 25.0},
     "vram": {"fallback_pct": 80.0, "queue_pct": 0.0, "hold_pct": 0.0},
     "wsl": {"distro": "", "queue_mem_pct": 0.0, "hold_mem_pct": 0.0},
 }
-WSL_SOURCES = ("path", "vhdx", "home")
+def _disk_levels(path):
+    from . import placement
+    return (60.0, 40.0, 25.0, 15.0) if placement.drive(path) == "C" else (150.0, 100.0, 50.0, 25.0)
+
+
+DISK_LEVEL_KEYS = ("warn_gb", "queue_gb", "hold_gb", "critical_gb")
 
 
 def _tracker(raw, index):
@@ -284,6 +290,10 @@ def _tracker(raw, index):
     if kind is None:
         raise ConfigError(f"{_where(path)} needs kind = one of {', '.join(TRACKER_KINDS)}")
     fields = TRACKER_FIELDS[kind]
+    if kind == "disk":
+        if "wsl_source" in raw:
+            raise ConfigError("legacy disk wsl_source: run python -m drover.config migrate-machine")
+        fields = {**fields, **dict(zip(DISK_LEVEL_KEYS, _disk_levels(raw.get("path", ""))))}
     _unknown(raw, {"kind", "name", "enabled", *fields}, path)
     out = {"kind": kind, "name": _scalar(raw.get("name", kind), str, path + ["name"]),
            "enabled": _scalar(raw.get("enabled", True), bool, path + ["enabled"])}
@@ -292,10 +302,11 @@ def _tracker(raw, index):
         if isinstance(default, float) and out[key] < 0:
             raise ConfigError(f"{_where(path + [key])} must not be negative, not {out[key]!r}")
     if kind == "disk":
-        _choice(out["wsl_source"], WSL_SOURCES, path + ["wsl_source"])
-        if out["hold_gb"] > out["queue_gb"]:
-            raise ConfigError(f"tracker {out['name']!r}: hold_gb ({out['hold_gb']:g}) must not exceed queue_gb "
-                              f"({out['queue_gb']:g})")
+        values = [out[key] for key in DISK_LEVEL_KEYS]
+        if not all(math.isfinite(v) and v >= 0 for v in values):
+            raise ConfigError(f"tracker {out['name']!r}: disk levels must be finite and nonnegative")
+        if values != sorted(values, reverse=True):
+            raise ConfigError(f"tracker {out['name']!r}: critical_gb must not exceed hold_gb; hold_gb must not exceed queue_gb; queue_gb must not exceed warn_gb")
     if kind == "load" and out["hold_per_core"] < out["queue_per_core"]:
         raise ConfigError(f"tracker {out['name']!r}: hold_per_core must be at least queue_per_core")
     if kind == "ram" and out["hold_gb"] > out["queue_base_gb"]:
@@ -339,6 +350,38 @@ def _legacy(raw):
     return raw
 
 
+def _absolute_machine_path(value):
+    from pathlib import PurePosixPath, PureWindowsPath
+    return isinstance(value, str) and bool(value) and "\x00" not in value and (
+        PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute())
+
+
+def _cleanup_policy(raw):
+    defaults = DEFAULTS["disk_cleanup"]
+    _unknown(raw, defaults, ["disk_cleanup"])
+    out = {}
+    for key in ("temp_roots", "report_roots"):
+        paths = _strs(raw.get(key, []), ["disk_cleanup", key])
+        if not all(_absolute_machine_path(path) for path in paths):
+            raise ConfigError(f"disk_cleanup.{key} must contain absolute machine paths")
+        out[key] = paths
+    caches = raw.get("caches", [])
+    if not isinstance(caches, list):
+        raise ConfigError("disk_cleanup.caches must be a list")
+    out["caches"] = []
+    for i, entry in enumerate(caches):
+        path = ["disk_cleanup", "caches", i]
+        _unknown(entry, {"argv", "cwd", "placement"}, path)
+        argv = _strs(entry.get("argv"), path + ["argv"])
+        if not argv or not all(arg and "\x00" not in arg for arg in argv):
+            raise ConfigError(f"{_where(path)}.argv must contain nonempty literal arguments")
+        if not _absolute_machine_path(entry.get("cwd")):
+            raise ConfigError(f"{_where(path)}.cwd must be absolute")
+        side = _choice(entry.get("placement"), PLACEMENTS, path + ["placement"])
+        out["caches"].append({"argv": argv, "cwd": entry["cwd"], "placement": side})
+    return out
+
+
 def validate(raw):
     """The full config for a merged raw dict: every default filled in, every value checked. Raises ConfigError."""
     raw = _legacy(raw)
@@ -358,6 +401,7 @@ def validate(raw):
     cfg["capacity"] = _check_table(raw.get("capacity", {}), DEFAULTS["capacity"], ["capacity"],
                                    {"parallel_cap": (1, 64)})
     cfg["trackers"] = _trackers(raw.get("trackers", []))
+    cfg["disk_cleanup"] = _cleanup_policy(raw.get("disk_cleanup", {}))
     cfg["policy"] = _check_table(raw.get("policy", {}), DEFAULTS["policy"], ["policy"],
                                  {"tau": (0, 1), "landing_batch_size": (1, 5)})
     cfg["decider"] = _check_table(raw.get("decider", {}), DEFAULTS["decider"], ["decider"], {"timeout_s": (0.1, 600)})
@@ -707,6 +751,85 @@ def dumps(table, _path=()):
     return out
 
 
+def migrate_disk_config(raw):
+    """Return validated proposed machine facts without changing the input."""
+    from . import placement
+    proposed = copy.deepcopy(raw)
+    rows = []
+    trackers = proposed.get("trackers", [])
+    if not isinstance(trackers, list) or not all(isinstance(t, dict) for t in trackers):
+        raise ConfigError("trackers must be a list of tables")
+    for tracker in trackers:
+        if tracker.get("kind") != "disk":
+            rows.append(tracker)
+            continue
+        source = tracker.pop("wsl_source", None)
+        if source is not None:
+            _choice(source, ("home", "path", "vhdx"), ["trackers", "wsl_source"])
+        for key in DISK_LEVEL_KEYS:
+            if key in tracker:
+                value = _scalar(tracker[key], float, ["trackers", key])
+                if not math.isfinite(value) or value < 0:
+                    raise ConfigError(f"disk {key} must be finite and nonnegative")
+        if source == "home":
+            continue
+        path = tracker.get("path", "")
+        if source == "vhdx" and not placement.drive(path):
+            host = placement.physical_disk_path("/")
+            if not host or not placement.drive(host):
+                raise ConfigError("cannot resolve VHDX host drive; migration refused")
+            tracker["path"] = path = host
+        defaults = dict(zip(DISK_LEVEL_KEYS, _disk_levels(path)))
+        old_pair = (50, 25) if placement.drive(path) == "C" else (75, 25)
+        if source is not None and placement.drive(path) in ("H", "C") and \
+                (tracker.get("queue_gb"), tracker.get("hold_gb")) == old_pair:
+            tracker.update({key: value for key, value in defaults.items()
+                            if key in ("queue_gb", "hold_gb") or key not in tracker})
+        else:
+            tracker.setdefault("queue_gb", defaults["queue_gb"])
+            tracker.setdefault("hold_gb", defaults["hold_gb"])
+            tracker.setdefault("warn_gb", max(defaults["warn_gb"], tracker["queue_gb"]))
+            tracker.setdefault("critical_gb", min(defaults["critical_gb"], tracker["hold_gb"]))
+        rows.append(tracker)
+    if "trackers" in proposed:
+        proposed["trackers"] = rows
+    validate(proposed)
+    return proposed
+
+
+def _migrate_disks(apply):
+    from datetime import datetime, timezone
+    path = home() / "config.toml"
+    original = path.read_bytes()
+    raw = tomllib.loads(original.decode("utf-8"))
+    proposed = migrate_disk_config(raw)
+    print(dumps(proposed), end="")
+    if proposed == raw:
+        print("Machine disk configuration is already current.")
+    elif apply:
+        backup = path.with_name(path.name + ".bak-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+        with backup.open("xb") as stream:
+            stream.write(original)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(dumps(proposed))
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        load(path.parent)
+        print(f"Backup: {backup}\nApplied machine migration.")
+    else:
+        print("Dry run; use --apply to back up and write this configuration.")
+    return 0
+
+
 # ---- CLI ------------------------------------------------------------------------------------------------------
 
 def main(argv=None):
@@ -732,6 +855,10 @@ def main(argv=None):
             validate(raw)
             print(f"{a.check}: ok")
             return 0
+        if a.action == "migrate-machine" and not a.key:
+            if a.repo or a.revision is not None:
+                raise ConfigError("global migrate-machine does not accept repository selectors")
+            return _migrate_disks(a.apply)
         origins = {}
         cfg = load(sources=origins)
         if a.action == "migrate-machine":
@@ -750,7 +877,7 @@ def main(argv=None):
             raw = tomllib.loads(original.decode("utf-8"))
             # The loader remains the sole reader/validator of committed policy.
             facts = {k: v for k, v in raw.items()
-                     if k in ("name", "repo", "worktrees", "remote", "default_branch")}
+                     if k in ("name", "repo", "worktrees", "remote", "default_branch", "budget_gb")}
             if "run" in raw and not isinstance(raw["run"], dict):
                 raise ConfigError(f"{path}: run must be a table")
             if "env" in raw.get("run", {}):

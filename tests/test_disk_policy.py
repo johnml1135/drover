@@ -59,7 +59,7 @@ class Policy(unittest.TestCase):
     def test_rejects_escape_and_invalid_cache_argv(self):
         cleanup_config = repos.cleanup_config
         for path in ('../outside', '/absolute', 'C:/drive', 'a/../b', 'a/./b', './a', '.',
-                     'a//b', 'a/', '.git', '.git/config', 'a/*', 'a/?', 'a/[x]', r'a\b'):
+                     'a//b', 'a/', '.git', '.git/config', '.GIT', 'build/.Git/config', 'a/*', 'a/?', 'a/[x]', r'a\b'):
             with self.subTest(path=path):
                 revision = self.adopt([path])
                 with self.assertRaises(repos.RepoError):

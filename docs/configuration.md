@@ -13,7 +13,7 @@ provide their tooling. Future workflows use YAML under `.drover/workflows/*.yaml
 in this phase.
 
 After adoption, `<state>/repos/<name>.toml` contains only `name`, `repo`, `worktrees`, `remote`,
-`default_branch` and `[run.env]`. Machine env overrides repository env by variable name, including equal values.
+`default_branch`, optional `budget_gb`, and `[run.env]`. Machine env overrides repository env by variable name, including equal values.
 Unknown keys and machine policy are errors naming the file and key. Missing committed entries preserve complete
 machine fallback, including older script paths. An unreachable checkout permits startup fallback at HEAD;
 exact revisions require a reachable checkout. A present invalid entry always fails.
@@ -58,6 +58,7 @@ in the committed entry are rejected. The defaults below describe omitted values;
 | `landing.mode` | Defaults to `local`; `pr` is reserved and not implemented. |
 | `landing.push` | Boolean, defaults to `false` unless legacy `land.push` supplies it. |
 | `land.policy` | `batch` or `single`; defaults to `batch`. |
+| `cleanup.build_outputs` | Declared disposable output paths; defaults to `[]`. Canonical relative literal paths only. |
 | `land.push` | Legacy push alias; defaults to `false` and loses to explicit `landing.push`. |
 
 `gate.unknown` and `gate.hint` are derived output fields, not accepted repository settings. A missing `test`
@@ -96,3 +97,33 @@ the loader already ignores them, and commands come from the committed `scripts.t
 Commit the entry and script before applying; rollback restores both the repository
 revision and the machine backup together. An already running hub needs its normal
 managed reload after the coordinated rollout.
+
+
+### Physical disks and cleanup declarations
+
+Disk trackers measure physical free GiB (1024**3 bytes), including the host drive
+of WSL storage. Windows and WSL default to H: 150/100/50/25 and C:
+60/40/25/15 for `warn_gb`, `queue_gb`, `hold_gb`, `critical_gb`; Linux-only
+hosts default to `/` with the data-drive tuple. Other drives use that tuple.
+Levels apply strictly below each threshold; equal thresholds are permitted.
+Unknown readings do not block. Warning triggers cleanup, queue stops new
+workers, hold also stops new CI starts, and critical latches the pause switch.
+Recovery releases queue/hold; only the owner clears a critical pause.
+
+Run `python -m drover config migrate-machine` to print the proposed global
+config migration without writing. Add `--apply` for a byte-exact backup and
+atomic replacement. This removes virtual disk trackers and resolves legacy
+VHDX sources to physical paths; unresolved paths refuse migration. The existing
+`migrate-machine NAME` migrates repository machine facts separately.
+
+Machine `[disk_cleanup]` accepts only `temp_roots = []`, `report_roots = []`
+(absolute paths) and `caches = []`. Each cache entry has literal `argv`, an
+absolute `cwd`, and `placement = "windows"` or `"wsl"`. There are no default
+cache commands. Repository machine files may declare a finite positive
+`budget_gb` for an advisory budget.
+
+Committed `.drover/config.toml` may declare `[cleanup] build_outputs = []`:
+canonical relative literal paths, without globs, dot segments or `.git`.
+Machine files cannot override this policy after adoption. Declared outputs
+still require clean, idle worktrees and ignored/untracked containment evidence;
+tracked files and protected or linked targets are retained.

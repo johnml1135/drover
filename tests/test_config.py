@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config
+from drover import config, placement
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -53,8 +53,7 @@ class Defaults(unittest.TestCase):
         t = {x["name"]: x for x in load()["trackers"]}
         self.assertEqual((t["load"]["queue_per_core"], t["load"]["hold_per_core"]), (2.5, 3.5))
         self.assertEqual((t["ram"]["queue_base_gb"], t["ram"]["queue_per_worker_gb"], t["ram"]["hold_gb"]), (6.0, 0.5, 4.0))
-        self.assertEqual([(t[n]["queue_gb"], t[n]["hold_gb"]) for n in ("h", "wsl", "c")],
-                         [(75.0, 25.0), (75.0, 25.0), (50.0, 25.0)])
+        self.assertEqual([x for x in t.values() if x["kind"] == "disk"], placement.default_disk_trackers())
         self.assertEqual(t["vram"]["fallback_pct"], 80.0)
         self.assertEqual((t["vram"]["queue_pct"], t["vram"]["hold_pct"]), (0.0, 0.0))     # VRAM never queues or holds
         self.assertEqual((t["wsl-up"]["queue_mem_pct"], t["wsl-up"]["hold_mem_pct"]), (0.0, 0.0))
@@ -118,7 +117,7 @@ class Layers(unittest.TestCase):
 
     def test_trackers_merge_by_name(self):
         c = load("[[trackers]]\nkind='load'\nqueue_per_core = 3.0\n[[trackers]]\nkind='disk'\nname='d'\npath='D:\\\\'\n"
-                 "queue_gb=10\nhold_gb=5\n[[trackers]]\nkind='disk'\nname='h'\nenabled=false\n")
+                 "queue_gb=10\nhold_gb=5\ncritical_gb=1\n[[trackers]]\nkind='disk'\nname='h'\nenabled=false\n")
         t = {x["name"]: x for x in c["trackers"]}
         self.assertEqual((t["load"]["queue_per_core"], t["load"]["hold_per_core"]), (3.0, 3.5))
         self.assertEqual((t["d"]["queue_gb"], t["d"]["hold_gb"]), (10.0, 5.0))
@@ -198,11 +197,11 @@ class Validation(unittest.TestCase):
     def test_trackers(self):
         self.bad("[[trackers]]\nname='x'\n", "needs kind")
         self.bad("[[trackers]]\nkind='fan'\n", "kind must be one of ram, disk, load, vram, wsl")
-        self.bad("[[trackers]]\nkind='disk'\nname='d'\nqueue_gb=5\nhold_gb=9\n", "hold_gb .* must not exceed queue_gb")
+        self.bad("[[trackers]]\nkind='disk'\nname='d'\nqueue_gb=5\nhold_gb=9\n", "hold_gb must not exceed queue_gb")
         self.bad("[[trackers]]\nkind='load'\nqueue_per_core=4\n", "hold_per_core must be at least")
         self.bad("[[trackers]]\nkind='ram'\nhold_gb=7\n", "hold_gb must not exceed queue_base_gb")
         self.bad("[[trackers]]\nkind='wsl'\nname='wsl-up'\nqueue_mem_pct=90\nhold_mem_pct=80\n", "hold_mem_pct must be at least")
-        self.bad("[[trackers]]\nkind='disk'\nname='d'\nwsl_source='nfs'\n", "wsl_source must be one of")
+        self.bad("[[trackers]]\nkind='disk'\nname='d'\nwsl_source='nfs'\n", "migrate-machine")
         self.bad("[[trackers]]\nkind='load'\nbogus=1\n", "unknown key trackers")
 
     def test_models(self):
@@ -242,7 +241,7 @@ class Writer(unittest.TestCase):
         for key in ("repos_dir", "state_dir", "repos_root", "worktrees", "wsl_distro", "wsl_user", "priority",
                     "max_workers", "reserve_pct", "director_reserve_pct", "director", "placement", "binary", "config_dir",
                     "parallel_cap", "queue_per_core", "hold_per_core", "queue_base_gb", "queue_per_worker_gb", "hold_gb",
-                    "wsl_source", "queue_gb", "fallback_pct", "queue_pct", "hold_pct", "distro", "queue_mem_pct",
+                    "warn_gb", "critical_gb", "queue_gb", "fallback_pct", "queue_pct", "hold_pct", "distro", "queue_mem_pct",
                     "hold_mem_pct", "tau", "landing_batch_size", "tuner_cadence_days", "push", "url", "device", "mode",
                     "timeout_s", "ollama_models", "primary", "shadow", "long_state", "ui_port", "api_port", "tailscale",
                     "allowed_logins", "api_listen_wsl", "issuer", "client_id", "allowed_emails", "small_claude",

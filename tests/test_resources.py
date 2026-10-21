@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from drover import resources
+from drover import resources, disk, config
 
 
 def wsl(**over):
@@ -65,7 +65,7 @@ class Ram(unittest.TestCase):
 
 class Disk(unittest.TestCase):
     def test_edges_each_drive(self):
-        for key, queue, hold in (('h', 75, 25), ('wsl', 75, 25), ('c', 50, 25)):
+        for key, queue, hold in (('h', 100, 50), ('c', 40, 25)):
             with self.subTest(key):
                 self.assertEqual(verdict(wsl(disk_free_gb=disks(**{key: queue})))['verdict'], 'go')
                 r = verdict(wsl(disk_free_gb=disks(**{key: queue - 0.1})))
@@ -74,7 +74,7 @@ class Disk(unittest.TestCase):
                 self.assertEqual(verdict(wsl(disk_free_gb=disks(**{key: hold})))['verdict'], 'queue')
                 r = verdict(wsl(disk_free_gb=disks(**{key: hold - 0.1})))
                 self.assertEqual(r['verdict'], 'hold')
-                self.assertEqual(r['cleanup_hint'], 'run garden')
+                self.assertEqual(r['cleanup_hint'], 'drover disk-cleanup')
 
     def test_unknown_never_blocks(self):
         r = verdict(wsl(disk_free_gb={'h': None, 'wsl': 200, 'c': None}))
@@ -99,28 +99,27 @@ class Gpu(unittest.TestCase):
 
 
 class Windows(unittest.TestCase):
-    def test_repo_disk_tracker_resolves_home_before_windows_measurement(self):
-        from drover import config
+    def test_configured_physical_drive_is_measured_on_windows(self):
         from types import SimpleNamespace
-        tracker = next(t for t in config.DEFAULT_TRACKERS if t['name'] == 'h')
-        with mock.patch('os.path.expanduser', return_value=r'R:\Users\acme\repos'), \
-                mock.patch.object(placement, 'IS_WINDOWS', True), \
-                mock.patch.object(resources.shutil, 'disk_usage', return_value=SimpleNamespace(free=10 * resources.GB)) as usage:
-            free = resources.read_disks(True, [tracker])
-        usage.assert_called_once_with(r'R:\Users\acme\repos')
-        self.assertEqual(free, {'h': 10})
-        self.assertEqual(verdict({'platform': 'windows', 'disk_free_gb': free})['verdict'], 'hold')
+        tracker = config.validate({'trackers': [{'kind': 'disk', 'name': 'physical', 'path': 'R:/'}]})
+        tracker['trackers'] = [t for t in tracker['trackers'] if t['name'] == 'physical']
+        with mock.patch.object(placement, 'IS_WINDOWS', True), \
+                mock.patch.object(disk.shutil, 'disk_usage', return_value=SimpleNamespace(free=10 * resources.GB)) as usage:
+            rows = disk.read(tracker)
+        usage.assert_called_once_with(placement.to_windows_path('R:/'))
+        self.assertEqual(rows[0]['free_gb'], 10)
+        self.assertEqual(disk.admission(rows)['verdict'], 'hold')
 
     def test_windows_unknown_load_and_no_wsl_disk(self):
         r = verdict({'platform': 'windows', 'load5': None, 'ram_available_gb': 16,
-                     'disk_free_gb': {'c': 60, 'h': 30}, 'vram': None})
+                     'disk_free_gb': {'c': 60, 'h': 80}, 'vram': None})
         self.assertEqual(r['verdict'], 'queue')
         self.assertEqual(r['facts']['load5'], None)
-        self.assertEqual(r['reasons'], ['~/repos free 30.0 GB < 75 GB'])
+        self.assertEqual(r['reasons'], ['h: disk queue (80.0 GB free)'])
 
     def test_windows_hold_on_c(self):
         r = verdict({'platform': 'windows', 'ram_available_gb': 16, 'disk_free_gb': {'c': 10}})
-        self.assertEqual((r['verdict'], r['cleanup_hint']), ('hold', 'run garden'))
+        self.assertEqual((r['verdict'], r['cleanup_hint']), ('hold', 'drover disk-cleanup'))
 
     def test_real_gather_on_this_host_does_not_crash(self):
         facts = resources.gather()
@@ -146,7 +145,7 @@ class Trackers(unittest.TestCase):
         cfg = self.cfg({'kind': 'disk', 'name': 'd', 'path': 'D:\\', 'queue_gb': 100, 'hold_gb': 40},
                        {'kind': 'disk', 'name': 'c', 'enabled': False})
         r = resources.check(fake=wsl(disk_free_gb=disks(d=90, c=1)), config=cfg)
-        self.assertEqual((r['verdict'], r['reasons']), ('queue', ['D: free 90.0 GB < 100 GB']))
+        self.assertEqual((r['verdict'], r['reasons']), ('queue', ['d: disk queue (90.0 GB free)']))
         self.assertEqual(resources.check(fake=wsl(disk_free_gb=disks(d=39)), config=cfg)['verdict'], 'hold')
 
     def test_ram_tracker_levels_and_slots(self):
@@ -227,16 +226,16 @@ class Vhdx(unittest.TestCase):
         self.assertEqual(self.vhdx(env={'DROVER_VHDX_DIR': '/y'}), '/y')
 
 
-    def test_missing_host_drive_warns_without_blocking(self):
+    def test_unknown_physical_drive_is_visible_without_blocking(self):
         r = verdict(wsl(disk_free_gb=disks(h=None)))
         self.assertEqual(r['verdict'], 'go')
-        self.assertIn(resources.VHDX_WARNING, r['reasons'])
-        self.assertEqual(r['warnings'], [resources.VHDX_WARNING])
-        self.assertNotIn('warnings', verdict(wsl()))
+        self.assertEqual(next(row for row in r['facts']['disks'] if row['name'] == 'h')['level'], 'unknown')
 
-    def test_read_disks_host_unknown(self):
-        with mock.patch.object(resources.placement, 'vhdx_dir', return_value=None):
-            self.assertIsNone(resources.read_disks(False)['h'])
+    def test_reader_failure_is_unknown_without_host_discovery(self):
+        with mock.patch('subprocess.run', side_effect=AssertionError('no host probe')), \
+                mock.patch.object(disk.shutil, 'disk_usage', side_effect=OSError('unavailable')):
+            rows = disk.read()
+        self.assertTrue(all(row['free_gb'] is None for row in rows))
 
 
 MOUNTINFO = (
@@ -321,7 +320,7 @@ class Cli(unittest.TestCase):
     def test_human_output(self):
         code, out = self.run_cli(wsl(disk_free_gb=disks(c=10)))
         self.assertIn('HOLD', out)
-        self.assertIn('run garden', out)
+        self.assertIn('drover disk-cleanup', out)
 
 
 if __name__ == '__main__':

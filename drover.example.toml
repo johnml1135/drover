@@ -165,29 +165,26 @@ queue_base_gb = 6.0         # queue below this, plus resident Ollama RAM (Window
 queue_per_worker_gb = 0.5   # ...plus this per new worker
 hold_gb = 4.0
 
+# Linux-only defaults to one physical / tracker instead of H and C.
 [[trackers]]
 kind = "disk"
 name = "h"
-path = "~/repos"                # where to measure
-wsl_source = "vhdx"         # on WSL: path (measure `path`), vhdx (the drive holding the distro's ext4.vhdx), home (WSL's ext4)
-queue_gb = 75.0
-hold_gb = 25.0
-
-[[trackers]]
-kind = "disk"
-name = "wsl"
-path = ""
-wsl_source = "home"         # WSL's own ext4; unknown (never blocks) when the hub runs on Windows
-queue_gb = 75.0
-hold_gb = 25.0
+enabled = true
+path = "H:/"
+warn_gb = 150.0
+queue_gb = 100.0
+hold_gb = 50.0
+critical_gb = 25.0
 
 [[trackers]]
 kind = "disk"
 name = "c"
-path = 'C:\'
-wsl_source = "path"
-queue_gb = 50.0
+enabled = true
+path = "C:/"
+warn_gb = 60.0
+queue_gb = 40.0
 hold_gb = 25.0
+critical_gb = 15.0
 
 [[trackers]]
 kind = "vram"               # GPU memory in use, percent
@@ -242,3 +239,9 @@ allowed_emails = []
 [config_sync]
 remote = ""                  # optional private git remote URL; it MUST be private
 auto_push = true             # push after local configuration/decision commits; failure is nonfatal
+
+# Only declared scopes and literal commands are eligible; no tool defaults.
+[disk_cleanup]
+temp_roots = []
+report_roots = []
+caches = [] # entries: {argv = ["executable", "argument"], cwd = "/absolute/path", placement = "wsl"}

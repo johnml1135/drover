@@ -25,10 +25,8 @@ from . import config, decisions, repos
 from .tool_discovery import DISCOVERY_SCRIPT, parse_discovery
 
 # The thresholds settled in plan section 12 were set for the owner's machine: 64 GB RAM (queue 6 GB free, hold 4 GB),
-# C: of 476 GB (queue 50, hold 25) and a 931 GB data drive (queue 75, hold 25). Levels scale from those, so that machine
-# gets exactly today's numbers and others get the same ratios.
+# Disk levels use fixed physical-drive thresholds. RAM levels scale from the reference RAM.
 REF_RAM_GB = 64.0
-REF_DISKS = {"system": (476.0, 50.0, 25.0), "data": (931.0, 75.0, 25.0)}   # total GB, queue GB, hold GB
 TARGET_P95_MS = 2000.0   # the decider's latency target (plan section 12)
 BENCH_CALLS = 10
 ANSWER_KEYS = ("state_dir", "repos_root", "worktrees", "ollama_models", "decider_primary", "decider_shadow",
@@ -576,35 +574,28 @@ def _member(v, options):
 
 
 def scale_levels(ram_gb, drives, wsl_cap, vhdx_letters, wanted=None):
-    """Tracker overrides scaled to the machine from the REF_* machine: RAM levels with total RAM, disk levels with drive
-    size (C: from the system drive's ratios, any other drive from the data drive's). Load is per core already. Only the
-    `wanted` drive letters get a tracker (default: all); a default tracker for R: is switched off when R: is not one.
-    A drive already at or under its queue level is warned about, never given lower levels. Returns (trackers, notes)."""
+    """Scale RAM levels; use fixed physical-disk thresholds regardless of capacity."""
     ts, notes = [], []
     if ram_gb:
         k = ram_gb / REF_RAM_GB
         ts.append({"kind": "ram", "name": "ram", "queue_base_gb": max(2.0, round(6.0 * k, 1)),
                    "hold_gb": max(1.5, round(4.0 * k, 1)), "queue_per_worker_gb": 0.5})
         notes.append(f"RAM {ram_gb:.0f} GB: queue below {ts[-1]['queue_base_gb']:g} GB free, hold below {ts[-1]['hold_gb']:g} GB")
-    letters = set()
     for d in drives:
         letter = d["path"][0].upper()
         if wanted is not None and letter not in wanted:
             continue
-        letters.add(letter)
-        total, q, h = REF_DISKS["system" if letter == "C" else "data"]
-        k = d["total_gb"] / total
-        queue, hold = max(2, round(q * k)), max(1, round(h * k))
+        levels = (60.0, 40.0, 25.0, 15.0) if letter == "C" else (150.0, 100.0, 50.0, 25.0)
         vhdx = letter in vhdx_letters
-        ts.append({"kind": "disk", "name": letter.lower(), "path": d["path"], "wsl_source": "vhdx" if vhdx else "path",
-                   "queue_gb": float(max(queue, hold + 1)), "hold_gb": float(hold)})
+        ts.append({"kind": "disk", "name": letter.lower(), "path": d["path"],
+                   **dict(zip(config.DISK_LEVEL_KEYS, levels))})
         notes.append(f"{d['path']} {d['total_gb']:.0f} GB: queue below {ts[-1]['queue_gb']:g} GB free, hold below "
                      f"{ts[-1]['hold_gb']:g} GB" + (" (hosts the WSL disk)" if vhdx else ""))
-        if d["free_gb"] <= ts[-1]["queue_gb"]:
-            notes.append(f"WARNING: {d['path']} has only {d['free_gb']:.0f} GB free, at or under its queue level: Drover "
-                         "would start no new work until you free space there")
-    if "H" not in letters:
-        ts.append({"kind": "disk", "name": "h", "enabled": False})
+        if d["free_gb"] is not None and d["free_gb"] < ts[-1]["warn_gb"]:
+            notes.append(f"WARNING: {d['path']} has only {d['free_gb']:.0f} GB free, below its warning level; free space there")
+    for default in placement.default_disk_trackers():
+        if default["name"] not in {t["name"] for t in ts}:
+            ts.append({**default, "enabled": False})
     ts.append({"kind": "wsl", "name": "wsl-up", "queue_mem_pct": 85.0 if wsl_cap else 0.0,
                "hold_mem_pct": 95.0 if wsl_cap else 0.0})
     if wsl_cap:
@@ -625,7 +616,7 @@ def wanted_drives(s, vhdx):
 
 
 def q_trackers(a, d, vhdx, wanted):
-    a.say("\n6. Resource tracker levels (queue = start no new work, hold = stop everything).")
+    a.say("\n6. Resource tracker levels (queue = no new workers, hold = no new workers or CI).")
     cores = d["cores"]()
     a.say(f"   {cores} cores; load stays at 2.5 (queue) and 3.5 (hold) per core")
     a.say("   tracked drives: " + ", ".join(sorted(x + ":" for x in wanted)) + " (state dir, repos, worktrees, WSL disk, C:)")

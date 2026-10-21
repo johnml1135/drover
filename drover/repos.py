@@ -5,6 +5,7 @@ all platforms invoke them with the same argv and the checkout as cwd.
 """
 import json
 import logging
+import math
 import os
 import sys
 import tomllib
@@ -31,9 +32,27 @@ class _ResolvedRepo(dict):
 DOCS_ONLY_GLOBS = ("docs/**", "*.md", "GLOSSARY.md", "LICENSE", "!.github/**")
 
 
+def cleanup_config(prog):
+    """Validated committed output declarations and an optional machine budget."""
+    policy = prog.get("cleanup", {})
+    if not isinstance(policy, dict) or set(policy) - {"build_outputs"}:
+        raise RepoError("cleanup must contain only build_outputs")
+    outputs = policy.get("build_outputs", [])
+    if not isinstance(outputs, list) or not all(
+            isinstance(path, str) and path and not any(c in path for c in "\\:*?[]\x00")
+            and not path.startswith("/") and all(part.casefold() not in ("", ".", "..", ".git")
+                                                  for part in path.split("/")) for path in outputs):
+        raise RepoError("cleanup.build_outputs must contain canonical relative literal paths outside .git")
+    budget = prog.get("budget_gb")
+    if budget is not None and (type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0):
+        raise RepoError("budget_gb must be finite and positive")
+    return {"build_outputs": list(outputs), "budget_gb": budget}
+
+
 def normalize(raw, name=None, *, sources=None):
     """A validated repo dict with every default filled in."""
     original = raw
+    cleanup = cleanup_config(raw)
     seed = config._source_leaves(raw, "injected") if sources is not None else None
     if seed is not None:
         seed.update({key: sources[key] for key in seed if key in sources})
@@ -126,7 +145,8 @@ def normalize(raw, name=None, *, sources=None):
             g[key] = float(g.get(key) or default_limit)
         except (TypeError, ValueError) as e:
             raise RepoError(f"{name}: gate.{key} must be a number") from e
-    out = {"name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
+    out = {"cleanup": {"build_outputs": cleanup["build_outputs"]}, "budget_gb": cleanup["budget_gb"],
+            "name": name, "repo": str(raw["repo"]), "worktrees": str(raw["worktrees"]),
             "default_branch": main,
             "remote": remote,
             "run": {"platforms": plats, "default": default, "env": dict(env), "sandbox_writable_roots": list(roots)},
@@ -143,6 +163,9 @@ def normalize(raw, name=None, *, sources=None):
     if sources is not None:
         origins = config._source_leaves(out, "default")
         origins.update({key: seed[key] for key in origins if key in seed})
+        output_origins = [v for k, v in seed.items() if k.startswith("cleanup.build_outputs")]
+        if output_origins:
+            origins["cleanup.build_outputs"] = output_origins[0]
         if not original.get("name"):
             origins["name"] = "injected"
         def derive(key, *dependencies):
@@ -252,11 +275,13 @@ def machine_overrides(name, repo, trees, *, base=None, push=None, adopted=False)
         raise RepoError(f"{name}: push belongs in .drover/config.toml after adoption")
     raw = {"name": name, "repo": repo, "worktrees": saved.get("worktrees", trees),
            "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
+    if "budget_gb" in saved:
+        raw["budget_gb"] = saved["budget_gb"]
     if adopted:
         if "env" in saved.get("run", {}):
             raw["run"] = {"env": dict(saved["run"]["env"])}
     else:
-        for key in ("scripts", "gate", "run", "brief", "review"):
+        for key in ("scripts", "gate", "run", "brief", "review", "cleanup"):
             if key in saved:
                 raw[key] = saved[key]
         if "policy" in saved.get("land", {}):
@@ -353,6 +378,7 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
                 "gate": {"platform", "timeout_s", "idle_s", "docs_only", "docs_only_globs"},
                 "review": {"backend", "seat", "model", "effort", "high_risk_model"},
                 "landing": {"mode", "push"}, "land": {"policy", "push"}, "scripts": None,
+                "cleanup": {"build_outputs"},
             }
             def invalid(key, detail):
                 raise RepoError(f"{entry}@{commit}: {key}: {detail}")
@@ -399,7 +425,7 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
         raise RepoError(f"cannot read repo config commit {revision}: checkout {repo} is unreachable")
     if versioned:
         for key, value in machine.items():
-            if key in ("name", "repo", "worktrees", "remote", "default_branch"):
+            if key in ("name", "repo", "worktrees", "remote", "default_branch", "budget_gb"):
                 continue
             if key == "run" and isinstance(value, dict):
                 forbidden = [f"run.{k}" for k in value if k != "env"]
