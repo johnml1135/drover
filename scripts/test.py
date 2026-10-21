@@ -98,7 +98,7 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     chosen = [m.removesuffix('.py').replace('/', '.').replace('\\', '.') for m in args.modules] or modules()
-    env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': '', 'PYTHONUNBUFFERED': '1'}
+    env = {**os.environ, 'GIT_CEILING_DIRECTORIES': tempfile.gettempdir(), 'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': '', 'PYTHONUNBUFFERED': '1'}
     if args.tier == 'integration':
         env['DROVER_TESTS'] = 'integration'
     else:
@@ -115,7 +115,10 @@ def main(argv=None):
                         shutil.rmtree(path)
             except OSError:
                 pass
-        env['DROVER_TEST_TMPDIR'] = tempfile.mkdtemp(prefix='drover-fix-gate-')
+        # Not under a `.git`: a stray /tmp/.git would make every fixture look like repository content.
+        base = next((b for b in (tempfile.gettempdir(), '/dev/shm', '/var/tmp') if os.path.isdir(b) and
+                     not any((p / '.git').exists() for p in (Path(b).absolute(), *Path(b).absolute().parents))), None)
+        env['DROVER_TEST_TMPDIR'] = tempfile.mkdtemp(prefix='drover-fix-gate-', dir=base)
     else:
         Path(env['DROVER_TEST_TMPDIR']).mkdir(parents=True, exist_ok=True)
     timings = load_timings()

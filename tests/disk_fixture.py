@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import config, placement
+from tests.gitfix import clean_parent
 
 DAY = 86400
 GIB = 1024 ** 3
@@ -22,7 +23,7 @@ def empty_result():
 
 class DiskCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='disk-contract-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='disk-contract-', dir=clean_parent())
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.state = self.root / 'state'

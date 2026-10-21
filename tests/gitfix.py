@@ -10,6 +10,15 @@ import threading
 from pathlib import Path
 
 
+def clean_parent():
+    """A temp parent with no `.git` at or above it (a stray /tmp/.git must not turn fixtures into repo content)."""
+    for base in (tempfile.gettempdir(), '/dev/shm', '/var/tmp'):
+        path = Path(base).absolute()
+        if path.is_dir() and not any((p / '.git').exists() for p in (path, *path.parents)):
+            return str(path)
+    return None
+
+
 def sh(*args, cwd=None, check=True, text=True, input=None):
     command = [str(a) for a in args]
     env = os.environ.copy()
@@ -60,7 +69,7 @@ def _template(ignore):
     with _template_lock:
         if ignore not in _templates:
             if not _template_dir:
-                _template_dir.append(tempfile.mkdtemp(prefix='drover-fix-template-', dir=os.environ.get('DROVER_TEST_TMPDIR')))
+                _template_dir.append(tempfile.mkdtemp(prefix='drover-fix-template-', dir=os.environ.get('DROVER_TEST_TMPDIR') or clean_parent()))
                 atexit.register(_remove_tree, _template_dir[0])
             root = Path(_template_dir[0]) / f'shape{len(_templates)}'
             root.mkdir()
@@ -89,7 +98,7 @@ class Repo:
 
     def __init__(self, ignore=''):
         template = _template(ignore)
-        self.tmp = tempfile.TemporaryDirectory(prefix='drover-fix-', dir=os.environ.get('DROVER_TEST_TMPDIR'))
+        self.tmp = tempfile.TemporaryDirectory(prefix='drover-fix-', dir=os.environ.get('DROVER_TEST_TMPDIR') or clean_parent())
         self.root = Path(self.tmp.name)
         self.remote, self.repo = self.root / 'remote.git', self.root / 'repo'
         shutil.copytree(template / 'remote.git', self.remote)
