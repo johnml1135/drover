@@ -2,7 +2,9 @@
 import hashlib
 import json
 import math
+import os
 import socket
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +67,51 @@ def _save_report(state_dir, result):
     disk_state.save_file(state_dir, 'last-report.json', result)
 
 
+class _Progress:
+    """One JSON line per stage start and finish in disk/progress.log, and the current stage in state.json,
+    so an operator can tell a long stage from a hung run. Best effort: it never fails the cleanup."""
+    LIMIT = 1 << 20
+
+    def __init__(self, state_dir):
+        self.state_dir = Path(state_dir)
+        self.started = time.time()
+        self.current = None
+
+    def _log(self, **line):
+        try:
+            path = self.state_dir / 'disk' / 'progress.log'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > self.LIMIT:
+                path.replace(path.with_name('progress.log.1'))
+            with path.open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(dict(at=time.time(), pid=os.getpid(), **line)) + '\n')
+        except OSError:
+            pass
+
+    def _mark(self, current):
+        try:
+            disk_state.update(self.state_dir, lambda state: state.update(progress=current))
+        except (OSError, ValueError):
+            pass  # contention or unreadable state never gates the run
+
+    def begin(self, drive, stage, side):
+        self.current = dict(drive=drive, stage=stage, side=side, started=time.time(), run_started=self.started)
+        self._log(event='start', drive=drive, stage=stage, side=side)
+        self._mark(self.current)
+
+    def end(self, outcome, items=0, errors=0):
+        current = self.current
+        if current is not None:
+            self._log(event='finish', drive=current['drive'], stage=current['stage'], side=current['side'],
+                      elapsed_s=round(time.time() - current['started'], 3), outcome=outcome,
+                      items=items, errors=errors)
+            self.current = None
+
+    def done(self):
+        self._log(event='done', elapsed_s=round(time.time() - self.started, 3))
+        self._mark(None)
+
+
 def _reading(value):
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
 
@@ -78,6 +125,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
     state_dir = config.state_dir(cfg)
     tasks = _task_snapshot(state_dir)
     with disk_state.CleanupLock(state_dir):
+        progress = _Progress(state_dir)
         key = scope_key(cfg)
         if apply and disk_state.read(state_dir).get('report_scope') != key:
             raise ValueError('complete a dry report for the same cleanup scope before apply')
@@ -100,8 +148,10 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                     request = dict(stage=stage, mode=mode, apply=apply and free is not None, now=runtime.now(),
                                    drive=drive, repos=machines, paths=cfg['disk_cleanup'],
                                    state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
+                    progress.begin(row['name'], stage, side)
                     try:
                         answer = _valid_result(runtime.call(side, request))
+                        progress.end('ok', len(answer['items']), len(answer['errors']))
                         result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
                         if stage == 6:
                             inventories.add((row['name'], side))
@@ -111,6 +161,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                             trimmed = _valid_result(runtime.call('windows', dict(request, stage=1)))
                             result['errors'].extend(trimmed['errors'])
                     except (OSError, ValueError, RuntimeError) as error:
+                        progress.end('error', errors=1)
                         result['errors'].append(dict(stage=stage, side=side, error=str(error)))
                         if getattr(error, 'termination_confirmed', True) is False:
                             try:
@@ -162,6 +213,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                 except OSError:
                                     pass
                                 raise
+        progress.done()
         for cache in (state_dir / 'disk').glob('inventory-' + inventory_id + '-*.json'):
             cache.unlink(missing_ok=True)
         for cache in (state_dir / 'disk').glob('processes-' + inventory_id + '*.json'):
