@@ -128,4 +128,16 @@ The script selects the platform's Python, runs `python -m unittest discover -s t
 cleans up its temporary fixtures, and prints thread stacks if the suite stalls. Install the hub dependencies
 with `uv sync --project hub` and use that environment to include hub tests.
 
+### Test tiers and the parallel runner
+
+`python3 scripts/test.py` runs every `tests/test_*.py` module in its own process, up to 8 at a time, and exits
+non-zero if any module fails. It runs the **default tier**: fast tests that fake the runner, the decision model and
+the clock. `python3 scripts/test.py --tier integration` (equivalently `DROVER_TESTS=integration`) also runs the
+**integration tier**, the tests that start the real `drover.runner`, real child processes, real timeouts or a real
+gate script; this is the pre-landing run and what `.drover/scripts/test.ps1` executes. Mark such a test with
+`@integration` from `tests/tiers.py`; a test is moved to that tier, never deleted. On Windows run the script with
+the hub venv's `python.exe` so the hub tests are included. Plain `python -m unittest discover -s tests -t .` still
+works and runs the default tier. Tests mock the decision model and use no real sleeps; a test that takes over a
+second states why in a comment.
+
 Account allowance, routing and the Stats tab: [usage and statistics](docs/USAGE-STATS.md).
