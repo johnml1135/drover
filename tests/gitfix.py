@@ -2,7 +2,9 @@
 import atexit
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -36,6 +38,20 @@ def sh(*args, cwd=None, check=True, text=True, input=None):
     return r
 
 
+def _remove_tree(path):
+    """rmtree that clears the read-only bit (git objects on Windows) and retries."""
+    def retry(function, target, *_):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            function(target)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
+
+
 _templates, _template_lock, _template_dir = {}, threading.Lock(), []
 
 
@@ -45,7 +61,7 @@ def _template(ignore):
         if ignore not in _templates:
             if not _template_dir:
                 _template_dir.append(tempfile.mkdtemp(prefix='drover-fix-template-', dir=os.environ.get('DROVER_TEST_TMPDIR')))
-                atexit.register(shutil.rmtree, _template_dir[0], ignore_errors=True)
+                atexit.register(_remove_tree, _template_dir[0])
             root = Path(_template_dir[0]) / f'shape{len(_templates)}'
             root.mkdir()
             remote, repo = root / 'remote.git', root / 'repo'

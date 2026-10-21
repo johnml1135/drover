@@ -78,7 +78,8 @@ def run_module(name, env, durations, timeout, ids=None):
         text = lambda b: b.decode(errors='replace') if isinstance(b, bytes) else (b or '')
         code, output = 124, f'TIMEOUT after {timeout}s\n' + text(error.stdout) + text(error.stderr)
     ran, skipped = counts(output)
-    if code != 0 and not ran and 'unittest.case.SkipTest' in output:
+    last = next((line for line in reversed(output.splitlines()) if line.strip()), '')
+    if code != 0 and not ran and re.match(r'unittest\.case\.SkipTest: ', last):
         code, skipped = 0, 1       # the module skips itself at import (for example hub deps missing); discover reports a skip
     if ids and not ran and code == 0:
         code = 1
