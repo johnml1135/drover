@@ -41,6 +41,10 @@ _Avoid_: Buffer, headroom
 One step in the order of models a task is tried on: level 1 is the cheapest (Luna), level 2 the next (Sol), and so on. A failed or stuck run moves to the next level; unstick escalation is the same steps used to recover a stuck task.
 _Avoid_: Rung, tier, ladder
 
+**Dispatch filter**:
+The owner's list of repos (`dispatch_repos`) that may start work; every other repo stays idle, and unset means all repos. The pause switch (`dispatch_enabled`) still overrides it. Set with `python -m drover.dispatch_repos`.
+_Avoid_: Repo pause, allowlist
+
 **Tracker**:
 One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with its levels: warn, queue (no new work starts), hold (running work winds down) and critical (Drover pauses). A disk tracker measures the drive itself, never the free space inside a virtual disk stored on it.
 _Avoid_: Check, guard, monitor

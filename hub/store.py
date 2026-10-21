@@ -9,7 +9,7 @@ import json
 import threading
 import time
 
-from drover import config, contract, decisions, importer, landing, origin, repos, stats, usage
+from drover import config, contract, decisions, dispatch_repos, importer, landing, origin, repos, stats, usage
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
@@ -766,7 +766,8 @@ class UiView:
     # -- pause toggle ----------------------------------------------------
     def dispatch_state(self):
         on = self.s.dispatch_enabled()
-        return {"enabled": on, "label": "RUNNING" if on else "PAUSED"}
+        repos = list(dispatch_repos.get(lambda k, d=None: ops.get_setting(self.s.conn, k, d)))
+        return {"enabled": on, "label": "RUNNING" if on else "PAUSED", "repos": repos}
 
     def set_dispatch(self, enabled):
         return self.s.set_dispatch_enabled(enabled, actor="owner")

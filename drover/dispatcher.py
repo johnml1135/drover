@@ -22,6 +22,7 @@ from pathlib import Path
 
 from dataclasses import dataclass, field
 
+from . import dispatch_repos
 from . import task_access
 from . import brief as brief_mod
 from . import config as config_mod
@@ -507,8 +508,11 @@ class Dispatcher:
         p, started = self.port, []
         live_tasks = {tid for _, tid, _ in self.live.values()}
         self.ci_runners.heartbeat({tid for _, tid, spec in self.live.values() if spec.get("role") == "gate"})
+        allow = dispatch_repos.allowed(p.get_setting)
         for t in p.list_tasks("running"):
             runs = p.list_runs(t["id"])
+            if not dispatch_repos.permits(allow, t["repo"]):
+                continue                             # the owner limited dispatch to other repos
             if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or not self._awaiting_gate(runs):
                 continue
             try:
@@ -689,9 +693,11 @@ class Dispatcher:
             return {**route, 'seat': seat['name'] if seat else None,
                     'effort': effort_for(route['model'], route.get('effort')),
                     'harness': route.get('harness', route['backend']), 'placement': placement}
+        allow = dispatch_repos.allowed(self.port.get_setting)
         started, inspected = [], {}                  # inspections are cached for this tick only
         for _ in range(slots):
-            batch = self.replanning.prepare(assign, now=self.now(), inspected=inspected)
+            batch = self.replanning.prepare(assign, now=self.now(), inspected=inspected,
+                                            allow=lambda t: dispatch_repos.permits(allow, t["repo"]))
             if batch is None:
                 break
             launched = self._spawn({**batch.task, 'write': False, 'read_checkouts': batch.read_checkouts,
@@ -712,9 +718,12 @@ class Dispatcher:
         """Start a fresh review run for each gated task that has none. Derived from the ledger each tick."""
         p, started = self.port, []
         live_tasks = {tid for _, tid, _ in self.live.values()}
+        allow = dispatch_repos.allowed(p.get_setting)
         for t in p.list_tasks("gated"):
             if len(started) >= slots:
                 break
+            if not dispatch_repos.permits(allow, t["repo"]):
+                continue
             runs = p.list_runs(t["id"])
             if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or not self._awaiting_review(runs):
                 continue
@@ -1345,7 +1354,7 @@ class Dispatcher:
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
         while slots > 0:
-            task = p.claim_next({}, exclude=skip)
+            task = p.claim_next({"repos": list(dispatch_repos.get(p.get_setting))}, exclude=skip)
             if task is None:
                 break
             assert task["status"] == "claimed"

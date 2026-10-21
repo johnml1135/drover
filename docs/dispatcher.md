@@ -26,6 +26,13 @@ Every dispatcher requires a `Pipeline`; workers finish into checks, then review,
 `--no-gate-dry-run` CLI flag and synchronous `gate_fn` mode have been removed. To observe recovery without admitting
 work, keep `dispatch_enabled` false; paused dispatch still reaps and adopts runs.
 
+`dispatch_repos` (ledger setting, JSON list; unset or empty means every repo) limits dispatch to the named repos
+(matched case-insensitively). Every other repo stays idle: no claims, gates, reviews, replan planners or landing
+batches, including for work already finished (it waits, as under pause, and resumes when the filter clears).
+`dispatch_enabled` false still pauses everything. Runs already in flight are still reaped and adopted. Owner-only:
+the token settings route refuses the `dispatch_` prefix, so set it with
+`python -m drover.dispatch_repos [--db PATH] show | set REPO... | clear`; the hub header shows "only <repos>".
+
 `Dispatcher(port, pipeline, runtime=None, usage=None, route=route.choose, decide=...)` takes the ledger and pipeline,
 an execution environment (`DispatchRuntime`: launcher, resource checker, clock), the measured per-seat usage poller,
 the router and the decider. Worktree operations belong to the pipeline; scans and WSL readiness belong to the launcher.

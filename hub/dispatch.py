@@ -8,7 +8,7 @@ import logging
 import threading
 from pathlib import Path
 
-from drover import ci, contract, disk, landing, repos
+from drover import ci, contract, disk, dispatch_repos, landing, repos
 from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
 from drover.ledger import ops, landing as landing_storage
@@ -102,9 +102,12 @@ class LandingService:
         conn = self.store.conn
         if not truthy(ops.get_setting(conn, "dispatch_enabled", "false")):
             return {}
+        allow = dispatch_repos.allowed(lambda k, d=None: ops.get_setting(conn, k, d))
         pipe = Pipeline(DirectPort(conn, actor="landing"), repos_dir=self.repos_dir, runs_dir=self.settings.runs_dir)
         out = {}
         for name in sorted({t["repo"] for t in ops.list_tasks(conn, status="reviewed")}):
+            if not dispatch_repos.permits(allow, name):
+                continue                             # blocked like pause: the owner limited dispatch to other repos
             prog = pipe.repo({"repo": name})
             if prog is None or repos.ci_policy(prog)["unknown"]:
                 continue

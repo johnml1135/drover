@@ -75,7 +75,7 @@ class Replanning:
         self.port.waiting.delay(request['task_id'], 'planner', 'replan-inputs', now, minutes=1)
         self.port.append_event('replan-deferred', {'request': request['id'], 'reason': str(exc)[:300]}, request['task_id'])
 
-    def prepare(self, assign, *, now, inspected=None):
+    def prepare(self, assign, *, now, inspected=None, allow=None):
         """`inspected` is a per-tick cache of source inspections, keyed by task id."""
         p = self.port
         inspected = {} if inspected is None else inspected
@@ -85,6 +85,8 @@ class Replanning:
         triggers = {e['id']: e['data'] for e in p.events('replan-request')}
         for request in requests:
             task = request['task']
+            if allow is not None and not allow(task):
+                continue                             # the owner limited dispatch to other repos
             if (request['state'] != contract.REPLAN_QUEUED or request['active_run'] or task['archived']
                     or task['status'] in (*states.ACTIVE, *states.TERMINAL)
                     or any(r['kind'] != REPLAN for r in request['pending']) or p.waiting.replan_busy(task['id'], runs)):

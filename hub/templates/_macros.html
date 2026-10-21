@@ -12,7 +12,7 @@
 {%- endmacro %}
 {% macro dispatch_ctl(dispatch, next='/health') -%}
 <span class="dispatch {{ 'on' if dispatch.enabled else 'off' }}">
-  <span class="pill {{ 'ok' if dispatch.enabled else 'warn' }}" role="status" aria-label="Dispatch {{ dispatch.label }}">{{ dispatch.label }}</span>
+  <span class="pill {{ 'ok' if dispatch.enabled else 'warn' }}" role="status" aria-label="Dispatch {{ dispatch.label }}">{{ dispatch.label }}</span>{% if dispatch.repos %} <span class="pill warn" title="Dispatch is limited to these repos">only {{ dispatch.repos | join(', ') }}</span>{% endif %}
   {% if dispatch.enabled %}
   <form method="post" action="/dispatch/toggle"><input type="hidden" name="enable" value="0"><input type="hidden" name="next" value="{{ next }}"><button class="btn">Pause</button></form>
   {% else %}
