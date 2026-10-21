@@ -195,7 +195,9 @@ class DispatchRuntime:
 class Dispatcher:
     def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide):
         from .usage import Poller
+        from .replan import Replanning
         self.port, self.pipeline = port, pipeline
+        self.replanning = Replanning(pipeline)
         runtime = runtime or DispatchRuntime()
         self.launcher, self.resources_fn, self.now = runtime.launcher, runtime.resources, runtime.now
         self.stats_resources_fn = lambda: self.resources_fn(new_workers=0, with_wsl_memory=True)
@@ -263,7 +265,7 @@ class Dispatcher:
         spec = self.live.get(run_id, (None, None, {}))[2]
         if spec.get('role') == 'planner':
             try:
-                p.waiting.finish_replan(spec['request_id'], run_id, contract.UNVERIFIED, now=self.now())
+                self.replanning.finish(run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=self.now())
             except Exception as error:
                 self._safe_event('replan-recovery-needed', {'run': run_id, 'error': repr(error)[:300]}, task_id)
             return
@@ -671,77 +673,38 @@ class Dispatcher:
         return d if isinstance(d, dict) else None
 
     # ---- review ---------------------------------------------------------------------------------------
-    def _start_replans(self, policy, admitted, slots) -> list[int]:
-        from .ledger.waiting import REPLAN
-        p, started = self.port, []
-        for request in p.waiting.replans():
-            if len(started) >= slots:
-                break
-            tid, task = request['task_id'], request['task']
-            if request['state'] != 'queued' or request['active_run'] or task['archived'] or task['status'] in states.TERMINAL:
-                continue
-            if any(r['kind'] != REPLAN for r in request['pending']) or any(t == tid for _, t, _ in self.live.values()) or any(t == tid for t, _, _ in self.cancelling.values()):
-                continue
+    def _start_replans(self, policy, admitted, slots):
+        def assign(task, inputs):
             route = self._route({**task, 'role': 'planner', 'model_pin': None}, policy, admitted)
             if route.get('backend') not in admitted:
-                continue
-            try:
-                inputs = self.pipeline.replan_inputs(task)
-                prog = self.pipeline.repo(task)
-                placement, why = place(task, route, inputs['checkout'], prog)
-                if placement is None or self._is_unavailable(route['backend'], placement):
-                    continue
-                if placement == 'wsl' and (not self.launcher.wsl_up() or self._wsl_blocked()):
-                    continue
-                b = brief_mod.assemble_replan(task, p.list_runs(tid), p.owner_notes(tid), inputs)
-            except (OSError, ValueError, WorktreeRefused) as exc:
-                p.waiting.delay(tid, 'planner', 'replan-inputs', self.now(), minutes=1)
-                p.append_event('replan-deferred', {'request': request['id'], 'reason': str(exc)[:300]}, tid)
-                continue
-            attached = p.waiting.start_replan(request['id'], route, inputs, now=self.now())
-            if attached is None:
-                continue
-            run_id = attached['run_id']
-            try:
-                fresh = self.pipeline.replan_inputs(p.get_task(tid))
-                if inputs != fresh:
-                    raise ValueError('planner inputs moved before launch')
-                task_access.verify(inputs['read_checkouts'])
-            except (ValueError, OSError, WorktreeRefused):
-                p.waiting.finish_replan(request['id'], run_id, contract.UNVERIFIED, now=self.now())
-                continue
-            launched = self._spawn({**task, 'write': False, 'read_checkouts': inputs['read_checkouts'],
-                                    'read_dirs': [r['path'] for r in inputs['read_checkouts']]},
-                                   route, policy, placement, inputs['checkout'], b, 'planner',
-                                   {'request_id': request['id'], 'snapshot': attached['snapshot'],
-                                    'wall_s': 600, 'idle_s': 120}, run_id=run_id)
+                return None
+            placement, _ = place(task, route, inputs['checkout'], self.pipeline.repo(task))
+            if placement is None or self._is_unavailable(route['backend'], placement):
+                return None
+            if placement == 'wsl' and (not self.launcher.wsl_up() or self._wsl_blocked()):
+                return None
+            seat = seat_of(route)
+            return {**route, 'seat': seat['name'] if seat else None,
+                    'effort': effort_for(route['model'], route.get('effort')),
+                    'harness': route.get('harness', route['backend']), 'placement': placement}
+        started = []
+        for _ in range(slots):
+            batch = self.replanning.prepare(assign, now=self.now())
+            if batch is None:
+                break
+            launched = self._spawn({**batch.task, 'write': False, 'read_checkouts': batch.read_checkouts,
+                                   'read_dirs': list(batch.read_roots)}, batch.assignment, policy,
+                                  batch.assignment['placement'], batch.cwd, batch.brief, 'planner',
+                                  {'request_ids': list(batch.request_ids), 'task_ids': list(batch.task_ids)}, run_id=batch.run_id)
             if launched is not None:
                 started.append(launched)
         return started
 
     def _finish_planner(self, run_id, task_id, spec, result):
-        p, u = self.port, result['usage']
-        usage = {k: u[k] for k in ('tokens_in', 'tokens_out', 'tokens_cached')}
-        usage['allowance_used'] = self._allowance_used(spec)
-        record = None
-        if result.get('provider_error'):
-            outcome = contract.PROVIDER_ERROR
-        elif result['status'] == contract.TIMEOUT:
-            outcome = contract.TIMEOUT
-        elif result['status'] == contract.ERROR:
-            outcome = contract.ERROR
-        else:
-            record = contract.parse_replan_record(result.get('text') or '')
-            outcome = contract.DONE if record else contract.NO_RECORD
+        usage = {**result.get('usage', {}), 'allowance_used': self._allowance_used(spec)}
         if spec.get('launch_cancelled'):
-            outcome = contract.UNVERIFIED
-        try:
-            task_access.verify(spec.get('read_checkouts') or [])
-            fresh = self.pipeline.replan_inputs(p.get_task(task_id))
-        except (ValueError, OSError, WorktreeRefused):
-            fresh, outcome = None, contract.UNVERIFIED
-        return p.waiting.finish_replan(spec['request_id'], run_id, outcome, record, usage,
-                                      snapshot=fresh, now=self.now())
+            result = {**result, 'status': contract.UNVERIFIED}
+        return self.replanning.finish(run_id, {**result, 'usage': usage}, now=self.now())
 
     def _start_reviews(self, policy, admitted, slots):
         """Start a fresh review run for each gated task that has none. Derived from the ledger each tick."""
@@ -949,7 +912,7 @@ class Dispatcher:
             p.append_event("review-started", {"run": run_id, "sha": extra["sha"], "worker_run": extra["worker_run"]},
                            task["id"])
         p.append_event("dispatch.access", {"run": run_id, "read_checkouts": spec["read_checkouts"],
-                                           "write": spec["write"], **({k: spec[k] for k in ("request_id", "snapshot")} if role == "planner" else {})}, task["id"])
+                                           "write": spec["write"], **({k: spec[k] for k in ("request_ids", "task_ids")} if role == "planner" else {})}, task["id"])
         p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce}, task["id"])  # before any start
         try:
             handle = self.launcher.launch(spec)
@@ -969,12 +932,10 @@ class Dispatcher:
         p, tid = self.port, task["id"]
         cancelled = getattr(exc, "cancel_requested", False)
         if role == 'planner':
-            request = next(r for r in p.waiting.replans() if r['current_run'] == run_id)
             if cancelled:
                 p.append_event('launch-cancel', {'run': run_id, 'placement': placement}, tid)
                 self.cancelling[run_id] = (tid, placement, nonce)
-            p.waiting.finish_replan(request['id'], run_id, contract.LAUNCH_ERROR,
-                                   snapshot=request['snapshot']['inputs'], now=self.now())
+            self.replanning.finish(run_id, {'status': contract.LAUNCH_ERROR, 'text': '', 'usage': {}}, now=self.now())
             if getattr(exc, 'missing', False) or isinstance(exc, FileNotFoundError):
                 self.unavailable[(route['backend'], placement)] = self.now()
             return None
@@ -1028,21 +989,12 @@ class Dispatcher:
                 if t["id"] not in live_tasks:
                     out += [(t, r) for r in self.port.list_runs(t["id"]) if r["ended"] is None]
         seen = {r['id'] for _, r in out}
-        # Planner sources are parked, and terminal sources can still have a run to reap.
-        access = {e['data']['run']: e['task_id'] for e in self.port.events('dispatch.access')
-                  if 'request_id' in e['data']}
-        for run_id, tid in access.items():
-            if run_id in seen or run_id in self.live:
-                continue
-            for run in self.port.list_runs(tid):
-                if run['id'] == run_id and run['ended'] is None:
-                    out.append((self.port.get_task(tid), run))
-                    seen.add(run_id)
-        for request in self.port.waiting.replans():
-            for run in self.port.list_runs(request['task_id']):
-                if run['ended'] is None and run['id'] not in seen and run['id'] not in self.live:
-                    out.append((request['task'], run))
-                    seen.add(run['id'])
+        # Durable membership also finds enrollment before dispatch.access and resolved sources.
+        for batch in self.port.waiting.replan_runs():
+            run = batch['run']
+            if run['ended'] is None and run['id'] not in seen and run['id'] not in self.live:
+                out.append((self.port.get_task(run['task_id']), run))
+                seen.add(run['id'])
         return out
 
     def _scan(self, want_wsl):
@@ -1084,11 +1036,10 @@ class Dispatcher:
         p, policy = self.port, self.port.get_policy()
         places, nonces = self._placements(), self._nonces()
         cleared = {e['data']['run'] for e in p.events('launch-cancel-cleared')}
-        planner_launches = {e['data']['run'] for e in p.events('dispatch.access') if 'request_id' in e['data']}
-        pending_sources = {r['task_id'] for r in p.waiting.replans()}
+        planner_launches = {batch['run_id'] for batch in p.waiting.replan_runs()}
         for event in p.events('launch-cancel'):
             rid = event['data']['run']
-            if rid in planner_launches and rid not in cleared and event['task_id'] in pending_sources:
+            if rid in planner_launches and rid not in cleared:
                 self.cancelling[rid] = (event['task_id'], places.get(rid, 'unknown'), nonces.get(rid))
         recovered, live_tasks = [], {tid for _, tid, _ in self.live.values()}
         for t in p.list_tasks("running"):
@@ -1127,17 +1078,15 @@ class Dispatcher:
         if "read_checkouts" in saved:
             spec.update(read_checkouts=saved["read_checkouts"], write=saved.get("write", True))
         if run['role'] == 'planner':
-            if 'request_id' not in saved:
-                request = next(r for r in self.port.waiting.replans() if r['current_run'] == run['id'])
-                saved = {**saved, 'request_id': request['id'], 'snapshot': request['snapshot']}
-            spec.update(request_id=saved['request_id'], snapshot=saved['snapshot'], write=False,
+            batch = self.replanning.restore(run['id'])
+            spec.update(seat=batch.assignment.get('seat'), request_ids=list(batch.request_ids), task_ids=list(batch.task_ids), write=False,
+                        cwd=batch.cwd, read_dirs=list(batch.read_roots), read_checkouts=batch.read_checkouts,
                         launch_cancelled=run['id'] in self.cancelling,
                         sandbox='read-only', wall_s=600, idle_s=120)
-            spec.setdefault('read_checkouts', saved['snapshot']['inputs']['read_checkouts'])
         if hasattr(self.port, "conn"):
             row = self.port.conn.execute('SELECT data FROM run_stats WHERE run_id=?', (run["id"],)).fetchone()
             if row:
-                spec["seat"] = json.loads(row["data"]).get("seat")
+                spec["seat"] = json.loads(row["data"]).get("seat") or spec.get("seat")
         handle = self.launcher.adopt(spec, _epoch(run["started"]))
         self.live[run["id"]] = (handle, task["id"], spec)
         self.port.append_event("run-adopted", {"run": run["id"], "placement": placement}, task["id"])
@@ -1189,8 +1138,7 @@ class Dispatcher:
         self.missed.pop(run_id, None)
         p = self.port
         if spec.get('role') == 'planner':
-            p.waiting.finish_replan(spec['request_id'], run_id, contract.ORPHANED,
-                                   snapshot=spec['snapshot']['inputs'], now=self.now())
+            self.replanning.finish(run_id, {'status': contract.ORPHANED, 'text': '', 'usage': {}}, now=self.now())
             return task_id
         p.finish_run(run_id, "orphaned", note="runner gone with no terminal status")
         if spec.get("role") in ("gate", "review"):
@@ -1349,7 +1297,7 @@ class Dispatcher:
         policy = p.get_policy()
         enabled = truthy(p.get_setting("dispatch_enabled", "false"))
         p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self.ci_runners.snapshot()})
-        planner_tasks = {tid for _, tid, sp in self.live.values() if sp.get("role") == "planner"}
+        planner_tasks = {tid for _, _, sp in self.live.values() if sp.get("role") == "planner" for tid in sp["task_ids"]}
         out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
         if not self.recovered:

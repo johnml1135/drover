@@ -165,30 +165,56 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-def assemble_replan(task, runs, findings, inputs, pinned=None) -> dict:
-    """A bounded director brief whose only output authority is a replan record."""
+
+def assemble_replans(items, pinned=None) -> dict:
+    """One bounded read-only brief; task authority and required context are never trimmed."""
     system = pinned if pinned is not None else pinned_text()
     budget = BUDGET_TOKENS['M']
-    history = [{'id': r['id'], 'outcome': r.get('outcome'), 'note': (r.get('note') or '')[:NOTE_MAX],
-                'gate': _last_lines(str(r.get('gate_receipt') or ''), EXCERPT_LINES)} for r in runs[-20:]]
-    findings = [str(f)[:500] for f in findings[-20:]]
-    finish = ("Read-only planner: do not edit files, commit, or run commands needing write access. "
-              "End with exactly one final JSON object: "
+    shared, references = [], {}
+    sections, history = [], []
+    for item in items:
+        inputs = dict(item['inputs'])
+        refs = []
+        for checkout in inputs.pop('read_checkouts', []):
+            key = (checkout['path'], checkout['sha'])
+            if key not in references:
+                references[key] = len(shared)
+                shared.append(checkout)
+            refs.append(references[key])
+        sections.append('\n\n'.join((
+            _task_block({**item['task'], 'write': False, 'description': item['task'].get('goal')}), _scope_block(item['task'].get('scope_files')),
+            json.dumps({**inputs, 'read_checkouts': refs}, ensure_ascii=True),
+            _section('Requesting blocker', json.dumps(item.get('trigger'))))))
+        runs = [{'id': r['id'], 'outcome': r.get('outcome'), 'note': (r.get('note') or '')[:NOTE_MAX],
+                 'gate': _last_lines(str(r.get('gate_receipt') or ''), EXCERPT_LINES)} for r in item['runs'][-20:]]
+        notes = [str(n)[:500] for n in item['notes'][-20:]]
+        history.append([runs, notes])
+    finish = ('Read-only planner: do not edit files, commit, or run commands needing write access. '
+              'Return each task independently. Allowed task results: '
               '{"action":"revise","goal":"...","acceptance":["..."],"scope_files":["..."]}, '
               '{"action":"split","tasks":[{"key":"a","title":"...","goal":"...",'
               '"acceptance":["..."],"scope_files":["..."],"deps":[]}, ...]}, or '
               '{"action":"needs-owner","question":"..."}. '
-              "Split into 2..8 children; dependencies name local keys. Preserve required acceptance and scope.")
+              'Split into 2..8 children; dependencies name local keys within that task only. '
+              'Preserve required acceptance and scope. End with exactly one final JSON object, '
+              'with no trailing text, at most 32768 UTF-8 bytes. ')
+    finish += ('Use the flat task result.' if len(items) == 1 else
+               'Use {"results":[{"task_id":"T-...","result":{allowed task result}}, ...]}. '
+               'Only the listed task IDs grant authority; no cross-task edits.')
+    mandatory = '\n\n'.join([*sections, _section('Shared immutable read checkouts', json.dumps(shared)), finish])
+    if estimate_tokens(system + mandatory) > budget:
+        raise BriefTooLarge('mandatory replan context exceeds brief budget')
     def build():
-        return '\n\n'.join((_task_block({**task, 'write': False, 'description': task.get('goal')}), _scope_block(task.get('scope_files')),
-                              json.dumps(inputs, ensure_ascii=True), finish,
-                              _section('Recent runs', json.dumps(history)),
-                              _section('Findings', json.dumps(findings))))
+        return mandatory + '\n\n' + '\n\n'.join(
+            _section('Recent runs and owner notes for ' + item['task']['id'], json.dumps(h))
+            for item, h in zip(items, history))
     user = build()
-    while estimate_tokens(system + user) > budget and (history or findings):
-        (history if history else findings).pop(0)
+    # Reduce membership before discarding optional history; a singleton keeps the old trimming policy.
+    if len(items) > 1 and estimate_tokens(system + user) > budget:
+        raise BriefTooLarge('complete batch exceeds brief budget')
+    while estimate_tokens(system + user) > budget and any(a or b for a, b in history):
+        for runs, notes in history:
+            if runs or notes:
+                (runs if runs else notes).pop(0)
         user = build()
-    tokens = estimate_tokens(system + user)
-    if tokens > budget:
-        raise BriefTooLarge(f"replan brief for {task['id']} exceeds {budget} tokens")
-    return dict(system_append=system, user_prompt=user, tokens=tokens, budget=budget)
+    return dict(system_append=system, user_prompt=user, tokens=estimate_tokens(system + user), budget=budget)

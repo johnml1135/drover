@@ -542,7 +542,8 @@ def claim_next(conn, worker=None, now=None, exclude=()):
     with tx(conn):
         skip = set(exclude or ())
         for cand in ready_tasks(conn, worker.get("repo"), worker.get("repo_path"), now):
-            if cand["id"] in skip:
+            from .waiting import Waiting
+            if cand["id"] in skip or Waiting(conn, actor).replan_busy(cand["id"]):
                 continue
             row = conn.execute(
                 "UPDATE tasks SET status='claimed', owner_kind=?, model=?, branch=COALESCE(?,branch), "
@@ -813,7 +814,7 @@ def archive_task(conn, task_id, archived=True, actor="owner"):
     with tx(conn):
         t = get_task(conn, task_id)
         if t["status"] in ("claimed", "running", "gated", "reviewed") or conn.execute(
-                "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
+                "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL AND role<>'planner'", (task_id,)).fetchone():
             raise ValueError("finish or cancel active work before archiving")
         conn.execute("UPDATE tasks SET archived=?,updated=? WHERE id=?", (int(archived), stamp(), task_id))
         event(conn, "task.archived", actor, {"archived": bool(archived)}, task_id=task_id)
@@ -831,6 +832,8 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
                 "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
             raise ValueError("finish or cancel active work before deleting")
         from .waiting import Waiting
+        if Waiting(conn, actor).replan_busy(task_id):
+            raise ValueError("finish or clear uncertain planner before deleting")
         Waiting(conn, actor).forget_task(task_id)
         # Landing metadata may reference a task; retain the audit batch but detach its membership.
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_landed'").fetchone():

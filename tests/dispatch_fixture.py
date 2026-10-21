@@ -28,6 +28,9 @@ class FakePipeline:
         self.ci = FixtureCI(self.runs_dir)
         self.current_head = lambda: 'abc1234'
 
+    def all_repos(self):
+        return {'p': self.prog}
+
     def repo(self, task):
         return self.prog
 
@@ -35,11 +38,6 @@ class FakePipeline:
         self.port.update_task(task['id'], worktree=WORKTREE)
         task['worktree'] = WORKTREE
         return WORKTREE
-
-    def replan_inputs(self, task) -> dict:
-        return dict(repo=task.get('repo') or 'p', branch=task.get('branch') or 'main',
-                    head=self.current_head(), dirty_digest='0' * 64,
-                    checkout=task.get('worktree') or WORKTREE, read_checkouts=[])
 
     def prepare_dispatch(self, task) -> bool:
         return True

@@ -83,7 +83,7 @@ class MigrationCase(unittest.TestCase):
             return report
         with patch('drover.ledger.waiting_migration.migrate_waiting', side_effect=capture):
             db.migrate(self.conn)
-        self.assertEqual(db.schema_version(self.conn), 7)
+        self.assertEqual(db.schema_version(self.conn), max(version for version, _ in schema.MIGRATIONS))
         self.assertEqual(len(reports), 1)
         report = reports[0]
         self.assertEqual(set(report), {'converted', 'retired', 'diagnostics'})
@@ -498,7 +498,7 @@ class CopyMigration(MigrationCase):
         self.assertEqual(logical(self.conn), before)
         self.conn.execute('DROP TRIGGER refuse_v7')
         db.migrate(self.conn)
-        self.assertEqual(db.schema_version(self.conn), 7)
+        self.assertEqual(db.schema_version(self.conn), max(version for version, _ in schema.MIGRATIONS))
 
     def test_readonly_backup_and_release_rehearsal(self):
         main = require(self, 'drover.ledger.waiting_migration', 'main')

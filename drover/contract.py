@@ -6,6 +6,7 @@ task_events kind 'gate' and decisions.outcome. Parsers accept the legacy shapes 
 import json
 
 CI_PASSED, CI_FAILED, CI_REFUSED = "passed", "failed", "refused"
+REPLAN_QUEUED, REPLAN_RUNNING, REPLAN_OWNER, REPLAN_DONE = "queued", "running", "owner", "done"
 
 GATED = 'gated'
 GATE_FAIL = 'gate-fail'
@@ -211,9 +212,8 @@ def parse_review_record(text):
     return None
 
 
-def parse_replan_record(text) -> dict | None:
+def _replan_object(text):
     """Read one final planner object from a bounded UTF-8 tail, failing closed."""
-    import re
     if not isinstance(text, str):
         return None
     tail = text.encode('utf-8')[-32768:].decode('utf-8', errors='replace').rstrip()
@@ -233,7 +233,14 @@ def parse_replan_record(text) -> dict | None:
         offset = end
     if len(objects) != 1 or objects[0][1] != len(tail):
         return None
-    record = objects[0][0]
+    return objects[0][0]
+
+
+def validate_replan_record(record):
+    """Validate the task-local action independently of its transport envelope."""
+    import re
+    if not isinstance(record, dict):
+        return None
 
     def string(value, limit):
         return isinstance(value, str) and 0 < len(value) <= limit and bool(value.strip())
@@ -270,3 +277,32 @@ def parse_replan_record(text) -> dict | None:
     else:
         valid = False
     return record if valid else None
+
+
+def parse_replan_record(text) -> dict | None:
+    """Preserve the singleton flat final-object contract."""
+    return validate_replan_record(_replan_object(text))
+
+
+def parse_replan_records(text, task_ids) -> dict:
+    """Read a bounded envelope; malformed members have no authority over siblings."""
+    task_ids = tuple(task_ids)
+    obj = _replan_object(text)
+    if len(task_ids) == 1:
+        record = validate_replan_record(obj)
+        return {task_ids[0]: record} if record else {}
+    if not isinstance(obj, dict) or set(obj) != {'results'} or not isinstance(obj['results'], list):
+        return {}
+    known, seen, records = set(task_ids), set(), dict.fromkeys(task_ids)
+    for entry in obj['results']:
+        if not isinstance(entry, dict) or not isinstance(entry.get('task_id'), str):
+            continue
+        tid = entry['task_id']
+        if tid not in known:
+            continue
+        if tid in seen:
+            records[tid] = None
+            continue
+        seen.add(tid)
+        records[tid] = validate_replan_record(entry.get('result')) if set(entry) == {'task_id', 'result'} else None
+    return records

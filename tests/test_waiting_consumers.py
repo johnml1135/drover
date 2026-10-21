@@ -499,12 +499,12 @@ class FinalReviewRegressions(LedgerCase):
         # Reload the public interface: the waits, rather than current metadata,
         # must retain a runnable leader and protect the follower until release.
         w = self.waiting()
-        self.assertIsNone(w.start_replan(requests[sources[1]]['id'], self.route, {}))
+        self.assertIsNone(w.start_replans([{'request_id': requests[sources[1]]['id'], 'inputs': {}}], self.route))
         for tid in sources:
-            started = w.start_replan(requests[tid]['id'], self.route, {})
+            started = w.start_replans([{'request_id': requests[tid]['id'], 'inputs': {}}], self.route)
             self.assertIsNotNone(started, 'metadata edits must not strand both planners')
             self.assertTrue(w.pending(('task', sources[1])))
-            w.finish_replan(requests[tid]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+            w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: self.revise}, None, fresh={requests[tid]['id']: {}})[requests[tid]['id']]
         self.assertEqual(w.replans(), [])
         self.assertEqual(w.pending(), [])
 
@@ -513,16 +513,14 @@ class FinalReviewRegressions(LedgerCase):
         epic = ops.create_epic(self.conn, 'p', 'Overlap')['id']
         sources = sorted(self.task(epic_id=epic, scope_files=['src/*']) for _ in range(2))
         follower = self.task('proposed', epic_id=epic, scope_files=['src/a'])
-        # Only the two ready sources request replans; the proposed follower stays protected.
         for tid in reversed(sources):
             w.request_replan(tid, 'owner-request')
         requests = {r['task_id']: r for r in w.replans()}
-        self.assertIsNone(w.start_replan(requests[sources[1]]['id'], self.route, {}))
-        for tid in sources:
-            started = w.start_replan(requests[tid]['id'], self.route, {})
-            self.assertIsNotNone(started, 'overlapping sources must have one runnable leader')
-            self.assertTrue(w.pending(('task', follower)))
-            w.finish_replan(requests[tid]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        started = w.start_replans([{'request_id': requests[t]['id'], 'inputs': {}} for t in sources], self.route)
+        self.assertIsNotNone(started, 'overlapping sources share one runnable batch')
+        self.assertTrue(w.pending(('task', follower)))
+        w.finish_replans(started['run_id'], contract.DONE, {t: self.revise for t in sources},
+                         fresh={r['id']: {} for r in requests.values()})
         self.assertEqual(w.replans(), [])
         self.assertEqual(w.pending(('task', follower)), [])
         self.assertEqual(self.status(follower), 'proposed')
@@ -533,11 +531,10 @@ class FinalReviewRegressions(LedgerCase):
         sources = sorted(self.task(epic_id=epic, scope_files=['src/*']) for _ in range(2))
         ops.event(self.conn, 'replan-request', 'owner', {}, epic_id=epic)
         requests = {r['task_id']: r for r in w.replans()}
-        self.assertIsNone(w.start_replan(requests[sources[1]]['id'], self.route, {}))
-        for tid in sources:
-            started = w.start_replan(requests[tid]['id'], self.route, {})
-            self.assertIsNotNone(started, 'epic sources must have one runnable leader')
-            w.finish_replan(requests[tid]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        started = w.start_replans([{'request_id': requests[t]['id'], 'inputs': {}} for t in sources], self.route)
+        self.assertIsNotNone(started, 'epic sources share one batch')
+        w.finish_replans(started['run_id'], contract.DONE, {t: self.revise for t in sources},
+                         fresh={r['id']: {} for r in requests.values()})
         self.assertEqual(w.replans(), [])
         self.assertTrue(all(self.status(tid) == 'ready' for tid in sources))
 
@@ -548,16 +545,13 @@ class FinalReviewRegressions(LedgerCase):
         ops.add_dep(self.conn, first, second)
         ops.event(self.conn, 'replan-request', 'owner', {}, epic_id=epic)
         requests = {r['task_id']: r for r in w.replans()}
-        self.assertIsNone(w.start_replan(requests[first]['id'], self.route, {}))
-        started = w.start_replan(requests[second]['id'], self.route, {})
-        self.assertIsNotNone(started, 'the prerequisite source leads regardless of task id')
-        self.assertIsNone(w.start_replan(requests[first]['id'], self.route, {}))
-        w.finish_replan(requests[second]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
-        self.assertTrue(w.pending(('task', second)), 'completed leader remains a protected follower')
-        self.assertIsNone(ops.claim_next(self.conn, {'actor': 'dispatcher'}))
-        started = w.start_replan(requests[first]['id'], self.route, {})
+        started = w.start_replans([{'request_id': requests[t]['id'], 'inputs': {}} for t in (first, second)], self.route)
         self.assertIsNotNone(started)
-        w.finish_replan(requests[first]['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        self.assertEqual([m['task_id'] for m in started['members']], [second, first])
+        self.assertTrue(w.pending(('task', second)), 'enrolled prerequisite remains protected')
+        self.assertIsNone(ops.claim_next(self.conn, {'actor': 'dispatcher'}))
+        w.finish_replans(started['run_id'], contract.DONE, {t: self.revise for t in (first, second)},
+                         fresh={r['id']: {} for r in requests.values()})
         self.assertEqual(w.replans(), [])
         self.assertEqual(w.pending(), [])
 
@@ -587,8 +581,8 @@ class FinalReviewRegressions(LedgerCase):
         tid = self.task()
         request = w.request_replan(tid, 'owner-request')
         event = ops.events(self.conn, task_id=tid, kind='replan-request')[-1]
-        started = w.start_replan(request['id'], self.route, {})
-        w.finish_replan(request['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        started = w.start_replans([{'request_id': request['id'], 'inputs': {}}], self.route)
+        w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: self.revise}, None, fresh={request['id']: {}})[request['id']]
         before = logical(self.conn)
         w.resolve(event)
         self.assertEqual(w.replans(), [], 'completed request replay must not queue another replan')
@@ -602,8 +596,8 @@ class FinalReviewRegressions(LedgerCase):
         request = w.request_replan(tid, 'owner-request')
         self.assertEqual(w.request_replan(tid, 'second-request')['id'], request['id'])
         event = ops.events(self.conn, task_id=tid, kind='replan-request')[-1]
-        started = w.start_replan(request['id'], self.route, {})
-        w.finish_replan(request['id'], started['run_id'], contract.DONE, self.revise, snapshot={})
+        started = w.start_replans([{'request_id': request['id'], 'inputs': {}}], self.route)
+        w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: self.revise}, None, fresh={request['id']: {}})[request['id']]
         before = logical(self.conn)
         self.waiting().resolve(event)
         self.assertEqual(w.replans(), [], 'coalesced event replay must not queue another replan')
@@ -616,9 +610,8 @@ class FinalReviewRegressions(LedgerCase):
         source, follower = self.task(), self.task()
         ops.add_dep(self.conn, follower, source)
         request = w.request_replan(source, 'owner-request')
-        started = w.start_replan(request['id'], self.route, {})
-        w.finish_replan(request['id'], started['run_id'], contract.DONE,
-                        {'action': 'needs-owner', 'question': 'Which API?'}, snapshot={})
+        started = w.start_replans([{'request_id': request['id'], 'inputs': {}}], self.route)
+        w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: {'action': 'needs-owner', 'question': 'Which API?'}}, None, fresh={request['id']: {}})[request['id']]
         question, = w.questions()
         before = logical(self.conn)
         with self.assertRaises(RuntimeError):

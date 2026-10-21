@@ -112,7 +112,7 @@ A consumer's labelled, explained request that its provider change its work, acce
 _Avoid_: Bounce, reopen
 
 **Run**:
-One worker's attempt at one task. A task may have several runs (retries, escalations), and a run may span several sessions.
+One worker's attempt at one task, or one read-only planner run serving one or more replan requests. A task may have several runs (retries, escalations), and a run may span several sessions.
 _Avoid_: Attempt, job
 
 **Session**:

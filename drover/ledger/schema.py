@@ -154,4 +154,32 @@ CREATE TABLE base_gate (repo TEXT NOT NULL, sha TEXT NOT NULL,
  status TEXT NOT NULL CHECK(status IN ('red','green')), at TEXT NOT NULL, PRIMARY KEY(repo,sha));
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7)]
+V8 = """
+CREATE TABLE replan_run_requests (
+ run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+ request_id INTEGER NOT NULL REFERENCES replan_requests(id) ON DELETE CASCADE,
+ position INTEGER NOT NULL CHECK(position>=0),
+ finished_event INTEGER REFERENCES task_events(id),
+ PRIMARY KEY(run_id,request_id), UNIQUE(run_id,position));
+CREATE INDEX replan_membership_request ON replan_run_requests(request_id,run_id);
+INSERT INTO replan_run_requests(run_id,request_id,position,finished_event)
+SELECT r.current_run,r.id,0,
+ (SELECT e.id FROM task_events e WHERE e.kind='replan-attempt-finished'
+  AND json_extract(e.data,'$.request')=r.id AND json_extract(e.data,'$.run')=r.current_run
+  ORDER BY e.id DESC LIMIT 1)
+FROM replan_requests r WHERE r.current_run IS NOT NULL;
+INSERT OR IGNORE INTO replan_run_requests(run_id,request_id,position,finished_event)
+SELECT run.id,r.id,0,
+ (SELECT e.id FROM task_events e WHERE e.kind='replan-attempt-finished'
+  AND json_extract(e.data,'$.request')=r.id AND json_extract(e.data,'$.run')=run.id
+  ORDER BY e.id DESC LIMIT 1)
+FROM task_events access JOIN runs run ON run.id=json_extract(access.data,'$.run')
+ JOIN replan_requests r ON r.id=json_extract(access.data,'$.request_id')
+WHERE access.kind='dispatch.access' AND run.role='planner' AND EXISTS (
+ SELECT 1 FROM task_events cancel WHERE cancel.kind='launch-cancel'
+ AND json_extract(cancel.data,'$.run')=run.id) AND NOT EXISTS (
+ SELECT 1 FROM task_events cleared WHERE cleared.kind='launch-cancel-cleared'
+ AND json_extract(cleared.data,'$.run')=run.id);
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8)]

@@ -146,11 +146,12 @@ def build_argv(spec):
             scratch = placement_mod.to_wsl_path(str(scratch)) if placement == "wsl" else placement_mod.to_windows_path(scratch)
             settings["env"].update({"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch})
         if readonly:
-            tools = "Read,Grep,Glob,Bash" if placement == "wsl" else "Read,Grep,Glob"
+            shell = placement == "wsl" and spec.get("role") != "planner"
+            tools = "Read,Grep,Glob,Bash" if shell else "Read,Grep,Glob"
             argv.extend(["--tools", tools])
             permissions["deny"].extend(["Edit", "Write", "NotebookEdit"])
-            if placement != "wsl":
-                # Without a filesystem sandbox, even Bash could write.
+            if not shell:
+                # Planners have no shell authority; other read-only roles need a filesystem sandbox.
                 permissions["deny"].append("Bash")
         else:
             task_access.check_read_roots(spec["cwd"], spec.get("read_dirs") or [])

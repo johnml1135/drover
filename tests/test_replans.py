@@ -21,10 +21,27 @@ SPLIT = {'action': 'split', 'tasks': [
 ]}
 
 
+def inspected(case, task):
+    from drover.replan import Replanning
+    for key in ('worktree', 'branch'):
+        if task.get(key) != case.get(task['id']).get(key):
+            ops.update_task(case.conn, task['id'], **{key: task.get(key)})
+    waiting = case.port.waiting
+    if not any(r['task_id'] == task['id'] for r in waiting.replans()):
+        waiting.request_replan(task['id'], 'owner-request')
+    planning = Replanning(case.pipe)
+    batch = planning.prepare(lambda candidate, inputs: ROUTE if candidate['id'] == task['id'] else None, now=1000)
+    inputs = batch.members[0]['snapshot']['inputs']
+    planning.finish(batch.run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=1000)
+    waiting.expire(100000)
+    return inputs
+
+
 class Records(PipelineBase):
     def test_parser_bounds_and_brief(self):
         parse = require(self, 'drover.contract', 'parse_replan_record')
-        assemble = require(self, 'drover.brief', 'assemble_replan')
+        assemble = lambda task, runs, notes, inputs: require(self, 'drover.brief', 'assemble_replans')([
+            dict(task=task, runs=runs, notes=notes, trigger=None, inputs=inputs)])
         for record in (REVISE, OWNER, SPLIT):
             self.assertEqual(parse('Planner observations\n' + json.dumps(record) + '\n'), record)
         invalid = [
@@ -65,14 +82,14 @@ class Records(PipelineBase):
             assemble({**task, 'goal': 'required spec ' * 100000}, [], [], inputs)
 
     def test_inputs_detect_dirty_and_branch_changes(self):
-        method = getattr(pipeline.Pipeline, 'replan_inputs', None)
-        self.assertTrue(callable(method), 'Pipeline.replan_inputs interface is absent')
+        method = require(self, 'drover.replan', 'Replanning')
+        self.assertTrue(callable(method), 'Replanning interface is absent')
         cfg = config.validate({'paths': {'state_dir': str(Path(self.tmp.name) / 'state')}})
         config.use(cfg)
         self.addCleanup(config.reset)
         tid = self.task()
         checkout = Path(self.pipe.worktree(self.get(tid)))
-        initial = self.pipe.replan_inputs(self.get(tid))
+        initial = inspected(self, self.get(tid))
         self.assertEqual(initial['head'], self.fix.git('rev-parse', 'HEAD', cwd=checkout))
         head = initial['head']
         digests = [initial['dirty_digest']]
@@ -82,7 +99,7 @@ class Records(PipelineBase):
             (checkout / filename).write_text(content)
             if staged:
                 self.fix.git('add', filename, cwd=checkout)
-            current = self.pipe.replan_inputs(self.get(tid))
+            current = inspected(self, self.get(tid))
             self.assertEqual(current['head'], head)
             self.assertNotEqual(current['dirty_digest'], digests[-1])
             digests.append(current['dirty_digest'])
@@ -95,27 +112,27 @@ class Records(PipelineBase):
             # Git on Windows can still exercise tracked/index/untracked digests above.
             self.assertIn(exc.errno, (1, 13, 1314))
         else:
-            symlink = self.pipe.replan_inputs(self.get(tid))
+            symlink = inspected(self, self.get(tid))
             outside.write_text('changed outside checkout')
-            self.assertEqual(self.pipe.replan_inputs(self.get(tid))['dirty_digest'], symlink['dirty_digest'])
+            self.assertEqual(inspected(self, self.get(tid))['dirty_digest'], symlink['dirty_digest'])
             link.unlink()
             link.symlink_to(Path(self.tmp.name) / 'another')
-            self.assertNotEqual(self.pipe.replan_inputs(self.get(tid))['dirty_digest'], symlink['dirty_digest'])
+            self.assertNotEqual(inspected(self, self.get(tid))['dirty_digest'], symlink['dirty_digest'])
         owner_head = self.fix.git('rev-parse', 'HEAD')
         owner_index = self.fix.git('ls-files', '--stage')
         self.fix.commit('new-head.txt', cwd=checkout)
-        self.assertNotEqual(self.pipe.replan_inputs(self.get(tid))['head'], head)
+        self.assertNotEqual(inspected(self, self.get(tid))['head'], head)
         read_repo = self.fix.repo
         read_task = self.task()
-        before = self.pipe.replan_inputs(self.get(read_task))
+        before = inspected(self, self.get(read_task))
         self.fix.commit('read-moved.txt')
-        after = self.pipe.replan_inputs(self.get(read_task))
+        after = inspected(self, self.get(read_task))
         self.assertNotEqual(before['read_checkouts'], after['read_checkouts'])
         owner_head = self.fix.git('rev-parse', 'HEAD')
         owner_index = self.fix.git('ls-files', '--stage')
         owner_status = self.fix.git('status', '--porcelain')
         missing = {**self.get(tid), 'worktree': str(Path(self.tmp.name) / 'missing')}
-        fallback = self.pipe.replan_inputs(missing)
+        fallback = inspected(self, missing)
         self.assertNotEqual(fallback['checkout'], str(read_repo))
         self.assertEqual(self.fix.git('rev-parse', 'HEAD'), owner_head)
         self.assertEqual(self.fix.git('ls-files', '--stage'), owner_index)
@@ -133,7 +150,7 @@ class Replans(LedgerCase):
         return w, tid, w.request_replan(tid, 'owner-request')
 
     def start(self, w, request, now=1000):
-        started = w.start_replan(request['id'], ROUTE, self.inputs(), now=now)
+        started = w.start_replans([{'request_id': request['id'], 'inputs': self.inputs()}], ROUTE, now=now)
         self.assertIsInstance(started, dict)
         self.assertIsInstance(started['run_id'], int)
         return started
@@ -213,11 +230,11 @@ class Replans(LedgerCase):
         for n, outcome in enumerate(('provider-error', 'launch-error', 'orphaned', 'unverified',
                                       'provider-error', 'provider-error', 'provider-error'), 1):
             sp = self.start(w, r, now)
-            self.assertIsNone(w.start_replan(r['id'], ROUTE, self.inputs(), now=now))
+            self.assertIsNone(w.start_replans([{'request_id': r['id'], 'inputs': self.inputs()}], ROUTE, now=now))
             fresh = self.inputs()
             if outcome == 'unverified':
                 fresh['dirty_digest'] = 'c' * 64
-            done = w.finish_replan(r['id'], sp['run_id'], outcome, snapshot=fresh, now=now)
+            done = w.finish_replans(sp['run_id'], outcome, {w.replan_run(sp['run_id'])['members'][0]['task_id']: None}, None, fresh={r['id']: fresh}, now=now)[r['id']]
             self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 0)
             row, = [row for row in w.pending(('task', tid)) if row['kind'] == 'deadline']
             delay = min(1800, 60 * 2 ** min(n - 1, 5))
@@ -226,7 +243,7 @@ class Replans(LedgerCase):
             self.conn = connect(self.path)
             w = self.waiting()
             self.assertEqual([row['timeout_at'] for row in w.pending(('task', tid)) if row['kind'] == 'deadline'], [now + delay])
-            self.assertEqual(w.finish_replan(r['id'], sp['run_id'], outcome, snapshot=fresh, now=now + 1), done)
+            self.assertEqual(w.finish_replans(sp['run_id'], outcome, {w.replan_run(sp['run_id'])['members'][0]['task_id']: None}, None, fresh={r['id']: fresh}, now=now + 1)[r['id']], done)
             now += delay
             w.expire(now)
         for changed in ('goal', 'deps', 'branch', 'read', 'dirty'):
@@ -239,7 +256,7 @@ class Replans(LedgerCase):
             else:
                 inputs[{'branch': 'head', 'read': 'read_checkouts', 'dirty': 'dirty_digest'}[changed]] = (
                     [{'entry': {'repo': 'p'}, 'path': self.tmp.name, 'sha': 'b' * 40}] if changed == 'read' else 'd' * 40)
-            w.finish_replan(r['id'], sp['run_id'], 'done', REVISE, snapshot=inputs, now=now)
+            w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: REVISE}, None, fresh={r['id']: inputs}, now=now)[r['id']]
             self.assertNotEqual(ops.get_task(self.conn, tid)['goal'], REVISE['goal'])
             w.expire(now + 1800)
             now += 1800
@@ -247,7 +264,7 @@ class Replans(LedgerCase):
         # Force a real database failure rather than mocking a private Waiting helper.
         self.conn.execute("CREATE TRIGGER refuse_planner BEFORE INSERT ON runs WHEN new.role='planner' BEGIN SELECT RAISE(ABORT,'injected'); END")
         with self.assertRaises(sqlite_error()):
-            w.start_replan(r['id'], ROUTE, self.inputs(), now=now)
+            w.start_replans([{'request_id': r['id'], 'inputs': self.inputs()}], ROUTE, now=now)
         self.assertEqual(logical(self.conn), before)
 
     def test_replan_release_and_owner_replacement(self):
@@ -262,7 +279,7 @@ class Replans(LedgerCase):
             r = w.request_replan(tid, 'owner-request')
             approved = ops.get_task(self.conn, tid)['approved_at']
             sp = self.start(w, r)
-            out = w.finish_replan(r['id'], sp['run_id'], 'done', record, snapshot=self.inputs(), now=1001)
+            out = w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: record}, None, fresh={r['id']: self.inputs()}, now=1001)[r['id']]
             task = ops.get_task(self.conn, tid)
             self.assertEqual((task['branch'], task['worktree'], task['approved_at'], task['model_pin']),
                              ('topic', self.tmp.name, approved, pin))
@@ -278,7 +295,7 @@ class Replans(LedgerCase):
                 ops.answer_question(self.conn, q['id'], text='Use the stable API')
                 self.assertEqual(self.status(tid), 'ready')
                 self.assertEqual(self.status(follower), 'blocked')
-            self.assertEqual(w.finish_replan(r['id'], sp['run_id'], 'done', record, snapshot=self.inputs()), out)
+            self.assertEqual(w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: record}, None, fresh={r['id']: self.inputs()})[r['id']], out)
 
     def test_limits_invalid_timeout_and_reset(self):
         w = self.waiting()
@@ -287,7 +304,7 @@ class Replans(LedgerCase):
             ops.set_setting(self.conn, 'replan_limit', invalid)
             before = logical(self.conn)
             with self.subTest(value=invalid), self.assertRaises(ValueError):
-                w.start_replan(r['id'], ROUTE, self.inputs())
+                w.start_replans([{'request_id': r['id'], 'inputs': self.inputs()}], ROUTE)
             self.assertEqual(logical(self.conn), before)
             ops.set_status(self.conn, tid, 'cancelled', actor='owner')
         for limit in (0, 1, 2):
@@ -295,10 +312,10 @@ class Replans(LedgerCase):
             _, tid, r = self.request()
             for n in range(limit):
                 sp = self.start(w, r)
-                out = w.finish_replan(r['id'], sp['run_id'], 'timeout' if n == 0 else 'no-record', snapshot=self.inputs())
+                out = w.finish_replans(sp['run_id'], 'timeout' if n == 0 else 'no-record', {w.replan_run(sp['run_id'])['members'][0]['task_id']: None}, None, fresh={r['id']: self.inputs()})[r['id']]
                 self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], n + 1)
-                self.assertEqual(w.finish_replan(r['id'], sp['run_id'], 'timeout', snapshot=self.inputs()), out)
-            self.assertIsNone(w.start_replan(r['id'], ROUTE, self.inputs()))
+                self.assertEqual(w.finish_replans(sp['run_id'], 'timeout', {w.replan_run(sp['run_id'])['members'][0]['task_id']: None}, None, fresh={r['id']: self.inputs()})[r['id']], out)
+            self.assertIsNone(w.start_replans([{'request_id': r['id'], 'inputs': self.inputs()}], ROUTE))
             self.assertEqual(self.status(tid), 'needs-owner')
             q = next(q for q in ops.open_questions(self.conn) if q['target_id'] == tid)
             ops.answer_question(self.conn, q['id'], text='Revise the requirements')
@@ -306,7 +323,7 @@ class Replans(LedgerCase):
         ops.set_setting(self.conn, 'replan_limit', '2')
         _, tid, r = self.request()
         sp = self.start(w, r)
-        w.finish_replan(r['id'], sp['run_id'], 'done', REVISE, snapshot=self.inputs())
+        w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: REVISE}, None, fresh={r['id']: self.inputs()})[r['id']]
         self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 1)
         # Successful replanning consumes budget but only an external owner action resets it.
         self.assertEqual(ops.get_task(self.conn, tid)['retry_after_run'], 0)
@@ -324,7 +341,7 @@ class Replans(LedgerCase):
 
     def test_split_graph_rollback_release(self):
         w, tid, follower, prerequisite, r, sp = self.split_fixture()
-        out = w.finish_replan(r['id'], sp['run_id'], 'done', SPLIT, snapshot=self.inputs())
+        out = w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: SPLIT}, None, fresh={r['id']: self.inputs()})[r['id']]
         a, b = out['children']
         self.assertEqual(len(set(out['children'])), 2)
         for child in (a, b):
@@ -346,22 +363,22 @@ class Replans(LedgerCase):
             invalid = copy.deepcopy(SPLIT)
             invalid['tasks'][0]['deps'] = deps
             before = {t['id'] for t in ops.list_tasks(self.conn)}
-            w.finish_replan(r['id'], sp['run_id'], 'done', invalid, snapshot=self.inputs())
+            w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: invalid}, None, fresh={r['id']: self.inputs()})[r['id']]
             self.assertEqual({t['id'] for t in ops.list_tasks(self.conn)}, before)
             self.assertNotEqual(self.status(tid), 'cancelled')
 
     def test_split_collision_replay(self):
         w, tid, follower, prerequisite, r, sp = self.split_fixture()
-        out = w.finish_replan(r['id'], sp['run_id'], 'done', SPLIT, snapshot=self.inputs())
+        out = w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: SPLIT}, None, fresh={r['id']: self.inputs()})[r['id']]
         before = logical(self.conn)
-        self.assertEqual(w.finish_replan(r['id'], sp['run_id'], 'done', SPLIT, snapshot=self.inputs()), out)
+        self.assertEqual(w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: SPLIT}, None, fresh={r['id']: self.inputs()})[r['id']], out)
         self.assertEqual(logical(self.conn), before)
         self.assertEqual({d['kind'] for d in ops.deps_of(self.conn, follower) if d['depends_on'] in out['children']}, {'blocks'})
         w, tid, follower, prerequisite, r, sp = self.split_fixture()
         before = logical(self.conn)
         self.conn.execute("CREATE TRIGGER refuse_child BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT,'injected'); END")
         with self.assertRaises(sqlite_error()):
-            w.finish_replan(r['id'], sp['run_id'], 'done', SPLIT, snapshot=self.inputs())
+            w.finish_replans(sp['run_id'], 'done', {w.replan_run(sp['run_id'])['members'][0]['task_id']: SPLIT}, None, fresh={r['id']: self.inputs()})[r['id']]
         self.assertEqual(logical(self.conn), before)
 
 
@@ -593,9 +610,9 @@ class PlannerRegressions(PlannerDispatchCase):
     def test_same_commit_branch_switch_invalidates_inputs(self):
         tid = self.task()
         checkout = self.pipe.worktree(self.get(tid))
-        before = self.pipe.replan_inputs(self.get(tid))
+        before = inspected(self, self.get(tid))
         self.fix.git('switch', '-c', 'different-branch', cwd=checkout)
-        after = self.pipe.replan_inputs(self.get(tid))
+        after = inspected(self, self.get(tid))
         self.assertEqual(before['head'], after['head'])
         self.assertNotEqual(before['branch'], after['branch'])
 
@@ -612,7 +629,7 @@ class PlannerSplitBounds(LedgerCase):
             record = copy.deepcopy(SPLIT)
             record['tasks'][0][field] = []
             before = {t['id'] for t in ops.list_tasks(self.conn)}
-            w.finish_replan(request['id'], started['run_id'], contract.DONE, record, snapshot=self.inputs())
+            w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: record}, None, fresh={request['id']: self.inputs()})[request['id']]
             self.assertEqual({t['id'] for t in ops.list_tasks(self.conn)}, before)
             self.assertNotEqual(self.status(tid), 'cancelled')
 
@@ -630,8 +647,7 @@ class SingletonCharacterization(LedgerCase):
                 w, tid, request = self.request()
                 approved = ops.get_task(self.conn, tid)['approved_at']
                 started = self.start(w, request)
-                out = w.finish_replan(request['id'], started['run_id'], contract.DONE,
-                                      record, snapshot=self.inputs(), now=1001)
+                out = w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: record}, None, fresh={request['id']: self.inputs()}, now=1001)[request['id']]
                 self.assertEqual(self.status(tid), expected)
                 self.assertEqual(ops.get_task(self.conn, tid)['approved_at'], approved)
                 self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 1)
@@ -651,11 +667,10 @@ class SingletonCharacterization(LedgerCase):
         ops.set_setting(self.conn, 'replan_limit', '1')
         self.assertIsNone(contract.parse_replan_record('{"action":"revise"'))
         started = self.start(w, request)
-        w.finish_replan(request['id'], started['run_id'], contract.NO_RECORD,
-                        snapshot=self.inputs(), now=1001)
+        w.finish_replans(started['run_id'], contract.NO_RECORD, {w.replan_run(started['run_id'])['members'][0]['task_id']: None}, None, fresh={request['id']: self.inputs()}, now=1001)[request['id']]
         self.assertEqual(ops.get_task(self.conn, tid)['goal'], 'Original')
         self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 1)
-        self.assertIsNone(w.start_replan(request['id'], ROUTE, self.inputs(), now=1002))
+        self.assertIsNone(w.start_replans([{'request_id': request['id'], 'inputs': self.inputs()}], ROUTE, now=1002))
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
         question, = ops.open_questions(self.conn)
         ops.answer_question(self.conn, question['id'], text='Try the supported interface')
@@ -667,13 +682,12 @@ class SingletonCharacterization(LedgerCase):
                                        (1060, contract.LAUNCH_ERROR, 1180),
                                        (1180, contract.ORPHANED, 1420)):
             started = self.start(w, request, now)
-            w.finish_replan(request['id'], started['run_id'], outcome,
-                            snapshot=self.inputs(), now=now)
+            w.finish_replans(started['run_id'], outcome, {w.replan_run(started['run_id'])['members'][0]['task_id']: None}, None, fresh={request['id']: self.inputs()}, now=now)[request['id']]
             self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 0)
             self.assertEqual([r['timeout_at'] for r in w.pending(('task', tid))
                               if r['kind'] == 'deadline'], [deadline])
             w.expire(deadline - 1)
-            self.assertIsNone(w.start_replan(request['id'], ROUTE, self.inputs(), now=deadline - 1))
+            self.assertIsNone(w.start_replans([{'request_id': request['id'], 'inputs': self.inputs()}], ROUTE, now=deadline - 1))
             w.expire(deadline)
             self.assertFalse(any(r['kind'] == 'deadline' for r in w.pending(('task', tid))))
 
@@ -684,8 +698,7 @@ class SingletonCharacterization(LedgerCase):
             with self.subTest(field=field):
                 w, tid, request = self.request()
                 started = self.start(w, request)
-                w.finish_replan(request['id'], started['run_id'], contract.DONE, REVISE,
-                                snapshot={**self.inputs(), field: value}, now=1001)
+                w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: REVISE}, None, fresh={request['id']: {**self.inputs(), field: value}}, now=1001)[request['id']]
                 self.assertEqual(ops.get_task(self.conn, tid)['goal'], 'Original')
                 self.assertEqual(ops.get_task(self.conn, tid)['replans_used'], 0)
                 self.assertEqual(ops.list_runs(self.conn, tid)[0]['outcome'], contract.UNVERIFIED)
@@ -694,8 +707,7 @@ class SingletonCharacterization(LedgerCase):
         w, tid, request = self.request()
         started = self.start(w, request)
         ops.set_status(self.conn, tid, states.CANCELLED, actor='owner')
-        w.finish_replan(request['id'], started['run_id'], contract.DONE, REVISE,
-                        snapshot=self.inputs(), now=1001)
+        w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: REVISE}, None, fresh={request['id']: self.inputs()}, now=1001)[request['id']]
         self.assertEqual(self.status(tid), states.CANCELLED)
         self.assertEqual(ops.get_task(self.conn, tid)['goal'], 'Original')
         self.assertIsNotNone(ops.list_runs(self.conn, tid)[0]['ended'])
@@ -705,11 +717,9 @@ class SingletonCharacterization(LedgerCase):
         w, tid, request = self.request()
         started = self.start(w, request)
         usage = dict(tokens_in=101, tokens_out=37, tokens_cached=11)
-        first = w.finish_replan(request['id'], started['run_id'], contract.DONE, SPLIT,
-                                usage, snapshot=self.inputs(), now=1001)
+        first = w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: SPLIT}, usage, fresh={request['id']: self.inputs()}, now=1001)[request['id']]
         before = logical(self.conn)
-        second = w.finish_replan(request['id'], started['run_id'], contract.DONE, SPLIT,
-                                 usage, snapshot=self.inputs(), now=1002)
+        second = w.finish_replans(started['run_id'], contract.DONE, {w.replan_run(started['run_id'])['members'][0]['task_id']: SPLIT}, usage, fresh={request['id']: self.inputs()}, now=1002)[request['id']]
         self.assertEqual(second, first)
         self.assertEqual(logical(self.conn), before)
         run, = ops.list_runs(self.conn, tid)
@@ -748,7 +758,7 @@ class PlannerPredecessors(PlannerDispatchCase):
                     if stage == 'review' else completed)
                 self.d.tick()
                 planner, = [s for s in self.planners() if s['task']['id'] == tid]
-                self.assertEqual(planner['request_id'], request['id'])
+                self.assertEqual(planner['request_ids'], [request['id']])
                 self.assertEqual(ops.list_runs(self.conn, tid)[0]['outcome'], 'unverified')
                 self.assertTrue(ops.events(self.conn, task_id=tid, kind='replan.stage-finished'))
                 self.assertEqual(self.status(tid), 'blocked')

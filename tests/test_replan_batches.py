@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from drover import brief, config, contract, launch, runner
 from drover.ledger import connect, db, ops, schema, states
-from drover.ledger.waiting import Waiting, cause_key
+from drover.ledger.waiting import Waiting, cause_key, REPLAN, OWNER_ANSWER
 from tests import test_replans as single
 from tests import test_waiting as waiting_tests
 
@@ -105,7 +105,12 @@ class Migration(waiting_tests.LedgerCase):
         self.assertEqual((request['task_id'], request['requesting_event']), ('T-legacy', event))
         after = ops.get_task(conn, 'T-legacy')
         self.assertEqual((after['title'], after['approved_at']), (before['title'], before['approved_at']))
-        self.assertEqual(Waiting(conn, 'owner').pending(('task', 'T-legacy'))[0]['kind'], 'replan')
+        pending = Waiting(conn, 'owner').pending(('task', 'T-legacy'))
+        replan, = [row for row in pending if row['kind'] == REPLAN]
+        self.assertEqual(replan['kind'], REPLAN)
+        diagnostic, = [row for row in pending if row['kind'] == OWNER_ANSWER]
+        self.assertIsNotNone(diagnostic['cause'])
+        self.assertTrue(ops.events(conn, kind='waiting.migration-diagnostic'))
         self.assertEqual(conn.execute('SELECT count(*) FROM replan_run_requests').fetchone()[0], 0)
         rows = waiting_tests.logical(conn)
         db.migrate(conn)
@@ -911,3 +916,86 @@ class WaitRelease(BatchLedgerCase):
                         ops.unblock(self.conn, follower, actor='owner')
                     self.assertEqual(self.status(follower), states.READY if index == 3 else states.BLOCKED)
                 self.assertEqual(w.pending(('task', follower)), [])
+
+
+class PlannerPermissionsIntegration(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'executable stand-in runs on WSL; reviewer checks Windows')
+    def test_wsl_claude_planner_command_denies_bash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'backend'
+            executable.write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            executable.chmod(0o755)
+            argv, stdin = launch.build_argv(dict(role='planner', write=False, backend='claude',
+                binary=str(executable), model='opus-5.5', effort='high', cwd=directory,
+                placement='wsl', system_append='read-only policy', user_prompt='inspect only'))
+            observed = json.loads(subprocess.run(argv, input=stdin, text=True, capture_output=True,
+                                                 check=True, cwd=directory, timeout=5).stdout)
+            permissions = json.loads(observed[observed.index('--settings') + 1])['permissions']
+            self.assertTrue({'Edit', 'Write', 'Bash'} <= set(permissions['deny']))
+            self.assertNotIn('Bash', observed[observed.index('--tools') + 1].split(','))
+
+
+class BatchRegressions(BatchLedgerCase):
+    def test_archived_member_aborts_unlaunched_batch(self):
+        w, tids, requests = self.requests()
+        started = self.enroll(w, requests)
+        ops.archive_task(self.conn, tids[0])
+        self.assertFalse(w.verify_replans(started['run_id'], {r['id']: self.inputs() for r in requests}, now=1001))
+        self.assertEqual(self.physical(tids)[0]['outcome'], contract.UNVERIFIED)
+        self.assertEqual([ops.get_task(self.conn, tid)['replans_used'] for tid in tids], [0, 0])
+        self.assertEqual(self.deadline(w, tids[1]), [])
+        remaining, = w.replans()
+        self.assertEqual((remaining['task_id'], remaining['state']), (tids[1], contract.REPLAN_QUEUED))
+
+
+class PreparationRegressions(BatchPipelineCase):
+    def test_exhausted_seed_does_not_starve_other_members(self):
+        planning = self.planning()
+        tids, _ = self.queue(3)
+        ops.set_setting(self.conn, 'replan_limit', '1')
+        first = self.prepare(planning, lambda task, inputs: ROUTE if task['id'] == tids[0] else None)
+        planning.finish(first.run_id, single.result(contract.NO_RECORD, '{invalid'), now=1001)
+        remaining = self.prepare(planning, now=1002)
+        self.assertIsNotNone(remaining)
+        self.assertEqual(set(remaining.task_ids), set(tids[1:]))
+        self.assertEqual(self.status(tids[0]), states.NEEDS_OWNER)
+
+
+class EnvelopeRegressions(BatchPipelineCase):
+    def test_valid_empty_envelope_retries_members_but_finishes_execution(self):
+        planning = self.planning()
+        tids, _ = self.queue()
+        batch = self.prepare(planning)
+        planning.finish(batch.run_id, single.result(contract.NO_RECORD, '{"results":[]}'), now=1001)
+        run = ops.list_runs(self.conn, batch.task['id'])[0]
+        self.assertEqual(run['outcome'], contract.DONE)
+        self.assertEqual([self.get(tid)['replans_used'] for tid in tids], [0, 0])
+        self.assertTrue(all(any(w['kind'] == 'deadline' for w in self.waiting().pending(('task', tid))) for tid in tids))
+
+
+class AssignmentRegressions(BatchPipelineCase):
+    def test_restore_keeps_assignment_before_access_event(self):
+        planning = self.planning()
+        self.queue()
+        assignment = {**ROUTE, 'seat': 'other', 'harness': 'other', 'placement': 'wsl'}
+        batch = self.prepare(planning, lambda task, inputs: assignment)
+        restored = planning.restore(batch.run_id)
+        self.assertEqual(restored.assignment, batch.assignment)
+        self.assertEqual(ops.events(self.conn, kind='dispatch.access'), [])
+
+
+class EnrollmentRegressions(BatchPipelineCase):
+    def test_owner_edit_before_enrollment_rejects_stale_brief(self):
+        planning = self.planning()
+        tids, _ = self.queue()
+        real = Waiting.start_replans
+        def changed(waiting, *args, **kwargs):
+            ops.update_task(self.conn, tids[0], goal='Owner edit before enrollment')
+            return real(waiting, *args, **kwargs)
+        with patch.object(Waiting, 'start_replans', changed):
+            self.assertIsNone(self.prepare(planning))
+        self.assertEqual([r for tid in tids for r in ops.list_runs(self.conn, tid)], [])
+        self.assertEqual(self.get(tids[0])['goal'], 'Owner edit before enrollment')
+        retry = self.prepare(planning)
+        self.assertIn('Owner edit before enrollment', retry.brief['user_prompt'])
