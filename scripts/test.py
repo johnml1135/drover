@@ -98,7 +98,7 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     chosen = [m.removesuffix('.py').replace('/', '.').replace('\\', '.') for m in args.modules] or modules()
-    env = {**os.environ, 'GIT_CEILING_DIRECTORIES': tempfile.gettempdir(), 'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': '', 'PYTHONUNBUFFERED': '1'}
+    env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': '', 'PYTHONUNBUFFERED': '1'}
     if args.tier == 'integration':
         env['DROVER_TESTS'] = 'integration'
     else:
@@ -121,6 +121,8 @@ def main(argv=None):
         env['DROVER_TEST_TMPDIR'] = tempfile.mkdtemp(prefix='drover-fix-gate-', dir=base)
     else:
         Path(env['DROVER_TEST_TMPDIR']).mkdir(parents=True, exist_ok=True)
+    env['GIT_CEILING_DIRECTORIES'] = os.pathsep.join(
+        x for x in (env.get('GIT_CEILING_DIRECTORIES'), str(Path(env['DROVER_TEST_TMPDIR']).absolute().parent)) if x)
     timings = load_timings()
     chosen.sort(key=lambda m: -timings.get(m, (ROOT / 'tests' / (m.split('.')[-1] + '.py')).stat().st_size / 1000
                                            if (ROOT / 'tests' / (m.split('.')[-1] + '.py')).exists() else 0))

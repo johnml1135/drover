@@ -16,7 +16,8 @@ def clean_parent():
         path = Path(base).absolute()
         if path.is_dir() and not any((p / '.git').exists() for p in (path, *path.parents)):
             return str(path)
-    return None
+    raise RuntimeError('no temp directory without a `.git` at or above it (tried the system temp dir, /dev/shm, /var/tmp); '
+                       'set DROVER_TEST_TMPDIR to a clean directory')
 
 
 def sh(*args, cwd=None, check=True, text=True, input=None):
