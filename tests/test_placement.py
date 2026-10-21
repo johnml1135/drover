@@ -139,3 +139,18 @@ class PlacementTests(unittest.TestCase):
             found, reasons = tool_discovery.parse_discovery_result(result.stdout)
             self.assertEqual(found, {name: str(Path(tmp) / name) for name in ('claude', 'codex', 'pwsh')})
             self.assertEqual(reasons, {})
+
+
+class CleanupIdentityCache(unittest.TestCase):
+    def test_own_identity_is_read_once_per_process(self):
+        calls = []
+        def run(*args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, '1234\n', '')
+        with patch.object(placement, 'IS_WINDOWS', True), patch.object(placement.subprocess, 'run', run), \
+                patch.object(placement, '_SELF_IDENTITY', None):
+            first = placement.cleanup_identity()
+            second = placement.cleanup_identity()
+            placement.cleanup_identity(os.getpid() + 1)
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 2)  # one for self, one for the other pid

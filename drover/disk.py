@@ -1,4 +1,5 @@
 """Cheap physical-drive observations and admission policy, independent of the hub."""
+import json
 import math
 import shutil
 
@@ -50,6 +51,30 @@ def admission(readings: list[dict]) -> dict:
     return dict(verdict=verdict, pause=pause, reasons=reasons)
 
 
+LOCK_BACKOFF_S = 30 * 60
+
+
+def _lock_wait(state, blocker, directory, now):
+    """Track how long one lock has blocked cleanup; past the back-off raise one owner-visible notice per lock."""
+    if blocker is None:
+        state.pop('lock_wait', None)
+        return
+    token = blocker.get('token') or 'unreadable'
+    wait = state.get('lock_wait')
+    if not wait or wait.get('token') != token:
+        wait = state['lock_wait'] = dict(token=token, since=now)
+    if now - wait['since'] < LOCK_BACKOFF_S:
+        return
+    ident = 'lock:' + token
+    outbox = state.setdefault('outbox', {})
+    if ident not in outbox:
+        notice = dict(id=ident, kind='cleanup_lock', title='Disk cleanup is blocked by a stale lock',
+                      body=f"{directory / 'disk-cleanup.lock'} has been held for over {LOCK_BACKOFF_S // 60} minutes "
+                           f"and its holder cannot be proven dead. Owner: {json.dumps(blocker, sort_keys=True)}. "
+                           "If that process is gone, remove the lock directory.")
+        outbox[ident] = dict(notice=notice, toasted=False, acknowledged=False)
+
+
 def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dict:
     """Observe even while paused; short claims precede all background work."""
     import json
@@ -91,11 +116,14 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dic
     # Healthy ticks must never inventory processes.
     if any(row['level'] not in ('ok', 'unknown') for row in rows):
         identity = placement.cleanup_identity()
+    # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick.
+    blocker = disk_state.lock_blocker(directory) if identity else None
     def change(state):
         episodes = state.setdefault('episodes', {})
         applied = bool(state.get('automation', {}).get('apply', False))
         launches = []
         state['readings'] = rows
+        _lock_wait(state, blocker, directory, now)
         for row in rows:
             episode = episodes.setdefault(row['name'], {})
             claim = episode.get('claim')
@@ -115,6 +143,8 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dic
                 state.setdefault('notice_episodes', {}).pop(row['name'], None)
                 continue
             baseline = episode.get('post' if applied else 'report_post')
+            if blocker is not None:
+                continue
             if claim or (baseline is not None and free > baseline - 1):
                 continue
             claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied)

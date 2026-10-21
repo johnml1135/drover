@@ -1808,9 +1808,17 @@ $nodes.Item(1).InnerText = $n.body
         raise OSError('toast unavailable: ' + done.stderr[-1000:])
 
 
+_SELF_IDENTITY = None
+
+
 def cleanup_identity(pid=None):
-    """PID plus kernel creation identity; unknown never proves a claim dead."""
+    """PID plus kernel creation identity; unknown never proves a claim dead.
+
+    This process's own identity cannot change, so it is read once (a Windows process query can take seconds)."""
+    global _SELF_IDENTITY
     pid = os.getpid() if pid is None else pid
+    if pid == os.getpid() and _SELF_IDENTITY and _SELF_IDENTITY['pid'] == pid:
+        return dict(_SELF_IDENTITY)
     if IS_WINDOWS:
         done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
                                f'$ErrorActionPreference="Stop"; $p=Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}"; if ($null -eq $p) {{ "absent" }} else {{ $p.CreationDate.ToFileTimeUtc() }}'],
@@ -1829,7 +1837,10 @@ def cleanup_identity(pid=None):
                 birth = f'{boot}:{started}' if boot and started else None
             except OSError:
                 birth = None
-    return dict(pid=pid, birth=birth, side=cleanup_side())
+    identity = dict(pid=pid, birth=birth, side=cleanup_side())
+    if pid == os.getpid() and birth and birth != 'absent':
+        _SELF_IDENTITY = dict(identity)
+    return identity
 
 
 def cleanup_claim_alive(identity):

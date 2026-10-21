@@ -116,3 +116,94 @@ except BlockingIOError:
         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
         with disk_state.CleanupLock(self.state):
             pass
+
+
+class StaleLock(DiskCase):
+    """A dead same-side holder is reclaimed; anything unprovable stays locked."""
+
+    def plant(self, **over):
+        lock = self.state / 'disk-cleanup.lock'
+        lock.mkdir()
+        owner = dict(token='dead-token', pid=424242, host=__import__('socket').gethostname(),
+                     created=1.0, side=self.side, birth='boot:100')
+        owner.update(over)
+        (lock / 'owner.json').write_text(json.dumps(owner), encoding='utf-8')
+        return lock
+
+    def identity(self, birth):
+        return lambda pid=None: dict(pid=pid, birth=birth, side=self.side)
+
+    def test_acquire_records_side_and_birth(self):
+        from drover.disk_state import CleanupLock
+        with patch('drover.placement.cleanup_identity', self.identity('boot:7')):
+            with CleanupLock(self.state) as lock:
+                owner = json.loads((lock.path / 'owner.json').read_text())
+        self.assertEqual((owner['side'], owner['birth']), (self.side, 'boot:7'))
+
+    def test_dead_holder_is_reclaimed(self):
+        from drover.disk_state import CleanupLock
+        lock = self.plant()
+        with patch('drover.placement.cleanup_identity', self.identity('absent')):
+            with CleanupLock(self.state) as mine:
+                self.assertNotEqual(json.loads((lock / 'owner.json').read_text())['token'], 'dead-token')
+                self.assertTrue(mine.acquired)
+        self.assertFalse(lock.exists())
+        self.assertEqual([p.name for p in self.state.iterdir() if 'stale' in p.name], [])
+
+    def test_live_holder_is_kept(self):
+        from drover.disk_state import CleanupLock
+        lock = self.plant()
+        with patch('drover.placement.cleanup_identity', self.identity('boot:100')):
+            with self.assertRaises(BlockingIOError):
+                CleanupLock(self.state).__enter__()
+        self.assertEqual(json.loads((lock / 'owner.json').read_text())['token'], 'dead-token')
+
+    def test_reused_pid_with_different_birth_is_reclaimed(self):
+        from drover.disk_state import CleanupLock
+        self.plant()
+        with patch('drover.placement.cleanup_identity', self.identity('boot:999')):
+            with CleanupLock(self.state) as mine:
+                self.assertTrue(mine.acquired)
+
+    def test_other_side_other_host_and_unreadable_holders_are_kept(self):
+        from drover.disk_state import CleanupLock
+        for over in (dict(side=self.other_side), dict(host='another-host'), dict(birth=None), dict(side=None)):
+            with self.subTest(over=over):
+                lock = self.plant(**over)
+                with patch('drover.placement.cleanup_identity', self.identity('absent')):
+                    with self.assertRaises(BlockingIOError):
+                        CleanupLock(self.state).__enter__()
+                (lock / 'owner.json').unlink()
+                lock.rmdir()
+        lock = self.state / 'disk-cleanup.lock'
+        lock.mkdir()
+        (lock / 'owner.json').write_text('{not json')
+        with patch('drover.placement.cleanup_identity', self.identity('absent')):
+            with self.assertRaises(BlockingIOError):
+                CleanupLock(self.state).__enter__()
+
+    def test_two_reclaimers_produce_exactly_one_winner(self):
+        import threading
+        from drover.disk_state import CleanupLock
+        for _ in range(15):
+            lock = self.plant()
+            gate = threading.Barrier(2)
+            results, held = [], []
+            def contend():
+                mine = CleanupLock(self.state)
+                gate.wait()
+                try:
+                    mine.__enter__()
+                except BlockingIOError:
+                    results.append('busy')
+                else:
+                    results.append('won')
+                    held.append(mine)
+            with patch('drover.placement.cleanup_identity', self.identity('absent')):
+                threads = [threading.Thread(target=contend) for _ in range(2)]
+                [t.start() for t in threads]
+                [t.join() for t in threads]
+            self.assertEqual(sorted(results), ['busy', 'won'])
+            self.assertEqual(json.loads((lock / 'owner.json').read_text())['token'], held[0].token)
+            held[0].__exit__(None, None, None)
+            self.assertFalse(lock.exists())

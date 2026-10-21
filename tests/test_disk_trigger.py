@@ -205,3 +205,61 @@ class Trigger(DiskCase):
             return subprocess.CompletedProcess(argv, 0, 'absent\n', '')
         with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=cim):
             self.assertFalse(placement.cleanup_claim_alive(dict(pid=12, birth='old', side='windows')))
+
+
+class LockBackoff(DiskCase):
+    """A wedged cleanup lock must not spawn a doomed triggered run on every tick."""
+
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+
+    tick = Trigger.tick
+
+    def plant(self, **over):
+        import json
+        import socket
+        lock = self.state / 'disk-cleanup.lock'
+        lock.mkdir()
+        owner = dict(token='wedge-token', pid=424242, host=socket.gethostname(), created=1.0,
+                     side=self.other_side, birth='x')
+        owner.update(over)
+        (lock / 'owner.json').write_text(json.dumps(owner), encoding='utf-8')
+        return lock
+
+    def outbox(self):
+        from drover import disk_state
+        return disk_state.read(self.state).get('outbox', {})
+
+    def test_wedged_lock_suppresses_launch_then_warns_once(self):
+        launches = []
+        lock = self.plant()
+        self.free = 60
+        self.tick(lambda: launches.append(1) or {})
+        self.assertEqual(launches, [])
+        self.assertEqual(self.outbox(), {})  # not yet past the back-off
+        self.now += 31 * 60
+        self.tick(lambda: launches.append(1) or {})
+        self.tick(lambda: launches.append(1) or {})
+        self.assertEqual(launches, [])
+        notices = [e['notice'] for e in self.outbox().values()]
+        self.assertEqual(len(notices), 1)
+        self.assertIn('disk-cleanup.lock', notices[0]['body'])
+        self.assertIn('wedge-token', notices[0]['body'])
+        self.assertIn('424242', notices[0]['body'])
+        # Once the lock is cleared the next tick launches again.
+        (lock / 'owner.json').unlink()
+        lock.rmdir()
+        self.tick(lambda: launches.append(1) or {})
+        self.assertEqual(launches, [1])
+
+    def test_reclaimable_lock_does_not_block_launch(self):
+        launches = []
+        self.plant(side=self.side, birth='boot:1')
+        self.free = 60
+        ident = lambda pid=None: dict(pid=pid, birth='absent', side=self.side)
+        with patch('drover.placement.cleanup_identity', ident):
+            self.tick(lambda: launches.append(1) or {})
+        self.assertEqual(launches, [1])

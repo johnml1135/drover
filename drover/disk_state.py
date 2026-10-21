@@ -1,15 +1,48 @@
 """Durable disk facts, cross-kernel directory locks and restoration evidence.
 
-Locks never expire automatically. A dead holder requires operator inspection.
+Locks never expire by age. A lock is reclaimed only when its holder is proven dead: same host, same side
+(windows/wsl) and the recorded pid is absent or now has a different birth time (pid reuse). Anything unprovable
+(other side or host, old or unreadable owner.json) fails closed and needs operator inspection.
 State locks cover only file IO; callers perform subprocess work outside them.
 """
 import json
 import os
 import socket
+import subprocess
 import tempfile
 import time
 import uuid
 from pathlib import Path
+
+
+def holder_dead(owner: dict) -> bool:
+    """True only when the recorded holder is provably gone; every doubt answers False."""
+    from . import placement
+    birth = owner.get('birth')
+    if (owner.get('host') != socket.gethostname() or owner.get('side') != placement.cleanup_side()
+            or not birth or birth == 'absent'):
+        return False
+    try:
+        return placement.cleanup_claim_alive(dict(pid=owner.get('pid'), birth=birth, side=owner['side'])) is False
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def lock_blocker(state_dir: Path):
+    """The owner record of a cleanup lock that currently blocks a new run, else None.
+
+    A missing lock, or a holder proven dead (the next acquire reclaims it), does not block. An unreadable owner
+    reports an empty record so callers still see that something holds the lock."""
+    path = Path(state_dir) / 'disk-cleanup.lock'
+    if not path.exists():
+        return None
+    try:
+        owner = json.loads((path / 'owner.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(owner, dict):
+        return {}
+    return None if holder_dead(owner) else owner
 
 
 class CleanupLock:
@@ -20,27 +53,73 @@ class CleanupLock:
         self.token = uuid.uuid4().hex
         self.acquired = False
 
+    def _owner(self):
+        try:
+            owner = json.loads((self.path / 'owner.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        return owner if isinstance(owner, dict) else None
+
+    def _reclaim(self, stale):
+        """Rename the lock away atomically (one reclaimer wins), then confirm it is still the stale holder."""
+        tomb = self.path.with_name(f'{self.path.name}.stale-{self.token}')
+        try:
+            os.rename(self.path, tomb)
+        except OSError:
+            return False
+        try:
+            moved = json.loads((tomb / 'owner.json').read_text(encoding='utf-8')).get('token')
+        except (OSError, ValueError, AttributeError):
+            moved = None
+        if moved != stale.get('token'):
+            try:
+                os.rename(tomb, self.path)  # we took a live holder's lock: put it back
+            except OSError:
+                pass
+            return False
+        (tomb / 'owner.json').unlink(missing_ok=True)
+        try:
+            tomb.rmdir()
+        except OSError:
+            pass
+        return True
+
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.path.mkdir()
         except FileExistsError:
+            stale = self._owner()
+            if stale is None or not holder_dead(stale) or not self._reclaim(stale):
+                raise self._busy() from None
             try:
-                holder = (self.path / 'owner.json').read_text(encoding='utf-8')
-            except OSError:
-                holder = 'holder diagnostics unavailable'
-            raise BlockingIOError(f'cleanup lock busy: {self.path}: {holder}') from None
+                self.path.mkdir()
+            except FileExistsError:
+                raise self._busy() from None
         self.acquired = True
         try:
+            from . import placement
+            try:
+                identity = placement.cleanup_identity()
+            except (OSError, subprocess.SubprocessError):
+                identity = dict(birth=None, side=placement.cleanup_side())
             (self.path / 'owner.json').write_text(json.dumps({
                 'token': self.token, 'pid': os.getpid(), 'host': socket.gethostname(),
-                'created': time.time()}), encoding='utf-8')
+                'created': time.time(), 'side': identity.get('side'), 'birth': identity.get('birth')}),
+                encoding='utf-8')
         except BaseException:
             (self.path / 'owner.json').unlink(missing_ok=True)
             self.path.rmdir()
             self.acquired = False
             raise
         return self
+
+    def _busy(self):
+        try:
+            holder = (self.path / 'owner.json').read_text(encoding='utf-8')
+        except OSError:
+            holder = 'holder diagnostics unavailable'
+        return BlockingIOError(f'cleanup lock busy: {self.path}: {holder}')
 
     def __exit__(self, *exc):
         if exc and getattr(exc[1], 'termination_confirmed', True) is False:

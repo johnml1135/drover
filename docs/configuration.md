@@ -173,7 +173,11 @@ Before enabling applied automation, wrap every external cleaner invocation:
 `python -m drover disk-cleanup lock -- EXECUTABLE ARGUMENTS...`.
 Native and WSL callers must map the same state directory. The wrapper holds the
 shared directory lock for the entire child and returns its status. A hard-killed
-holder leaves diagnostics for deliberate inspection; age never steals a lock.
+holder is reclaimed automatically only when proven dead: owner.json records the holder's host, side
+(windows/wsl) and process birth time, and the next acquire reclaims (atomic rename to a tombstone, then a token
+re-check) when the same host and side show that pid absent or reborn. Age never steals a lock; a holder on the other
+side or host, or with an unreadable owner.json, stays locked for deliberate inspection. While a lock blocks the hub's
+disk tick it launches no triggered run, and after 30 minutes it raises one Inbox notice naming the lock and owner.
 Drover never edits external cleaner scripts or retires them.
 
 Keep herdr until the owner records seven consecutive calendar days of successful
