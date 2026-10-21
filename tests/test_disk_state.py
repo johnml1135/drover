@@ -182,28 +182,67 @@ class StaleLock(DiskCase):
             with self.assertRaises(BlockingIOError):
                 CleanupLock(self.state).__enter__()
 
-    def test_two_reclaimers_produce_exactly_one_winner(self):
-        import threading
+    def holder(self):
+        return json.loads((self.state / 'disk-cleanup.lock' / 'owner.json').read_text())['token']
+
+    def hooked(self, hook):
+        from drover import disk_state
+        return patch.object(disk_state, '_HOOK', hook)
+
+    def enter(self):
         from drover.disk_state import CleanupLock
-        for _ in range(15):
-            lock = self.plant()
-            gate = threading.Barrier(2)
-            results, held = [], []
-            def contend():
-                mine = CleanupLock(self.state)
-                gate.wait()
-                try:
-                    mine.__enter__()
-                except BlockingIOError:
-                    results.append('busy')
-                else:
-                    results.append('won')
-                    held.append(mine)
-            with patch('drover.placement.cleanup_identity', self.identity('absent')):
-                threads = [threading.Thread(target=contend) for _ in range(2)]
-                [t.start() for t in threads]
-                [t.join() for t in threads]
-            self.assertEqual(sorted(results), ['busy', 'won'])
-            self.assertEqual(json.loads((lock / 'owner.json').read_text())['token'], held[0].token)
-            held[0].__exit__(None, None, None)
-            self.assertFalse(lock.exists())
+        lock = CleanupLock(self.state)
+        try:
+            lock.__enter__()
+        except BlockingIOError:
+            return lock, False
+        return lock, True
+
+    def test_fresh_acquirer_between_rename_and_mkdir_keeps_the_only_lock(self):
+        self.plant()
+        c = []
+        def hook(name):
+            if name == 'after_rename':
+                c.append(self.enter())  # C: plain mkdir wins the gap
+        with patch('drover.placement.cleanup_identity', self.identity('absent')), self.hooked(hook):
+            a, a_won = self.enter()
+        self.assertFalse(a_won)
+        self.assertTrue(c[0][1])
+        self.assertEqual(self.holder(), c[0][0].token)
+        self.assertEqual([p.name for p in self.state.iterdir() if p.name.endswith('.reclaim')], [])
+
+    def test_stale_view_never_displaces_a_completed_reclaim(self):
+        self.plant()
+        a = []
+        def hook(name):
+            if name == 'before_guard' and not a:
+                a.append(None)
+                a[0] = self.enter()  # A runs a whole reclaim after B read the stale owner
+        with patch('drover.placement.cleanup_identity', self.identity('absent')), self.hooked(hook):
+            b, b_won = self.enter()
+        self.assertFalse(b_won)
+        self.assertTrue(a[0][1])
+        self.assertEqual(self.holder(), a[0][0].token)
+
+    def test_existing_guard_fails_closed_for_everyone(self):
+        self.plant()
+        seen = []
+        def hook(name):
+            if name == 'after_guard' and not seen:
+                seen.append(self.enter())  # B and C arrive while A holds the guard
+                seen.append(self.enter())
+        with patch('drover.placement.cleanup_identity', self.identity('absent')), self.hooked(hook):
+            a, a_won = self.enter()
+        self.assertTrue(a_won)
+        self.assertEqual([won for _, won in seen], [False, False])
+        self.assertEqual(self.holder(), a.token)
+
+    def test_stuck_guard_is_never_reclaimed_automatically(self):
+        self.plant()
+        (self.state / 'disk-cleanup.lock.reclaim').mkdir()
+        with patch('drover.placement.cleanup_identity', self.identity('absent')):
+            lock, won = self.enter()
+        self.assertFalse(won)
+        self.assertEqual(self.holder(), 'dead-token')
+        from drover import disk_state
+        self.assertIn('reclaim_guard', disk_state.lock_blocker(self.state))

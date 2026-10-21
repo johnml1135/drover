@@ -28,21 +28,36 @@ def holder_dead(owner: dict) -> bool:
         return False
 
 
+_HOOK = None  # tests inject interleavings here
+
+
+def _step(name):
+    if _HOOK is not None:
+        _HOOK(name)
+
+
+def guard_path(path: Path) -> Path:
+    return path.with_name(path.name + '.reclaim')
+
+
 def lock_blocker(state_dir: Path):
     """The owner record of a cleanup lock that currently blocks a new run, else None.
 
     A missing lock, or a holder proven dead (the next acquire reclaims it), does not block. An unreadable owner
     reports an empty record so callers still see that something holds the lock."""
     path = Path(state_dir) / 'disk-cleanup.lock'
+    stuck = guard_path(path).exists()  # a reclaim guard is never cleared automatically: surface it
     if not path.exists():
-        return None
+        return {'reclaim_guard': str(guard_path(path))} if stuck else None
     try:
         owner = json.loads((path / 'owner.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return {}
+        owner = {}
     if not isinstance(owner, dict):
-        return {}
-    return None if holder_dead(owner) else owner
+        owner = {}
+    if stuck:
+        return {**owner, 'reclaim_guard': str(guard_path(path))}
+    return None if owner and holder_dead(owner) else owner
 
 
 class CleanupLock:
@@ -60,29 +75,56 @@ class CleanupLock:
             return None
         return owner if isinstance(owner, dict) else None
 
+    def _write_owner(self):
+        from . import placement
+        try:
+            identity = placement.cleanup_identity()
+        except (OSError, subprocess.SubprocessError):
+            identity = dict(birth=None, side=placement.cleanup_side())
+        (self.path / 'owner.json').write_text(json.dumps({
+            'token': self.token, 'pid': os.getpid(), 'host': socket.gethostname(),
+            'created': time.time(), 'side': identity.get('side'), 'birth': identity.get('birth')}),
+            encoding='utf-8')
+
     def _reclaim(self, stale):
-        """Rename the lock away atomically (one reclaimer wins), then confirm it is still the stale holder."""
-        tomb = self.path.with_name(f'{self.path.name}.stale-{self.token}')
+        """Replace a provably dead holder. Only the holder of the `.reclaim` guard may move the lock, so two
+        reclaimers can never both act; an existing guard fails closed and is never reclaimed automatically."""
+        guard = guard_path(self.path)
+        _step('before_guard')
         try:
-            os.rename(self.path, tomb)
-        except OSError:
-            return False
+            guard.mkdir()
+        except FileExistsError:
+            raise self._busy() from None
         try:
-            moved = json.loads((tomb / 'owner.json').read_text(encoding='utf-8')).get('token')
-        except (OSError, ValueError, AttributeError):
-            moved = None
-        if moved != stale.get('token'):
+            _step('after_guard')
+            current = self._owner()
+            if current is None or current.get('token') != stale.get('token') or not holder_dead(current):
+                raise self._busy()
+            tomb = self.path.with_name(f'{self.path.name}.stale-{self.token}')
             try:
-                os.rename(tomb, self.path)  # we took a live holder's lock: put it back
+                os.rename(self.path, tomb)  # never restored: a tombstone is only ever the dead holder
+            except OSError:
+                raise self._busy() from None
+            _step('after_rename')
+            try:
+                (tomb / 'owner.json').unlink(missing_ok=True)
+                tomb.rmdir()
             except OSError:
                 pass
-            return False
-        (tomb / 'owner.json').unlink(missing_ok=True)
-        try:
-            tomb.rmdir()
-        except OSError:
-            pass
-        return True
+            try:
+                self.path.mkdir()  # a fresh acquirer may have won the gap; then this lock is theirs
+            except FileExistsError:
+                raise self._busy() from None
+            self.acquired = True
+            self._write_owner()
+        except BaseException:
+            if self.acquired:
+                (self.path / 'owner.json').unlink(missing_ok=True)
+                self.path.rmdir()
+                self.acquired = False
+            raise
+        finally:
+            guard.rmdir()
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,23 +132,13 @@ class CleanupLock:
             self.path.mkdir()
         except FileExistsError:
             stale = self._owner()
-            if stale is None or not holder_dead(stale) or not self._reclaim(stale):
+            if stale is None or not holder_dead(stale):
                 raise self._busy() from None
-            try:
-                self.path.mkdir()
-            except FileExistsError:
-                raise self._busy() from None
+            self._reclaim(stale)
+            return self
         self.acquired = True
         try:
-            from . import placement
-            try:
-                identity = placement.cleanup_identity()
-            except (OSError, subprocess.SubprocessError):
-                identity = dict(birth=None, side=placement.cleanup_side())
-            (self.path / 'owner.json').write_text(json.dumps({
-                'token': self.token, 'pid': os.getpid(), 'host': socket.gethostname(),
-                'created': time.time(), 'side': identity.get('side'), 'birth': identity.get('birth')}),
-                encoding='utf-8')
+            self._write_owner()
         except BaseException:
             (self.path / 'owner.json').unlink(missing_ok=True)
             self.path.rmdir()

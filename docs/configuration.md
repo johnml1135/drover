@@ -174,8 +174,9 @@ Before enabling applied automation, wrap every external cleaner invocation:
 Native and WSL callers must map the same state directory. The wrapper holds the
 shared directory lock for the entire child and returns its status. A hard-killed
 holder is reclaimed automatically only when proven dead: owner.json records the holder's host, side
-(windows/wsl) and process birth time, and the next acquire reclaims (atomic rename to a tombstone, then a token
-re-check) when the same host and side show that pid absent or reborn. Age never steals a lock; a holder on the other
+(windows/wsl) and process birth time, and the next acquire reclaims (only the holder of a `disk-cleanup.lock.reclaim` guard
+directory re-proves the holder dead and renames the lock to a tombstone; an existing guard fails closed and is never
+cleared automatically) when the same host and side show that pid absent or reborn. Age never steals a lock; a holder on the other
 side or host, or with an unreadable owner.json, stays locked for deliberate inspection. While a lock blocks the hub's
 disk tick it launches no triggered run, and after 30 minutes it raises one Inbox notice naming the lock and owner.
 Drover never edits external cleaner scripts or retires them.
