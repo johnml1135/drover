@@ -1,7 +1,10 @@
 """Fake git repos in temp dirs for the landing, gate and garden tests."""
+import atexit
 import os
+import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 
@@ -33,23 +36,49 @@ def sh(*args, cwd=None, check=True, text=True, input=None):
     return r
 
 
+_templates, _template_lock, _template_dir = {}, threading.Lock(), []
+
+
+def _template(ignore):
+    """The finished fixture for one shape, built once per process and copied for every Repo()."""
+    with _template_lock:
+        if ignore not in _templates:
+            if not _template_dir:
+                _template_dir.append(tempfile.mkdtemp(prefix='drover-fix-template-', dir=os.environ.get('DROVER_TEST_TMPDIR')))
+                atexit.register(shutil.rmtree, _template_dir[0], ignore_errors=True)
+            root = Path(_template_dir[0]) / f'shape{len(_templates)}'
+            root.mkdir()
+            remote, repo = root / 'remote.git', root / 'repo'
+            sh('git', 'init', '-q', '--bare', '-b', 'main', remote)
+            # An explicit file URL avoids Git for Windows interpreting a drive-letter path as remote syntax.
+            sh('git', 'clone', '-q', remote.resolve().as_uri(), repo)
+            for k, v in (('user.name', 'test'), ('user.email', 't@example.invalid')):
+                sh('git', '-C', repo, 'config', k, v)
+            files = [('base.txt', 'base\n')] + ([('.gitignore', ignore)] if ignore else [])
+            for name, text in files:
+                (repo / name).write_text(text)
+                sh('git', '-C', repo, 'add', name)
+                sh('git', '-C', repo, 'commit', '-q', '-m', name)
+            sh('git', '-C', repo, 'push', '-q', 'origin', 'HEAD:main')
+            sh('git', '-C', repo, 'fetch', '-q', 'origin')
+            _templates[ignore] = root
+        return _templates[ignore]
+
+
 class Repo:
-    """A bare `remote.git` and a clone `repo` with one pushed base commit on main."""
+    """A bare `remote.git` and a clone `repo` with one pushed base commit on main.
+
+    Each shape (the `ignore` text) is built once per process; every Repo() is a private copy of it with origin
+    repointed at its own remote.git, so tests share nothing."""
 
     def __init__(self, ignore=''):
+        template = _template(ignore)
         self.tmp = tempfile.TemporaryDirectory(prefix='drover-fix-', dir=os.environ.get('DROVER_TEST_TMPDIR'))
         self.root = Path(self.tmp.name)
         self.remote, self.repo = self.root / 'remote.git', self.root / 'repo'
-        sh('git', 'init', '-q', '--bare', '-b', 'main', self.remote)
-        # An explicit file URL avoids Git for Windows interpreting a drive-letter path as remote syntax.
-        sh('git', 'clone', '-q', self.remote.resolve().as_uri(), self.repo)
-        for k, v in (('user.name', 'test'), ('user.email', 't@example.invalid')):
-            self.git('config', k, v)
-        self.commit('base.txt', 'base\n')
-        if ignore:
-            self.commit('.gitignore', ignore)
-        self.git('push', '-q', 'origin', 'HEAD:main')
-        self.git('fetch', '-q', 'origin')
+        shutil.copytree(template / 'remote.git', self.remote)
+        shutil.copytree(template / 'repo', self.repo)
+        self.git('config', 'remote.origin.url', self.remote.resolve().as_uri())
 
     def cleanup(self):
         self.tmp.cleanup()
