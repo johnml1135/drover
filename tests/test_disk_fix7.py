@@ -1,4 +1,5 @@
 """Identity and metadata regressions from cleanup review seven and ruling R12."""
+import importlib.util
 import json
 import os
 import subprocess
@@ -311,6 +312,7 @@ class OwnProcesses(DiskCase):
                 pass
         self.assertFalse(list((self.state / 'disk').glob('process-*.json')))
 
+    @unittest.skipUnless(importlib.util.find_spec('uvicorn'), 'hub entrypoint needs the hub environment (uvicorn)')
     def test_hub_entrypoint_records_its_actual_process_for_cleanup(self):
         from hub import __main__ as hub_main
         app = SimpleNamespace(state=SimpleNamespace(start_background=lambda: None, shutdown=lambda: None))

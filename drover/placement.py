@@ -1547,9 +1547,13 @@ for entry in Path('/proc').iterdir():
             continue
         if (entry / 'stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z':
             continue
-        if token in (entry / 'cmdline').read_bytes().split(b'\0') or \
-                b'DROVER_RUN_ID=' + token in (entry / 'environ').read_bytes().split(b'\0'):
+        if token in (entry / 'cmdline').read_bytes().split(b'\0'):
             sys.exit(1)
+        try:
+            if b'DROVER_RUN_ID=' + token in (entry / 'environ').read_bytes().split(b'\0'):
+                sys.exit(1)
+        except PermissionError:
+            continue  # unreadable environ and no token in argv: not Drover's own
     except FileNotFoundError:
         continue
     except OSError:

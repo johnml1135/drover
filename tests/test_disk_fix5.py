@@ -89,6 +89,42 @@ class Startup(DiskCase):
         self.assertTrue(result['errors'][0]['termination_confirmed'])
         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
 
+    @unittest.skipIf(os.name == 'nt', 'reads /proc')
+    def test_startup_proof_skips_unreadable_environ_but_keeps_argv_token_and_unknown_errors(self):
+        token = 'tok-' + os.urandom(4).hex()
+        real = Path.read_bytes
+
+        def proof(environ_error):
+            def read_bytes(path):
+                if path.name == 'environ':
+                    raise environ_error
+                return real(path)
+            sys.argv = ['proof', token]
+            with patch.object(Path, 'read_bytes', read_bytes):
+                try:
+                    exec(placement._CLEANUP_STARTUP_PROOF, {'__name__': 'proof'})
+                except SystemExit as stop:
+                    return stop.code
+            return 0
+
+        saved = sys.argv
+        # Unreadable environ without the token in argv (systemd, sd-pam): not Drover's own.
+        self.assertEqual(proof(PermissionError(errno.EACCES, 'denied')), 0)
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)', token])
+        try:
+            self.assertEqual(proof(PermissionError(errno.EACCES, 'denied')), 1)  # argv token still wins
+        finally:
+            child.kill()
+            child.wait()
+            sys.argv = saved
+        other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            self.assertEqual(proof(OSError(errno.EIO, 'unknown')), 2)  # non-EACCES evidence fails closed
+        finally:
+            other.kill()
+            other.wait()
+            sys.argv = saved
+
     def test_remote_startup_requires_wsl_process_absence_before_unlock(self):
         self.cfg['paths']['wsl_distro'] = 'Fixture'
         for absent in (False, True):
