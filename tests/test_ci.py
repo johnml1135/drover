@@ -27,6 +27,21 @@ class CITests(unittest.TestCase):
     def setUp(self):
         self.repo = Repo(ignore='__pycache__/\n')
         self.addCleanup(self.repo.cleanup)
+        from drover import config, disk
+        import copy
+        import os
+        environment = patch.dict(os.environ, {'DROVER_HOME': str(self.repo.root / 'state')})
+        environment.start()
+        self.addCleanup(environment.stop)
+        original_config = config.get()
+        self.addCleanup(config.use, original_config)
+        cfg = copy.deepcopy(original_config)
+        cfg['paths']['state_dir'] = str(self.repo.root / 'state')
+        cfg['repos_dir'] = str(self.repo.root / 'state' / 'repos')
+        config.use(cfg)
+        for context in (patch.object(disk, 'read', return_value=[dict(name='fixture', path=str(self.repo.root), free_gb=1000., level='ok')]),):
+            context.start()
+            self.addCleanup(context.stop)
         self.runs = self.repo.root / 'runs'
         self.service = ci.CI(self.runs)
         self.machine = {'name': 'fixture', 'repo': str(self.repo.repo), 'run': {'env': {}}}

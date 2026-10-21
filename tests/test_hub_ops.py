@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 try:
@@ -55,6 +56,17 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        from drover import config
+        import copy
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['paths'].update(state_dir=str(self.root / 'state'), repos_root=str(self.root / 'repos'))
+        cfg['repos_dir'] = str(self.root / 'state' / 'repos')
+        environment = patch.dict(os.environ, {'DROVER_HOME': str(self.root / 'state')})
+        environment.start()
+        self.addCleanup(environment.stop)
+        context = patch.object(config, 'get', return_value=cfg)
+        context.start()
+        self.addCleanup(context.stop)
         self.removed, self.wsl, self.tuner = [], FakeWsl(), FakeTuner(False)
         self.remove_result = lambda repo, row: {"ok": True}
         self.now = [1_000_000.0]

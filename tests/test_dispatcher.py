@@ -429,7 +429,8 @@ class FailClosed(Base):
         dispatcher.IS_WINDOWS = True
         self.addCleanup(setattr, dispatcher, "IS_WINDOWS", orig)
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out), mock.patch('drover.disk.tick', return_value={
+                'drives': [], 'pause': False, 'critical_tokens': []}):
             rc = dispatcher.main(["--db", str(Path(self.tmp.name) / "m.db"), "--once", "--json", "--lock", lock])
         self.assertEqual(rc, 0)
         self.assertTrue(json.loads(out.getvalue())["paused"])        # dispatch_enabled defaults to false

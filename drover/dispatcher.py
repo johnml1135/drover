@@ -188,7 +188,7 @@ ENV_BLOCK_KINDS = ("verification_environment", "missing_windows_worker")
 class DispatchRuntime:
     """The execution environment shared by worker launch, resource checks and recovery."""
     launcher: object = field(default_factory=RunnerLauncher)
-    resources: object = resources_mod.check
+    resources: object = resources_mod.tick
     now: object = time.time
 
 
@@ -522,6 +522,8 @@ class Dispatcher:
         return started
 
     def _begin_gate(self, task, runs):
+        if self.resources_fn(new_workers=0)['verdict'] == 'hold':
+            return False
         p, pl, tid = self.port, self.pipeline, task["id"]
         worker = self._last_nongate(runs)
         sha = self._event_for("worker-done", "run", worker["id"]).get("sha")
@@ -1310,10 +1312,16 @@ class Dispatcher:
         p.waiting.expire(self.now())
         if any(r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down' for r in p.waiting.pending()) and self.launcher.wsl_up():
             p.append_event('capacity-available', {'placement': 'wsl'})
-        if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
-            return out
         res = self.resources_fn(new_workers=1)
         self.last_resources = res
+        if res.get('pause'):
+            p.set_setting('dispatch_enabled', 'false')
+            enabled, out['paused'] = False, True
+            for token in res.get('critical_tokens', []):
+                # Tokens are consumed only after the sticky ledger pause commits.
+                (config_mod.state_dir(config_mod.get()) / 'disk' / token).unlink(missing_ok=True)
+        if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
+            return out
         out["verdict"] = res["verdict"]
         if res["verdict"] != self.last_verdict:
             p.append_event("resources", {"verdict": res["verdict"], "reasons": res.get("reasons", [])})

@@ -1,4 +1,5 @@
 """Paused dispatch still observes physical capacity and durable offline notices."""
+import json
 from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
@@ -7,6 +8,45 @@ from tests.test_dispatcher import FakeLauncher
 
 
 class Hub(DiskCase):
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+
+    def test_cleanup_receives_hub_snapshot_with_state_flags(self):
+        from drover import disk_cleanup
+        from drover.ledger import ops, states
+        from hub.store import Store
+        from hub.services import Services
+        from hub.settings import Settings
+        from tests.test_hub_ops import FakeTuner
+        store = Store(self.root / 'snapshot.db')
+        self.addCleanup(store.close)
+        cancelled = ops.create_task(store.conn, 'archived terminal task', 'p')
+        ops.set_status(store.conn, cancelled['id'], states.CANCELLED, actor='owner')
+        ops.archive_task(store.conn, cancelled['id'])
+        active = ops.create_task(store.conn, 'live task', 'p')
+        ops.approve(store.conn, active['id'])
+        ops.claim_next(store.conn, {})
+        ops.update_task(store.conn, active['id'], worktree=str(self.root / 'offline-live-tree'))
+        svc = Services(store, Settings(runs_dir=self.root / 'runs', use_tailscale=False),
+                       wsl=lambda *a: (1, ''), tuner_mod=FakeTuner(False),
+                       disks=lambda: {}, ollama=lambda *a: False, clock=lambda: self.now)
+        with patch('drover.ownership.read', side_effect=OSError('owning side unavailable')):
+            svc.tick()
+        self.calls.clear()
+        disk_cleanup.run(self.cfg, runtime=self.runtime())
+        tasks = self.calls[0][1]['tasks']
+        self.assertEqual(tasks['at'], self.now)
+        by_id = {t['id']: t for t in tasks['tasks']}
+        self.assertEqual(by_id[cancelled['id']]['state'], states.CANCELLED)
+        self.assertTrue(by_id[cancelled['id']]['terminal'])
+        self.assertFalse(by_id[cancelled['id']]['live'])
+        self.assertEqual(by_id[active['id']]['state'], states.CLAIMED)
+        self.assertFalse(by_id[active['id']]['terminal'])
+        self.assertTrue(by_id[active['id']]['live'])
+
     def make_hub(self):
         from drover.ledger import connect, ops
         from drover.port import DirectPort
@@ -38,7 +78,7 @@ class Hub(DiskCase):
         resources.tick  # NEW seam must fail naturally before any external work.
         conn, dispatch, reads = self.make_hub()
         ops.set_setting(conn, 'dispatch_enabled', 'false')
-        task = ops.create_task(conn, 'capacity held task', 'p')
+        task = ops.create_task(conn, 'capacity held task', 'p', read_access=[])
         ops.approve(conn, task['id'])
         self.free = 49
         out = dispatch.tick()
@@ -92,3 +132,20 @@ class Hub(DiskCase):
         self.assertEqual(len(ops.open_questions(store.conn)), 1)
         self.assertTrue(published, 'Inbox replay publishes a UI change after commit')
         self.assertEqual(ops.get_setting(store.conn, 'dispatch_enabled'), 'false')
+
+    def test_snapshot_worktree_paths_are_translated_for_side_worker(self):
+        import subprocess
+        from drover import placement
+        request = dict(stage=4, apply=False, state_dir=r'H:\state', repos=[], paths={},
+                       tasks=dict(at=self.now, active_worktrees=[r'H:\trees\active'],
+                                  tasks=[dict(id='T-1', state='irrelevant', terminal=False, live=True,
+                                              worktree=r'H:\trees\active')]))
+        captured = []
+        def execute(argv, **kwargs):
+            captured.append(json.loads(kwargs['input']))
+            return subprocess.CompletedProcess(argv, 0, '{"items":[],"errors":[],"reclaimed_bytes":0}', '')
+        with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=execute):
+            placement.cleanup_call('wsl', request)
+        snapshot = captured[0]['tasks']
+        self.assertEqual(snapshot['active_worktrees'], ['/mnt/h/trees/active'])
+        self.assertEqual(snapshot['tasks'][0]['worktree'], '/mnt/h/trees/active')

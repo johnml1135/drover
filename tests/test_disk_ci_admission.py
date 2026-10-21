@@ -9,6 +9,12 @@ from tests.gitfix import Repo
 
 
 class Admission(DiskCase):
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+
     def fixture(self):
         from drover import ci, config, repos
         from drover.ledger import connect

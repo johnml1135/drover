@@ -314,6 +314,17 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     return result
 
 
+def tick(new_workers=1, fake=None, config=None, with_wsl_memory=False):
+    """One disk observation feeds resource admission and the independent tracker."""
+    cfg = config_mod.get() if config is None else config
+    tracked = disk.tick(cfg)
+    facts = gather(fake, [t for t in trackers_of(cfg) if t['kind'] != 'disk'], with_wsl_memory)
+    facts['disk_free_gb'] = {row['name']: row['free_gb'] for row in tracked['drives']}
+    result = check(new_workers, facts, cfg, with_wsl_memory)
+    result.update(pause=tracked['pause'], critical_tokens=tracked['critical_tokens'])
+    return result
+
+
 def render(result):
     lines = ['%s (room for %d more worker(s))' % (result['verdict'].upper(), result['slots'])]
     lines += ['  - ' + r for r in result['reasons']]

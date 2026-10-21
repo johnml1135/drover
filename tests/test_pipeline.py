@@ -107,6 +107,21 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
+        from drover import config, disk
+        import copy
+        import os
+        environment = patch.dict(os.environ, {'DROVER_HOME': str(root / 'state')})
+        environment.start()
+        self.addCleanup(environment.stop)
+        original_config = config.get()
+        self.addCleanup(config.use, original_config)
+        cfg = copy.deepcopy(original_config)
+        cfg['paths']['state_dir'] = str(root / 'state')
+        cfg['repos_dir'] = str(root / 'state' / 'repos')
+        config.use(cfg)
+        for context in (patch.object(disk, 'read', return_value=[dict(name='fixture', path=str(root), free_gb=1000., level='ok')]),):
+            context.start()
+            self.addCleanup(context.stop)
         self.conn = connect(root / "l.db")
         self.addCleanup(self.conn.close)
         self.runs = root / "runs"

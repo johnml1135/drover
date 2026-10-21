@@ -968,7 +968,7 @@ def trim_argv():
 def cleanup_runtime(cfg):
     from .disk import _free
     from .disk_cleanup import CleanupRuntime
-    return CleanupRuntime(time.time, _free, cleanup_call, lambda notice: None)
+    return CleanupRuntime(time.time, _free, cleanup_call, disk_toast)
 
 
 def cleanup_call(side: str, request: dict) -> dict:
@@ -985,6 +985,12 @@ def cleanup_call(side: str, request: dict) -> dict:
     if IS_WINDOWS and side == 'wsl':
         convert = to_wsl_path
         request['state_dir'] = convert(request['state_dir'])
+        snapshot = request.get('tasks') or {}
+        if snapshot:
+            snapshot['active_worktrees'] = [convert(p) for p in snapshot.get('active_worktrees', [])]
+            for task in snapshot.get('tasks', []):
+                if task.get('worktree'):
+                    task['worktree'] = convert(task['worktree'])
         for repo in request['repos']:
             for key in ('repo', 'worktrees'):
                 if repo.get(key):
@@ -1046,3 +1052,64 @@ def cleanup_contains(request, path):
     # A parent may provide an exact native scope (also used by hermetic workers).
     # A known different physical mapping always wins over lexical containment.
     return bool(declared and Path(path).is_absolute() and Path(path).is_relative_to(Path(declared)))
+
+
+def disk_toast(notice: dict) -> None:
+    """Best-effort current interactive user transport; durable delivery is separate."""
+    if not IS_WINDOWS:
+        raise OSError('Windows toast unsupported on this placement')
+    script = r'''
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null
+$n = $input | Out-String | ConvertFrom-Json
+$xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text></text></binding></visual></toast>')
+$nodes = $xml.GetElementsByTagName('text')
+$nodes.Item(0).InnerText = $n.title
+$nodes.Item(1).InnerText = $n.body
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Drover').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+'''
+    done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                          input=json.dumps(notice), capture_output=True, text=True, timeout=15, shell=False)
+    if done.returncode:
+        raise OSError('toast unavailable: ' + done.stderr[-1000:])
+
+
+def cleanup_identity(pid=None):
+    """PID plus kernel creation identity; unknown never proves a claim dead."""
+    pid = os.getpid() if pid is None else pid
+    if IS_WINDOWS:
+        done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+                               f'$ErrorActionPreference="Stop"; $p=Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}"; if ($null -eq $p) {{ "absent" }} else {{ $p.CreationDate.ToFileTimeUtc() }}'],
+                              capture_output=True, text=True, timeout=15, **NO_WINDOW)
+        birth = done.stdout.strip() if not done.returncode else None
+    else:
+        try:
+            birth = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+        except FileNotFoundError:
+            birth = 'absent'
+        except OSError:
+            birth = None
+    return dict(pid=pid, birth=birth, side=cleanup_side())
+
+
+def cleanup_claim_alive(identity):
+    if identity.get('side') != cleanup_side() or not identity.get('birth'):
+        return None
+    current = cleanup_identity(identity['pid'])
+    return None if not current['birth'] else current['birth'] == identity['birth']
+
+
+def cleanup_enqueue(cfg, claim):
+    """Detached fixed cleanup entry point pinned independently of the hub cwd."""
+    code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
+            'from drover.disk_cleanup import run;'
+            'run(json.loads(sys.argv[2]),mode="triggered",apply=sys.argv[3]=="1")')
+    argv = [sys.executable, '-c', code, str(Path(__file__).resolve().parents[1]),
+            json.dumps(cfg), '1' if claim['applied'] else '0', claim['id']]
+    from . import config
+    log = Path(config.state_dir(cfg)) / 'disk' / 'cleanup.log'
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open('ab') as stream:
+        proc, _ = detach(argv, os.environ.copy(), stream)
+    return dict(identity=cleanup_identity(proc.pid))

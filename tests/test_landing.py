@@ -49,6 +49,21 @@ class LandingCase(unittest.TestCase):
     def setUp(self):
         self.r = Repo()
         self.addCleanup(self.r.cleanup)
+        from drover import config, disk
+        import copy
+        import os
+        environment = patch.dict(os.environ, {'DROVER_HOME': str(self.r.root / 'state')})
+        environment.start()
+        self.addCleanup(environment.stop)
+        original_config = config.get()
+        self.addCleanup(config.use, original_config)
+        cfg = copy.deepcopy(original_config)
+        cfg['paths']['state_dir'] = str(self.r.root / 'state')
+        cfg['repos_dir'] = str(self.r.root / 'state' / 'repos')
+        config.use(cfg)
+        for context in (patch.object(disk, 'read', return_value=[dict(name='fixture', path=str(self.r.root), free_gb=1000., level='ok')]),):
+            context.start()
+            self.addCleanup(context.stop)
         self.conn = ledger_db.connect(self.r.root / 'ledger.db')
         self.addCleanup(self.conn.close)
         self.script = self.r.root / 'gate.py'

@@ -9,6 +9,12 @@ from tests.disk_fixture import DiskCase
 
 
 class Trigger(DiskCase):
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+
     def activate(self):
         from drover import disk_schedule
         context = patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'xdg')})
@@ -122,3 +128,79 @@ class Trigger(DiskCase):
         result = self.tick(lambda *a, **kw: self.fail('healthy reader launched cleanup'))
         self.assertEqual(disk.admission(disk.read(self.cfg, reader=lambda p: self.free))['verdict'], 'go')
         self.assertTrue(result['pause'], 'healthy capacity does not authorize resuming the hub')
+
+    def test_default_enqueue_executes_composed_command(self):
+        import json
+        from types import SimpleNamespace
+        from drover import placement
+        target = self.root / "literal ' command.json"
+        cfg = {**self.cfg, 'test_output': str(target)}
+        def detach(argv, env, log):
+            shim = ('import sys,types,json;'
+                    'm=types.ModuleType("drover.disk_cleanup");'
+                    'm.run=lambda cfg,**kw: open(cfg["test_output"],"w").write(json.dumps([cfg,kw]));'
+                    'sys.modules["drover.disk_cleanup"]=m;')
+            done = subprocess.run([*argv[:2], shim + argv[2], *argv[3:]], env=env,
+                                  capture_output=True, text=True, timeout=10)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return SimpleNamespace(pid=os.getpid()), False
+        with patch.object(placement, 'detach', side_effect=detach):
+            placement.cleanup_enqueue(cfg, {'id': 'literal-token', 'applied': True})
+        saved, kwargs = json.loads(target.read_text())
+        self.assertEqual(saved, cfg)
+        self.assertEqual(kwargs, {'mode': 'triggered', 'apply': True})
+
+    def test_two_low_drives_share_one_machine_cleanup(self):
+        from drover import disk_state
+        self.approve_report()
+        self.cfg['trackers'].append({**self.cfg['trackers'][0], 'name': 'second-drive'})
+        self.approve_report()
+        disk_state.update(self.state, lambda s: s.update(automation={'apply': True}))
+        launches = []
+        def enqueue():
+            launches.append(1)
+            return self.complete()
+        self.tick(enqueue)
+        self.assertEqual(launches, [1])
+
+    def test_result_survives_busy_episode_writer(self):
+        from drover import disk, disk_cleanup, disk_state
+        self.approve_report()
+        disk_state.update(self.state, lambda s: s.update(automation={'apply': True}))
+        launches = []
+        def enqueue():
+            launches.append(1)
+            with patch.object(disk_state, 'update', side_effect=BlockingIOError('busy')):
+                return self.complete()
+        self.tick(enqueue)
+        self.assertTrue(list((self.state / 'disk').glob('result-*.json')))
+        self.tick(lambda: self.fail('durable result was not reconciled'))
+        self.assertEqual(launches, [1])
+
+    def test_child_identity_survives_busy_attach(self):
+        from drover import disk_state, placement
+        self.approve_report()
+        disk_state.update(self.state, lambda s: s.update(automation={'apply': True}))
+        original = disk_state.update
+        count = []
+        def busy_attach(*args):
+            count.append(1)
+            if len(count) == 2:
+                raise BlockingIOError('attach busy')
+            return original(*args)
+        child = dict(pid=123456, birth='child', side='wsl')
+        with patch.object(disk_state, 'update', side_effect=busy_attach):
+            self.tick(lambda: {'identity': child})
+        launches = []
+        with patch.object(placement, 'cleanup_claim_alive', side_effect=lambda identity: identity != child):
+            self.tick(lambda: launches.append(1))
+        self.assertEqual(launches, [1])
+
+    def test_windows_absent_pid_is_proven_dead(self):
+        from drover import placement
+        def cim(argv, **kwargs):
+            # Inspect only: never execute CIM. Absence must be checked before dereferencing CreationDate.
+            self.assertIn('if ($null -eq $p)', argv[-1])
+            return subprocess.CompletedProcess(argv, 0, 'absent\n', '')
+        with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=cim):
+            self.assertFalse(placement.cleanup_claim_alive(dict(pid=12, birth='old', side='windows')))

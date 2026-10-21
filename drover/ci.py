@@ -309,7 +309,15 @@ class CI:
                 runner.write_json_atomic(request, saved)
             spec = context['spec']
             ticket = saved.get('ticket')
-            interrupted = False
+            status = runner.read_status(self.runs_dir, spec['run_id'])
+            from . import disk
+            if not status and disk.admission(disk.read())['verdict'] == 'hold':
+                if conn is not None and ticket is not None:
+                    slots.lease_release(conn, ticket)
+                saved.pop('ticket', None)
+                runner.write_json_atomic(request, saved)
+                raise CIInterrupted('CI deferred until a healthy disk reading')
+            interrupted, capacity_deferred = False, False
             try:
                 if conn is not None:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
@@ -326,6 +334,11 @@ class CI:
                             continue
                         time.sleep(self.poll_s)
                 status = runner.read_status(self.runs_dir, spec['run_id'])
+                if not status and disk.admission(disk.read())['verdict'] == 'hold':
+                    capacity_deferred = True
+                    saved.pop('ticket', None)
+                    runner.write_json_atomic(request, saved)
+                    raise CIInterrupted('CI deferred until a healthy disk reading')
                 following = True  # launch may start execution even if returning a handle fails
                 handle = self.launcher.adopt(spec) if status else self.launcher.launch(spec)
                 next_scan, missed = time.monotonic() + (0 if status else 30), 0
@@ -371,6 +384,8 @@ class CI:
                     request.unlink(missing_ok=True)
                     return receipt
             except BaseException as error:
+                if capacity_deferred:
+                    raise
                 status = runner.read_status(self.runs_dir, spec['run_id']) or {}
                 interrupted = following and not (status.get('nonce') == spec['nonce']
                     and status.get('state') in ('exited', 'killed', 'timeout'))

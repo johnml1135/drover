@@ -122,3 +122,20 @@ def update(state_dir, change):
         answer = change(state)
         _write(state_dir, state)
         return answer
+
+
+def save_file(state_dir, name, value):
+    """Independent durable fact (critical token or result), even if state.lock is busy."""
+    directory = Path(state_dir) / 'disk'
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(value, stream, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(directory / name)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

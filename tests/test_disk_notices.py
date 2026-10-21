@@ -1,11 +1,18 @@
 """Cleanup notices survive transport failure and enter the existing Inbox once."""
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
 
 
 class Notices(DiskCase):
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+
     def durable_notices(self):
         found = {}
         def visit(value):
@@ -125,3 +132,45 @@ class Notices(DiskCase):
         self.assertEqual(len(ops.list_epics(conn)), 1, 'one machine-wide Disk space epic')
         self.assertIsNone(ops.get_setting(conn, 'dispatch_enabled'))
         self.assertEqual(ops.list_tasks(conn), [])
+
+    def test_failed_outbox_write_does_not_consume_notice_episode(self):
+        from drover import disk_cleanup
+        self.approve_report()
+        replace = Path.replace
+        failed = []
+        def fail_outbox(path, target):
+            if Path(target).name == 'state.json' and 'outbox' in path.read_text() and not failed:
+                failed.append(1)
+                raise OSError('fixture atomic replacement refused')
+            return replace(path, target)
+        with patch.object(Path, 'replace', fail_outbox):
+            failed_result = disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
+        self.assertTrue(any(e.get('reason_code') == 'notice_persistence_failed' for e in failed_result['errors']))
+        disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
+        self.assertEqual(len(self.toasts), 1)
+        self.assertEqual(len(self.durable_notices()), 1)
+
+    def test_daily_healthy_budget_is_independent_of_exhaustion(self):
+        from drover import config
+        from tests.gitfix import Repo
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        repo.commit('.drover/config.toml', config.dumps({'schema_version': 1}))
+        (self.repos_dir / 'budget.toml').write_text(config.dumps(dict(name='budget', repo=str(repo.repo),
+                   worktrees=str(repo.root / 'trees'), budget_gb=0.0001)))
+        (repo.repo / 'payload').write_bytes(b'x' * 512 * 1024)
+        self.free = 180
+        self.approve_report()
+        result = self.run_cleanup(mode='daily', apply=True)
+        self.assertFalse(result['exhausted'])
+        self.assertEqual(len([n for n in self.durable_notices() if n['kind'] == 'budget']), 1)
+
+    def test_healthy_tracker_read_rearms_exhaustion_notice(self):
+        from drover import disk, disk_cleanup
+        self.approve_report()
+        disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
+        self.free = 180
+        disk.tick(self.cfg, reader=lambda p: self.free, enqueue=lambda: None)
+        self.free = 80
+        disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
+        self.assertEqual(len(self.toasts), 2)

@@ -8,7 +8,7 @@ import logging
 import threading
 from pathlib import Path
 
-from drover import ci, landing, repos
+from drover import ci, contract, disk, landing, repos
 from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
 from drover.ledger import ops, landing as landing_storage
@@ -120,6 +120,8 @@ class LandingService:
         out_dir.mkdir(parents=True, exist_ok=True)
         work = Path(repos.native(repos.worktree_root(prog))) / f"drover-landing-{name.lower()}"
         self.ci.resume(prog, work, conn=conn)
+        if disk.admission(disk.read())['verdict'] == 'hold':
+            return {'outcome': contract.HOLD}
         size = 1 if land["policy"] == "single" else None
         hold = landing.sync_main(conn, repo, repos.remote_name(prog), base_ref, name)
         if hold:
