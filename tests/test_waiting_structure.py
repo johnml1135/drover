@@ -7,8 +7,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+SKIPPED_DIRS = {'.venv', 'venv', 'env', 'node_modules', 'build', 'dist', 'site-packages', '__pycache__', '.git'}
+
+
 def production():
-    return sorted([*ROOT.joinpath('drover').rglob('*.py'), *ROOT.joinpath('hub').rglob('*.py')])
+    # Vendored environments and build output are not production source (hub/.venv alone is ~500 files).
+    found = [*ROOT.joinpath('drover').rglob('*.py'), *ROOT.joinpath('hub').rglob('*.py')]
+    return sorted(p for p in found if not SKIPPED_DIRS.intersection(p.relative_to(ROOT).parts))
 
 
 class Retired(unittest.TestCase):
