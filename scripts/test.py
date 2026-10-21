@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run Drover's unittest modules in parallel worker processes and aggregate the result.
 
-    python3 scripts/test.py                       # default tier, one worker per core (at most 8)
+    python3 scripts/test.py                       # default tier, two cores left free, at most 18 workers (DROVER_TEST_JOBS overrides)
     python3 scripts/test.py --tier integration    # both tiers: the pre-landing run (sets DROVER_TESTS=integration)
     python3 scripts/test.py -j 4 tests.test_ci    # chosen modules, 4 workers
     python3 scripts/test.py --durations 10        # also list each worker's slowest tests
@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TIMINGS = Path(tempfile.gettempdir()) / 'drover-test-timings.json'
 MODULE_TIMEOUT_S = 900
+MAX_JOBS = 18
 SLOW_MODULE_S = 60
 SHARD_ABOVE_S = 40          # a module whose last run took longer than this is split across workers
 SHARD_SIZE = 12             # tests per shard
@@ -41,6 +42,14 @@ def flat(s):
 for t in flat(unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])):
     print(t.id())
 '''
+
+
+def default_jobs():
+    """Workers: DROVER_TEST_JOBS, else the cores less two for the OS and the runner, between 1 and MAX_JOBS."""
+    try:
+        return max(1, int(os.environ['DROVER_TEST_JOBS']))
+    except (KeyError, ValueError):
+        return max(1, min(MAX_JOBS, (os.cpu_count() or 1) - 2))
 
 
 def modules():
@@ -91,7 +100,7 @@ def run_module(name, env, durations, timeout, ids=None):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('modules', nargs='*', help='dotted test modules (default: every tests/test_*.py)')
-    p.add_argument('-j', '--jobs', type=int, default=min(8, os.cpu_count() or 1))
+    p.add_argument('-j', '--jobs', type=int, default=default_jobs())
     p.add_argument('--tier', choices=('default', 'integration'), default='default',
                    help="'integration' also runs the integration tier (sets DROVER_TESTS=integration)")
     p.add_argument('--durations', type=int, default=0, metavar='N', help='show each module worker its N slowest tests')
