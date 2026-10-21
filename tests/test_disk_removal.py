@@ -1,5 +1,6 @@
 """Removal, revalidation and usable restoration records at the public boundary."""
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,7 +14,7 @@ from tests.test_disk_worktrees import WorktreeCase
 class Removal(WorktreeCase):
     def test_missing_folder_entry_by_path_other_side_survives(self):
         native = self.worktree('missing native')
-        foreign = self.worktree('missing other', lock='windows')
+        foreign = self.worktree('missing other', lock=self.other_side)
         shutil.rmtree(native)
         shutil.rmtree(foreign)
         branches = self.branches()
@@ -28,7 +29,7 @@ class Removal(WorktreeCase):
         listed = self.registrations()
         self.assertNotIn(str(native), listed)
         self.assertIn(str(foreign), listed)
-        self.assertIn('locked windows', listed)
+        self.assertIn('locked ' + self.other_side, listed)
         self.assertEqual(self.branches(), branches)
         self.assertFalse(any('prune' in call for call in calls), calls)
         self.assertTrue(any('remove' in call and str(native) in tuple(map(str, call))
@@ -57,7 +58,7 @@ class Removal(WorktreeCase):
                                 self.r.commit('later.txt', cwd=wt)
                             elif change == 'lock':
                                 self.r.git('worktree', 'unlock', wt)
-                                self.r.git('worktree', 'lock', '--reason', 'windows', wt)
+                                self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
                             elif change == 'status-error':
                                 return subprocess.CompletedProcess(['git'], 128, '', 'unavailable')
                     return real_git(repo, *args, **kw)
@@ -76,7 +77,8 @@ class Removal(WorktreeCase):
         from drover import ownership
         for detached in (False, True):
             with self.subTest(detached=detached):
-                wt = self.worktree('restore "quote"\n' + str(detached), detached=detached)
+                name = "restore 'quote' " if os.name == 'nt' else 'restore "quote"\n'
+                wt = self.worktree(name + str(detached), detached=detached)
                 sha = self.r.commit('payload.txt', 'precious\n', cwd=wt)
                 # Detached unreferenced commits need terminal task proof, then a rescue ref.
                 task = 'restore-' + str(detached)
@@ -92,7 +94,7 @@ class Removal(WorktreeCase):
                 self.assertEqual([r['phase'] for r in entries], ['planned', 'completed'])
                 record = entries[-1]
                 self.assertEqual(record['head'], sha)
-                self.assertEqual(record['side_lock'], 'wsl')
+                self.assertEqual(record['side_lock'], self.side)
                 self.assertIsInstance(record['restore_argv'], list)
                 self.assertIn(str(wt), record['restore_argv'])
                 if detached:
@@ -104,7 +106,7 @@ class Removal(WorktreeCase):
                     sh(*record['lock_argv'])
                 self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=wt), sha)
                 self.assertEqual((wt / 'payload.txt').read_text(), 'precious\n')
-                self.assertIn('locked wsl', self.registrations())
+                self.assertIn('locked ' + self.side, self.registrations())
 
     def test_ignored_content_outside_declared_outputs_keeps_worktree(self):
         for name, files, removable in (
@@ -171,7 +173,7 @@ class Removal(WorktreeCase):
         (dirty / 'scratch.txt').write_text('owner work')
         unmerged = self.worktree('unmerged')
         self.r.commit('unmerged.txt', cwd=unmerged)
-        ghost = self.worktree('other-side ghost', lock='windows')
+        ghost = self.worktree('other-side ghost', lock=self.other_side)
         shutil.rmtree(ghost)
         before = self.registrations()
         branches = self.branches()
@@ -192,7 +194,7 @@ class Removal(WorktreeCase):
         listed = self.registrations()
         for path in (dirty, unmerged, ghost):
             self.assertIn(str(path), listed)
-        self.assertIn('locked windows', listed)
+        self.assertIn('locked ' + self.other_side, listed)
         self.assertEqual(self.branches(), branches)
         self.assertFalse(any('prune' in call for call in calls), calls)
 
@@ -212,7 +214,8 @@ class Removal(WorktreeCase):
         self.merge(wt)
         inner = wt / 'generated' / 'foreign-inner'
         self.r.git('worktree', 'add', '-q', '-b', 'foreign-inner', inner, 'origin/main')
-        self.r.git('worktree', 'lock', '--reason', 'windows', inner)
+        self.r.git('worktree', 'lock', '--reason', self.other_side, inner)
+        (inner / '.git').chmod(0o666)
         (inner / '.git').unlink()
         keep = inner / 'keep'
         keep.write_text('foreign owner data')
@@ -220,4 +223,4 @@ class Removal(WorktreeCase):
         self.cleanup(apply=True)
         self.assertEqual(keep.read_text(), 'foreign owner data')
         self.assertIn(str(inner), self.registrations())
-        self.assertIn('locked windows', self.registrations())
+        self.assertIn('locked ' + self.other_side, self.registrations())

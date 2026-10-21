@@ -771,7 +771,22 @@ def physical_disk_path(path: str) -> str | None:
         host = vhdx_dir()
         letter = drive(host) if host else None
         return native(letter + ':/') if letter else None
-    return '/'
+    return linux_mount(path)
+
+
+def linux_mount(path):
+    import posixpath
+    target = Path(posixpath.normpath(str(path)))
+    try:
+        mounts = []
+        for line in Path('/proc/self/mountinfo').read_text().splitlines():
+            encoded = line.split()[4]
+            mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), encoded)
+            if target.is_relative_to(Path(mount)):
+                mounts.append(mount)
+        return max(mounts, key=len) if mounts else None
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def _cleanup_path(path, windows):
@@ -787,8 +802,54 @@ def cleanup_processes(*, proc_root=None, cim=None, windows=None):
     return _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows)
 
 
+def _windows_cwd(pid):
+    """Read CurrentDirectory from the process parameters; inaccessible is unknown."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.ReadProcessMemory.argtypes = [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)]
+    nt = c.WinDLL('ntdll').NtQueryInformationProcess
+    nt.argtypes = [w.HANDLE, w.ULONG, c.c_void_p, w.ULONG, c.c_void_p]
+    nt.restype = c.c_long
+    handle = kernel.OpenProcess(0x0400 | 0x0010, False, pid)
+    if not handle:
+        return None
+    try:
+        def read(address, size):
+            data = c.create_string_buffer(size)
+            count = c.c_size_t()
+            if not kernel.ReadProcessMemory(handle, address, data, size, c.byref(count)) or count.value != size:
+                raise OSError('process memory unavailable')
+            return data.raw
+        width = c.sizeof(c.c_void_p)
+        basic = (c.c_void_p * 6)()
+        if nt(handle, 0, c.byref(basic), c.sizeof(basic), None) < 0:
+            return None
+        peb = basic[1]
+        if width == 8:
+            wow = c.c_void_p()
+            if nt(handle, 26, c.byref(wow), c.sizeof(wow), None) < 0:
+                return None
+            if wow.value:
+                peb, width = wow.value, 4
+        parameters = int.from_bytes(read(peb + (0x20 if width == 8 else 0x10), width), 'little')
+        directory = read(parameters + (0x38 if width == 8 else 0x24), 16 if width == 8 else 8)
+        length = int.from_bytes(directory[:2], 'little')
+        address = int.from_bytes(directory[8:16] if width == 8 else directory[4:8], 'little')
+        if not address or not length or length > 65534 or length % 2:
+            return None
+        return read(address, length).decode('utf-16-le')
+    except (OSError, ValueError, OverflowError):
+        return None
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def _cim_rows():
-    """(cwd, command line) for every process via CIM; raises on failure or timeout. CIM exposes no cwd."""
+    """(cwd, command line) for every process via CIM plus native process parameters; missing cwd is unknown."""
     out = subprocess.run(
         ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
          'Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress'],
@@ -797,7 +858,7 @@ def _cim_rows():
         raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
     data = json.loads(out.stdout)
     data = [data] if isinstance(data, dict) else data
-    return [(None, ' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')]))) for d in data
+    return [(_windows_cwd(d['ProcessId']), ' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')]))) for d in data
             if d.get('ProcessId') != os.getpid()]
 
 
@@ -816,7 +877,8 @@ class _CleanupProcesses:
         if windows:
             try:
                 self.rows = (cim or _cim_rows)()
-            except (OSError, ValueError, subprocess.SubprocessError):
+                self.unknown = not self.rows or any(not cwd for cwd, _ in self.rows)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 self.unknown = True
             return
         self.root = Path(proc_root if proc_root is not None else '/proc')
@@ -852,6 +914,10 @@ class _CleanupProcesses:
                 self.unknown = True
                 cwd = None
             self.rows.append((cwd, cmd))
+
+    @property
+    def reason(self):
+        return 'process visibility unavailable' if self.unknown else None
 
     def busy(self, worktree):
         if self.unknown:
@@ -975,6 +1041,31 @@ def cleanup_runtime(cfg):
     return CleanupRuntime(time.time, _free, cleanup_call, disk_toast)
 
 
+class CleanupWorkerError(RuntimeError):
+    termination_confirmed = False
+
+
+def cleanup_worker(request):
+    """Own the worker group/job before any stage can spawn children."""
+    from . import disk_side, disk_state
+    if IS_WINDOWS:
+        from types import SimpleNamespace
+        # The handle remains open until exit, so client loss kills the job's children.
+        job = WindowsTree._make_job(SimpleNamespace(_handle=-1))
+    else:
+        os.setsid()
+    status = dict(pid=os.getpid(), runner_pid=os.getpid(), run_id=request['_worker_id'])
+    name = 'worker-' + request['_worker_id'] + '.json'
+    disk_state.save_file(request['state_dir'], name, status)
+    try:
+        answer = disk_side.serve(request)
+    except BaseException as error:
+        disk_state.save_file(request['state_dir'], name, dict(status, error=str(error)))
+        raise
+    disk_state.save_file(request['state_dir'], name, dict(status, completed=True, result=answer))
+    json.dump(answer, sys.stdout)
+
+
 def cleanup_call(side: str, request: dict) -> dict:
     """Run a fixed JSON worker; only declared paths are translated across sides."""
     if side not in ('windows', 'wsl'):
@@ -983,8 +1074,12 @@ def cleanup_call(side: str, request: dict) -> dict:
         errors = [dict(reason_code='side_unavailable')] if os.environ.get('WSL_DISTRO_NAME') else []
         return dict(items=[], errors=errors, reclaimed_bytes=0)
     import copy
-    import tempfile
+    import uuid
+    from . import disk_state
     request = copy.deepcopy(request)
+    original_state = request['state_dir']
+    token = uuid.uuid4().hex
+    request['_worker_id'] = token
     request['side'] = side
     root = str(Path(__file__).resolve().parents[1])
     if IS_WINDOWS and side == 'wsl':
@@ -1001,21 +1096,56 @@ def cleanup_call(side: str, request: dict) -> dict:
                 if repo.get(key):
                     repo[key] = convert(repo[key])
         for key in ('temp_roots', 'report_roots'):
-            request['paths'][key] = [convert(p) for p in request['paths'].get(key, [])]
+            request['paths'][key] = [convert(p) for p in request['paths'].get(key, [])
+                                     if cleanup_path_side(p) == side]
+        request['paths']['caches'] = [c for c in request['paths'].get('caches', [])
+                                      if cleanup_path_side(c.get('path', c.get('cwd'))) == side]
         for cache in request['paths'].get('caches', []):
             key = 'path' if 'path' in cache else 'cwd'
             cache[key] = convert(cache[key])
-        argv = ['wsl.exe', '-d', distro(), '--', 'python3']
+        argv = ['wsl.exe', '-d', distro(), '--', 'env', 'DROVER_RUN_ID=' + token, 'python3']
         root = convert(root)
     else:
         argv = [sys.executable]
     # Pin the application root independently of cwd or the hub's environment.
-    code = 'import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module("drover.disk_side",run_name="__main__")'
-    done = subprocess.run([*argv, '-c', code, root], input=json.dumps(request),
-                          capture_output=True, text=True, timeout=600, shell=False)
-    if done.returncode:
-        raise RuntimeError('cleanup worker failed: ' + done.stderr[-2000:])
-    return json.loads(done.stdout)
+    code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
+            'from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))')
+    try:
+        done = subprocess.run([*argv, '-c', code, root, token], input=json.dumps(request),
+                              capture_output=True, text=True, timeout=600, shell=False,
+                              env={**os.environ, 'DROVER_RUN_ID': token})
+        if not done.returncode:
+            return json.loads(done.stdout)
+        reason, output, detail = 'worker_failed', done.stdout, done.stderr
+    except subprocess.TimeoutExpired as error:
+        reason, output, detail = 'worker_timeout', error.stdout, error.stderr
+    except OSError as error:
+        return dict(items=[], errors=[dict(reason_code='worker_unavailable', error=str(error))], reclaimed_bytes=0)
+    def text(value):
+        return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
+    evidence = dict(reason_code=reason, output=text(output)[-4000:], error=text(detail)[-4000:])
+    try:
+        status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text())
+        if not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
+                status.get('run_id') != token:
+            raise ValueError('worker identity unavailable')
+        if IS_WINDOWS and side == 'windows':
+            for pid, args, *_ in process_cmdlines():
+                if pid == status['pid'] and token in args:
+                    subprocess.run(['taskkill.exe', '/PID', str(pid), '/T', '/F'],
+                                   capture_output=True, timeout=30, **NO_WINDOW)
+                    break
+        confirmed = recover_ci_children(side, status, str(Path(__file__).resolve().parents[1]))
+    except (OSError, ValueError, KeyError, TypeError, ScanError, subprocess.SubprocessError):
+        confirmed = False
+    evidence['termination_confirmed'] = confirmed
+    try:
+        disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
+    except OSError as error:
+        evidence['persistence_error'] = str(error)
+    if not confirmed:
+        raise CleanupWorkerError(json.dumps(evidence))
+    return dict(items=[], errors=[evidence], reclaimed_bytes=0)
 
 
 def cleanup_side():
@@ -1032,7 +1162,6 @@ def cleanup_link(path):
 def cleanup_scope(request):
     """Keep only this physical drive; path spelling/translation lives here."""
     import copy
-    import tempfile
     scoped = copy.deepcopy(request)
     def belongs(path):
         return cleanup_contains(request, path)
@@ -1040,16 +1169,23 @@ def cleanup_scope(request):
     # rather than dropping the repository that owns that drive's registrations.
     for name in ('temp_roots', 'report_roots'):
         roots = request['paths'].get(name, [])
-        if name == 'temp_roots':
-            roots = [*roots, tempfile.gettempdir(), str(Path(request['state_dir']) / 'scratch')]
-        scoped['paths'][name] = list(dict.fromkeys(p for p in roots if belongs(p)))
-    scoped['paths']['caches'] = [entry for entry in request['paths'].get('caches', [])
+        scoped['paths'][name] = list(dict.fromkeys(native(p) for p in roots if belongs(p)))
+    scoped['paths']['caches'] = [entry for entry in scoped['paths'].get('caches', [])
                                 if entry['placement'] == cleanup_side() and belongs(entry.get('path', entry.get('cwd')))]
+    for entry in scoped['paths']['caches']:
+        key = 'path' if 'path' in entry else 'cwd'
+        entry[key] = native(entry[key])
     return scoped
+
+
+def cleanup_path_side(path):
+    return 'windows' if drive(str(path)) else worktree_side(str(path))
 
 
 def cleanup_contains(request, path):
     """Whether this concrete candidate belongs to the requested physical drive."""
+    if cleanup_path_side(path) != cleanup_side():
+        return False
     declared = request['drive']['path']
     host = physical_disk_path(path)
     drive_host = physical_disk_path(declared) if declared is not None else None

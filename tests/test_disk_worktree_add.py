@@ -1,6 +1,7 @@
 """Creation APIs tag real linked checkouts before reporting success."""
 import datetime
 import io
+import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import time
@@ -66,7 +67,7 @@ class Add(DiskCase):
         from drover import worktree, ownership
         fixture = Repo()
         self.addCleanup(fixture.cleanup)
-        path = fixture.root / 'spaces \'quotes" and\nnewline'
+        path = fixture.root / ("spaces 'quotes' and literal" if os.name == 'nt' else 'spaces \'quotes" and\nnewline')
         fixture.git('branch', 'exact-topic')
         with patch.object(ownership, 'tag', side_effect=OSError('fixture tag write denied')):
             with self.assertRaises((OSError, RuntimeError)) as caught:

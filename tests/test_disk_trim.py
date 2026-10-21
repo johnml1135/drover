@@ -25,7 +25,7 @@ class Trim(DiskCase):
                 self.approve_report()
                 self.calls.clear()
                 self.run_cleanup(apply=True, real=False, handler=stage)
-                self.assertEqual(sum(side == 'wsl' and request['stage'] == 1
+                self.assertEqual(sum(side == 'windows' and request['stage'] == 1
                                      for side, request in self.calls), retrims)
 
     def test_composed_side_command_runs(self):
@@ -40,7 +40,7 @@ class Trim(DiskCase):
                        repos=[], state_dir=str(self.state), tasks={},
                        paths=dict(temp_roots=[], report_roots=[], caches=[dict(
                            argv=[sys.executable, str(script), str(marker), *literal],
-                           cwd=str(self.temp_root), placement='wsl')]))
+                           cwd=str(self.temp_root), placement=self.side)]))
         # This public native-side call must run its composed worker and command.
         # Block a cross-platform escape; no WSL or root process may run in tests.
         original = subprocess.run
@@ -50,8 +50,21 @@ class Trim(DiskCase):
             self.assertNotIn('fstrim', [str(a).lower() for a in argv])
             seen.append(list(argv))
             return original(argv, *args, **kwargs)
-        with patch.object(placement, 'IS_WINDOWS', False), patch.object(subprocess, 'run', side_effect=execute):
-            result = placement.cleanup_call('wsl', request)
+        with patch.object(subprocess, 'run', side_effect=execute):
+            result = placement.cleanup_call(self.side, request)
         self.assertTrue(seen)
         self.assertEqual(json.loads(marker.read_text()), [literal, str(self.temp_root)])
         self.assertEqual(result['errors'], [])
+
+    def test_retrim_returns_to_windows_before_next_destructive_stage(self):
+        def stage(side, request):
+            answer = empty_result()
+            if side == 'wsl' and request['stage'] == 2:
+                answer['reclaimed_bytes'] = GIB
+            return answer
+        self.approve_report()
+        self.calls.clear()
+        self.run_cleanup(apply=True, handler=stage)
+        steps = [(side, r['stage']) for side, r in self.calls]
+        reclaimed = steps.index(('wsl', 2))
+        self.assertEqual(steps[reclaimed + 1], ('windows', 1))

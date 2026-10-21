@@ -18,7 +18,8 @@ from drover.disk_state import CleanupLock
 state = Path(sys.argv[1])
 try:
     with CleanupLock(state):
-        print('acquired', flush=True)
+        import os
+        print('acquired ' + str(os.getpid()), flush=True)
         sys.stdin.readline()
 except BlockingIOError:
     print('busy', flush=True)
@@ -30,11 +31,12 @@ except BlockingIOError:
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: first.poll() is None and first.kill())
         try:
-            self.assertEqual(first.stdout.readline().strip(), 'acquired')
+            ready, holder_pid = first.stdout.readline().strip().split()
+            self.assertEqual(ready, 'acquired')
             lock = self.state / 'disk-cleanup.lock'
             self.assertTrue(lock.is_dir())
             diagnostic = ''.join(path.read_text() for path in lock.iterdir() if path.is_file())
-            self.assertIn(str(first.pid), diagnostic)
+            self.assertEqual(json.loads(diagnostic)['pid'], int(holder_pid))
             second = subprocess.run([sys.executable, str(helper), str(self.state)], env=env,
                                     input='', capture_output=True, text=True, timeout=10)
             self.assertEqual(second.returncode, 23, second.stderr)

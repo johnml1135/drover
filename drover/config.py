@@ -411,6 +411,30 @@ def validate(raw):
                                    {"parallel_cap": (1, 64)})
     cfg["trackers"] = _trackers(raw.get("trackers", []))
     cfg["disk_cleanup"] = _cleanup_policy(raw.get("disk_cleanup", {}))
+    folders = [c['path'] for c in cfg['disk_cleanup']['caches'] if 'path' in c]
+    if folders:
+        from . import placement, repos
+        protected = [str(state_dir(cfg)), cfg['paths']['repos_root'], cfg['paths']['worktrees']]
+        try:
+            for machine_file in repos_dir(cfg).glob('*.toml'):
+                machine = repos.read_machine(machine_file)
+                protected.extend(machine.get(k) for k in ('repo', 'worktrees'))
+                if machine.get('repo') and not machine.get('worktrees') and not cfg['paths']['worktrees']:
+                    protected.append(machine['repo'].rstrip('\\/') + '.worktrees')
+            for folder in folders:
+                concrete = Path(placement.native(folder))
+                if (concrete / '.git').exists() or any((p / '.git' / 'HEAD').exists() or
+                        (p / '.git').is_file() for p in concrete.parents):
+                    raise ConfigError('folder cache overlaps protected repository')
+                parts = placement.path_parts(folder)
+                if any(part in ('.git', '.venv') for part in parts):
+                    raise ConfigError('folder cache overlaps protected path')
+                for root in filter(None, protected):
+                    other = placement.path_parts(root)
+                    if parts[:len(other)] == other or other[:len(parts)] == parts:
+                        raise ConfigError('folder cache overlaps protected repository, worktree or state path')
+        except (OSError, ValueError) as error:
+            raise ConfigError(str(error)) from error
     cfg["policy"] = _check_table(raw.get("policy", {}), DEFAULTS["policy"], ["policy"],
                                  {"tau": (0, 1), "landing_batch_size": (1, 5)})
     cfg["decider"] = _check_table(raw.get("decider", {}), DEFAULTS["decider"], ["decider"], {"timeout_s": (0.1, 600)})

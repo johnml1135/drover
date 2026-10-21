@@ -11,7 +11,7 @@ class Reading(DiskCase):
         self.cfg['trackers'].append(dict(self.cfg['trackers'][0], name='disabled', enabled=False))
         with patch('subprocess.run', side_effect=AssertionError('reader must not start a process')):
             rows = disk.read(self.cfg, reader=lambda path: seen.append(path) or 151.)
-        physical = placement.native('H:\\')
+        physical = placement.native('H:/')
         self.assertEqual(seen, [physical])
         self.assertEqual(rows, [dict(name='test-drive', path=physical, free_gb=151., level='ok')])
         self.assertFalse(any('vhdx' in str(p).lower() or p == str(self.root.home()) for p in seen))

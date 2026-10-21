@@ -53,29 +53,9 @@ class Scope(WorktreeCase):
                     return disk_side.serve(request)
                 runtime = disk_cleanup.CleanupRuntime(base_runtime.now, base_runtime.read,
                                                        call, base_runtime.toast)
-                real_metadata = placement.worktree_metadata
-                def native_metadata(*args, **kwargs):
-                    with mock.patch.object(placement, 'IS_WINDOWS', False):
-                        return real_metadata(*args, **kwargs)
-                real_git = placement.git
-                real_argv = placement.git_argv
-                def native_argv(*args, **kwargs):
-                    with mock.patch.object(placement, 'IS_WINDOWS', False):
-                        return real_argv(*args, **kwargs)
-                def native_git(repo, *args, **kwargs):
-                    with mock.patch.object(placement, 'IS_WINDOWS', False):
-                        return real_git(repo, *args, **kwargs)
-                real_side = placement.worktree_side
-                def owning_side(path, lock=None):
-                    if lock in ('windows', 'wsl'):
-                        return lock
-                    return real_side(path, lock)
-                # The sole platform seam supplies the simulated current side; no OS calls.
-                with mock.patch.object(placement, 'IS_WINDOWS', side == 'windows'), \
-                     mock.patch.object(placement, 'git', side_effect=native_git), \
-                     mock.patch.object(placement, 'git_argv', side_effect=native_argv), \
-                     mock.patch.object(placement, 'worktree_metadata', side_effect=native_metadata), \
-                     mock.patch.object(placement, 'worktree_side', side_effect=owning_side), \
+                # Simulated owning side and path mapping; Git always uses the real native platform.
+                with mock.patch.object(placement, 'cleanup_side', return_value=side), \
+                     mock.patch.object(placement, 'cleanup_path_side', return_value=side), \
                      mock.patch.object(placement, 'cleanup_runtime', return_value=runtime), \
                      mock.patch.object(placement, 'cleanup_processes',
                                        return_value=type('Idle', (), {'busy': lambda _, p: False})()), \
@@ -122,7 +102,7 @@ class Scope(WorktreeCase):
         from drover import disk_cleanup, disk_side
         runtime = self.runtime(real=True)
         def call(side, request):
-            if side != 'wsl' or request['stage'] == 1:
+            if side != self.side or request['stage'] == 1:
                 return {'items': [], 'errors': [], 'reclaimed_bytes': 0}
             return disk_side.serve(request)
         runtime = disk_cleanup.CleanupRuntime(runtime.now, lambda path: 180 if path == str(other) else 80,

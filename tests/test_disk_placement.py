@@ -29,7 +29,7 @@ class Facts(unittest.TestCase):
             self.assertTrue(busy.busy(str(target)))
             self.assertFalse(busy.busy(str(root / 'work')))
             cim = placement.cleanup_processes(windows=True, cim=lambda: [
-                (None, 'python "H:\\trees\\topic\\worker.py"')])
+                (r'H:\elsewhere', 'python "H:\\trees\\topic\\worker.py"')])
             self.assertTrue(cim.busy(r'H:\trees\topic'))
             self.assertFalse(cim.busy(r'H:\trees\top'))
             def unavailable():
@@ -66,3 +66,12 @@ class Facts(unittest.TestCase):
                 patch.object(placement, 'distro', return_value='Fixture'), \
                 patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}):
             self.assertEqual(placement.physical_disk_path('/home/user/topic'), 'H:/')
+
+    def test_windows_shell_cwd_and_missing_visibility_retain_candidates(self):
+        visible = placement.cleanup_processes(windows=True, cim=lambda: [
+            (r'H:\trees\topic', 'pwsh.exe')])
+        self.assertTrue(visible.busy(r'H:\trees\topic'))
+        self.assertFalse(visible.busy(r'H:\trees\other'))
+        hidden = placement.cleanup_processes(windows=True, cim=lambda: [(None, 'pwsh.exe')])
+        self.assertTrue(hidden.busy(r'H:\trees\other'))
+        self.assertEqual(hidden.reason, 'process visibility unavailable')

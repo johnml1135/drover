@@ -1,6 +1,7 @@
 """Ownership lives outside tracked files and task acquisition renews its lease."""
 import json
 import os
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -25,6 +26,8 @@ class Ownership(unittest.TestCase):
         fix.git('worktree', 'add', '-q', '-b', 'linked', tree)
         admin = Path(fix.git('rev-parse', '--absolute-git-dir', cwd=tree))
         # Relative admin pointers are common after cross-side worktree creation.
+        (tree / '.git').chmod(0o666)
+        (tree / '.git').unlink()
         (tree / '.git').write_text('gitdir: ' + os.path.relpath(admin, tree) + '\n')
         record = ownership.tag(str(tree), 'alpha', 'session:literal', NOW + 86400, now=NOW)
         self.assertEqual(record, {'v': 2, 'repo': 'alpha', 'owner': 'session:literal',
@@ -85,7 +88,7 @@ class Ownership(unittest.TestCase):
         calls = []
         def local_transport(adapter, argv, **kwargs):
             calls.append(list(argv))
-            return argv
+            return [sys.executable, *argv[1:]] if argv[0] == 'python3' else argv
         with patch.object(placement, 'routes_through_wsl', return_value=True), \
                 patch.object(placement.WSL, 'command', new=local_transport):
             record = ownership.tag(str(tree), 'alpha', 'session: "quote"\n雪', NOW + 1, now=NOW)

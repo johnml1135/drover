@@ -59,7 +59,7 @@ class Quarantine(WorktreeCase):
         self.r.git('worktree', 'unlock', recreated)
         self.r.git('worktree', 'remove', recreated)
         self.r.git('worktree', 'add', '-q', '-b', 'replacement', recreated, 'origin/main')
-        self.r.git('worktree', 'lock', '--reason', 'wsl', recreated)
+        self.r.git('worktree', 'lock', '--reason', self.side, recreated)
         self.cleanup(apply=True)
         (paths['dirty'] / 'scratch').unlink()
         self.now += DAY

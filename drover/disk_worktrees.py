@@ -22,6 +22,7 @@ def entries(repo):
             if key:
                 row[key] = value
         if 'worktree' in row:
+            row['worktree'] = placement.canonical(row['worktree'])
             rows.append(row)
     return rows
 
@@ -62,13 +63,17 @@ def task_facts(request, path, tag):
     at = snapshot.get('at')
     fresh = type(at) in (float, int) and 0 <= request['now'] - at <= 900
     if not fresh:
-        return False, False
+        return bool(tag and tag['owner'].startswith('drover:')), False
     live = str(path) in snapshot.get('active_worktrees', [])
     terminal = False
+    found = False
     for task in snapshot.get('tasks', []):
         if tag and tag['owner'] == 'drover:' + str(task.get('id')):
-            live |= task.get('live') is True
+            found = True
+            live |= task.get('terminal') is not True or task.get('live') is True
             terminal |= task.get('terminal') is True and task.get('live') is False
+    if tag and tag['owner'].startswith('drover:') and not found:
+        live = True
     return live, terminal
 
 
@@ -103,8 +108,9 @@ def inspect(request, machine, entry):
     if path == Path(placement.native(machine['repo'])):
         row['reason_code'] = 'main_checkout'
         return row
-    if task_facts(request, path, None)[0] or placement.cleanup_processes().busy(str(path)):
-        row['reason_code'] = 'busy'
+    proof = placement.cleanup_processes()
+    if task_facts(request, path, None)[0] or proof.busy(str(path)):
+        row['reason_code'] = getattr(proof, 'reason', None) or 'busy'
         return row
     if not path.exists():
         row.update(action='candidate', reason_code='missing')

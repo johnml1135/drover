@@ -121,7 +121,8 @@ class Migration(unittest.TestCase):
             unresolved = {'trackers': [disk('h', '~/repos', wsl_source='vhdx', queue_gb=75.0, hold_gb=25.0)]}
             path.write_text(config.dumps(unresolved))
             unresolved_bytes = path.read_bytes()
-            with patch.object(placement, 'vhdx_dir', return_value=None):
+            with patch.object(placement, 'vhdx_dir', return_value=None), \
+                    patch.object(placement, 'detect_vhdx_drives', return_value={}):
                 self.assertEqual(cli('--apply')[0], 2)
             self.assertEqual(path.read_bytes(), unresolved_bytes)
             self.assertEqual(list(state.glob('*bak*')), backups)

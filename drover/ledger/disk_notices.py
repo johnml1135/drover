@@ -1,4 +1,7 @@
 """Hub-only delivery of durable disk notices into the existing Inbox."""
+import hashlib
+import json
+
 from . import ops, tx
 
 
@@ -22,7 +25,7 @@ def replay(conn, cfg, now):
     from . import states
     tasks = []
     for task in ops.list_tasks(conn, include_archived=True):
-        live = task['status'] in states.ACTIVE
+        live = task['status'] not in states.TERMINAL
         tasks.append(dict(id=task['id'], state=task['status'], terminal=task['status'] in states.TERMINAL,
                           live=live, worktree=task.get('worktree'), owner='drover:' + task['id']))
         try:
@@ -37,6 +40,16 @@ def replay(conn, cfg, now):
         state = disk_state.read(state_dir)
     except BlockingIOError:
         return []
+    reports = []
+    try:
+        report = json.loads((state_dir / 'disk' / 'last-report.json').read_text(encoding='utf-8'))
+        ident = hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
+        with tx(conn):
+            if not any(e['data']['id'] == ident for e in ops.events(conn, kind='disk.report')):
+                ops.event(conn, 'disk.report', 'disk', dict(id=ident, report=report))
+                reports.append(ident)
+    except (OSError, ValueError):
+        pass
     delivered = []
     for ident, entry in state.get('outbox', {}).items():
         if not entry['acknowledged']:
@@ -50,4 +63,4 @@ def replay(conn, cfg, now):
             disk_state.update(state_dir, acknowledge)
         except BlockingIOError:
             pass  # Ledger dedup protects replay after temporary contention.
-    return delivered
+    return delivered + reports

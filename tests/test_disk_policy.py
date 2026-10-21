@@ -15,6 +15,9 @@ class Policy(unittest.TestCase):
         self.fix = Repo()
         self.addCleanup(self.fix.cleanup)
         self.addCleanup(config.reset)
+        env = patch.dict(os.environ, {'DROVER_HOME': str(self.fix.root / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
         config.use(config.validate({'paths': {'state_dir': str(self.fix.root / 'state')}}))
         self.machine = {'name': 'alpha', 'repo': str(self.fix.repo), 'budget_gb': 12.5}
 

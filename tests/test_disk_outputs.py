@@ -76,20 +76,21 @@ class Outputs(WorktreeCase):
                 checks.append(args)
                 if len(checks) == 3:
                     self.r.git('worktree', 'unlock', wt)
-                    self.r.git('worktree', 'lock', '--reason', 'windows', wt)
+                    self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
             return real_git(repo, *args, **kw)
         with mock.patch.object(placement, 'git', side_effect=git):
             self.cleanup(apply=True)
         self.assertGreaterEqual(len(checks), 3)
         self.assertEqual(output.read_text(), 'preserve on ownership change')
-        self.assertIn('locked windows', self.registrations())
+        self.assertIn('locked ' + self.other_side, self.registrations())
 
     def test_nested_registered_worktree_survives_declared_output_cleanup(self):
         wt = self.worktree('outer output')
         self.r.commit('unmerged.txt', cwd=wt)
         inner = wt / 'generated' / 'foreign-inner'
         self.r.git('worktree', 'add', '-q', '-b', 'foreign-inner', inner, 'origin/main')
-        self.r.git('worktree', 'lock', '--reason', 'windows', inner)
+        self.r.git('worktree', 'lock', '--reason', self.other_side, inner)
+        (inner / '.git').chmod(0o666)
         (inner / '.git').unlink()
         keep = inner / 'keep'
         keep.write_text('foreign owner data')
@@ -97,7 +98,7 @@ class Outputs(WorktreeCase):
         self.cleanup(apply=True)
         self.assertEqual(keep.read_text(), 'foreign owner data')
         self.assertIn(str(inner), self.registrations())
-        self.assertIn('locked windows', self.registrations())
+        self.assertIn('locked ' + self.other_side, self.registrations())
 
     def test_changed_branch_output_scope_requires_another_report(self):
         from drover import config

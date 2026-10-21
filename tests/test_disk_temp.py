@@ -46,12 +46,42 @@ class Temporary(DiskCase):
         self.approve_report()
         self.assertTrue(scratch.exists())
         self.run_cleanup(apply=True)
-        self.assertFalse(scratch.exists())
+        self.assertTrue(scratch.exists())
         self.assertEqual({path: path.read_bytes() for path in protected}, before)
         self.cfg['disk_cleanup']['temp_roots'] = [str(self.state)]
         outside = self.file(self.root / 'outside' / 'payload')
+        scratch.unlink()
         (self.state / 'scratch').rmdir()
         (self.state / 'scratch').symlink_to(outside.parent, target_is_directory=True)
         self.approve_report()
         self.run_cleanup(apply=True)
         self.assertEqual(outside.read_text(), 'sentinel')
+
+    def test_protected_descendants_keep_entire_temp_subtree(self):
+        for marker in ('.git', '.venv'):
+            with self.subTest(marker=marker):
+                precious = self.file(self.temp_root / marker.strip('.') / 'nested' / marker / 'keep')
+                self.age(precious.parents[2], 8 * DAY)
+                self.approve_report()
+                result = self.run_cleanup(apply=True)
+                self.assertTrue(precious.exists())
+                self.assertTrue(any(i['path'] == str(precious.parents[2]) and i['action'] == 'keep'
+                                    for i in result['items']))
+
+    def test_protection_is_rechecked_before_temp_deletion(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from drover import placement
+        candidate = self.file(self.temp_root / 'racing' / 'payload').parent
+        self.age(candidate, 8 * DAY)
+        self.approve_report()
+        calls = []
+        def busy(path):
+            calls.append(path)
+            if len(calls) == 2:
+                self.file(candidate / '.git', 'gitdir: preserve')
+                self.age(candidate, 8 * DAY)
+            return False
+        with patch.object(self, 'busy', side_effect=busy):
+            self.run_cleanup(apply=True)
+        self.assertTrue((candidate / '.git').exists())

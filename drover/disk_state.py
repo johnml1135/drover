@@ -43,6 +43,8 @@ class CleanupLock:
         return self
 
     def __exit__(self, *exc):
+        if exc and getattr(exc[1], 'termination_confirmed', True) is False:
+            return  # Unconfirmed worker loss requires operator inspection; never unlock.
         if self.acquired:
             owner = self.path / 'owner.json'
             # Never unlink a replacement holder's directory.

@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config
+from drover import config, placement
 
 DAY = 86400
 GIB = 1024 ** 3
@@ -44,6 +44,8 @@ class DiskCase(unittest.TestCase):
         self.free = 80.
         self.calls, self.toasts, self.busy_paths = [], [], set()
         self.tasks = {}
+        self.side = placement.cleanup_side()
+        self.other_side = 'wsl' if self.side == 'windows' else 'windows'
         for context in (patch.dict(os.environ, {'DROVER_HOME': str(self.state)}),
                         patch.object(config, 'get', return_value=self.cfg)):
             context.start()
@@ -60,7 +62,8 @@ class DiskCase(unittest.TestCase):
             for child in path.rglob('*'):
                 if not child.is_symlink():
                     os.utime(child, (self.now - seconds, self.now - seconds))
-        os.utime(path, (self.now - seconds, self.now - seconds), follow_symlinks=False)
+        if not path.is_symlink():
+            os.utime(path, (self.now - seconds, self.now - seconds))
         return path
 
     def file(self, path, text='sentinel', age=8 * DAY):
@@ -77,7 +80,7 @@ class DiskCase(unittest.TestCase):
             self.calls.append((side, copy.deepcopy(request)))
             if handler is not None:
                 return handler(side, request)
-            if not real or side != 'wsl' or request['stage'] == 1:
+            if not real or side != self.side or request['stage'] == 1:
                 return empty_result()
             from drover.disk_side import serve
             # Tests declare every temp root explicitly, never inspect host temp.

@@ -14,7 +14,7 @@ class GardenCase(WorktreeCase):
         (self.r.root / 'noproc').mkdir()
         self.proc = placement.cleanup_processes(proc_root=self.r.root / 'noproc', windows=False)
 
-    def worktree(self, name, lock='wsl'):
+    def worktree(self, name, lock='native'):
         path = super().worktree(name, lock=lock)
         self.r.git('branch', '-m', name, cwd=path)
         return path

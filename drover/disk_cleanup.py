@@ -78,6 +78,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         claims = {name: episode['claim'] for name, episode in disk_state.read(state_dir).get('episodes', {}).items() if episode.get('claim')}
         machines = _repos(cfg, result['errors'])
         rows = disk.read(cfg, reader=runtime.read)
+        inventories = set()
         for row in rows:
             tracker = next(t for t in cfg['trackers'] if t['name'] == row['name'])
             free = row['free_gb']
@@ -94,13 +95,21 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                    state_dir=str(state_dir), tasks=tasks)
                     try:
                         answer = _valid_result(runtime.call(side, request))
+                        if stage == 6:
+                            inventories.add((row['name'], side))
                         result['items'].extend(dict(item, stage=stage, side=side) for item in answer['items'])
                         result['errors'].extend(dict(item, stage=stage, side=side) for item in answer['errors'])
                         if stage > 1 and apply and side == 'wsl' and answer['reclaimed_bytes'] >= 1024 ** 3:
-                            trimmed = _valid_result(runtime.call(side, dict(request, stage=1)))
+                            trimmed = _valid_result(runtime.call('windows', dict(request, stage=1)))
                             result['errors'].extend(trimmed['errors'])
                     except (OSError, ValueError, RuntimeError) as error:
                         result['errors'].append(dict(stage=stage, side=side, error=str(error)))
+                        if getattr(error, 'termination_confirmed', True) is False:
+                            try:
+                                disk_state.save_file(state_dir, 'last-report.json', result)
+                            except OSError:
+                                pass
+                            raise
                 free = _reading(runtime.read(row['path'])) if row['path'] is not None else None
                 drive['post_free_gb'] = free
                 drive['level'] = next((level for level in ('critical', 'hold', 'queue', 'warn')
@@ -128,25 +137,39 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             if budgeted:
                 for row in rows:
                     for side in ('windows', 'wsl'):
+                        if (row['name'], side) in inventories:
+                            continue
                         request = dict(stage=6, apply=False, now=runtime.now(), drive=row, repos=budgeted,
                                        paths=cfg['disk_cleanup'], state_dir=str(state_dir), tasks=tasks)
                         try:
                             answer = _valid_result(runtime.call(side, request))
-                            result['items'].extend(dict(i, stage=6, side=side) for i in answer['items']
-                                                   if i.get('reason_code') == 'budget_usage')
+                            result['items'].extend(dict(i, stage=6, side=side) for i in answer['items'])
+                            result['errors'].extend(dict(i, stage=6, side=side) for i in answer['errors'])
                         except (OSError, ValueError, RuntimeError) as error:
                             result['errors'].append(dict(reason_code='budget_unavailable', side=side, error=str(error)))
-            # A busy writer must not erase completed result evidence or lose a notice.
-            pending = 'pending-notices-' + uuid.uuid4().hex + '.json'
-            try:
-                disk_state.save_file(state_dir, pending, dict(result=result, machines=machines))
+                            if getattr(error, 'termination_confirmed', True) is False:
+                                try:
+                                    disk_state.save_file(state_dir, 'last-report.json', result)
+                                except OSError:
+                                    pass
+                                raise
+        # Persist report evidence independently of the short outbox transaction.
+        pending = 'pending-notices-' + uuid.uuid4().hex + '.json'
+        try:
+            disk_state.save_file(state_dir, pending, dict(result=result, machines=machines))
+            _report_notices(state_dir, result)
+            if apply:
                 _notices(cfg, result, runtime, machines)
-            except BlockingIOError:
-                pass
-            except OSError as error:
-                result['errors'].append(dict(reason_code='notice_persistence_failed', error=str(error)))
-            else:
-                (state_dir / 'disk' / pending).unlink(missing_ok=True)
+        except BlockingIOError:
+            pass
+        except OSError as error:
+            result['errors'].append(dict(reason_code='notice_persistence_failed', error=str(error)))
+        else:
+            (state_dir / 'disk' / pending).unlink(missing_ok=True)
+        try:
+            disk_state.save_file(state_dir, 'last-report.json', result)
+        except OSError as error:
+            result['errors'].append(dict(reason_code='report_persistence_failed', error=str(error)))
         if not apply and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):
             disk_state.update(state_dir, lambda state: state.update(report_scope=key))
     return result
@@ -177,6 +200,23 @@ def remove_approved(cfg: dict, repo: str, path: str, *, runtime=None) -> dict:
     except (OSError, ValueError, RuntimeError) as error:
         out['errors'].append(dict(path=path, error=str(error)))
     return out
+
+
+def _report_notices(state_dir, result):
+    if not any(i.get('reason_code') == 'merged_live_task' for i in result['items']):
+        return
+    def prepare(state):
+        outbox = state.setdefault('outbox', {})
+        for item in result['items']:
+            if item.get('reason_code') != 'merged_live_task':
+                continue
+            ident = 'merged_live_task:' + hashlib.sha256(json.dumps(
+                [item.get('repo'), item.get('task_id'), item['path']]).encode()).hexdigest()
+            notice = dict(id=ident, kind='merged_live_task', title='Merged work has an open task',
+                          body=f"{item.get('task_id')}: {item['path']} retained for its open task.", items=[item])
+            if ident not in outbox:
+                outbox[ident] = dict(notice=notice, toasted=False, acknowledged=False)
+    disk_state.update(state_dir, prepare)
 
 
 def _notices(cfg, result, runtime, machines):
@@ -245,7 +285,9 @@ def retry_notices(cfg):
     for path in (config.state_dir(cfg) / 'disk').glob('pending-notices-*.json'):
         try:
             pending = json.loads(path.read_text(encoding='utf-8'))
-            _notices(cfg, pending['result'], placement.cleanup_runtime(cfg), pending['machines'])
+            _report_notices(config.state_dir(cfg), pending['result'])
+            if pending['result']['applied']:
+                _notices(cfg, pending['result'], placement.cleanup_runtime(cfg), pending['machines'])
         except BlockingIOError:
             return
         path.unlink(missing_ok=True)

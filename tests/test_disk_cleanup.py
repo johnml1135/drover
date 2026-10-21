@@ -43,4 +43,4 @@ class Modes(DiskCase):
         bad = self.repos_dir / 'unreadable.toml'
         bad.write_text('invalid machine bytes')
         result = self.run_cleanup()
-        self.assertTrue(any(str(bad) in str(error) for error in result['errors']))
+        self.assertTrue(any(str(bad) == error.get('path') for error in result['errors']))

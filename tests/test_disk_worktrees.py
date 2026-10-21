@@ -28,8 +28,10 @@ class WorktreeCase(DiskCase):
             'name': name, 'repo': str(repo.repo), 'worktrees': str(trees),
             'remote': 'origin', 'default_branch': 'main'}), encoding='utf-8')
 
-    def worktree(self, name, *, lease=True, lock='wsl', detached=False):
+    def worktree(self, name, *, lease=True, lock='native', detached=False):
         from drover import ownership
+        if lock == 'native':
+            lock = self.side
         path = self.trees / name
         self.tree_count += 1
         branch = 'fixture-' + str(self.tree_count)
@@ -57,7 +59,9 @@ class WorktreeCase(DiskCase):
         return self.r.git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads')
 
     def registrations(self):
-        return self.r.git('worktree', 'list', '--porcelain', '-z')
+        raw = self.r.git('worktree', 'list', '--porcelain', '-z')
+        return '\0'.join('worktree ' + str(Path(field[9:])) if field.startswith('worktree ') else field
+                         for field in raw.split('\0'))
 
     def journal(self):
         path = self.state / 'disk-cleanup-manifest.jsonl'
@@ -65,7 +69,7 @@ class WorktreeCase(DiskCase):
 
     def reported(self, result, path):
         # Offending descendants may be reported separately or in structured metadata.
-        self.assertIn(str(path), json.dumps(result['items'], ensure_ascii=False))
+        self.assertIn(json.dumps(str(path), ensure_ascii=False), json.dumps(result['items'], ensure_ascii=False))
 
 
 class Settled(WorktreeCase):
@@ -97,7 +101,7 @@ class Settled(WorktreeCase):
     def test_dirty_busy_other_side_and_lock_notes(self):
         from drover import disk_cleanup
         paths = {key: self.worktree(key, lock=lock) for key, lock in (
-            ('dirty', 'wsl'), ('busy', 'wsl'), ('foreign', 'windows'),
+            ('dirty', self.side), ('busy', self.side), ('foreign', self.other_side),
             ('noted', 'owner: reviewing'))}
         for key, path in paths.items():
             self.r.commit(key + '.txt', cwd=path)
@@ -112,7 +116,7 @@ class Settled(WorktreeCase):
             self.assertTrue(path.exists())
             self.reported(result, path)
         self.assertIn('locked owner: reviewing', before)
-        self.assertIn('locked windows', before)
+        self.assertIn('locked ' + self.other_side, before)
 
     def test_task_landed_or_cancelled_and_unknown(self):
         from drover import disk_cleanup, ownership
@@ -146,3 +150,20 @@ class Settled(WorktreeCase):
         self.cleanup()
         self.cleanup(apply=True)
         self.assertTrue(stale.exists(), 'stale snapshot cannot establish settlement')
+
+    def test_nonterminal_owner_keeps_merged_worktree(self):
+        from drover import ownership
+        for index, state in enumerate((states.READY, states.BLOCKED, states.FAILED, states.NEEDS_OWNER)):
+            with self.subTest(state=state):
+                wt = self.worktree('open-' + str(index))
+                self.r.commit('open-' + str(index), cwd=wt)
+                self.merge(wt)
+                ident = 'open-' + str(index)
+                ownership.tag(str(wt), 'alpha', 'drover:' + ident, self.now + 86400, now=self.now)
+                self.tasks = dict(at=self.now, active_worktrees=[], tasks=[dict(
+                    id=ident, terminal=False, live=False, state=state, worktree=str(wt))])
+                self.cleanup()
+                result = self.cleanup(apply=True)
+                self.assertTrue(wt.exists())
+                self.assertTrue(any(i['reason_code'] == 'merged_live_task' and i.get('task_id') == ident
+                                    for i in result['items']))

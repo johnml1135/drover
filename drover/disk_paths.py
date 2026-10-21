@@ -42,49 +42,60 @@ def safe_path(path):
     return all(not placement.cleanup_link(parent) for parent in (path, *path.parents) if parent.exists() or parent.is_symlink())
 
 
+def protected_path(path, request):
+    path = Path(path).absolute()
+    roots = [Path(request['state_dir']).absolute()]
+    roots += [Path(placement.native(repo[key])).absolute() for repo in request['repos']
+              for key in ('repo', 'worktrees') if repo.get(key)]
+    return not placement.cleanup_contains(request, str(path)) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
+        (path / '.git').exists() or any((parent / '.git' / 'HEAD').exists() or
+            (parent / '.git').is_file() for parent in path.parents)
+
+
+def temp_facts(path, request):
+    if protected_path(path, request):
+        raise ValueError('protected subtree')
+    def prove(parent):
+        for child in parent.iterdir():
+            if protected_path(child, request):
+                raise ValueError('protected descendant')
+            if child.is_dir():
+                prove(child)
+    if path.is_dir():
+        prove(path)
+    return facts(path, request['now'])
+
+
 def temporary(request):
     out = result()
-    now = request['now']
-    state = Path(request['state_dir']).absolute()
-    scratch = state / 'scratch'
-    protected = [Path(repo[key]).absolute() for repo in request['repos']
-                 for key in ('repo', 'worktrees') if repo.get(key)]
     proof = placement.cleanup_processes()
     for root_text in request['paths'].get('temp_roots', []):
         root = Path(root_text).absolute()
-        if not root.exists() or not safe_path(root):
-            continue
-        # Broad roots cannot select the state directory; visit its sole eligible subtree explicitly.
-        roots = [scratch] if within(root, state) and not within(root, scratch) else [root]
-        if within(state, root) and scratch not in roots:
-            roots.append(scratch)
-        for eligible in roots:
-            if not eligible.is_dir() or not safe_path(eligible):
+        try:
+            if not root.is_dir() or not safe_path(root):
                 continue
-            try:
-                candidates = list(eligible.iterdir())
-            except OSError as error:
-                out['errors'].append(dict(path=str(eligible), error=str(error)))
-                continue
-            for path in candidates:
+            for path in root.iterdir():
                 row = item(path, request, 'temp_retained')
                 try:
-                    if (within(path, state) and not within(path, scratch)) or within(state, path) or \
-                            any(within(path, p) or within(p, path) for p in protected) or not safe_path(path):
-                        row['reason_code'] = 'protected'
-                    else:
-                        row.update(facts(path, now))
-                        if row['age_s'] >= 7 * 86400 and not proof.busy(str(path)):
+                    row.update(temp_facts(path, request))
+                    if row['age_s'] >= 7 * 86400:
+                        if proof.busy(str(path)):
+                            row['reason_code'] = getattr(proof, 'reason', None) or 'process_busy'
+                        else:
                             row.update(action='candidate', reason_code='stale_temp')
-                            if request['apply'] and facts(path, now) == {k: row[k] for k in ('files', 'bytes', 'age_s')} \
-                                    and safe_path(path) and not placement.cleanup_processes().busy(str(path)):
-                                shutil.rmtree(path) if path.is_dir() else path.unlink()
-                                row['action'] = 'removed'
-                                out['reclaimed_bytes'] += row['bytes']
+                            if request['apply']:
+                                current = placement.cleanup_processes()
+                                if current.busy(str(path)):
+                                    row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
+                                elif temp_facts(path, request) == {k: row[k] for k in ('files', 'bytes', 'age_s')}:
+                                    shutil.rmtree(path) if path.is_dir() else path.unlink()
+                                    row['action'] = 'removed'
+                                    out['reclaimed_bytes'] += row['bytes']
                 except (OSError, ValueError) as error:
-                    row['reason_code'] = 'unavailable'
-                    row['error'] = str(error)
+                    row.update(action='keep', reason_code='protected', error=str(error))
                 out['items'].append(row)
+        except OSError as error:
+            out['errors'].append(dict(path=str(root), error=str(error)))
     return out
 
 
@@ -113,14 +124,17 @@ def caches(request):
 
 
 def folder_cache(request, entry, out):
-    root = Path(entry['path'])
+    root = Path(entry['path']).absolute()
+    if protected_path(root, request):
+        out['items'].append(item(root, request, 'protected'))
+        return
     if not root.is_dir() or not safe_path(root):
         return
     aggressive = request.get('mode') != 'daily' and request['drive'].get('level') in ('warn', 'queue', 'hold', 'critical')
     try:
         candidates = []
         for path in root.rglob('*'):
-            if not safe_path(path) or not path.is_file():
+            if protected_path(path, request) or not path.is_file():
                 continue
             info = path.stat()
             activity = info.st_atime if info.st_atime > info.st_mtime else info.st_mtime
@@ -133,10 +147,14 @@ def folder_cache(request, entry, out):
                     break
             row = item(path, request, 'folder_cache')
             row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
-            if request['apply'] and safe_path(path) and path.stat() == info and not placement.cleanup_processes().busy(str(path)):
-                path.unlink()
-                row['action'] = 'removed'
-                out['reclaimed_bytes'] += info.st_size
+            if request['apply']:
+                proof = placement.cleanup_processes()
+                if proof.busy(str(path)):
+                    row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
+                elif not protected_path(path, request) and path.stat() == info:
+                    path.unlink()
+                    row['action'] = 'removed'
+                    out['reclaimed_bytes'] += info.st_size
             out['items'].append(row)
     except (OSError, ValueError) as error:
         out['errors'].append(dict(path=str(root), error=str(error)))

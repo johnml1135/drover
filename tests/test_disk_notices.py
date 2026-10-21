@@ -106,7 +106,7 @@ class Notices(DiskCase):
                          'external symlink target is not charged to the repo')
         wt = trees / 'second physical directory'
         repo.git('worktree', 'add', '-q', '-b', 'budget-topic', wt, 'HEAD')
-        repo.git('worktree', 'lock', '--reason', 'wsl', wt)
+        repo.git('worktree', 'lock', '--reason', self.side, wt)
         ownership.tag(str(wt), 'fixture', 'session:budget', self.now + 86400, now=self.now)
         (wt / 'second payload').write_bytes(b'y' * (512 * 1024))
         self.run_cleanup(apply=True, real=True)
@@ -188,3 +188,56 @@ class Notices(DiskCase):
         self.assertEqual(len(self.durable_notices()), 1)
         from drover import disk_state
         self.assertFalse(next(iter(disk_state.read(self.state)['outbox'].values()))['toasted'])
+
+    def test_background_report_items_survive_and_replay_to_hub(self):
+        from drover import disk_cleanup, disk_state
+        from drover.ledger import connect, ops, disk_notices
+        item = dict(path=str(self.root / 'open tree'), action='keep', reason_code='merged_live_task',
+                    task_id='T-open', repo='fixture')
+        def worker(side, request):
+            answer = {'items': [], 'errors': [], 'reclaimed_bytes': 0}
+            if side == 'wsl' and request['stage'] == 6:
+                answer['items'].append(item)
+            return answer
+        result = self.run_cleanup(apply=False, handler=worker)
+        saved = json.loads((self.state / 'disk' / 'last-report.json').read_text())
+        self.assertEqual(saved['items'], result['items'])
+        conn = connect(self.root / 'replay.db')
+        self.addCleanup(conn.close)
+        disk_notices.replay(conn, self.cfg, self.now)
+        disk_notices.replay(conn, self.cfg, self.now)
+        notices = [e['data']['notice'] for e in ops.events(conn, kind='disk.notice')]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['items'][0]['task_id'], 'T-open')
+        self.assertEqual(self.toasts, [])
+
+    def test_general_inventory_is_exposed_through_hub_replay(self):
+        from drover.ledger import connect, ops, disk_notices
+        payload = self.file(self.report_root / 'retained')
+        result = self.run_cleanup()
+        conn = connect(self.root / 'inventory.db')
+        self.addCleanup(conn.close)
+        disk_notices.replay(conn, self.cfg, self.now)
+        disk_notices.replay(conn, self.cfg, self.now)
+        events = ops.events(conn, kind='disk.report')
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['data']['report']['items'], result['items'])
+        self.assertTrue(any(i['path'] == str(payload) for i in events[0]['data']['report']['items']))
+        self.assertEqual(ops.open_questions(conn), [])
+
+    def test_snapshot_marks_every_nonterminal_task_as_owned(self):
+        from drover.ledger import connect, ops, states, disk_notices
+        conn = connect(self.root / 'ownership.db')
+        self.addCleanup(conn.close)
+        expected = {}
+        for state in (states.READY, states.BLOCKED, states.FAILED, states.NEEDS_OWNER, states.CANCELLED):
+            task = ops.create_task(conn, state, 'fixture')
+            ops.approve(conn, task['id'])
+            if state != states.READY:
+                if state == states.FAILED:
+                    ops.set_status(conn, task['id'], states.BLOCKED, reason='fixture', actor='owner')
+                ops.set_status(conn, task['id'], state, reason='fixture', actor='owner')
+            expected[task['id']] = state not in states.TERMINAL
+        disk_notices.replay(conn, self.cfg, self.now)
+        snapshot = json.loads((self.state / 'disk' / 'tasks.json').read_text())
+        self.assertEqual({t['id']: t['live'] for t in snapshot['tasks']}, expected)

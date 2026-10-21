@@ -15,7 +15,7 @@ class Caches(DiskCase):
         suffix = ['space value', "quote'\"", 'semi;colon', 'line\nbreak', '$(literal)']
         self.cfg['disk_cleanup']['caches'] = [
             dict(argv=[sys.executable, str(script), str(out), code, *suffix],
-                 cwd=str(self.temp_root), placement='wsl')
+                 cwd=str(self.temp_root), placement=self.side)
             for out, code in ((first, '7'), (second, '0'))]
         return first, second, suffix
 
@@ -46,7 +46,7 @@ class Caches(DiskCase):
         old = self.file(folder / 'old', age=31 * 86400)
         young = self.file(folder / 'young', age=2 * 86400)
         self.cfg['disk_cleanup']['caches'] = [
-            dict(path=str(folder), placement='wsl', max_age_days=30)]
+            dict(path=str(folder), placement=self.side, max_age_days=30)]
         self.approve_report()
         self.run_cleanup(apply=True, mode='daily')
         self.assertFalse(old.exists())
@@ -75,8 +75,58 @@ class Caches(DiskCase):
         fallback = self.file(folder / 'fallback', age=31 * 86400)
         used = self.file(folder / 'used', age=40 * 86400)
         os.utime(used, (self.now - 86400, self.now - 40 * 86400))
-        self.cfg['disk_cleanup']['caches'] = [dict(path=str(folder), placement='wsl')]
+        self.cfg['disk_cleanup']['caches'] = [dict(path=str(folder), placement=self.side)]
         self.approve_report()
         self.run_cleanup(apply=True, mode='daily')
         self.assertFalse(fallback.exists())
         self.assertTrue(used.exists())
+
+    def test_folder_cache_cannot_delete_repository_or_state(self):
+        from tests.gitfix import Repo
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        source = repo.repo / 'source.txt'
+        repo.commit('source.txt', 'valuable')
+        secret = self.file(self.state / 'private')
+        self.cfg['disk_cleanup']['caches'] = [dict(path=str(p), placement=self.side)
+                                             for p in (repo.repo, self.state)]
+        from drover import placement
+        from drover.disk_side import serve
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        request = dict(stage=3, mode='triggered', apply=True, now=self.now, repos=[], tasks={},
+                       state_dir=str(self.state), paths=self.cfg['disk_cleanup'],
+                       drive=dict(path=str(self.root), level='queue', warn_gb=150))
+        with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
+                patch.object(placement, 'cleanup_free', return_value=80), \
+                patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
+            result = serve(request)
+        self.assertEqual(source.read_text(), 'valuable')
+        self.assertTrue(secret.exists())
+        self.assertTrue(any(i['reason_code'] == 'protected' for i in result['items']))
+
+    def test_config_rejects_folder_cache_overlapping_configured_repo(self):
+        from drover import config
+        from tests.gitfix import Repo
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        (self.repos_dir / 'repo.toml').write_text(config.dumps(dict(
+            name='repo', repo=str(repo.repo), worktrees=str(repo.root / 'trees'))))
+        for folder in (repo.repo / 'cache', repo.root, self.state / 'cache', repo.root / 'trees'):
+            with self.subTest(folder=folder):
+                self.cfg['disk_cleanup']['caches'] = [dict(path=str(folder), placement=self.side)]
+                with self.assertRaisesRegex(config.ConfigError, 'overlap|protected'):
+                    config.validate(self.cfg)
+
+    def test_cache_validation_checks_default_worktree_root_without_loading_config(self):
+        from drover import config
+        from tests.gitfix import Repo
+        from unittest.mock import patch
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        (self.repos_dir / 'repo.toml').write_text(config.dumps(dict(name='repo', repo=str(repo.repo))))
+        self.cfg['paths']['worktrees'] = ''
+        self.cfg['disk_cleanup']['caches'] = [dict(path=str(repo.repo) + '.worktrees/cache', placement=self.side)]
+        with patch.object(config, 'get', side_effect=AssertionError('validation loaded global config')):
+            with self.assertRaisesRegex(config.ConfigError, 'overlap|protected'):
+                config.validate(self.cfg)
