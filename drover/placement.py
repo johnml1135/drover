@@ -1012,15 +1012,32 @@ def _windows_cwd(pid):
 
 
 def _cim_rows(timeout=240, pids=None):
-    """One CIM query supplies owner SIDs alongside argv/exe evidence."""
+    """One PowerShell pass supplies owner SIDs alongside argv/exe evidence."""
+    # Owners come from each process token in this one PowerShell process (no per-process WMI call, no admin).
+    # A token that cannot be opened (services, other users, elevated) yields a null owner, which is exactly what
+    # GetOwnerSid returned for those processes without elevation; callers already fail closed on a null owner.
     script = r'''$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices; using System.Security.Principal;
+public static class DroverTok {
+  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("advapi32.dll")] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  public static string Owner(uint pid) {
+    IntPtr h = OpenProcess(0x1000, false, pid);
+    if (h == IntPtr.Zero) return null;
+    try {
+      IntPtr t;
+      if (!OpenProcessToken(h, 8, out t)) return null;
+      try { return new WindowsIdentity(t).User.Value; } catch { return null; } finally { CloseHandle(t); }
+    } finally { CloseHandle(h); }
+  }
+}
+'@
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,SessionId | ForEach-Object {
-    $ownerSid = $null
-    try { $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
-          if ($owner.ReturnValue -eq 0) { $ownerSid = $owner.Sid } } catch {}
     [pscustomobject]@{ProcessId=$_.ProcessId; Name=$_.Name; ExecutablePath=$_.ExecutablePath;
-                     CommandLine=$_.CommandLine; SessionId=$_.SessionId; OwnerSid=$ownerSid}
+                     CommandLine=$_.CommandLine; SessionId=$_.SessionId; OwnerSid=[DroverTok]::Owner([uint32]$_.ProcessId)}
 })
 @{sid=$sid; processes=$rows} | ConvertTo-Json -Compress -Depth 4
 '''

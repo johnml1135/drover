@@ -250,7 +250,7 @@ class UserScope(unittest.TestCase):
                     patch.object(subprocess, 'run', return_value=done) as query, \
                     patch.object(placement, '_windows_cwd', return_value=None):
                 proof = placement.cleanup_processes(windows=True)
-            self.assertIn('GetOwnerSid', query.call_args.args[0][-1])
+            self.assertIn('OpenProcessToken', query.call_args.args[0][-1])  # one batched pass, owners from tokens
             self.assertTrue(proof.busy(r'H:\candidate'))
             self.assertEqual(proof.busy(r'H:\unrelated'), same_user)
             self.assertEqual(proof.out_of_scope, 0 if same_user else 1)
