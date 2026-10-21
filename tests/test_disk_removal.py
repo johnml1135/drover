@@ -39,7 +39,7 @@ class Removal(WorktreeCase):
         for change in ('dirty', 'head', 'lock', 'status-error', 'ignored'):
             with self.subTest(change=change):
                 wt = self.worktree('race-' + change)
-                self.r.commit('done.txt', cwd=wt)
+                self.r.commit('done-' + change + '.txt', cwd=wt)
                 self.merge(wt)
                 self.cleanup()
                 real_git = placement.git
@@ -82,7 +82,7 @@ class Removal(WorktreeCase):
                 task = 'restore-' + str(detached)
                 from drover.ledger import states
                 ownership.tag(str(wt), 'alpha', 'drover:' + task, self.now + 86400, now=self.now)
-                self.tasks = {'at': self.now, 'tasks': [{'id': task, 'status': states.LANDED,
+                self.tasks = {'at': self.now, 'tasks': [{'id': task, 'state': states.LANDED, 'terminal': True, 'live': False,
                               'worktree': str(wt), 'owner': 'drover:' + task}], 'active_worktrees': []}
                 branches = self.branches()
                 self.cleanup()
@@ -195,3 +195,29 @@ class Removal(WorktreeCase):
         self.assertIn('locked windows', listed)
         self.assertEqual(self.branches(), branches)
         self.assertFalse(any('prune' in call for call in calls), calls)
+
+    def test_missing_registration_of_live_process_is_kept(self):
+        wt = self.worktree('missing busy')
+        shutil.rmtree(wt)
+        self.busy_paths.add(str(wt))
+        self.cleanup()
+        before = self.registrations()
+        self.cleanup(apply=True)
+        self.assertEqual(self.registrations(), before)
+        self.assertIn(str(wt), self.registrations())
+
+    def test_nested_registered_worktree_survives_outer_settlement(self):
+        wt = self.worktree('outer settled')
+        self.r.commit('merged.txt', cwd=wt)
+        self.merge(wt)
+        inner = wt / 'generated' / 'foreign-inner'
+        self.r.git('worktree', 'add', '-q', '-b', 'foreign-inner', inner, 'origin/main')
+        self.r.git('worktree', 'lock', '--reason', 'windows', inner)
+        (inner / '.git').unlink()
+        keep = inner / 'keep'
+        keep.write_text('foreign owner data')
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertEqual(keep.read_text(), 'foreign owner data')
+        self.assertIn(str(inner), self.registrations())
+        self.assertIn('locked windows', self.registrations())

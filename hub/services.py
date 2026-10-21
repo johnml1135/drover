@@ -210,12 +210,11 @@ class Services:
         self.store.add_event(f"garden.row.{kind}", "garden", {"batch": batch, "branch": row["branch"], **data})
 
     def default_remove(self, repo, row):
-        """One approved row: explicit branch disposition; worktrees await the disk interface."""
-        from drover import cleanup
+        """One approved row uses the shared worktree or explicit branch cleanup interface."""
+        from drover import cleanup, disk_cleanup
         path = repo_path(repo)
         if (row.get("worktree") or "").strip():
-            return {"ok": False, "report_only": True, "reason_code": "worktree-cleanup-unavailable",
-                    "reason": "Worktree cleanup is report-only until the disk cleanup interface is available"}
+            return disk_cleanup.remove_approved(config.get(), path, row['worktree'])
 
         def log(step, **data):
             self.store.add_event(f"garden.branch.{step}", "garden", {"batch": self._current, **data})

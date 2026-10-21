@@ -5,29 +5,28 @@ from drover import placement
 from tests.gitfix import Repo, sh
 
 
-class GardenCase(unittest.TestCase):
+from tests.test_disk_worktrees import WorktreeCase
+
+
+class GardenCase(WorktreeCase):
     def setUp(self):
-        self.r = Repo()
-        self.addCleanup(self.r.cleanup)
+        super().setUp()
         (self.r.root / 'noproc').mkdir()
         self.proc = placement.cleanup_processes(proc_root=self.r.root / 'noproc', windows=False)
-        self.state = self.r.root / 'state'
-        import os
-        self._env = os.environ.get('DROVER_STATE_DIR')
-        os.environ['DROVER_STATE_DIR'] = str(self.state)
-        self.addCleanup(lambda: os.environ.pop('DROVER_STATE_DIR') if self._env is None
-                        else os.environ.__setitem__('DROVER_STATE_DIR', self._env))
 
-    def worktree(self, name, lock=None):
-        path = self.r.root / 'wt' / name
-        self.r.git('worktree', 'add', '-q', '-b', name, path, 'origin/main')
-        if lock:
-            self.r.git('worktree', 'lock', '--reason', lock, path)
+    def worktree(self, name, lock='wsl'):
+        path = super().worktree(name, lock=lock)
+        self.r.git('branch', '-m', name, cwd=path)
         return path
 
+    def busy(self, path):
+        return self.proc.busy(str(path))
+
     def propose(self, **kw):
-        from drover import garden  # P1–P4: fixture restored through disk_cleanup.run in T16–T18.
-        return garden.propose(self.r.repo, proc=self.proc, min_age_days=0, **kw)
+        rows = self.cleanup()['items']
+        rows = [row for row in rows if row['stage'] == 4 and row['path'] != str(self.r.repo)]
+        return {'removable': [row for row in rows if row['action'] == 'candidate'],
+                'keep': [row for row in rows if row['action'] != 'candidate']}
 
     def names(self, items):
         return sorted(Path(i['path']).name for i in items)
@@ -82,39 +81,6 @@ class ClassifyTests(GardenCase):
         out = self.propose()
         self.assertEqual(out['removable'], [])
         self.assertEqual(self.names(out['keep']), ['busy', 'note'])
-
-
-class BatchTests(GardenCase):
-
-    def setup_items(self):
-        self.merged = self.worktree('merged')
-        self.r.commit('m.txt', cwd=self.merged)
-        self.land('merged')
-        self.unm = self.worktree('unm')
-        self.r.commit('u.txt', cwd=self.unm)
-        self.dirty = self.worktree('dirty')
-        (self.dirty / 'wip.txt').write_text('precious')
-        self.dirty_other = self.worktree('dirty2')
-        self.r.commit('d2.txt', cwd=self.dirty_other)
-        (self.dirty_other / 'wip.txt').write_text('precious2')
-
-
-    def test_remove_merged_script_dry_run_then_apply_and_never_prunes(self):
-        from drover import garden  # P12: retained until its interface move in T17.
-        self.setup_items()
-        gone = self.r.root / 'wt' / 'ghost'
-        self.r.git('worktree', 'add', '-q', '-b', 'ghost', gone, 'origin/main')
-        self.r.commit('g.txt', cwd=gone)
-        self.land('ghost')
-        import shutil
-        shutil.rmtree(gone)   # a missing directory is another side's or a crash's: prune would forget it
-        rows = garden.remove_merged(self.r.repo, proc=self.proc, min_age_days=0)
-        self.assertEqual([Path(r['path']).name for r in rows], ['merged'])
-        self.assertTrue(self.merged.is_dir())
-        rows = garden.remove_merged(self.r.repo, apply=True, proc=self.proc, min_age_days=0)
-        self.assertTrue(rows[0]['result']['ok'])
-        self.assertFalse(self.merged.exists())
-        self.assertIn('ghost', self.r.git('worktree', 'list', '--porcelain'))   # entry still there: no prune
 
 
 if __name__ == '__main__':

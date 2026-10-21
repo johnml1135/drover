@@ -113,3 +113,12 @@ def append_manifest(state_dir: Path, record: dict) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+
+
+def update(state_dir, change):
+    """Apply a short state-only transaction; never run subprocesses in change."""
+    with _StateLock(state_dir):
+        state = _read(state_dir)
+        answer = change(state)
+        _write(state_dir, state)
+        return answer

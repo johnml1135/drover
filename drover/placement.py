@@ -1023,12 +1023,9 @@ def cleanup_scope(request):
     import tempfile
     scoped = copy.deepcopy(request)
     def belongs(path):
-        host = physical_disk_path(path)
-        declared = request['drive']['path']
-        if declared and Path(path).is_absolute() and Path(path).is_relative_to(Path(declared)):
-            return True
-        return host is not None and str(host).casefold() == str(physical_disk_path(declared)).casefold()
-    scoped['repos'] = [repo for repo in request['repos'] if belongs(repo['repo'])]
+        return cleanup_contains(request, path)
+    # Repositories may have worktrees on another drive. Stages scope every candidate,
+    # rather than dropping the repository that owns that drive's registrations.
     for name in ('temp_roots', 'report_roots'):
         roots = request['paths'].get(name, [])
         if name == 'temp_roots':
@@ -1037,3 +1034,15 @@ def cleanup_scope(request):
     scoped['paths']['caches'] = [entry for entry in request['paths'].get('caches', [])
                                 if entry['placement'] == cleanup_side() and belongs(entry['cwd'])]
     return scoped
+
+
+def cleanup_contains(request, path):
+    """Whether this concrete candidate belongs to the requested physical drive."""
+    declared = request['drive']['path']
+    host = physical_disk_path(path)
+    drive_host = physical_disk_path(declared) if declared is not None else None
+    if host is not None and drive_host is not None:
+        return str(host).casefold() == str(drive_host).casefold()
+    # A parent may provide an exact native scope (also used by hermetic workers).
+    # A known different physical mapping always wins over lexical containment.
+    return bool(declared and Path(path).is_absolute() and Path(path).is_relative_to(Path(declared)))

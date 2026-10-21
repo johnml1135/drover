@@ -58,6 +58,10 @@ class Scope(WorktreeCase):
                     with mock.patch.object(placement, 'IS_WINDOWS', False):
                         return real_metadata(*args, **kwargs)
                 real_git = placement.git
+                real_argv = placement.git_argv
+                def native_argv(*args, **kwargs):
+                    with mock.patch.object(placement, 'IS_WINDOWS', False):
+                        return real_argv(*args, **kwargs)
                 def native_git(repo, *args, **kwargs):
                     with mock.patch.object(placement, 'IS_WINDOWS', False):
                         return real_git(repo, *args, **kwargs)
@@ -69,6 +73,7 @@ class Scope(WorktreeCase):
                 # The sole platform seam supplies the simulated current side; no OS calls.
                 with mock.patch.object(placement, 'IS_WINDOWS', side == 'windows'), \
                      mock.patch.object(placement, 'git', side_effect=native_git), \
+                     mock.patch.object(placement, 'git_argv', side_effect=native_argv), \
                      mock.patch.object(placement, 'worktree_metadata', side_effect=native_metadata), \
                      mock.patch.object(placement, 'worktree_side', side_effect=owning_side), \
                      mock.patch.object(placement, 'cleanup_runtime', return_value=runtime), \
@@ -105,3 +110,37 @@ class Scope(WorktreeCase):
                         self.assertEqual(set(targets), {'windows', 'wsl'})
                 self.assertTrue(all(req['drive']['path'] == self.cfg['trackers'][0]['path']
                                     for _, req in requests))
+
+    def test_worktree_is_charged_to_its_own_physical_drive(self):
+        wt = self.worktree('other drive')
+        self.r.commit('settled.txt', cwd=wt)
+        self.merge(wt)
+        other = self.root / 'other drive'
+        other.mkdir()
+        tracker = dict(self.cfg['trackers'][0], name='other', path=str(other))
+        self.cfg['trackers'].append(tracker)
+        from drover import disk_cleanup, disk_side
+        runtime = self.runtime(real=True)
+        def call(side, request):
+            if side != 'wsl' or request['stage'] == 1:
+                return {'items': [], 'errors': [], 'reclaimed_bytes': 0}
+            return disk_side.serve(request)
+        runtime = disk_cleanup.CleanupRuntime(runtime.now, lambda path: 180 if path == str(other) else 80,
+                                               call, runtime.toast)
+        def physical(path):
+            from pathlib import Path
+            path = Path(path)
+            return str(other) if path == wt or wt in path.parents or path == other else str(self.root)
+        idle = type('Idle', (), {'busy': lambda _, p: False})()
+        with mock.patch.object(placement, 'physical_disk_path', side_effect=physical), \
+             mock.patch.object(placement, 'cleanup_processes', return_value=idle), \
+             mock.patch('tempfile.gettempdir', return_value=str(self.temp_root)):
+            disk_cleanup.run(self.cfg, runtime=runtime)
+            disk_cleanup.run(self.cfg, apply=True, runtime=runtime)
+            self.assertTrue(wt.exists(), 'healthy unrelated physical drive must survive')
+            self.cfg['trackers'] = [tracker]
+            # The repo remains configured on the first drive. Its worktree is visited on its own low drive.
+            low = disk_cleanup.CleanupRuntime(runtime.now, lambda path: 80, call, runtime.toast)
+            disk_cleanup.run(self.cfg, runtime=low)
+            disk_cleanup.run(self.cfg, apply=True, runtime=low)
+        self.assertFalse(wt.exists(), 'worktree-only drive still includes its configured repo')

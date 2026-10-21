@@ -26,6 +26,12 @@ def serve(request: dict) -> dict:
     if stage == 3:
         from .disk_paths import caches
         return caches(request)
+    if stage == 4:
+        from .disk_worktrees import settled
+        return settled(request)
+    if stage in (5, 6):
+        from .disk_paths import outputs, report
+        return outputs(request) if stage == 5 else report(request)
     return dict(items=[], errors=[], reclaimed_bytes=0)
 
 

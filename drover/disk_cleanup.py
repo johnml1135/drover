@@ -32,9 +32,21 @@ def _repos(cfg, errors=None):
 
 def scope_key(cfg):
     """A report authorizes this machine and these exact configured scopes only."""
+    from .disk_worktrees import entries, outputs_at
+    machines = _repos(cfg)
+    policies = {}
+    for machine in machines:
+        values = set()
+        try:
+            for entry in entries(machine['repo']):
+                if entry.get('HEAD'):
+                    values.add(tuple(outputs_at(machine, entry['HEAD'], machine['repo'])))
+        except (OSError, ValueError):
+            values.add(('<unavailable>',))
+        policies[machine['name']] = sorted(values)
     facts = dict(machine=socket.gethostname(), state=str(config.state_dir(cfg)),
                  trackers=cfg['trackers'], paths=cfg['paths'], cleanup=cfg['disk_cleanup'],
-                 repos=_repos(cfg), machine_files={str(p): p.read_text() for p in sorted(config.repos_dir(cfg).glob('*.toml'))})
+                 repos=machines, output_policies=policies, machine_files={str(p): p.read_text() for p in sorted(config.repos_dir(cfg).glob('*.toml'))})
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
 
@@ -95,3 +107,30 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             state['report_scope'] = key
             disk_state.write(state_dir, state)
     return result
+
+
+def remove_approved(cfg: dict, repo: str, path: str, *, runtime=None) -> dict:
+    """Explicit owner authorization replaces settlement, never the safety checks."""
+    runtime = placement.cleanup_runtime(cfg) if runtime is None else runtime
+    out = dict(ok=False, items=[], errors=[])
+    try:
+        with disk_state.CleanupLock(config.state_dir(cfg)):
+            if disk_state.read(config.state_dir(cfg)).get('report_scope') != scope_key(cfg):
+                raise ValueError('complete a dry report for the same cleanup scope before apply')
+            machines = [m for m in _repos(cfg, out['errors']) if m['repo'] == repo]
+            if not machines:
+                raise ValueError('repository is outside configured cleanup scope')
+            for drive in disk.read(cfg, reader=runtime.read):
+                if drive['free_gb'] is None:
+                    continue
+                request = dict(stage=4, apply=True, now=runtime.now(), drive=drive, repos=machines,
+                               paths=cfg['disk_cleanup'], state_dir=str(config.state_dir(cfg)),
+                               tasks={}, approved_path=path)
+                for side in ('windows', 'wsl'):
+                    answer = _valid_result(runtime.call(side, request))
+                    out['items'].extend(answer['items'])
+                    out['errors'].extend(answer['errors'])
+            out['ok'] = any(i['path'] == path and i['action'] == 'removed' for i in out['items'])
+    except (OSError, ValueError, RuntimeError) as error:
+        out['errors'].append(dict(path=path, error=str(error)))
+    return out

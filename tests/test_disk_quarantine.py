@@ -110,3 +110,20 @@ class Quarantine(WorktreeCase):
         self.assertTrue((foreign / '.git').is_dir())
         self.assertEqual((unknown / 'precious').read_text(), 'not git')
         self.assertEqual(self.r.git('rev-parse', head), head)
+
+    def test_unlisted_activity_cancels_elapsed_grace(self):
+        snapshot = self.trees / 'busy snapshot'
+        self.trees.mkdir(exist_ok=True)
+        shutil.copytree(self.r.repo, snapshot, ignore=shutil.ignore_patterns('.git'))
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.now += 2 * DAY
+        self.busy_paths.add(str(snapshot))
+        self.cleanup(apply=True)
+        self.busy_paths.clear()
+        self.now += DAY
+        self.cleanup(apply=True)
+        self.assertTrue(snapshot.exists(), 'busy observation must cancel original grace')
+        self.now += 3 * DAY
+        self.cleanup(apply=True)
+        self.assertFalse(snapshot.exists())

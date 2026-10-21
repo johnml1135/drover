@@ -126,7 +126,8 @@ class Settled(WorktreeCase):
                           self.now + 86400, now=self.now)
             paths[status] = path
             if status is not None:
-                records.append({'id': task, 'status': status,
+                records.append({'id': task, 'state': status, 'terminal': status in states.TERMINAL,
+                                'live': status == states.RUNNING,
                                 'worktree': str(path), 'owner': 'drover:' + task})
         self.tasks = {'at': self.now, 'tasks': records,
                       'active_worktrees': [str(paths[states.RUNNING])]}
@@ -140,7 +141,7 @@ class Settled(WorktreeCase):
         self.r.commit('stale.txt', cwd=stale)
         ownership.tag(str(stale), 'alpha', 'drover:stale', self.now + 86400, now=self.now)
         self.tasks = {'at': self.now - 901, 'tasks': [{'id': 'stale',
-                      'status': states.LANDED, 'worktree': str(stale), 'owner': 'drover:stale'}],
+                      'state': states.LANDED, 'terminal': True, 'live': False, 'worktree': str(stale), 'owner': 'drover:stale'}],
                       'active_worktrees': []}
         self.cleanup()
         self.cleanup(apply=True)

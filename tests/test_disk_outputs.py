@@ -57,3 +57,59 @@ class Outputs(WorktreeCase):
         self.assertEqual(uncommitted.read_text(), 'not authorized')
         self.assertEqual((outside / 'keep').read_text(), 'link target')
         self.assertTrue((paths['tracked'] / '.git').is_file())
+
+    def test_output_rechecks_marker_after_final_status(self):
+        from unittest import mock
+        from drover import placement
+        wt = self.worktree('output-race')
+        self.r.commit('pending.txt', cwd=wt)
+        output = wt / 'generated' / 'result'
+        output.parent.mkdir()
+        output.write_text('preserve on ownership change')
+        self.cleanup()
+        real_git = placement.git
+        checks = []
+        def git(repo, *args, **kw):
+            if str(repo) == str(wt) and 'status' in args:
+                checks.append(args)
+                if len(checks) == 3:
+                    self.r.git('worktree', 'unlock', wt)
+                    self.r.git('worktree', 'lock', '--reason', 'windows', wt)
+            return real_git(repo, *args, **kw)
+        with mock.patch.object(placement, 'git', side_effect=git):
+            self.cleanup(apply=True)
+        self.assertGreaterEqual(len(checks), 3)
+        self.assertEqual(output.read_text(), 'preserve on ownership change')
+        self.assertIn('locked windows', self.registrations())
+
+    def test_nested_registered_worktree_survives_declared_output_cleanup(self):
+        wt = self.worktree('outer output')
+        self.r.commit('unmerged.txt', cwd=wt)
+        inner = wt / 'generated' / 'foreign-inner'
+        self.r.git('worktree', 'add', '-q', '-b', 'foreign-inner', inner, 'origin/main')
+        self.r.git('worktree', 'lock', '--reason', 'windows', inner)
+        (inner / '.git').unlink()
+        keep = inner / 'keep'
+        keep.write_text('foreign owner data')
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertEqual(keep.read_text(), 'foreign owner data')
+        self.assertIn(str(inner), self.registrations())
+        self.assertIn('locked windows', self.registrations())
+
+    def test_changed_branch_output_scope_requires_another_report(self):
+        from drover import config
+        wt = self.worktree('changed output scope')
+        self.r.commit('unmerged.txt', cwd=wt)
+        data = wt / 'data' / 'keep'
+        data.parent.mkdir()
+        data.write_text('not in original report')
+        self.cleanup()
+        self.r.commit('.drover/config.toml', config.dumps({
+            'schema_version': 1, 'cleanup': {'build_outputs': ['data']}}), cwd=wt)
+        with self.assertRaisesRegex(ValueError, 'dry report'):
+            self.cleanup(apply=True)
+        self.assertEqual(data.read_text(), 'not in original report')
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertFalse(data.exists())

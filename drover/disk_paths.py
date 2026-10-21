@@ -107,3 +107,126 @@ def caches(request):
                 out['errors'].append(dict(row, error=str(error)))
         out['items'].append(row)
     return out
+
+
+def output_evidence(request, machine, entry):
+    from . import ownership
+    from .disk_worktrees import git, outputs_at, status, task_facts
+    path = Path(placement.native(entry['worktree']))
+    if path == Path(placement.native(machine['repo'])) or not path.is_dir() or not safe_path(path) or \
+            placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
+            not placement.cleanup_contains(request, entry['worktree']):
+        raise ValueError('not an eligible owning-side worktree')
+    tag = ownership.read(str(path))
+    if task_facts(request, path, tag)[0] or placement.cleanup_processes().busy(str(path)):
+        raise ValueError('live worktree')
+    head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
+    declarations = outputs_at(machine, head, path)
+    git(path, 'diff', '--quiet', '--')
+    git(path, 'diff', '--cached', '--quiet', '--')
+    dirty, ignored = status(path)
+    roots = [path / rel for rel in declarations]
+    if any(not any(within(Path(name), root) for root in roots) for name in dirty):
+        raise ValueError('dirty worktree')
+    if git(path, 'rev-parse', '--verify', 'HEAD').strip() != head or ownership.read(str(path)) != tag:
+        raise ValueError('worktree identity changed')
+    return path, head, tag, declarations
+
+
+def outputs(request: dict) -> dict:
+    """Only committed, untracked, safely contained outputs in clean idle checkouts."""
+    from .disk_worktrees import entries, git, overlaps_worktrees
+    out = result()
+    for machine in request['repos']:
+        try:
+            listed = entries(machine['repo'])
+        except (OSError, ValueError) as error:
+            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+            continue
+        for entry in listed:
+            try:
+                path, head, tag, declarations = output_evidence(request, machine, entry)
+                for relative in declarations:
+                    target = path / relative
+                    if not target.exists() and not target.is_symlink():
+                        continue
+                    row = item(target, request, 'declared_output', repo=machine['repo'])
+                    try:
+                        if overlaps_worktrees(request, target, path) or not within(target, path) or not safe_path(target) or \
+                                any(not safe_path(p) for p in target.rglob('*')):
+                            raise ValueError('protected output contents')
+                        if git(path, 'ls-files', '-z', '--', relative):
+                            raise ValueError('output contains tracked files')
+                        row.update(facts(target, request['now']), owner=tag['owner'] if tag else None,
+                                   action='candidate')
+                        if request['apply']:
+                            current = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
+                            if current != entry or output_evidence(request, machine, current) != (path, head, tag, declarations) \
+                                    or facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')} \
+                                    or not safe_path(target) or any(not safe_path(p) for p in target.rglob('*')):
+                                raise ValueError('output evidence changed')
+                            after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
+                            if after != entry or overlaps_worktrees(request, target, path):
+                                raise ValueError('output side marker changed')
+                            shutil.rmtree(target) if target.is_dir() else target.unlink()
+                            row['action'] = 'removed'
+                            out['reclaimed_bytes'] += row['bytes']
+                    except (OSError, ValueError) as error:
+                        row.update(action='keep', error=str(error))
+                    out['items'].append(row)
+            except (OSError, ValueError):
+                # Stage 4/6 inventories the worktree that cannot authorize output deletion.
+                continue
+    return out
+
+
+def report(request: dict) -> dict:
+    """Generic inventory, including excluded descendants; this stage never mutates."""
+    from . import ownership
+    from .disk_worktrees import entries, status
+    out = result()
+    def record(path, reason, owner=None):
+        row = item(path, request, reason)
+        row['owner'] = owner
+        try:
+            row.update(facts(path, request['now']))
+        except (OSError, ValueError) as error:
+            row['error'] = str(error)
+        out['items'].append(row)
+    for machine in request['repos']:
+        try:
+            listed = entries(machine['repo'])
+            for entry in listed:
+                path = Path(placement.native(entry['worktree']))
+                if not placement.cleanup_contains(request, entry['worktree']):
+                    continue
+                # Foreign-side markers and owner notes are inventory only; never unlock.
+                tag = ownership.read(str(path)) if path.exists() else None
+                owner = tag['owner'] if tag else None
+                record(path, 'worktree_inventory', owner)
+                if placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side():
+                    continue
+                try:
+                    dirty, ignored = status(path)
+                    for name in dict.fromkeys(dirty + ignored):
+                        record(Path(name), 'untracked_or_ignored', owner)
+                except (OSError, ValueError):
+                    pass
+            root = Path(placement.native(machine['worktrees']))
+            registered = {str(Path(placement.native(e['worktree']))) for e in listed}
+            if root.is_dir() and safe_path(root):
+                for path in root.iterdir():
+                    if str(path) not in registered and placement.cleanup_contains(request, str(path)):
+                        record(path, 'unlisted_folder')
+        except (OSError, ValueError) as error:
+            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+    for root_text in request['paths'].get('report_roots', []):
+        root = Path(root_text)
+        if not root.is_dir() or not safe_path(root):
+            continue
+        try:
+            for path in root.iterdir():
+                record(path, 'declared_report')
+        except OSError as error:
+            out['errors'].append(dict(path=str(root), error=str(error)))
+    return out
