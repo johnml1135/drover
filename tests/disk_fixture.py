@@ -69,7 +69,7 @@ class DiskCase(unittest.TestCase):
     def file(self, path, text='sentinel', age=8 * DAY):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding='utf-8')
         self.age(path, age)
         return path
 

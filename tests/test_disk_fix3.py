@@ -139,6 +139,8 @@ class TargetDriveSafety(WorktreeCase):
                                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
                             result = serve(request)
                         self.assertTrue(target.exists(), result)
+                        self.assertTrue(any(i['path'] == str(target) and i['action'] == 'keep'
+                                            and i.get('reason_code') for i in result['items']), result)
                         self.assertFalse(control.exists(), 'eligible control proves stage ran')
                         self.assertGreaterEqual(len(checks), 2 if changed else 1)
                         target.unlink()
@@ -257,19 +259,33 @@ class ProtectedTreeProperty(WorktreeCase):
         from drover import placement
         from drover.disk_side import serve
         kinds = ('repo', 'bare', 'incomplete', 'venv', 'link', 'mount', 'live')
-        wt = self.worktree('property outputs')
-        self.r.commit('unmerged', cwd=wt)
         all_protected, all_mounts, all_live = [], [], []
         for seed in range(3):
             rng = random.Random(seed)
             for stage in range(1, 7):
                 with self.subTest(seed=seed, stage=stage):
-                    base = ((wt / 'generated') if stage == 5 else
-                            (self.trees if stage == 4 else self.temp_root)) / f'mix-{seed}-{stage}'
-                    protected, mounts, live = [], [], []
+                    base = self.temp_root / f'independent-{seed}-{stage}'
+                    if stage == 5:
+                        wt = self.worktree(f'outputs-{seed}')
+                        self.r.commit('unmerged', cwd=wt)
+                        base = wt / 'generated'
+                    protected, mounts, live, controls, cache_roots = [], [], [], [], []
                     shuffled = rng.sample(kinds, len(kinds))
-                    for index, kind in enumerate(shuffled):
-                        folder = base / f'node-{index}'
+                    for kind in shuffled:
+                        candidate = base / kind / 'protected'
+                        control = base / kind / 'control'
+                        if stage == 4:
+                            # Both are otherwise eligible registered, merged, leased worktrees.
+                            candidate = self.worktree(f'protected-{seed}-{kind}')
+                            control = self.worktree(f'control-{seed}-{kind}')
+                            folder = candidate / 'generated'
+                            # Mount and live-owner protection applies to the worktree itself.
+                            if kind == 'mount':
+                                mounts.append(candidate)
+                            elif kind == 'live':
+                                live.append(str(candidate))
+                        else:
+                            folder = candidate
                         for depth in range(rng.randrange(3)):
                             folder /= f'depth-{depth}'
                         if kind == 'repo':
@@ -287,22 +303,29 @@ class ProtectedTreeProperty(WorktreeCase):
                             folder.parent.mkdir(parents=True, exist_ok=True)
                             folder.symlink_to(outside, target_is_directory=True)
                             protected.extend((folder, sentinel))
-                            continue
-                        elif kind == 'mount':
+                        elif kind == 'mount' and stage != 4:
                             mounts.append(folder)
-                        elif kind == 'live':
+                        elif kind == 'live' and stage != 4:
                             live.append(str(folder))
-                        protected.append(self.file(folder / 'valuable'))
+                        if kind != 'link':
+                            protected.append(self.file(folder / 'valuable'))
+                        if stage == 4:
+                            controls.append(self.file(control / 'generated' / 'disposable'))
+                        else:
+                            controls.append(self.file(control / 'disposable'))
+                        # A protected cache root must not suppress its independent control.
+                        cache_roots.extend((dict(path=str(candidate), placement=self.side),
+                                            dict(path=str(control), placement=self.side)))
+                        self.age(candidate, 40 * 86400)
+                        self.age(control, 40 * 86400)
                     all_protected.extend(protected)
                     all_mounts.extend(mounts)
                     all_live.extend(live)
-                    control = self.file(base / 'ordinary')
-                    self.age(base, 40 * 86400)
                     request = fix2.PathSafety.request(self, stage)
                     request['repos'] = [dict(name='alpha', repo=str(self.r.repo),
                         worktrees=str(self.trees), remote='origin', default_branch='main')]
-                    request['paths'] = dict(temp_roots=[str(base)], report_roots=[str(base)],
-                        caches=[dict(path=str(base), placement=self.side)])
+                    request['paths'] = dict(temp_roots=[str(base / kind) for kind in shuffled],
+                        report_roots=[str(base)], caches=cache_roots)
                     request['tasks'] = dict(at=self.now, active_worktrees=all_live, tasks=[])
                     def physical(path):
                         p = Path(path)
@@ -315,7 +338,11 @@ class ProtectedTreeProperty(WorktreeCase):
                         request['now'] += 4 * 86400
                         request['tasks']['at'] = request['now']
                         result = serve(request)
-                    if stage in (2, 5):
-                        self.assertFalse(control.exists(), 'eligible control proves stage ran')
+                    for kind, control in zip(shuffled, controls):
+                        with self.subTest(kind=kind):
+                            if stage in (2, 3, 4, 5):
+                                self.assertFalse(control.exists(), 'each protection has an eligible control')
+                            else:
+                                self.assertTrue(control.exists(), 'trim and report stages do not remove paths')
                     for path in all_protected:
                         self.assertTrue(path.exists(), (seed, stage, str(path), first, result))

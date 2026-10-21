@@ -47,7 +47,7 @@ def scope_key(cfg):
         policies[machine['name']] = sorted(values)
     facts = dict(machine=socket.gethostname(), state=str(config.state_dir(cfg)),
                  trackers=cfg['trackers'], paths=cfg['paths'], cleanup=cfg['disk_cleanup'],
-                 repos=machines, output_policies=policies, machine_files={str(p): p.read_text() for p in sorted(config.repos_dir(cfg).glob('*.toml'))})
+                 repos=machines, output_policies=policies, machine_files={str(p): p.read_text(encoding='utf-8') for p in sorted(config.repos_dir(cfg).glob('*.toml'))})
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
 

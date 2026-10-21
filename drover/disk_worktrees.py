@@ -69,10 +69,12 @@ def task_facts(request, path, tag):
     terminal = False
     found = False
     for task in snapshot.get('tasks', []):
-        if (tag and tag['owner'] == 'drover:' + str(task.get('id'))) or \
-                (task.get('worktree') and placement.cleanup_parts(task['worktree']) == placement.cleanup_parts(path)):
-            found = True
+        owns = bool(tag and tag['owner'] == 'drover:' + str(task.get('id')))
+        at_path = task.get('worktree') and placement.cleanup_parts(task['worktree']) == placement.cleanup_parts(path)
+        if owns or at_path:
             live |= task.get('terminal') is not True or task.get('live') is True
+        if owns:
+            found = True
             terminal |= task.get('terminal') is True and task.get('live') is False
     if tag and tag['owner'].startswith('drover:') and not found:
         live = True

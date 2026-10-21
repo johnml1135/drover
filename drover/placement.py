@@ -1187,7 +1187,7 @@ def cleanup_call(side: str, request: dict) -> dict:
     finally:
         try:
             try:
-                status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text())
+                status = json.loads((Path(original_state) / 'disk' / ('worker-' + token + '.json')).read_text(encoding='utf-8'))
                 if not isinstance(status, dict) or type(status.get('pid')) is not int or status['pid'] <= 0 or \
                         status.get('run_id') != token:
                     raise ValueError('worker identity unavailable')

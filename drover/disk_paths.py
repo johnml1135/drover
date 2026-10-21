@@ -1,5 +1,6 @@
 """Safe declared path stages. No inferred tool, repository or language policy."""
 import shutil
+import subprocess
 from pathlib import Path
 
 from . import placement
@@ -55,7 +56,6 @@ def repository_tree(path, *, boundary=None):
     Never follow links while looking for evidence; unreadable trees fail closed.
     """
     import os
-    import subprocess
     path = Path(path).absolute()
     def root(candidate):
         marker = candidate / '.git'
@@ -173,7 +173,6 @@ def temporary(request):
 
 def caches(request):
     """Literal machine argv, cwd and inherited environment, with bounded execution."""
-    import subprocess
     out = result()
     for entry in request['paths'].get('caches', []):
         if 'path' in entry:
@@ -289,32 +288,42 @@ def outputs(request: dict) -> dict:
                         relative = target.relative_to(path)
                         if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
                             continue
-                        if not placement.cleanup_contains(request, str(target)) or live_tree(target, request) or repository_tree(target, boundary=path) or overlaps_worktrees(request, target, path):
-                            continue
                         row = item(target, request, 'declared_disposable', repo=machine['repo'])
-                        row.update(facts(target, request['now']), owner=tag['owner'] if tag else None, action='candidate')
-                        if request['apply']:
-                            current = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
-                            current_dirty, current_ignored = status(path)
-                            if current != entry or output_evidence(request, machine, current, touched=touched) != evidence or \
-                                    name not in current_dirty + current_ignored or \
-                                    git(path, 'ls-files', '-z', '--', str(relative)) or \
-                                    facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
-                                raise ValueError('disposable evidence changed')
-                            after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
-                            if after != entry or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
-                                    not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
-                                raise ValueError('disposable side marker changed')
-                            # status expands ignored directories to leaves; only empty directories reach here.
-                            target.rmdir() if target.is_dir() else target.unlink()
-                            touched.add(target.parent)
-                            row['action'] = 'removed'
-                            out['reclaimed_bytes'] += row['bytes']
+                        try:
+                            if not placement.cleanup_contains(request, str(target)):
+                                row['reason_code'] = 'drive_unproven'
+                            elif live_tree(target, request):
+                                row['reason_code'] = 'live_owner'
+                            elif repository_tree(target, boundary=path) or overlaps_worktrees(request, target, path):
+                                row['reason_code'] = 'protected'
+                            else:
+                                row.update(facts(target, request['now']), owner=tag['owner'] if tag else None, action='candidate')
+                                if request['apply']:
+                                    current = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
+                                    current_dirty, current_ignored = status(path)
+                                    if current != entry or output_evidence(request, machine, current, touched=touched) != evidence or \
+                                            name not in current_dirty + current_ignored or \
+                                            git(path, 'ls-files', '-z', '--', str(relative)) or \
+                                            facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
+                                        raise ValueError('disposable evidence changed')
+                                    after = next(e for e in entries(machine['repo']) if e['worktree'] == entry['worktree'])
+                                    if after != entry or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
+                                            not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
+                                        raise ValueError('disposable side marker changed')
+                                    # status expands ignored directories to leaves; only empty directories reach here.
+                                    target.rmdir() if target.is_dir() else target.unlink()
+                                    touched.add(target.parent)
+                                    row['action'] = 'removed'
+                                    out['reclaimed_bytes'] += row['bytes']
+                        except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
+                            row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
                         out['items'].append(row)
-                except (OSError, ValueError, StopIteration):
-                    continue
-        except (OSError, ValueError) as error:
-            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+                except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
+                    out['items'].append(item(entry['worktree'], request, 'output_evidence_unavailable',
+                                             repo=machine['repo'], error=str(error)))
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            out['items'].append(item(machine['repo'], request, 'repository_unavailable', error=str(error)))
+            out['errors'].append(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
     return out
 
 
