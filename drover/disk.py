@@ -2,6 +2,7 @@
 import json
 import math
 import shutil
+import subprocess
 
 from . import config, placement
 
@@ -110,12 +111,18 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dic
         else:
             attached = directory / 'disk' / ('claim-' + claim['id'] + '.json')
             identity = json.loads(attached.read_text(encoding='utf-8')) if attached.exists() else claim['identity']
-            if placement.cleanup_claim_alive(identity) is False:
-                dead.add(claim['id'])
+            try:
+                if placement.cleanup_claim_alive(identity) is False:
+                    dead.add(claim['id'])
+            except (subprocess.SubprocessError, OSError):
+                return result  # Process state unknown (slow query): skip this tick's disk step.
     identity = None
     # Healthy ticks must never inventory processes.
     if any(row['level'] not in ('ok', 'unknown') for row in rows):
-        identity = placement.cleanup_identity()
+        try:
+            identity = placement.cleanup_identity()
+        except (subprocess.SubprocessError, OSError):
+            return result
     # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick.
     blocker = disk_state.lock_blocker(directory) if identity else None
     def change(state):

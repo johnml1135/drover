@@ -263,3 +263,29 @@ class LockBackoff(DiskCase):
         with patch('drover.placement.cleanup_identity', ident):
             self.tick(lambda: launches.append(1) or {})
         self.assertEqual(launches, [1])
+
+
+class ProcessQueryTimeout(DiskCase):
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+
+    def test_timeout_skips_the_disk_step_instead_of_failing_the_tick(self):
+        from drover import disk
+        launches = []
+        slow = subprocess.TimeoutExpired('powershell.exe', 15)
+        with patch('drover.placement.cleanup_identity', side_effect=slow):
+            result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60,
+                               enqueue=lambda: launches.append(1) or {})
+        self.assertEqual(launches, [])
+        self.assertEqual(result['drives'][0]['level'], 'queue')
+
+    def test_timeout_checking_a_prior_claim_also_degrades(self):
+        from drover import disk, disk_state
+        disk_state.update(self.state, lambda s: s.update(episodes={'test-drive': {'claim': dict(
+            id='c1', identity=dict(pid=5, birth='b', side=self.side), applied=False)}}))
+        with patch('drover.placement.cleanup_identity', side_effect=subprocess.TimeoutExpired('p', 15)):
+            result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60, enqueue=lambda: {})
+        self.assertIn('drives', result)
