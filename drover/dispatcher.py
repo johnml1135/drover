@@ -1266,6 +1266,11 @@ class Dispatcher:
         w = (self.last_resources or {}).get("wsl") or {}
         return "; ".join(w.get("reasons") or ["WSL tracker"]) if w.get("verdict", "go") != "go" else ""
 
+    def _ram_blocked(self, placement):
+        """Why work placed on this side must wait: that side's RAM is short while another side's is not, else ''."""
+        w = ((self.last_resources or {}).get("ram_sides") or {}).get(placement) or {}
+        return "; ".join(w.get("reasons") or ["RAM"]) if w.get("verdict", "go") != "go" else ""
+
     def _headroom(self, plan):
         try:
             return self._seat_headroom(plan)
@@ -1383,6 +1388,9 @@ class Dispatcher:
             if placement == "wsl" and not self.launcher.wsl_up():
                 p.note_wsl_needed(task["id"])
                 self._defer(task, "WSL is not running", reason_code="wsl-down")
+                continue
+            if self._ram_blocked(placement):
+                self._defer(task, self._ram_blocked(placement))
                 continue
             if placement == "wsl" and self._wsl_blocked():
                 self._defer(task, self._wsl_blocked())

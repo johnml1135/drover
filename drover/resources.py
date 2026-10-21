@@ -325,6 +325,8 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
             levels.append((1, '%sRAM available %.1f GB < %.1f GB needed for %d new worker(s)' % (tag, gb, need, new_workers)))
         else:
             levels.append((0, ''))
+    ram_sides = {side: dict(verdict=('go', 'queue', 'hold')[rank], reasons=[reason] if reason else [])
+                 for side, (rank, reason) in zip(sides, levels)} if len(sides) > 1 and 'ram' in by_kind else None
     if sides and 'ram' in by_kind and all(rank for rank, _ in levels):
         floor = min(rank for rank, _ in levels)
         (hold if floor == 2 else queue).extend(reason for rank, reason in levels if rank == floor)
@@ -351,6 +353,8 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     verdict = 'hold' if hold else 'queue' if queue else 'go'
     result = {'verdict': verdict, 'reasons': hold + queue, 'facts': facts, 'slots': 0,
               'wsl': _wsl_state((by_kind.get('wsl') or [None])[0], facts)}
+    if ram_sides:
+        result['ram_sides'] = ram_sides  # the dispatcher claims only for seats whose side is go
     if vram_t and vram and vram[1] > 0 and 100.0 * vram[0] / vram[1] > vram_t['fallback_pct']:
         device = (config or {}).get('decider', {}).get('device') or config_mod.get()['decider']['device']
         result['decider'] = {'auto': 'decider-cpu', 'cpu': None}.get(device, 'decider-fallback')

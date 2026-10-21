@@ -306,6 +306,20 @@ class WslTracker(test_dispatcher.Base):
         self.assertEqual(self.status(wsl_task), "ready")                       # still in backoff, but not blocked by WSL
         self.assertFalse(self.d._wsl_blocked())
 
+    def test_a_short_ram_side_blocks_only_claims_placed_on_that_side(self):
+        self.allow["codex"] = False
+        wsl_task = self.task(size="S", goal="platform: linux")
+        win_task = self.task(size="S", priority="P4")
+        sides = {"windows": {"verdict": "go", "reasons": []},
+                 "wsl": {"verdict": "hold", "reasons": ["wsl RAM available 1.0 GB < 4 GB"]}}
+        self.verdict = {**test_dispatcher.GO, "ram_sides": sides}
+        self.d = self.make(wsl_up=lambda: True)
+        out = self.d.tick()
+        self.assertIn(win_task, out["launched"])
+        self.assertEqual(self.status(wsl_task), "ready")
+        reasons = [e["data"].get("reason", "") for e in self.events("status") if e["data"].get("to") == "ready"]
+        self.assertTrue(any("wsl RAM" in r for r in reasons))
+
     def test_the_global_verdict_never_includes_the_wsl_tracker(self):
         from drover import resources
         r = resources.check(fake={"platform": "windows", "ram_available_gb": 30, "wsl_up": False})
