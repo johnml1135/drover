@@ -424,10 +424,17 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     return result
 
 
+def cleanup_pressure(config=None, fake=None):
+    """Load and RAM verdict (disk excluded) for deciding whether disk cleanup may start or keep running."""
+    cfg = config_mod.get() if config is None else config
+    trackers = [t for t in trackers_of(cfg) if t['kind'] in ('load', 'ram')]
+    return check(1, fake, dict(cfg, trackers=trackers))
+
+
 def tick(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     """One disk observation feeds resource admission and the independent tracker."""
     cfg = config_mod.get() if config is None else config
-    tracked = disk.tick(cfg)
+    tracked = disk.tick(cfg, gate=lambda: cleanup_pressure(cfg))
     facts = gather(fake, [t for t in trackers_of(cfg) if t['kind'] != 'disk'], with_wsl_memory, cfg)
     facts['disk_free_gb'] = {row['name']: row['free_gb'] for row in tracked['drives']}
     result = check(new_workers, facts, cfg, with_wsl_memory)

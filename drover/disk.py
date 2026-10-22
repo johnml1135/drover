@@ -85,8 +85,11 @@ def _lock_wait(state, blocker, directory, now):
         outbox[ident] = dict(notice=notice, toasted=False, acknowledged=False)
 
 
-def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dict:
-    """Observe even while paused; short claims precede all background work."""
+def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None) -> dict:
+    """Observe even while paused; short claims precede all background work.
+
+    gate() returns a load/RAM verdict ({'verdict', 'reasons'}); a cleanup launches only on 'go', otherwise it is
+    deferred and state['cleanup_deferred'] records when and why."""
     import json
     import time
     import uuid
@@ -134,11 +137,21 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dic
             return result
     # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick.
     blocker = disk_state.lock_blocker(directory) if identity else None
+    pressure = None
+    if gate is not None and identity and blocker is None and \
+            any(row['level'] not in ('ok', 'unknown') and row['free_gb'] is not None for row in rows):
+        try:
+            pressure = gate()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pressure = None   # an unreadable machine state defers nothing
+    deferred = pressure is not None and pressure.get('verdict') != 'go'
     def change(state):
         episodes = state.setdefault('episodes', {})
         applied = bool(state.get('automation', {}).get('apply', False))
         launches = []
         state['readings'] = rows
+        if not deferred:
+            state.pop('cleanup_deferred', None)
         _lock_wait(state, blocker, directory, now)
         for row in rows:
             episode = episodes.setdefault(row['name'], {})
@@ -163,9 +176,13 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None) -> dic
                 continue
             if claim or (baseline is not None and free > baseline - 1):
                 continue
+            if deferred:
+                state['cleanup_deferred'] = dict(at=now, verdict=pressure['verdict'], reasons=list(pressure.get('reasons', [])))
+                continue
             claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied)
             episode['claim'] = claim
             launches.append((row['name'], claim))
+            state.pop('cleanup_deferred', None)
         return launches
     try:
         launches = disk_state.update(directory, change)

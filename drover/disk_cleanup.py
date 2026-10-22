@@ -4,6 +4,7 @@ import json
 import math
 import os
 import socket
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ class CleanupRuntime:
     read: Callable
     call: Callable
     toast: Callable
+    pressure: Callable | None = None   # () -> {'verdict': go|queue|hold, 'reasons': [...]}; hold aborts the run
 
 
 def _repos(cfg, errors=None):
@@ -133,6 +135,16 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         machines = _repos(cfg, result['errors'])
         rows = disk.read(cfg, reader=runtime.read)
         inventories = set()
+        aborted = None
+
+        def held():
+            if runtime.pressure is None:
+                return None
+            try:
+                answer = runtime.pressure()
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                return None   # an unreadable machine state never stops a cleanup
+            return list(answer.get('reasons') or ['load or RAM at hold']) if answer.get('verdict') == 'hold' else None
         inventory_id = uuid.uuid4().hex
         for row in rows:
             tracker = next(t for t in cfg['trackers'] if t['name'] == row['name'])
@@ -145,6 +157,9 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                     break
                 result['stages'].append(dict(drive=row['name'], stage=stage))
                 for side in ('windows', 'wsl'):
+                    aborted = held()
+                    if aborted:
+                        break
                     request = dict(stage=stage, mode=mode, apply=apply and free is not None, now=runtime.now(),
                                    drive=drive, repos=machines, paths=cfg['disk_cleanup'],
                                    state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
@@ -169,28 +184,35 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                             except OSError:
                                 pass
                             raise
+                if aborted:
+                    break
                 free = _reading(runtime.read(row['path'])) if row['path'] is not None else None
                 drive['post_free_gb'] = free
                 drive['level'] = next((level for level in ('critical', 'hold', 'queue', 'warn')
                                        if free is not None and free < tracker[level + '_gb']), 'ok' if free is not None else 'unknown')
+            if aborted:
+                result.update(aborted='aborted_load', abort_reasons=aborted)
+                progress._log(event='aborted_load', reasons=aborted)
+                break
             result['exhausted'] |= bool(apply and mode != 'daily' and free is not None and
                                         free < tracker['warn_gb'] and stage == 6)
         if mode == 'triggered':
             for drive in result['drives']:
                 claim = claims.get(drive['name'])
                 if claim:
-                    completed = dict(applied=apply, free=drive.get('post_free_gb', drive['free_gb']))
+                    completed = dict(applied=apply and not aborted, free=drive.get('post_free_gb', drive['free_gb']),
+                                     status='aborted_load' if aborted else 'completed')
                     disk_state.save_file(state_dir, 'result-' + claim['id'] + '.json', completed)
                     def finish(state):
                         episode = state['episodes'][drive['name']]
                         if (episode.get('claim') or {}).get('id') == claim['id']:
                             episode.update(claim=None)
-                            episode['post' if apply else 'report_post'] = completed['free']
+                            episode['post' if completed['applied'] else 'report_post'] = completed['free']
                     try:
                         disk_state.update(state_dir, finish)
                     except BlockingIOError:
                         pass
-        if apply:
+        if apply and not aborted:
             # Budget observation is report-only and independent of destructive stages.
             budgeted = [m for m in machines if m.get('budget_gb')]
             if budgeted:
@@ -237,7 +259,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             _save_report(state_dir, result)
         except OSError as error:
             result['errors'].append(dict(reason_code='report_persistence_failed', error=str(error)))
-        if not apply and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):
+        if not apply and not aborted and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):
             disk_state.update(state_dir, lambda state: state.update(report_scope=key))
     return result
 

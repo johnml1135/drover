@@ -1506,7 +1506,8 @@ def trim_argv():
 def cleanup_runtime(cfg):
     from .disk import _free
     from .disk_cleanup import CleanupRuntime
-    return CleanupRuntime(time.time, _free, cleanup_call, disk_toast)
+    from .resources import cleanup_pressure
+    return CleanupRuntime(time.time, _free, cleanup_call, disk_toast, lambda: cleanup_pressure(cfg))
 
 
 class CleanupWorkerError(RuntimeError):
@@ -1553,6 +1554,7 @@ class _CleanupJob:
 def cleanup_worker(request):
     """Own the worker group/job before any stage can spawn children."""
     from . import disk_side, disk_state
+    lower_priority()
     if IS_WINDOWS:
         # The caller holds this named job until every member has exited. Join before
         # executing the stage, so no deletion subprocess can escape containment.
@@ -1903,10 +1905,29 @@ def cleanup_claim_alive(identity):
     return None if not current['birth'] else current['birth'] == identity['birth']
 
 
+BELOW_NORMAL_PRIORITY_CLASS = 0x4000
+CLEANUP_NICE = 10
+
+
+def lower_priority(windows=None, set_class=None):
+    """Run this process, and so its children, at BelowNormal (Windows) or nice 10 (WSL/Linux). Best effort."""
+    windows = IS_WINDOWS if windows is None else windows
+    try:
+        if windows:
+            if set_class is None:
+                def set_class(value):
+                    _k32.SetPriorityClass(_k32.GetCurrentProcess(), value)
+            set_class(BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            os.nice(CLEANUP_NICE)
+    except (OSError, AttributeError):
+        pass
+
+
 def cleanup_enqueue(cfg, claim):
     """Detached fixed cleanup entry point pinned independently of the hub cwd."""
     code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
-            'from drover.disk_cleanup import run;'
+            'from drover.disk_cleanup import run;from drover.placement import lower_priority;lower_priority();'
             'run(json.loads(sys.argv[2]),mode="triggered",apply=sys.argv[3]=="1")')
     argv = [sys.executable, '-c', code, str(Path(__file__).resolve().parents[1]),
             json.dumps(cfg), '1' if claim['applied'] else '0', claim['id']]
