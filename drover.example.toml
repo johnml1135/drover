@@ -153,7 +153,8 @@ parallel_cap = 4            # workers at once, all seats; the tuner may move it 
 # switches one off. Unknown facts never block. Legacy resources.toml is ignored; migrate its thresholds
 # into named trackers. See docs/configuration.md and `python -m drover config explain trackers`.
 [[trackers]]
-kind = "load"               # 5-minute load average per core
+kind = "load"               # 5-minute load average per core. Windows has none: CPU busy % (GetSystemTimes,
+                            # 60 s smoothed) maps so 95% busy = hold_per_core (3.5) and about 68% = queue_per_core (2.5)
 name = "load"
 queue_per_core = 2.5
 hold_per_core = 3.5

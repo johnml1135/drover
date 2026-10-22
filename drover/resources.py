@@ -43,15 +43,65 @@ def is_windows():
 
 # ---- readers (each returns None when unknown) ---------------------------------------------------------------
 
+# Windows has no load average. CPU busy % (GetSystemTimes between two samples) is smoothed with a 60 s exponential
+# average and mapped onto the per-core load scale as busy_fraction * WINDOWS_LOAD_AT_FULL_PER_CORE, so the default
+# load thresholds (queue 2.5, hold 3.5 per core) mean about 68% and 95% busy. Documented in drover.example.toml.
+WINDOWS_LOAD_AT_FULL_PER_CORE = 3.5 / 0.95
+WINDOWS_CPU_SMOOTHING_S = 60.0
+_CPU = {'last': None, 'busy': None}
+
+
+def _windows_system_times():
+    """(idle, kernel, user) 100 ns ticks since boot; kernel includes idle. None when unavailable."""
+    import ctypes
+    from ctypes import wintypes
+    idle, kernel, user = (wintypes.FILETIME() for _ in range(3))
+    if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+        return None
+    return tuple((f.dwHighDateTime << 32) | f.dwLowDateTime for f in (idle, kernel, user))
+
+
+def _windows_cpu_busy(times=None, clock=None, sleep=None):
+    """Smoothed CPU busy fraction 0..1, or None. The first call samples over a short window itself."""
+    import time
+    times = times or _windows_system_times
+    clock = clock or time.monotonic
+    now, sample = clock(), times()
+    if sample is None:
+        return None
+    last = _CPU['last']
+    if last is None:
+        (sleep or time.sleep)(0.25)
+        last, now, sample = (now, sample), clock(), times()
+        if sample is None:
+            return None
+    (t0, s0), (t1, s1) = last, (now, sample)
+    total = (s1[1] - s0[1]) + (s1[2] - s0[2])
+    if total > 0:
+        instant = min(1.0, max(0.0, 1.0 - (s1[0] - s0[0]) / total))
+        previous = _CPU['busy']
+        weight = 1.0 if previous is None else 1.0 - math.exp(-max(t1 - t0, 0.0) / WINDOWS_CPU_SMOOTHING_S)
+        _CPU['busy'] = instant if previous is None else previous + weight * (instant - previous)
+        _CPU['last'] = (t1, s1)
+    return _CPU['busy']
+
+
 def read_load():
-    """(5-minute load, cores) or None."""
+    """(5-minute load, cores) or None. On Windows: smoothed CPU busy mapped to the per-core load scale."""
     try:
         load5 = float(Path('/proc/loadavg').read_text().split()[1])
     except (OSError, ValueError, IndexError):
         try:
             load5 = os.getloadavg()[1]
         except (OSError, AttributeError):
-            return None
+            if not is_windows():
+                return None
+            try:
+                busy = _windows_cpu_busy()
+            except (OSError, AttributeError):
+                return None
+            cores = os.cpu_count() or 1
+            return None if busy is None else (busy * WINDOWS_LOAD_AT_FULL_PER_CORE * cores, cores)
     return load5, os.cpu_count() or 1
 
 
