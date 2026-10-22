@@ -262,5 +262,137 @@ class Defaults(unittest.TestCase):
         self.assertIn('cooldown_s', (Path(config.__file__).parents[1] / 'drover.example.toml').read_text())
 
 
+class StuckClaim(Trigger):
+    """A claim whose process cannot be read (PowerShell keeps timing out) is released by age."""
+
+    def stuck(self, at):
+        import subprocess
+        self.cfg['disk_cleanup']['cooldown_s'] = 0
+        self.activate()
+        self.free = 60
+        launches = []
+        me = placement.cleanup_identity()
+        original = placement.cleanup_identity
+
+        def enqueue(*a, **kw):
+            launches.append(1)
+            return dict(identity=dict(pid=me['pid'], birth=None, side=me['side']))
+        self.tick(enqueue)
+
+        def age(state):
+            claim = state['episodes']['test-drive']['claim']
+            if at is None:
+                del claim['at']
+            else:
+                claim['at'] = at
+        disk_state.update(config.state_dir(self.cfg), age)
+
+        def flaky(pid=None):
+            if pid is not None:
+                raise subprocess.TimeoutExpired('powershell', 15)
+            return original()
+        return launches, enqueue, flaky
+
+    def test_old_claim_is_released_although_the_query_keeps_timing_out(self):
+        launches, enqueue, flaky = self.stuck(self.now - 25 * 3600)
+        with patch.object(placement, 'cleanup_identity', side_effect=flaky):
+            self.tick(enqueue)
+        self.assertEqual(len(launches), 2)
+
+    def test_young_claim_waits_when_the_query_times_out(self):
+        launches, enqueue, flaky = self.stuck(self.now - 3600)
+        with patch.object(placement, 'cleanup_identity', side_effect=flaky):
+            self.tick(enqueue)
+        self.assertEqual(len(launches), 1)
+
+    def test_legacy_claim_without_at_counts_as_old(self):
+        launches, enqueue, flaky = self.stuck(None)
+        with patch.object(placement, 'cleanup_identity', side_effect=flaky):
+            self.tick(enqueue)
+        self.assertEqual(len(launches), 2)
+
+
+class DeferralNotice(Trigger):
+    def setUp(self):
+        super().setUp()
+        self.launches = []
+
+    def enqueue(self, *a, **kw):
+        self.launches.append(1)
+        return self.complete()
+
+    def tick_gated(self, gate):
+        return disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, enqueue=self.enqueue, gate=gate)
+
+    def outbox(self):
+        return disk_state.read(config.state_dir(self.cfg)).get('outbox', {})
+
+    def test_notice_after_thirty_minutes_then_retracted_when_cleanup_runs(self):
+        self.cfg['disk_cleanup']['cooldown_s'] = 0
+        self.activate()
+        self.free = 60                                   # queue level
+        self.tick_gated(pressure('queue', 'busy'))
+        self.now += 20 * 60
+        self.tick_gated(pressure('queue', 'busy'))
+        self.assertNotIn('cleanup_deferred', self.outbox())
+        self.now += 11 * 60
+        self.tick_gated(pressure('queue', 'busy'))
+        entry = self.outbox()['cleanup_deferred']
+        self.assertEqual(entry['notice']['kind'], 'cleanup_deferred')
+        self.tick_gated(pressure('queue', 'busy'))
+        self.assertEqual(len(self.outbox()), 1)          # one notice, not one per tick
+        self.tick_gated(pressure('go'))
+        self.assertEqual(len(self.launches), 1)
+        self.assertNotIn('cleanup_deferred', self.outbox())
+
+
+class CriticalDisk(Trigger):
+    def setUp(self):
+        super().setUp()
+        self.launches = []
+
+    def enqueue(self, *a, **kw):
+        self.launches.append(1)
+        return self.complete()
+
+    def tick_gated(self, gate):
+        return disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, enqueue=self.enqueue, gate=gate)
+
+    def test_critical_launches_under_queue_pressure_but_not_hold(self):
+        self.activate()
+        self.free = 20                                   # critical (below 25)
+        self.tick_gated(pressure('hold', 'RAM'))
+        self.assertEqual(self.launches, [])
+        self.tick_gated(pressure('queue', 'busy'))
+        self.assertEqual(len(self.launches), 1)
+
+    def test_critical_bypasses_the_cooldown_but_queue_level_does_not(self):
+        self.cfg['disk_cleanup']['cooldown_s'] = 6 * 3600
+        self.activate()
+        self.free = 60
+        self.tick_gated(pressure('go'))
+        self.assertEqual(len(self.launches), 1)           # leaves 60 free
+        self.free = 45
+        self.now += 600
+        self.tick_gated(pressure('go'))
+        self.assertEqual(len(self.launches), 1, 'queue-level drop waits out the cooldown')
+        self.free = 20
+        self.now += 600
+        self.tick_gated(pressure('go'))
+        self.assertEqual(len(self.launches), 2, 'critical does not')
+
+    def test_cooldown_is_per_drive(self):
+        self.cfg['disk_cleanup']['cooldown_s'] = 6 * 3600
+        self.cfg['trackers'].append(dict(self.cfg['trackers'][0], name='other'))
+        self.activate()
+        disk_state.update(config.state_dir(self.cfg), lambda s: s.setdefault('episodes', {}).setdefault(
+            'test-drive', {}).update(last_cleanup=self.now - 60))
+        self.free = 60
+        self.tick_gated(pressure('go'))
+        episodes = disk_state.read(config.state_dir(self.cfg))['episodes']
+        self.assertIsNotNone(episodes['other'].get('claim') or episodes['other'].get('last_cleanup'))
+        self.assertIsNone(episodes['test-drive'].get('claim'))
+
+
 if __name__ == '__main__':
     unittest.main()

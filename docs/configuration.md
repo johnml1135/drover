@@ -124,6 +124,17 @@ launched (finished, `aborted_load` or failed) before launching another. The hub 
 RAM are `go`, re-triggers only after free space falls 10 GB below the last cleanup's result, and a running cleanup
 stops with `aborted_load` when load or RAM reach hold. Cleanup runs at BelowNormal (Windows) or nice 10 (WSL).
 
+Cleanup deferrals are recorded in the disk state as `cleanup_deferred`; after 30 minutes of deferral while a drive is
+at queue or worse, one Inbox notice is raised and retracted when cleanup runs. At the `critical` disk level the gate
+relaxes to "load and RAM below hold" and the cooldown (kept per drive) is bypassed.
+
+Windows load: there is no load average, so the `load` tracker reads CPU busy % (`GetSystemTimes`, smoothed over 60 s)
+and maps it onto the per-core scale: 100% busy counts as about 3.68 per core. With the defaults (`queue_per_core` 2.5,
+`hold_per_core` 3.5) new work therefore queues at about 68% busy and holds at 95%, and cleanup will not launch above
+the queue line. This is stricter dispatch on Windows than before, when load was unread. To tune it, set
+`queue_per_core` and `hold_per_core` on the `load` tracker: the busy percentage is `per_core / 3.68`, so
+`queue_per_core = 3.0` queues at about 82% busy.
+
 Machine `[disk_cleanup]` accepts only `temp_roots = []`, `report_roots = []`
 (absolute paths) and `caches = []`. A cache entry has either literal `argv`
 and absolute `cwd`, or an absolute folder `path`; both require

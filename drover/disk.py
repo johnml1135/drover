@@ -89,6 +89,39 @@ def _lock_wait(state, blocker, directory, now):
         outbox[ident] = dict(notice=notice, toasted=False, acknowledged=False)
 
 
+def _claim_age(directory, claim, now):
+    """Seconds since the claim was made. A legacy claim without `at` ages from its claim file, else counts as old."""
+    if 'at' in claim:
+        return now - claim['at']
+    try:
+        return now - (directory / 'disk' / ('claim-' + claim['id'] + '.json')).stat().st_mtime
+    except OSError:
+        return math.inf
+
+
+DEFERRAL_NOTICE_S = 30 * 60
+
+
+def _deferral_notice(state, now, rows):
+    """One Inbox notice once deferrals last 30 min while a drive is at queue or worse; retracted when cleanup runs."""
+    ident = 'cleanup_deferred'
+    outbox = state.setdefault('outbox', {})
+    deferral = state.get('cleanup_deferred')
+    low = any(row['level'] in ('queue', 'hold', 'critical') for row in rows)
+    if deferral and low and now - deferral['since'] >= DEFERRAL_NOTICE_S:
+        if ident not in outbox:
+            why = '; '.join(deferral['reasons']) or deferral['verdict']
+            outbox[ident] = dict(toasted=False, acknowledged=False, notice=dict(
+                id=ident, kind='cleanup_deferred', title='Disk cleanup is deferred while disk space is low',
+                body=f"Cleanup has been deferred for over {DEFERRAL_NOTICE_S // 60} minutes ({deferral['verdict']}: {why})."))
+    elif ident in outbox:
+        entry = outbox[ident]
+        if entry['acknowledged']:
+            entry['retracted'] = True
+        else:
+            del outbox[ident]
+
+
 def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None) -> dict:
     """Observe even while paused; short claims precede all background work.
 
@@ -127,12 +160,13 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
         else:
             attached = directory / 'disk' / ('claim-' + claim['id'] + '.json')
             identity = json.loads(attached.read_text(encoding='utf-8')) if attached.exists() else claim['identity']
+            unresolved = not identity.get('birth')
             try:
-                if not identity.get('birth') and identity.get('side') == placement.cleanup_side() and \
+                if unresolved and identity.get('side') == placement.cleanup_side() and \
                         type(identity.get('pid')) is int and identity['pid'] > 0:
                     # Launched but its start time was unreadable: resolve it now, so liveness can be proven.
                     seen = placement.cleanup_identity(identity['pid'])
-                    age = now - claim.get('at', now)
+                    age = _claim_age(directory, claim, now)
                     if seen.get('birth') and seen['birth'] != 'absent':
                         identity = seen
                         disk_state.save_file(directory, 'claim-' + claim['id'] + '.json', seen)
@@ -142,6 +176,9 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 if placement.cleanup_claim_alive(identity) is False:
                     dead.add(claim['id'])
             except (subprocess.SubprocessError, OSError):
+                if unresolved and _claim_age(directory, claim, now) > UNKNOWN_CLAIM_MAX_S:
+                    dead.add(claim['id'])   # a claim whose process cannot be read for a day is released
+                    continue
                 return result  # Process state unknown (slow query): skip this tick's disk step.
     identity = None
     # Healthy ticks must never inventory processes.
@@ -159,27 +196,30 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             pressure = gate()
         except (OSError, ValueError, subprocess.SubprocessError):
             pressure = None   # an unreadable machine state defers nothing
-    deferred = pressure is not None and pressure.get('verdict') != 'go'
+    def blocked(row):
+        # Critical space relaxes the gate: only hold stops it. Everything else needs go.
+        if pressure is None:
+            return False
+        return pressure.get('verdict') == 'hold' if row['level'] == 'critical' else pressure.get('verdict') != 'go'
     def change(state):
         episodes = state.setdefault('episodes', {})
         applied = bool(state.get('automation', {}).get('apply', False))
         launches = []
         cooldown = cfg.get('disk_cleanup', {}).get('cooldown_s', DEFAULT_COOLDOWN_S)
         state['readings'] = rows
-        if not deferred:
-            state.pop('cleanup_deferred', None)
+        deferrals = []
         _lock_wait(state, blocker, directory, now)
         for row in rows:
             episode = episodes.setdefault(row['name'], {})
             claim = episode.get('claim')
             if claim and claim['id'] in receipts:
                 completed = receipts[claim['id']]
-                state['last_cleanup'] = now
+                episode['last_cleanup'] = now
                 episode.update(claim=None)
                 episode['post' if completed['applied'] else 'report_post'] = completed['free']
                 claim = None
             elif claim and claim['id'] in dead:
-                state['last_cleanup'] = now
+                episode['last_cleanup'] = now
                 episode['claim'] = claim = None
             free = row['free_gb']
             if free is None:
@@ -194,18 +234,26 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 continue
             if claim or (baseline is not None and free > baseline - RETRIGGER_DROP_GB):
                 continue
-            if now - state.get('last_cleanup', -math.inf) < cooldown:
-                state['cleanup_deferred'] = dict(at=now, verdict='cooldown', reasons=[
-                    'last cleanup ended %d min ago; waiting %d min' % ((now - state['last_cleanup']) // 60, cooldown // 60)])
+            last = episode.get('last_cleanup', -math.inf)
+            if row['level'] != 'critical' and now - last < cooldown:
+                deferrals.append(('cooldown', ['%s: last cleanup ended %d min ago; waiting %d min' % (
+                    row['name'], (now - last) // 60, cooldown // 60)]))
                 continue
-            if deferred:
-                state['cleanup_deferred'] = dict(at=now, verdict=pressure['verdict'], reasons=list(pressure.get('reasons', [])))
+            if blocked(row):
+                deferrals.append((pressure['verdict'], list(pressure.get('reasons', []))))
                 continue
-            claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied, at=now)
-            state['last_cleanup'] = now
+            claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied, at=now,
+                         prior_last=episode.get('last_cleanup'))
+            episode['last_cleanup'] = now
             episode['claim'] = claim
             launches.append((row['name'], claim))
+        if deferrals:
+            previous = state.get('cleanup_deferred') or {}
+            state['cleanup_deferred'] = dict(at=now, since=previous.get('since', now), verdict=deferrals[0][0],
+                                             reasons=[r for _, rs in deferrals for r in rs])
+        else:
             state.pop('cleanup_deferred', None)
+        _deferral_notice(state, now, rows)
         return launches
     try:
         launches = disk_state.update(directory, change)
@@ -222,6 +270,10 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 episode = state['episodes'][name]
                 if (episode.get('claim') or {}).get('id') == claim['id']:
                     episode['claim'] = None
+                    if claim.get('prior_last') is None:
+                        episode.pop('last_cleanup', None)
+                    else:
+                        episode['last_cleanup'] = claim['prior_last']
         try:
             disk_state.update(directory, release)
         except BlockingIOError:
