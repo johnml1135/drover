@@ -117,6 +117,7 @@ class Base(unittest.TestCase):
         self.addCleanup(config.use, original_config)
         cfg = copy.deepcopy(original_config)
         cfg['paths']['state_dir'] = str(root / 'state')
+        cfg['paths']['wsl_worktrees'] = str(root / 'ext4')          # never the real ~/work
         cfg['repos_dir'] = str(root / 'state' / 'repos')
         config.use(cfg)
         # The detached landing caller needs the same admission as the parent mock.
@@ -367,6 +368,20 @@ class Worktrees(Base):
                     self.assertEqual(args[:4], ("-c", "core.autocrlf=false", "worktree", "add"))
                 self.assertEqual((Path(wt) / "base.txt").read_bytes(), committed)
 
+    def test_a_wsl_placement_creates_its_worktree_under_the_wsl_root_and_windows_keeps_the_h_root(self):
+        ext4 = Path(self.tmp.name) / "ext4"
+        with patch.object(placement, "wsl_worktrees_root", return_value=str(ext4)):
+            wsl_tid, win_tid = self.task(), self.task()
+            wsl = self.pipe.worktree(self.get(wsl_tid), "wsl")
+            win = self.pipe.worktree(self.get(win_tid), "windows")
+            default = self.pipe.worktree(self.get(self.task()))
+        self.assertEqual(wsl, str(ext4 / "p.worktrees" / f"drover-{wsl_tid}"))
+        self.assertEqual(win, str(Path(self.tmp.name) / "wts" / f"drover-{win_tid}"))
+        self.assertTrue(default.startswith(str(Path(self.tmp.name) / "wts")))
+        self.assertTrue((Path(wsl) / "base.txt").exists())
+        again = self.pipe.worktree(self.get(wsl_tid), "windows")            # a persisted worktree keeps its place
+        self.assertEqual(again, wsl)
+
     def test_example_home_paths_are_persisted_and_launched_as_absolute_paths(self):
         root = Path(self.tmp.name)
         repo = root / 'repos' / 'acme-lib'
@@ -500,6 +515,43 @@ class Worktrees(Base):
         self.assertEqual(a[-4:], ["-m", "fix C:\\x", "--", "R:\\f"])
         a = placement.git_argv("/home/j/w", ["worktree", "add", "-b", "C:\\br", "D:\\wt", "E:\\ref"], nt=True, distro="U")
         self.assertEqual(a[-5:], ["add", "-b", "C:\\br", "/mnt/d/wt", "E:\\ref"])
+
+    def test_the_dispatcher_decides_placement_before_it_makes_the_worktree(self):
+        seen = []
+        real = self.pipe.worktree
+
+        def spy(task, where=None):
+            seen.append(where)
+            return real(task, where)
+        tid = self.task()
+        with patch.object(self.pipe, "worktree", spy):
+            self.assertEqual(self.d.tick()["launched"], [tid])
+        self.assertEqual(seen, ["windows"])                                 # prog_dict is a windows-only repo
+
+    def test_a_linux_task_gets_a_wsl_worktree_only_where_the_repo_allows_wsl(self):
+        seen = []
+        real = self.pipe.worktree
+
+        def spy(task, where=None):
+            seen.append(where)
+            return real(task, where)
+        both = prog_dict(self.fix.repo, Path(self.tmp.name) / "wts", run={"env": {}, "platforms": ["windows", "wsl"],
+                                                                         "default": "windows"})
+        ext4 = Path(self.tmp.name) / "ext4"
+        tid = self.task(goal="Port it. platform: linux")
+        with patch.object(self.pipe, "worktree", spy), patch.object(placement, "wsl_worktrees_root", return_value=str(ext4)):
+            self.pipe._repos = {"p": both}
+            self.d.tick()
+            self.assertEqual(seen, ["wsl"])
+            self.assertTrue((ext4 / "p.worktrees" / f"drover-{tid}").is_dir())
+            seen.clear()
+            win_only = self.task(goal="Port it. platform: linux")
+            self.pipe._repos = {"p": prog_dict(self.fix.repo, Path(self.tmp.name) / "wts",
+                                               run={"env": {}, "platforms": ["windows"], "default": "windows"})}
+            self.d.tick()
+        self.assertEqual(seen, [])                # refused before any worktree is made
+        self.assertEqual(self.states(win_only)[-1][0], "needs-owner")
+        self.assertFalse((ext4 / "p.worktrees" / f"drover-{win_only}").exists())
 
     def test_the_dispatcher_launches_on_a_fresh_branch_when_the_registered_worktree_is_dirty(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
@@ -897,6 +949,7 @@ class CodexReview(Base):
             {"name": "codex-b", "backend": "codex", "priority": 2},
             {"name": "codex-a", "backend": "codex", "priority": 1, "max_workers": 1},
         ]})
+        cfg["paths"]["wsl_worktrees"] = str(Path(self.tmp.name) / "ext4")
         config.use(cfg)
         tid, sha = self.to_gated()
         first = self.fl.of("review")[0]

@@ -164,8 +164,10 @@ class Pipeline:
         return False
 
     # ---- worktrees -----------------------------------------------------------------------------------
-    def worktree(self, task):
-        """The task's worktree path (config form), created on first use. Idempotent: a persisted worktree is reused.
+    def worktree(self, task, where=None):
+        """The task's worktree path (config form), created on first use, for placement `where` ("windows" when
+        omitted; the dispatcher decides it first). A new WSL worktree goes under the WSL root on ext4 (ADR 0007);
+        a persisted or reachable worktree is reused wherever it is, so in-flight /mnt worktrees drain in place. Idempotent: a persisted worktree is reused.
         An existing worktree is used only when it is clean or the task owns it (ownership tag owner drover:<id>);
         otherwise WorktreeRefused. Syncs local main first, branches from it, renews ownership."""
         tid = task["id"]
@@ -213,7 +215,7 @@ class Pipeline:
                        "left untouched")
         if why:
             self.port.append_event("worktree-fallback", {"source_branch": branch, "reason": why}, tid)
-        return self._create(t, prog, repo, branch, source=branch if why else None)
+        return self._create(t, prog, repo, branch, source=branch if why else None, where=where)
 
     @staticmethod
     def _not_main(path, repo, prog):
@@ -247,7 +249,7 @@ class Pipeline:
     def _owned(path, tid):
         return ownership.owned_by(path, OWNER_PREFIX + tid)
 
-    def _create(self, t, prog, repo, branch, source=None):
+    def _create(self, t, prog, repo, branch, source=None, where=None):
         tid, remote, default = t["id"], repos.remote_name(prog), repos.default_branch(prog)
         from .ledger.waiting import OWNER_ANSWER, cause_key, repo_key
         waiting = self.port.waiting
@@ -272,16 +274,19 @@ class Pipeline:
         self.port.append_event("origin-synced", {"repo": name})
         base = self.base_ref(prog)
         name = f"drover-{tid}"
-        dest = str(Path(repos.native(join_cfg(repos.worktree_root(prog), name))).resolve())
+        root = repos.worktree_root(prog, where or "windows")
+        remote_fs = placement.routes_through_wsl(root)       # a Linux path seen from a Windows hub: only WSL opens it
+        dest = join_cfg(root, name) if remote_fs else str(Path(repos.native(join_cfg(root, name))).resolve())
         dest_cfg = placement.config_path(dest, repos.repo_path(prog))
         if source:                       # the branch's own worktree is unusable: branch from its committed tip
             branch, base = f"drover/{tid}", source
         branch = branch or f"drover/{tid}"
-        if Path(dest).exists():
+        if placement.reachable(dest) if remote_fs else Path(dest).exists():
             if self._dirty_foreign(dest, tid) or not self._owned(dest, tid):
                 raise WorktreeRefused(f"{dest_cfg} exists and is not this task's worktree")
         else:
-            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            if not remote_fs:                       # git creates the missing parents of an ext4 destination itself
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
             self._add(repo, dest, branch, base, remote)
         try:
             ownership.tag(dest, repos.repo_name(prog), OWNER_PREFIX + tid, time.time() + 86400)

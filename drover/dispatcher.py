@@ -1286,8 +1286,9 @@ class Dispatcher:
         row = next(row for row in p.waiting.pending(("task", tid)) if row["id"] == wait_id)
         p.append_event("backoff", {"minutes": row["data"]["minutes"], "why": why}, tid)
 
-    def _worktree(self, task):
-        """The task's worktree path, or False when it could not have one (it is then needs-owner with the reason)."""
+    def _worktree(self, task, where=None):
+        """The task's worktree path, or False when it could not have one (it is then needs-owner with the reason).
+        `where` is the placement decided first; a new worktree is created on that side's filesystem."""
         try:
             if task.get("read_access"):
                 task["read_checkouts"] = task_access.prepare(
@@ -1298,7 +1299,7 @@ class Dispatcher:
                 if not task.get("read_dirs"):
                     raise WorktreeRefused("read-only task needs at least one read repository")
                 return task["read_dirs"][0]
-            return self.pipeline.worktree(task)
+            return self.pipeline.worktree(task, where)
         except WorktreeRefused as e:
             self.port.set_status(task["id"], "needs-owner", reason=str(e)[:300])
         except Exception as e:                       # a git failure must not end the tick
@@ -1375,7 +1376,19 @@ class Dispatcher:
             if route.get("backend") not in admitted:
                 self._defer(task, route.get("reason") or f"{route.get('backend')} not admitted")
                 continue
-            wt = self._worktree(task)
+            where = None
+            if task.get("write", True) and self.pipeline.repo(task) is not None:
+                # Placement first (seat, route, task and repo platforms), so a new worktree lands on that side's
+                # filesystem: ext4 for WSL (ADR 0007), the Windows root otherwise. An existing worktree keeps its place.
+                where, why = place(task, route, task.get("worktree"), self.pipeline.repo(task))
+                if where is None:
+                    p.set_status(task["id"], "needs-owner", reason=why)
+                    continue
+                if where == "wsl" and not self.launcher.wsl_up():
+                    p.note_wsl_needed(task["id"])
+                    self._defer(task, "WSL is not running", reason_code="wsl-down")
+                    continue
+            wt = self._worktree(task, where)
             if wt is False:
                 continue                             # refused: the task went to the owner
             placement, why = place(task, route, wt, self.pipeline.repo(task))

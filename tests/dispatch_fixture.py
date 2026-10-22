@@ -34,7 +34,7 @@ class FakePipeline:
     def repo(self, task):
         return self.prog
 
-    def worktree(self, task):
+    def worktree(self, task, where=None):
         self.port.update_task(task['id'], worktree=WORKTREE)
         task['worktree'] = WORKTREE
         return WORKTREE
