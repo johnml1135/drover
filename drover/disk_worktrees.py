@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 
 from . import ownership, placement, repos
-from .disk_paths import facts, item, result, safe_path, within, disposable_match, repository_tree
+from .disk_paths import worktree_roots, facts, item, result, safe_path, within, disposable_match, repository_tree
 
 
 def git(repo, *args, env=None):
@@ -360,11 +360,10 @@ def unlisted_live(request, path):
 
 def unlisted(request, machine, listed):
     out = []
-    root = Path(placement.native(machine['worktrees']))
-    if not root.name.endswith('.worktrees') or not root.is_dir() or not safe_path(root):
-        return out
     registered = {str(Path(placement.native(e['worktree']))) for e in listed}
-    for path in root.iterdir():
+    roots = [r for r in worktree_roots(machine, this_side=True)
+             if r.name.endswith('.worktrees') and r.is_dir() and safe_path(r)]
+    for path in (p for root in roots for p in root.iterdir()):
         if str(path) in registered or not placement.cleanup_contains(request, str(path)):
             continue
         row = item(path, request, 'unknown_folder', repo=machine['repo'], name=machine['name'])

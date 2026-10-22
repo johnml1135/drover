@@ -46,3 +46,32 @@ class AddOnExt4(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CleanupCoversBothRoots(unittest.TestCase):
+    def test_both_roots_are_listed_and_protected_and_only_this_sides_are_scanned(self):
+        from pathlib import Path
+        from drover import disk_paths
+        machine = {"name": "a", "worktrees": "H:\\repos\\a.worktrees"}
+        self.assertEqual(len(disk_paths.worktree_roots(machine)), 2)
+        with patch.object(placement, "IS_WINDOWS", False), \
+                patch.object(placement, "wsl_worktrees_root", return_value="/home/dev/work"):
+            mine = disk_paths.worktree_roots(machine, this_side=True)
+        self.assertEqual(mine[-1], Path("/home/dev/work/a.worktrees"))         # WSL scans ext4 as well
+        with patch.object(placement, "IS_WINDOWS", True):
+            self.assertEqual(disk_paths.worktree_roots({"name": "a"}, this_side=True), [])    # Windows leaves ext4 to WSL
+        self.assertEqual(disk_paths.worktree_roots({"worktrees": "H:\\x"}), [Path(placement.native("H:\\x"))])
+
+
+from tests.test_disk_worktrees import WorktreeCase
+
+
+class CleanupScansWslRoot(WorktreeCase):
+    def test_an_unregistered_folder_under_the_wsl_root_is_reported(self):
+        wsl_root = self.r.root / 'ext4'
+        stray = wsl_root / 'alpha.worktrees' / 'stray'
+        stray.mkdir(parents=True)
+        (stray / 'file.txt').write_text('x')
+        with patch.object(placement, 'wsl_worktrees_root', return_value=str(wsl_root)):
+            result = self.cleanup()
+        self.assertTrue(any(i['path'] == str(stray) for i in result['items']), result['items'])

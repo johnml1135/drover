@@ -111,11 +111,22 @@ def live_tree(path, request):
     return False
 
 
+def worktree_roots(machine, *, this_side=False):
+    """A repo's worktree roots: the Windows root and the WSL ext4 root (ADR 0007). `this_side` keeps only the roots
+    this process can open; each side inventories and removes only what it owns."""
+    roots = [machine['worktrees']] if machine.get('worktrees') else []   # per-path side checks stay with the callers
+    from . import repos
+    wsl = repos.worktree_root(machine, 'wsl') if machine.get('name') else None   # derived: never a machine fact
+    if wsl and not (this_side and placement.cleanup_side() != 'wsl'):
+        roots.append(wsl)
+    return [Path(placement.native(r)) for r in roots]
+
+
 def protected_path(path, request):
     path = Path(path).absolute()
     roots = [Path(request['state_dir']).absolute()]
-    roots += [Path(placement.native(repo[key])).absolute() for repo in request['repos']
-              for key in ('repo', 'worktrees') if repo.get(key)]
+    roots += [Path(placement.native(repo['repo'])).absolute() for repo in request['repos'] if repo.get('repo')]
+    roots += [root.absolute() for repo in request['repos'] for root in worktree_roots(repo)]
     return not placement.cleanup_contains(request, str(path)) or live_tree(path, request) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
         repository_tree(path)
 
@@ -127,8 +138,8 @@ class TempBudgetExceeded(ValueError):
 def temp_facts(path, request):
     """Prove safety and measure in one pass; stop at the first protected descendant."""
     roots = [Path(request['state_dir']).absolute()]
-    roots += [Path(placement.native(repo[key])).absolute() for repo in request['repos']
-              for key in ('repo', 'worktrees') if repo.get(key)]
+    roots += [Path(placement.native(repo['repo'])).absolute() for repo in request['repos'] if repo.get('repo')]
+    roots += [root.absolute() for repo in request['repos'] for root in worktree_roots(repo)]
     if not safe_path(path) or live_tree(path, request) or \
             any(within(path, root) or within(root, path) for root in roots) or \
             any(repository_root(parent) for parent in path.parents):
@@ -436,12 +447,12 @@ def report(request: dict) -> dict:
                         out['items'].append(row)
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     worktree_row['status_error'] = str(error)
-            root = Path(placement.native(machine['worktrees']))
             registered = {str(Path(placement.native(e['worktree']))) for e in listed}
-            if root.is_dir() and safe_path(root):
-                for path in root.iterdir():
-                    if str(path) not in registered and placement.cleanup_contains(request, str(path)):
-                        record(path, 'unlisted_folder')
+            for root in worktree_roots(machine, this_side=True):
+                if root.is_dir() and safe_path(root):
+                    for path in root.iterdir():
+                        if str(path) not in registered and placement.cleanup_contains(request, str(path)):
+                            record(path, 'unlisted_folder')
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             out['errors'].append(dict(repo=machine['repo'], error=str(error)))
     for root_text in request['paths'].get('report_roots', []):

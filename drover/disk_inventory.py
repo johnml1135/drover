@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from . import disk_state, placement
+from .disk_paths import worktree_roots
 
 LIMIT = 20
 CACHE_LIMIT_BYTES = 4 * 1024 * 1024
@@ -109,7 +110,8 @@ def compact(items, request):
     """Retained reasons aggregate by reason/root; full samples and path lists are capped."""
     roots = [Path(placement.native(p)) for key in ('temp_roots', 'report_roots')
              for p in request['paths'].get(key, [])]
-    roots += [Path(placement.native(m[k])) for m in request['repos'] for k in ('repo', 'worktrees')]
+    roots += [Path(placement.native(m['repo'])) for m in request['repos']]
+    roots += [r for m in request['repos'] for r in worktree_roots(m)]
     groups, answer = {}, []
     for original in items:
         row = dict(original)
