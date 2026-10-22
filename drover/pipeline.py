@@ -37,10 +37,10 @@ def truthy(v):
 FETCH_TIMEOUT_S = 120
 
 
-def git(repo, *args, check=False, timeout=None):
+def git(repo, *args, check=False, timeout=None, **kw):
     """git with an argv list. A timeout is a failed command (rc 124), never a hang."""
     try:
-        r = placement.git(repo, *args, timeout=timeout)
+        r = placement.git(repo, *args, timeout=timeout, **kw)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {timeout}s")
     if check and r.returncode:

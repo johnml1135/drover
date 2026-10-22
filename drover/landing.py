@@ -36,9 +36,9 @@ PRIORITY_ORDER = ('P0', 'P1', 'P2', 'P3', 'P4')
 FETCH_TIMEOUT_S = 120
 
 
-def git(repo, *args, check=True, timeout=None):
+def git(repo, *args, check=True, timeout=None, **kw):
     try:
-        r = placement.git(repo, *args, timeout=timeout)
+        r = placement.git(repo, *args, timeout=timeout, **kw)
     except subprocess.TimeoutExpired:
         r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {timeout}s')
     if check and r.returncode:

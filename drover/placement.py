@@ -246,24 +246,26 @@ def _map_paths(args):
     return out
 
 
-def _git_command(repo, args, nt=None, distro=None):
+def _git_command(repo, args, nt=None, distro=None, side=None):
+    """`side="wsl"` runs the WSL git against a Windows-spelled repo (via /mnt/<drive>) for work that creates or
+    repairs an ext4 worktree: its pointers must be written by the side that will open them."""
     repo = str(repo)
-    if routes_through_wsl(repo, nt):
-        return WSL(distro).command(["git", "-C", repo, *_map_paths(args)]), {}
+    if routes_through_wsl(repo, nt) or (side == "wsl" and (IS_WINDOWS if nt is None else nt)):
+        return WSL(distro).command(["git", "-C", to_wsl_path(repo), *_map_paths(args)]), {}
     repo = native(repo)
     prefix, env = _git_location(repo)
     return Windows().command(["git", "-C", repo, *prefix, *args]), env
 
 
-def git_argv(repo, args, nt=None, distro=None):
+def git_argv(repo, args, nt=None, distro=None, side=None):
     """The argv that runs `git -C repo *args` from this host."""
-    return _git_command(repo, args, nt, distro)[0]
+    return _git_command(repo, args, nt, distro, side)[0]
 
 
-def git(repo, *args, timeout=None, env=None, runner=None):
+def git(repo, *args, timeout=None, env=None, runner=None, side=None):
     """subprocess result of git in `repo`; a missing wsl.exe/git is a failed command (rc 127), not an exception."""
     try:
-        argv, extra = _git_command(repo, args)
+        argv, extra = _git_command(repo, args, side=side)
         if extra:
             env = {**(os.environ if env is None else env), **extra}
         return (runner or subprocess.run)(argv, text=True, capture_output=True, encoding="utf-8", errors="replace",
@@ -1974,21 +1976,24 @@ def cleanup_free(path):
 def add_worktree(repo, dest, *tail, run=None, error=RuntimeError):
     """Create a worktree; old git may use absolute pointers only on a native filesystem."""
     if run is None:
-        def run(repo, *args, check=False):
-            return git(repo, *args, timeout=60)
-    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False)
+        def run(repo, *args, check=False, **kw):
+            return git(repo, *args, timeout=60, **kw)
+    # An ext4 destination is written by the WSL git so its `.git` file and the repository's `gitdir` record are
+    # paths WSL can resolve; Windows git would turn the Linux path into a Windows one.
+    side = {'side': 'wsl'} if routes_through_wsl(dest) else {}
+    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False, **side)
     rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
                          r.stderr, re.IGNORECASE)
     if r.returncode and rejected:
         if not is_linux_native(dest):
             raise error('this git has no `worktree add --relative-paths`, and a worktree under '
                         f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
-        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False)
+        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False, **side)
     if r.returncode:
         raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
 
     lock = run(repo, 'worktree', 'lock', '--reason',
-               'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows', str(dest), check=False)
+               'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows', str(dest), check=False, **side)
     if lock.returncode:
         raise error(f'created {dest} but could not set placement marker: {lock.stderr.strip()[-300:]}')
 
