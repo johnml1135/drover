@@ -2079,10 +2079,11 @@ def disk_schedule_plan(cfg: dict, *, apply: bool = False) -> dict:
 def unlock_worktree(repo, path):
     """Release only this creator's side marker; owner notes remain locked."""
     expected = 'wsl' if routes_through_wsl(path) or not IS_WINDOWS else 'windows'
-    listed = git(repo, 'worktree', 'list', '--porcelain', '-z', timeout=60)
+    side = {'side': 'wsl'} if expected == 'wsl' else {}      # only the WSL git spells ext4 worktrees correctly
+    listed = git(repo, 'worktree', 'list', '--porcelain', '-z', timeout=60, **side)
     if listed.returncode:
         return
     for block in listed.stdout.split('\0\0'):
         fields = dict(field.partition(' ')[::2] for field in block.split('\0') if field)
         if fields.get('worktree') and cleanup_normalize(fields['worktree']) == cleanup_normalize(path) and fields.get('locked') == expected:
-            git(repo, 'worktree', 'unlock', str(path), timeout=60)
+            git(repo, 'worktree', 'unlock', str(path), timeout=60, **side)

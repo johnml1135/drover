@@ -12,6 +12,11 @@ from tests.gitfix import Repo, sh
 class WorktreeCase(DiskCase):
     def setUp(self):
         super().setUp()
+        from unittest.mock import patch
+        from drover import placement
+        root = patch.object(placement, 'wsl_worktrees_root', return_value=str(self.root / 'ext4'))   # never ~/work
+        root.start()
+        self.addCleanup(root.stop)
         self.r = Repo(ignore='generated/\ndata/\n.venv/\n')
         self.addCleanup(self.r.cleanup)
         self.tree_count = 0

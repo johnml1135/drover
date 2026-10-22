@@ -230,7 +230,8 @@ class Pipeline:
         self.port.update_task(tid, branch=branch, worktree=wt)
 
     def _worktree_of_branch(self, repo, branch):
-        r = git(repo, "worktree", "list", "--porcelain")
+        # The WSL git lists ext4 worktrees as Linux paths; Windows git would spell them H:/home/...
+        r = git(repo, "worktree", "list", "--porcelain", side="wsl")
         path = None
         for line in r.stdout.splitlines():
             if line.startswith("worktree "):

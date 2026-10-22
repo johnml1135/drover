@@ -26,6 +26,13 @@ Every dispatcher requires a `Pipeline`; workers finish into checks, then review,
 `--no-gate-dry-run` CLI flag and synchronous `gate_fn` mode have been removed. To observe recovery without admitting
 work, keep `dispatch_enabled` false; paused dispatch still reaps and adopts runs.
 
+Placement is decided before the worktree is made (`place()`), and a new WSL placement gets its worktree on the
+distro's ext4 (`paths.wsl_worktrees`, ADR 0007) while a Windows placement gets the Windows root. A task keeps the
+worktree it has, so a task that started in WSL and later escalates to a route that needs Windows (a `platform: windows`
+route or tag) cannot follow it: `place()` returns needs-owner ("its worktree is on the WSL filesystem") instead of
+launching a Windows worker in a Linux path. Escalation is not re-routed to a WSL-capable seat automatically; the owner
+requeues it. Windows Claude seats may run in WSL, so ordinary escalation between Claude seats is unaffected.
+
 `dispatch_repos` (ledger setting, JSON list; an absent key means every repo) limits dispatch to the named repos
 (matched case-insensitively). Every other repo stays idle: no claims, gates, reviews, replan planners or landing
 batches, including for work already finished (it waits, as under pause, and resumes when the filter clears).

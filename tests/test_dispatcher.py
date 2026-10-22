@@ -7,7 +7,7 @@ import unittest.mock
 from unittest import mock
 from pathlib import Path
 
-from drover import brief, dispatcher, launch
+from drover import brief, dispatcher, launch, repos
 from tests.dispatch_fixture import FakePipeline, Observations, make_dispatcher
 from drover.ledger import connect, ops
 from drover.port import DirectPort, HttpPort
@@ -609,6 +609,16 @@ class Placement(Base):
         self.assertEqual(pf(plain, claude, "/home/u/wt"), "wsl")                    # only WSL can reach it
         self.assertEqual(pf(plain, claude, "/mnt/r/repos/wt"), "windows")
 
+
+    def test_an_ext4_worktree_cannot_be_handed_to_a_windows_route(self):
+        prog = repos.normalize({"name": "p", "repo": "/r", "scripts": {"test": "t.ps1"}})
+        task, ext4 = {"title": "t", "goal": "g"}, "/home/u/work/p.worktrees/drover-T"
+        self.assertEqual(dispatcher.place(task, {"backend": "claude", "seat": "claude"}, ext4, prog), ("wsl", None))
+        got, why = dispatcher.place(task, {"backend": "claude", "seat": "claude", "platform": "windows"}, ext4, prog)
+        self.assertIsNone(got)
+        self.assertIn("WSL filesystem", why)
+        self.assertEqual(dispatcher.place(task, {"backend": "claude", "platform": "windows"}, "/mnt/h/wt", prog)[0],
+                         "windows")
 
     def test_dispatch_records_placement_on_spec_and_event(self):
         self.allow["codex"] = False

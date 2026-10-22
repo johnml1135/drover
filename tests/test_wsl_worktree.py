@@ -48,6 +48,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ListingSide(unittest.TestCase):
+    def test_branch_lookup_and_unlock_list_worktrees_with_the_wsl_git(self):
+        from drover import pipeline
+        seen = []
+
+        def fake(repo, *args, **kw):
+            seen.append((args[:2], kw.get("side")))
+            out = "worktree /home/dev/work/a.worktrees/drover-T\nbranch refs/heads/drover/T\n"
+            if "-z" in args:
+                out = "worktree /home/dev/work/a.worktrees/drover-T\0locked wsl\0\0"
+            return subprocess.CompletedProcess(args, 0, out, "")
+        with patch.object(placement, "git", fake), patch.object(pipeline.placement, "git", fake):
+            found = pipeline.Pipeline.__new__(pipeline.Pipeline)._worktree_of_branch("H:\\repos\\a", "drover/T")
+            placement.unlock_worktree("H:\\repos\\a", "/home/dev/work/a.worktrees/drover-T")
+        self.assertEqual(found, "/home/dev/work/a.worktrees/drover-T")
+        self.assertEqual([side for _, side in seen if _[0] == "worktree"], ["wsl", "wsl", "wsl"])   # list, list, unlock
+
+
 class CleanupCoversBothRoots(unittest.TestCase):
     def test_both_roots_are_listed_and_protected_and_only_this_sides_are_scanned(self):
         from pathlib import Path

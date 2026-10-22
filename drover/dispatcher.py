@@ -110,6 +110,9 @@ def place(task, route, worktree, prog):
     plats = repos.run_config(prog)["platforms"]
     want = placement_for(task, route, worktree, plats)
     seat = seat_of(route)
+    if want == "windows" and worktree and placement.is_linux_native(worktree):
+        # A worktree on WSL ext4 (ADR 0007) cannot be opened by a Windows worker: say so rather than launch one.
+        return None, f"needs windows but its worktree {worktree} is on the WSL filesystem"[:300]
     allowed = route_mod.seat_placements(seat) if seat else config_mod.PLACEMENTS
     hard = bool(route_mod.task_platform(task) or route.get("platform") ) \
         or route.get("backend") == "codex" or bool(worktree and placement.is_linux_native(worktree))
