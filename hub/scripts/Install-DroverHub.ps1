@@ -10,8 +10,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $droverDir = Split-Path -Parent $HubDir   # `hub` and `drover` import from here
-$action = New-ScheduledTaskAction -Execute $Uv `
-    -Argument "run --project `"$HubDir`" python -m hub" -WorkingDirectory $droverDir
+# cmd.exe wraps uv only to append stdout/stderr to <state dir>\hub-out.log / hub-err.log (a task has no console)
+$cmdLine = "/d /c `"`"$Uv`" run --project `"$HubDir`" python -m hub >> `"$Root\hub-out.log`" 2>> `"$Root\hub-err.log`"`""
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $cmdLine -WorkingDirectory $droverDir
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable `
@@ -22,4 +23,4 @@ New-Item -ItemType Directory -Force $Root | Out-Null
 icacls $Root /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
 Register-ScheduledTask -TaskName 'DroverHub' -Action $action -Trigger $trigger `
     -Settings $settings -Description 'Drover Hub (ledger, API, website, watchdog)' -Force
-Write-Host "Registered DroverHub. Start now with: Start-ScheduledTask -TaskName DroverHub"
+Write-Host "Hub output: $Root\hub-out.log and hub-err.log. Registered DroverHub. Start now with: Start-ScheduledTask -TaskName DroverHub"

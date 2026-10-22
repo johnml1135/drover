@@ -19,9 +19,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-SENTINELS = {'LISTENERS', 'STOP', 'START'}
+SENTINELS = {'LISTENERS', 'STOP', 'START', 'INSPECT', 'TASK'}
 
 
 class DeployError(Exception):
@@ -70,7 +71,7 @@ def move_worktree(source, deploy, sha):
         return 'created'
     if git(deploy, 'rev-parse', '--git-dir', check=False).returncode:
         raise DeployError(f'{deploy} exists and is not a git worktree')
-    if git(deploy, 'status', '--porcelain', '--untracked-files=no').stdout.strip():
+    if git(deploy, 'status', '--porcelain', '--untracked-files=all').stdout.strip():
         raise DeployError(f'{deploy} has uncommitted changes; clean it first')
     git(deploy, 'checkout', '--detach', sha)
     return 'moved'
@@ -86,6 +87,13 @@ def default_run(argv, **kw):
             ps = (f"(Get-NetTCPConnection -State Listen -LocalPort {int(argv[1])} -ErrorAction SilentlyContinue "
                   "| Select-Object -ExpandProperty OwningProcess -Unique) -join ' '")
             argv = ['powershell.exe', '-NoProfile', '-Command', ps]
+        elif argv[0] == 'INSPECT':   # prints "<exe>|<command line>"
+            ps = (f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={int(argv[1])}'; "
+                  "if ($p) { $p.ExecutablePath + '|' + $p.CommandLine }")
+            argv = ['powershell.exe', '-NoProfile', '-Command', ps]
+        elif argv[0] == 'TASK':      # prints the task's state, nothing if it is not registered
+            argv = ['powershell.exe', '-NoProfile', '-Command',
+                    f"(Get-ScheduledTask -TaskName '{argv[1]}' -ErrorAction SilentlyContinue).State"]
         elif argv[0] == 'STOP':
             argv = ['taskkill.exe', '/PID', argv[1], '/F']          # no /T: children stay alive
         else:
@@ -102,19 +110,51 @@ def steps(deploy, task):
             f"Start-ScheduledTask -TaskName {task}"]
 
 
-def restart(run, deploy, uv, port, task):
+MIGRATE = """The hub is not registered as the scheduled task '{task}' (it was started by hand, or the task is missing).
+Migrate once, by hand: stop that hub (kill only its pid on the UI port, never /T), run
+  powershell -File "{script}" -HubDir "{hub}"
+then Start-ScheduledTask -TaskName {task}; later deploys can use --restart. See docs/hub-deployment.md."""
+
+
+def is_hub(line, roots):
+    """True when "<exe>|<command line>" is `python -m hub` run from one of the given checkouts."""
+    exe, _, cmd = line.partition('|')
+    tokens = cmd.replace('"', ' ').split()
+    if not any(a == '-m' and b == 'hub' for a, b in zip(tokens, tokens[1:])):
+        return False
+    low = (exe + ' ' + cmd).lower().replace('/', '\\')
+    return any(str(r).lower().replace('/', '\\') in low for r in roots)
+
+
+def restart(run, deploy, uv, port, task, source=None, wait_s=30, sleep=time.sleep):
     hub = Path(deploy) / 'hub'
+    if not (run(['TASK', task]).stdout or '').strip():
+        raise DeployError(MIGRATE.format(task=task, hub=hub, script=hub / 'scripts' / 'Install-DroverHub.ps1'))
+    pids = [p for p in (run(['LISTENERS', port]).stdout or '').split() if p.isdigit()]
+    for pid in pids:
+        if not is_hub((run(['INSPECT', pid]).stdout or '').strip(), [r for r in (source, deploy) if r]):
+            raise DeployError(f'pid {pid} listening on port {port} is not the hub (`python -m hub` from the source or '
+                              'deploy checkout); not stopping it')
     done = run([uv, 'sync', '--project', str(hub)])
     if done.returncode:
         raise DeployError(f'uv sync failed: {(done.stderr or "").strip()}; the old hub is still running')
-    pids = [p for p in (run(['LISTENERS', port]).stdout or '').split() if p.isdigit()]
     for pid in pids:
-        run(['STOP', pid])
-    run(['START', task])
+        stopped = run(['STOP', pid])
+        if stopped.returncode:
+            raise DeployError(f'could not stop pid {pid}: {(stopped.stderr or stopped.stdout or "").strip()}; task not started')
+    waited = 0
+    while pids and (run(['LISTENERS', port]).stdout or '').split():
+        if waited >= wait_s:
+            raise DeployError(f'port {port} is still in use after {wait_s}s; task not started')
+        sleep(1)
+        waited += 1
+    started = run(['START', task])
+    if started.returncode:
+        raise DeployError(f'could not start task {task}: {(started.stderr or "").strip()}')
     return pids
 
 
-def main(argv=None, run=default_run):
+def main(argv=None, run=default_run, sleep=time.sleep):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--source', default=str(Path(__file__).resolve().parents[1]), help='the checkout Drover lands into')
     ap.add_argument('--deploy', default=os.environ.get('DROVER_HUB_DEPLOY'), help='deployment worktree (or DROVER_HUB_DEPLOY)')
@@ -126,6 +166,7 @@ def main(argv=None, run=default_run):
     ap.add_argument('--port', default='8765', help='hub UI port (hub.ui_port)')
     ap.add_argument('--task', default='DroverHub', help='scheduled task name')
     ap.add_argument('--uv', default='uv')
+    ap.add_argument('--wait', type=int, default=30, help='seconds to wait for the port to free before starting')
     a = ap.parse_args(argv)
     if not a.deploy:
         ap.error('--deploy (or DROVER_HUB_DEPLOY) is required')
@@ -136,7 +177,7 @@ def main(argv=None, run=default_run):
             raise DeployError('refusing to deploy:\n  ' + '\n  '.join(bad))
         print(f'{move_worktree(a.source, a.deploy, sha)} {a.deploy} at {sha}')
         if a.restart:
-            pids = restart(run, a.deploy, a.uv, a.port, a.task)
+            pids = restart(run, a.deploy, a.uv, a.port, a.task, a.source, a.wait, sleep)
             print(f'stopped hub pid(s) {pids or "none"}; started task {a.task}')
         else:
             print('Not restarted. To switch the running hub:')

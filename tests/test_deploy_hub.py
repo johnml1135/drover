@@ -19,13 +19,30 @@ spec.loader.exec_module(deploy_hub)
 
 class Fake:
     """Records the commands the script would run and answers the listener query."""
-    def __init__(self, pids=()):
-        self.calls, self.pids = [], list(pids)
+    def __init__(self, pids=(), cmd=None, task='Ready', stop_rc=0, linger=0):
+        self.calls, self.pids, self.task, self.stop_rc, self.linger = [], list(pids), task, stop_rc, linger
+        self.cmd = cmd if cmd is not None else 'C:\\src\\hub\\.venv\\python.exe|python.exe -m hub'
+        self.src = None
+        self.stopped = False
 
     def __call__(self, argv, **kw):
         self.calls.append([str(a) for a in argv])
-        out = ' '.join(self.pids) if argv[0] == 'LISTENERS' else ''
-        return subprocess.CompletedProcess(argv, 0, out, '')
+        out, rc = '', 0
+        if argv[0] == 'LISTENERS':
+            out = ' '.join(self.pids)
+            if self.linger and self.stopped:
+                self.linger -= 1
+                out = '999'
+        elif argv[0] == 'INSPECT':
+            out = self.cmd.replace('C:\\src', str(self.src))
+        elif argv[0] == 'TASK':
+            out = self.task
+        elif argv[0] == 'STOP':
+            rc = self.stop_rc
+            self.stopped = True
+            if not rc:
+                self.pids = []
+        return subprocess.CompletedProcess(argv, rc, out, 'boom' if rc else '')
 
 
 class DeployTest(unittest.TestCase):
@@ -60,9 +77,10 @@ class DeployTest(unittest.TestCase):
 
     def run_main(self, *argv, fake=None):
         fake = fake or Fake()
+        fake.src = self.src
         out = io.StringIO()
         with redirect_stdout(out):
-            code = deploy_hub.main(['--source', str(self.src), '--deploy', str(self.dep), *argv], run=fake)
+            code = deploy_hub.main(['--source', str(self.src), '--deploy', str(self.dep), *argv], run=fake, sleep=lambda s: None)
         return code, out.getvalue(), fake
 
     def test_creates_detached_worktree_at_main_tip_with_receipt(self):
@@ -127,6 +145,39 @@ class DeployTest(unittest.TestCase):
         self.assertTrue(any(c[0] == 'START' for c in fake.calls))
         order = [c[0] for c in fake.calls]
         self.assertLess(order.index('UV'), order.index('STOP'))   # deps synced before the old hub is stopped
+
+    def test_restart_refuses_listener_that_is_not_the_hub(self):
+        for cmd in ('C:\\other\\python.exe|python.exe -m hub', 'C:\\src\\x.exe|python.exe -m http.server'):
+            code, out, fake = self.run_main('--force', '--restart', fake=Fake(pids=['5'], cmd=cmd))
+            self.assertNotEqual(code, 0)
+            self.assertIn('not the hub', out)
+            self.assertFalse([c for c in fake.calls if c[0] in ('STOP', 'START')])
+
+    def test_restart_without_task_explains_migration(self):
+        code, out, fake = self.run_main('--force', '--restart', fake=Fake(pids=['5'], task=''))
+        self.assertNotEqual(code, 0)
+        self.assertIn('Install-DroverHub.ps1', out)
+        self.assertFalse([c for c in fake.calls if c[0] in ('STOP', 'START')])
+
+    def test_failed_stop_aborts_start(self):
+        code, out, fake = self.run_main('--force', '--restart', fake=Fake(pids=['5'], stop_rc=1))
+        self.assertNotEqual(code, 0)
+        self.assertFalse([c for c in fake.calls if c[0] == 'START'])
+
+    def test_waits_for_port_then_starts_or_gives_up(self):
+        code, _, fake = self.run_main('--force', '--restart', fake=Fake(pids=['5'], linger=3))
+        self.assertEqual(code, 0)
+        self.assertTrue([c for c in fake.calls if c[0] == 'START'])
+        code, out, fake = self.run_main('--force', '--restart', '--wait', '2', fake=Fake(pids=['5'], linger=50))
+        self.assertNotEqual(code, 0)
+        self.assertFalse([c for c in fake.calls if c[0] == 'START'])
+
+    def test_untracked_file_makes_deploy_dirty(self):
+        self.run_main('--force')
+        (self.dep / 'stray').write_text('x')
+        code, out, _ = self.run_main('--commit', self.c1, '--force')
+        self.assertNotEqual(code, 0)
+        self.assertIn('uncommitted', out)
 
     def test_restart_with_no_listener_just_starts(self):
         _, _, fake = self.run_main('--force', '--restart', fake=Fake())

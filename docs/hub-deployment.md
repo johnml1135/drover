@@ -38,3 +38,24 @@ cleanup, runners, gates) start on whatever is on disk at that moment. A stray fi
   old hub running), kills only the pid(s) listening on `--port` (default 8765) with `taskkill /PID` and no `/T`, then
   starts the `--task` (default `DroverHub`). Detached cleanups and runners keep running.
 - Paths come from `--source`, `--deploy` (or `DROVER_HUB_DEPLOY`), `--port`, `--task`, `--uv`.
+
+## Safety checks on `--restart`
+
+- The task must exist; otherwise it stops with the migration steps below.
+- Every pid listening on the UI port must be `python -m hub` run from the source or deploy checkout; anything else is
+  never stopped. `uv sync` runs only after that check passes.
+- A failed `taskkill` aborts before the task is started. After stopping, it waits up to `--wait` seconds (default 30)
+  for the port to free, then starts the task.
+- The deploy worktree must be clean, untracked files included.
+
+## Migrating a hand-started hub (`Start-Process python -m hub`) to the task
+
+1. Create the deploy worktree and `uv sync` it (one-time setup above).
+2. Stop the hand-started hub: kill only its pid listening on the UI port (`taskkill /PID <pid> /F`, never `/T`).
+3. Register the task from the deployment: `Install-DroverHub.ps1 -HubDir <deploy>\hub`.
+4. `Start-ScheduledTask -TaskName DroverHub`; check `/health`.
+
+## Logs
+
+The task wraps uv in `cmd.exe /c` so stdout and stderr append to `<state dir>\hub-out.log` and `hub-err.log`
+(the state dir is the script's `-Root`). These files are not rotated; truncate them while the hub is stopped.
