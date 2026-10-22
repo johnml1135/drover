@@ -153,5 +153,114 @@ class Priority(unittest.TestCase):
             placement.lower_priority(windows=False)
 
 
+
+class Cooldown(Trigger):
+    """After any cleanup run the hub waits the cooldown, and re-triggers only on a meaningful drop."""
+
+    def setUp(self):
+        super().setUp()
+        self.launches = []
+        self.outcome = 'completed'
+
+    def enqueue(self, *a, **kw):
+        self.launches.append(self.now)
+        if self.outcome == 'completed':
+            return self.complete()
+        if self.outcome == 'aborted':
+            from dataclasses import replace
+            from drover import disk_cleanup
+            return disk_cleanup.run(self.cfg, mode='triggered', apply=True,
+                                    runtime=replace(self.runtime(), pressure=pressure('hold', 'busy')))
+        return None   # failed: no receipt, no process
+
+    def go(self, free, advance=0):
+        self.free = free
+        self.now += advance
+        return self.tick(self.enqueue)
+
+    def test_default_cooldown_is_six_hours(self):
+        self.assertEqual(config.validate({})['disk_cleanup']['cooldown_s'], 6 * 3600)
+
+    def test_cooldown_blocks_after_each_kind_of_run(self):
+        for outcome in ('completed', 'aborted', 'failed'):
+            with self.subTest(outcome):
+                self.launches.clear()
+                self.outcome = outcome
+                state = config.state_dir(self.cfg)
+                disk_state.update(state, lambda s: [s.pop(k, None) for k in ('episodes', 'last_cleanup', 'cleanup_deferred')])
+                self.activate()
+                self.go(60)
+                self.assertEqual(len(self.launches), 1)
+                if outcome == 'failed':
+                    # the claimed process is gone: mark it dead through its identity
+                    disk_state.update(state, lambda s: s['episodes']['test-drive'].update(claim=None))
+                self.go(30, advance=3600)                          # a huge drop, one hour later
+                self.assertEqual(len(self.launches), 1, 'cooldown holds')
+                deferred = disk_state.read(state)['cleanup_deferred']
+                self.assertEqual(deferred['verdict'], 'cooldown')
+                self.go(30, advance=6 * 3600)
+                self.assertEqual(len(self.launches), 2, 'cooldown elapsed')
+
+    def test_small_drop_does_not_retrigger_but_ten_gb_does(self):
+        self.activate()
+        self.go(80)
+        self.assertEqual(len(self.launches), 1)       # cleanup leaves 80 free
+        self.go(72, advance=7 * 3600)
+        self.assertEqual(len(self.launches), 1, '8 GB drop is not enough')
+        self.go(69.9, advance=60)
+        self.assertEqual(len(self.launches), 2, '10 GB drop is')
+
+
+class SingleProcess(Trigger):
+    def test_identity_timeout_after_spawn_keeps_the_claim(self):
+        proc = type('P', (), {'pid': 4242})()
+        with patch.object(placement, 'detach', return_value=(proc, False)), \
+                patch.object(placement, 'cleanup_identity', side_effect=__import__('subprocess').TimeoutExpired('ps', 15)):
+            answer = placement.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
+        self.assertEqual(answer['identity']['pid'], 4242)
+        self.assertIsNone(answer['identity']['birth'])
+
+    def test_not_yet_visible_process_is_unknown_not_dead(self):
+        proc = type('P', (), {'pid': 4242})()
+        with patch.object(placement, 'detach', return_value=(proc, False)), \
+                patch.object(placement, 'cleanup_identity', return_value=dict(pid=4242, birth='absent', side=placement.cleanup_side())):
+            answer = placement.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
+        self.assertIsNone(answer['identity']['birth'])
+
+    def test_running_unknown_birth_claim_blocks_a_second_launch(self):
+        self.activate()
+        launches = []
+        me = placement.cleanup_identity()
+        def enqueue(*a, **kw):
+            launches.append(1)
+            return dict(identity=dict(pid=me['pid'], birth=None, side=me['side']))
+        for advance in (0, 900, 900, 7 * 3600):
+            self.now += advance
+            self.free = 60
+            self.tick(enqueue)
+        self.assertEqual(len(launches), 1)          # the process is alive; birth resolves from its pid
+
+    def test_unknown_claim_of_a_vanished_process_is_released(self):
+        self.activate()
+        launches = []
+        def enqueue(*a, **kw):
+            launches.append(1)
+            return dict(identity=dict(pid=2 ** 22 + 1, birth=None, side=placement.cleanup_side()))
+        self.free = 60
+        self.tick(enqueue)
+        self.now += 3600
+        self.tick(enqueue)                       # released as dead; the cooldown now runs from here
+        self.assertEqual(len(launches), 1)
+        self.now += 7 * 3600
+        self.tick(enqueue)
+        self.assertEqual(len(launches), 2)
+
+
+class Defaults(unittest.TestCase):
+    def test_example_documents_the_cooldown_key(self):
+        from pathlib import Path
+        self.assertIn('cooldown_s', (Path(config.__file__).parents[1] / 'drover.example.toml').read_text())
+
+
 if __name__ == '__main__':
     unittest.main()

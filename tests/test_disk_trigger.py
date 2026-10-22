@@ -14,6 +14,7 @@ class Trigger(DiskCase):
         mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
         mapping.start()
         self.addCleanup(mapping.stop)
+        self.cfg['disk_cleanup']['cooldown_s'] = 0   # cooldown has its own tests in test_cleanup_throttle
 
     def activate(self):
         from drover import disk_schedule
@@ -45,12 +46,12 @@ class Trigger(DiskCase):
         self.free = 60
         self.tick(enqueue)
         self.assertEqual(len(launches), 1)
-        for free in (80, 79.75, 79.01):
+        for free in (80, 75, 70.01):
             self.free = free
             self.now += 900
             self.tick(enqueue)
             self.assertEqual(len(launches), 1, 'drop is measured from post-cleanup 80 GiB')
-        self.free = 79
+        self.free = 70
         self.tick(enqueue)
         self.assertEqual(len(launches), 2)
         self.tick(enqueue)

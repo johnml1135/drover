@@ -119,6 +119,11 @@ VHDX sources to physical paths; unresolved paths refuse migration. The existing
 Global `[disk_cleanup]` `temp_root_budget_s` (default 300) bounds the scan of each temp root. When it is
 exceeded the root is reported as `temp_root_partial`, scanning stops, and nothing unscanned is removed.
 
+Global `[disk_cleanup]` `cooldown_s` (default 21600, 6 h) is the least time the hub waits after any cleanup it
+launched (finished, `aborted_load` or failed) before launching another. The hub also launches only when load and
+RAM are `go`, re-triggers only after free space falls 10 GB below the last cleanup's result, and a running cleanup
+stops with `aborted_load` when load or RAM reach hold. Cleanup runs at BelowNormal (Windows) or nice 10 (WSL).
+
 Machine `[disk_cleanup]` accepts only `temp_roots = []`, `report_roots = []`
 (absolute paths) and `caches = []`. A cache entry has either literal `argv`
 and absolute `cwd`, or an absolute folder `path`; both require

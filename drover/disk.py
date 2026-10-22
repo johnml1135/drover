@@ -53,6 +53,10 @@ def admission(readings: list[dict]) -> dict:
 
 
 LOCK_BACKOFF_S = 30 * 60
+RETRIGGER_DROP_GB = 10.0       # a finished cleanup re-triggers only after free space falls this far below its result
+DEFAULT_COOLDOWN_S = 6 * 3600  # minimum gap after any cleanup run; disk_cleanup.cooldown_s overrides
+UNKNOWN_CLAIM_MAX_S = 24 * 3600
+ABSENT_GRACE_S = 120
 
 
 def _lock_wait(state, blocker, directory, now):
@@ -124,6 +128,17 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             attached = directory / 'disk' / ('claim-' + claim['id'] + '.json')
             identity = json.loads(attached.read_text(encoding='utf-8')) if attached.exists() else claim['identity']
             try:
+                if not identity.get('birth') and identity.get('side') == placement.cleanup_side() and \
+                        type(identity.get('pid')) is int and identity['pid'] > 0:
+                    # Launched but its start time was unreadable: resolve it now, so liveness can be proven.
+                    seen = placement.cleanup_identity(identity['pid'])
+                    age = now - claim.get('at', now)
+                    if seen.get('birth') and seen['birth'] != 'absent':
+                        identity = seen
+                        disk_state.save_file(directory, 'claim-' + claim['id'] + '.json', seen)
+                    elif (seen.get('birth') == 'absent' and age > ABSENT_GRACE_S) or age > UNKNOWN_CLAIM_MAX_S:
+                        dead.add(claim['id'])
+                        continue
                 if placement.cleanup_claim_alive(identity) is False:
                     dead.add(claim['id'])
             except (subprocess.SubprocessError, OSError):
@@ -149,6 +164,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
         episodes = state.setdefault('episodes', {})
         applied = bool(state.get('automation', {}).get('apply', False))
         launches = []
+        cooldown = cfg.get('disk_cleanup', {}).get('cooldown_s', DEFAULT_COOLDOWN_S)
         state['readings'] = rows
         if not deferred:
             state.pop('cleanup_deferred', None)
@@ -158,10 +174,12 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             claim = episode.get('claim')
             if claim and claim['id'] in receipts:
                 completed = receipts[claim['id']]
+                state['last_cleanup'] = now
                 episode.update(claim=None)
                 episode['post' if completed['applied'] else 'report_post'] = completed['free']
                 claim = None
             elif claim and claim['id'] in dead:
+                state['last_cleanup'] = now
                 episode['claim'] = claim = None
             free = row['free_gb']
             if free is None:
@@ -174,12 +192,17 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             baseline = episode.get('post' if applied else 'report_post')
             if blocker is not None:
                 continue
-            if claim or (baseline is not None and free > baseline - 1):
+            if claim or (baseline is not None and free > baseline - RETRIGGER_DROP_GB):
+                continue
+            if now - state.get('last_cleanup', -math.inf) < cooldown:
+                state['cleanup_deferred'] = dict(at=now, verdict='cooldown', reasons=[
+                    'last cleanup ended %d min ago; waiting %d min' % ((now - state['last_cleanup']) // 60, cooldown // 60)])
                 continue
             if deferred:
                 state['cleanup_deferred'] = dict(at=now, verdict=pressure['verdict'], reasons=list(pressure.get('reasons', [])))
                 continue
-            claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied)
+            claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied, at=now)
+            state['last_cleanup'] = now
             episode['claim'] = claim
             launches.append((row['name'], claim))
             state.pop('cleanup_deferred', None)

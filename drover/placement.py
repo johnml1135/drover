@@ -1936,7 +1936,13 @@ def cleanup_enqueue(cfg, claim):
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stream:
         proc, _ = detach(argv, os.environ.copy(), stream)
-    return dict(identity=cleanup_identity(proc.pid))
+    try:
+        identity = cleanup_identity(proc.pid)
+    except (subprocess.SubprocessError, OSError):
+        identity = None   # the process is running: a slow query must not release its claim and start a second one
+    if not identity or identity.get('birth') in (None, 'absent'):
+        identity = dict(pid=proc.pid, birth=None, side=cleanup_side())   # resolved later by the hub tick
+    return dict(identity=identity)
 
 
 def cleanup_free(path):
