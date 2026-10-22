@@ -152,6 +152,21 @@ def is_linux_native(path):
     return str(path).startswith("/") and not MNT_RE.match(str(path))
 
 
+def wsl_worktrees_root(paths=None, nt=None):
+    """The WSL-side root for worktrees (`paths.wsl_worktrees`), as an absolute Linux path. `~` is the home of
+    `paths.wsl_user` (else the Windows user name) when this host is Windows, else this user's own home."""
+    from . import config
+    paths = paths or config.get()["paths"]
+    root = str(paths["wsl_worktrees"]).rstrip("/") or "/"
+    if root == "~" or root.startswith("~/"):
+        if IS_WINDOWS if nt is None else nt:
+            user = paths.get("wsl_user") or os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+            root = ("/root" if user == "root" else f"/home/{user}") + root[1:]
+        else:
+            root = os.path.expanduser(root)
+    return root
+
+
 def routes_through_wsl(path, nt=None):
     return (IS_WINDOWS if nt is None else nt) and is_linux_native(path)
 

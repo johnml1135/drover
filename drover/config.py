@@ -56,7 +56,8 @@ DEFAULTS = {
                      "cooldown_s": 6 * 3600},
     "repos_dir": "",
     "config_sync": {"remote": "", "auto_push": True},
-    "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": ""},
+    "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": "",
+              "wsl_worktrees": "~/work"},
     "seats": DEFAULT_SEATS,
     "seats_policy": {"waste_threshold_pct": 15.0},
     "director": {"seat": "", "model": "", "effort": "high"},
@@ -403,6 +404,14 @@ def _cleanup_policy(raw):
     return out
 
 
+def _wsl_worktrees(value):
+    """WSL worktrees live on the distro's own ext4 (ADR 0007): a Linux path, never a Windows drive or /mnt/<drive>."""
+    if not (value == "~" or value.startswith(("~/", "/"))) or placement.MNT_RE.match(value) \
+            or value.startswith("//") or ".." in value.replace("\\", "/").split("/"):
+        raise ConfigError(f"paths.wsl_worktrees must be a Linux path under the distro's own filesystem "
+                          f"(~/work or /abs/path), not {value!r}; /mnt/<drive> is refused")
+
+
 def validate(raw):
     """The full config for a merged raw dict: every default filled in, every value checked. Raises ConfigError."""
     raw = _legacy(raw)
@@ -410,6 +419,7 @@ def validate(raw):
     cfg = {"repos_dir": _scalar(raw.get("repos_dir", ""), str, ["repos_dir"])}
     cfg["config_sync"] = _check_table(raw.get("config_sync", {}), DEFAULTS["config_sync"], ["config_sync"])
     cfg["paths"] = _check_table(raw.get("paths", {}), DEFAULTS["paths"], ["paths"])
+    _wsl_worktrees(cfg["paths"]["wsl_worktrees"])
     cfg["seats"] = _seats(raw.get("seats", DEFAULT_SEATS))
     cfg["seats_policy"] = _check_table(raw.get("seats_policy", {}), DEFAULTS["seats_policy"], ["seats_policy"],
                                          {"waste_threshold_pct": (0, 100)})

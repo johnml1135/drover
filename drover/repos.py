@@ -245,7 +245,11 @@ def repo_path(prog):
     return prog["repo"]
 
 
-def worktree_root(prog):
+def worktree_root(prog, where="windows"):
+    """Where a repo's worktrees go for a placement. Windows keeps the configured root (`worktrees`); WSL gets
+    `<paths.wsl_worktrees>/<name>.worktrees` on the distro's own filesystem (ADR 0007)."""
+    if where == "wsl":
+        return placement.wsl_worktrees_root().rstrip("/") + f"/{prog['name']}.worktrees"
     return prog["worktrees"]
 
 

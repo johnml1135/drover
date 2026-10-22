@@ -72,7 +72,15 @@ owner-answer mechanism authorizes it; writing a setting alone cannot authorize a
 The machine's `<state>/repos/<name>.toml` selects `name` and the required checkout `repo` path. Discovery uses
 the filename stem when `name` is omitted. `worktrees` defaults to `<paths.worktrees>/<name>.worktrees` when a
 shared machine root is configured, otherwise `<repo>.worktrees`. `remote` defaults to `origin`; `default_branch`
-defaults to `main`. Optional machine `run.env` defaults to `{}`. No other keys are admitted after adoption.
+defaults to `main`. `worktrees` is the Windows placement's root. WSL-placed tasks get their worktree at
+`<paths.wsl_worktrees>/<name>.worktrees/drover-<task>` instead (machine key `[paths] wsl_worktrees`, default `~/work`,
+where `~` is the home of `paths.wsl_user` in `paths.wsl_distro`). It must be a Linux path on the distro's own
+filesystem; config validation refuses `/mnt/<drive>` and Windows paths. The repository stays the one Windows clone
+(ADR 0007): the worktree is created with the WSL git against it, so its `.git` file and the repository's
+`worktrees/<id>/gitdir` record are relative paths only WSL can resolve; the worktree is locked with reason `wsl`, which
+keeps Windows `git worktree prune` from dropping it. Repos that run only on Windows (`gate.platform = "windows"`) never
+use the WSL root. Worktrees already under `/mnt/<drive>` finish in place and are removed by disk cleanup when settled;
+cleanup inventories both roots, each from its own side. Optional machine `run.env` defaults to `{}`. No other keys are admitted after adoption.
 Before adoption, the same machine layer may supply all repository policies and old relative script paths.
 Legacy fallback `landing.remote`/`landing.main` override `remote`/`default_branch`; the wizard serializes the
 resolved names into their canonical machine keys. These legacy landing names are rejected after adoption.

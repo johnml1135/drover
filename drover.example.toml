@@ -68,6 +68,10 @@ worktrees = ""
 wsl_distro = "Ubuntu"
 # The user inside that distro. Empty = your Windows user name.
 wsl_user = ""
+# Where WSL-placed tasks get their git worktrees: <this>/<repo>.worktrees/drover-<task>, on the distro's own ext4
+# (fast, reclaimable with the VHDX). "~" is that user's home. /mnt/<drive> and Windows paths are refused. The repo
+# itself stays the one Windows clone (ADR 0007); Windows-placed work keeps `worktrees` above.
+wsl_worktrees = "~/work"
 
 # Seats identify accounts by their config directory. The example uses the owner-settled order;
 # omitted [[seats]] retains the legacy two-seat defaults. Lists replace the defaults as a whole.

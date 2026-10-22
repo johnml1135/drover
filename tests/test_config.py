@@ -176,6 +176,19 @@ class Validation(unittest.TestCase):
         self.bad("[hub.auth]\nmode = 'oidc'\n", "hub.auth.mode must be one of tailscale")
         self.bad("[paths]\nwsl_distro = 5\n", r"paths\.wsl_distro must be a string")
 
+    def test_wsl_worktree_root_is_linux_only(self):
+        self.assertEqual(load()["paths"]["wsl_worktrees"], "~/work")
+        self.assertEqual(load("[paths]\nwsl_worktrees = '/srv/wt'\n")["paths"]["wsl_worktrees"], "/srv/wt")
+        for bad in ("/mnt/h/wt", "/mnt/c", "H:\\wt", "wt", "", "//host/share", "~/../mnt/h"):
+            with self.subTest(bad=bad):
+                self.bad(f"[paths]\nwsl_worktrees = '{bad}'\n", r"paths\.wsl_worktrees")
+
+    def test_wsl_worktree_root_resolves_for_the_configured_user(self):
+        paths = {"wsl_worktrees": "~/work", "wsl_user": "dev"}
+        self.assertEqual(placement.wsl_worktrees_root(paths, nt=True), "/home/dev/work")
+        self.assertEqual(placement.wsl_worktrees_root({**paths, "wsl_worktrees": "/srv/wt/"}, nt=True), "/srv/wt")
+        self.assertEqual(placement.wsl_worktrees_root(paths, nt=False), str(Path("~/work").expanduser()))
+
     def test_seats(self):
         seat = "[[seats]]\nname='{n}'\nbackend='{b}'\n{extra}"
         self.bad("[[seats]]\nbackend='claude'\n", "needs a name")
@@ -238,7 +251,7 @@ class Writer(unittest.TestCase):
 
     def test_example_documents_every_key(self):
         text = (REPO / "drover.example.toml").read_text(encoding="utf-8")
-        for key in ("repos_dir", "state_dir", "repos_root", "worktrees", "wsl_distro", "wsl_user", "priority",
+        for key in ("repos_dir", "state_dir", "repos_root", "worktrees", "wsl_distro", "wsl_user", "wsl_worktrees", "priority",
                     "max_workers", "reserve_pct", "director_reserve_pct", "director", "placement", "binary", "config_dir",
                     "parallel_cap", "queue_per_core", "hold_per_core", "queue_base_gb", "queue_per_worker_gb", "hold_gb",
                     "warn_gb", "critical_gb", "queue_gb", "fallback_pct", "queue_pct", "hold_pct", "distro", "queue_mem_pct",
