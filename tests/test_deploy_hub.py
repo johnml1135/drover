@@ -45,6 +45,59 @@ class Fake:
         return subprocess.CompletedProcess(argv, rc, out, 'boom' if rc else '')
 
 
+class CrossSideAdd(unittest.TestCase):
+    """From WSL a deploy worktree on a Windows drive must hold pointers Windows git can read."""
+    def versions(self, local, windows):
+        out = {'git': local, 'git.exe': windows}
+
+        def tool(argv):
+            v = out[argv[0]]
+            return None if v is None else f'git version {v}.windows.1\n'
+        return tool
+
+    def add(self, local, windows):
+        calls, exe = [], []
+        from unittest import mock
+        with mock.patch.object(deploy_hub, 'git', lambda repo, *a, **k: calls.append((str(repo), a))), \
+                mock.patch.object(deploy_hub.subprocess, 'run',
+                                  lambda argv, **k: exe.append(argv) or subprocess.CompletedProcess(argv, 0, '', '')):
+            deploy_hub.add_deploy_worktree('/mnt/h/repos/x', '/mnt/h/repos/x.deploy', 'abc', self.versions(local, windows))
+        return calls, exe
+
+    def test_new_git_on_both_sides_uses_relative_paths(self):
+        calls, exe = self.add('2.53.0', '2.52.0')
+        self.assertEqual(calls, [('/mnt/h/repos/x', ('worktree', 'add', '--relative-paths', '--detach',
+                                                     '/mnt/h/repos/x.deploy', 'abc'))])
+        self.assertEqual(exe, [])
+
+    def test_old_git_on_either_side_runs_the_add_through_windows_git(self):
+        for local, windows in (('2.47.1', '2.52.0'), ('2.53.0', '2.45.0')):
+            calls, exe = self.add(local, windows)
+            self.assertEqual(calls, [])
+            self.assertEqual(exe, [['git.exe', '-C', 'H:\\repos\\x', 'worktree', 'add', '--detach',
+                                    'H:\\repos\\x.deploy', 'abc']])
+
+    def test_no_windows_git_and_old_local_git_is_refused(self):
+        from unittest import mock
+        with mock.patch.object(deploy_hub, 'git'):
+            with self.assertRaises(deploy_hub.DeployError):
+                deploy_hub.add_deploy_worktree('/mnt/h/x', '/mnt/h/x.d', 'abc', self.versions('2.53.0', None))
+
+    def test_relative_paths_really_write_relative_pointers(self):
+        with tempfile.TemporaryDirectory(dir=clean_parent()) as d:
+            repo = Path(d) / 'src'
+            repo.mkdir()
+            sh('git', 'init', '-b', 'main', cwd=repo)
+            sh('git', 'config', 'user.email', 't@t', cwd=repo)
+            sh('git', 'config', 'user.name', 't', cwd=repo)
+            (repo / 'a').write_text('a')
+            sh('git', 'add', 'a', cwd=repo)
+            sh('git', 'commit', '-m', 'a', cwd=repo)
+            dep = Path(d) / 'dep'
+            sh('git', 'worktree', 'add', '--relative-paths', '--detach', str(dep), 'HEAD', cwd=repo)
+            self.assertFalse((dep / '.git').read_text().removeprefix('gitdir: ').startswith('/'))
+
+
 class DeployTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=clean_parent())

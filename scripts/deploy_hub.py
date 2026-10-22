@@ -17,6 +17,7 @@ hub venv first, then starts the scheduled task.  Paths come from arguments; noth
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -64,10 +65,54 @@ def check_commit(source, sha, branch, receipt, force):
     return found
 
 
+MNT_RE = re.compile(r'^/mnt/([a-zA-Z])(?:/(.*))?$')
+RELATIVE_PATHS_GIT = (2, 48)
+
+
+def run_tool(argv):
+    """Run a tool and return its stdout, or None when it is missing or fails."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def git_version(exe, tool=run_tool):
+    found = re.search(r'(\d+)\.(\d+)', tool([exe, '--version']) or '')
+    return (int(found.group(1)), int(found.group(2))) if found else None
+
+
+def windows_path(path):
+    found = MNT_RE.match(str(path))
+    return f'{found.group(1).upper()}:\\' + (found.group(2) or '').replace('/', '\\') if found else str(path)
+
+
+def add_deploy_worktree(source, deploy, sha, tool=run_tool):
+    """Create the detached deploy worktree so the Windows hub can open it. From WSL, a plain `git worktree add`
+    writes /mnt/h pointers that Windows git cannot read: use `--relative-paths` when git is 2.48+ on both sides,
+    else let Windows git (git.exe) write the pointers."""
+    if not MNT_RE.match(str(Path(source).absolute())):
+        git(source, 'worktree', 'add', '--detach', str(deploy), sha)        # one side opens it
+        return
+    local, windows = git_version('git', tool), git_version('git.exe', tool)
+    if local and windows and min(local, windows) >= RELATIVE_PATHS_GIT:
+        git(source, 'worktree', 'add', '--relative-paths', '--detach', str(deploy), sha)
+    elif windows:
+        r = subprocess.run(['git.exe', '-C', windows_path(Path(source).absolute()), 'worktree', 'add', '--detach',
+                            windows_path(Path(deploy).absolute()), sha],
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if r.returncode:
+            raise DeployError(f'git.exe worktree add failed: {r.stderr.strip()}')
+    else:
+        raise DeployError('a deploy worktree on a Windows drive needs git 2.48+ on both sides or git.exe on PATH; '
+                          'otherwise its .git file would hold a /mnt path Windows git cannot read')
+
+
 def move_worktree(source, deploy, sha):
     deploy = Path(deploy)
     if not deploy.exists():
-        git(source, 'worktree', 'add', '--detach', str(deploy), sha)
+        add_deploy_worktree(source, deploy, sha)
         return 'created'
     if git(deploy, 'rev-parse', '--git-dir', check=False).returncode:
         raise DeployError(f'{deploy} exists and is not a git worktree')
