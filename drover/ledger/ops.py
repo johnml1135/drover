@@ -105,6 +105,8 @@ def event(conn, kind, actor, data=None, task_id=None, epic_id=None, at=None):
         ident = cur.lastrowid
         row = {"id": ident, "kind": kind, "actor": actor, "task_id": task_id,
                "epic_id": epic_id, "data": data or {}, "at": when}
+        from ..notifications.core import capture_event
+        capture_event(conn, row)
         contexts = _event_queues.get() or {}
         if conn in contexts:
             contexts[conn].append(row)
@@ -120,13 +122,21 @@ def event(conn, kind, actor, data=None, task_id=None, epic_id=None, at=None):
         return ident
 
 
-def events(conn, task_id=None, epic_id=None, kind=None):
-    q, a = "SELECT * FROM task_events WHERE 1=1", []
+def events(conn, task_id=None, epic_id=None, kind=None, after=0, limit=None):
+    if not isinstance(after, int) or after < 0:
+        raise ValueError("after must be a nonnegative event position")
+    if limit is not None and (not isinstance(limit, int) or limit < 0):
+        raise ValueError("limit must be nonnegative")
+    q, a = "SELECT * FROM task_events WHERE id>?", [after]
     for col, v in (("task_id", task_id), ("epic_id", epic_id), ("kind", kind)):
         if v is not None:
             q += f" AND {col}=?"
             a.append(v)
-    return [_jrow(r, "data") for r in conn.execute(q + " ORDER BY id", a)]
+    q += " ORDER BY id"
+    if limit is not None:
+        q += " LIMIT ?"
+        a.append(limit)
+    return [_jrow(r, "data") for r in conn.execute(q, a)]
 
 
 # ---- settings and policy -------------------------------------------------------------------------------
@@ -221,7 +231,10 @@ def _check_handoff(text):
 
 def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", acceptance=(), scope_files=(),
                 priority="P2", size="M", risk="low", status="proposed", actor="owner", deps=(), rank=None,
-                kind="implementation", write=None, read_access=None, branch=None, related=(), description=None):
+                kind="implementation", write=None, read_access=None, branch=None, related=(), description=None,
+                initiating_role=None, group_id=None):
+    if group_id is not None:
+        raise ValueError("task groups are not supported yet")
     if status not in states.CREATION_STATES:
         raise ValueError("a new task starts as proposed or draft")
     task_context.check_kind(kind)
@@ -243,6 +256,9 @@ def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", accept
             "status,created,updated,kind,\"write\",read_access,branch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, epic_id, repo, repo_path, title, goal, _j(list(acceptance)), _j(list(scope_files)), priority, size,
              risk, rank, status, now, now, kind, write, _j(read_access), branch))
+        if initiating_role is not None:
+            from ..notifications import Notifications
+            Notifications(conn).assign(tid, initiating_role)
         event(conn, "task-created", actor, {"title": title, "status": status}, task_id=tid, epic_id=epic_id)
         _replace_connections(conn, tid, deps, related, actor)
         return get_task(conn, tid)
@@ -841,6 +857,8 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
         if Waiting(conn, actor).replan_busy(task_id):
             raise ValueError("finish or clear uncertain planner before deleting")
         Waiting(conn, actor).forget_task(task_id)
+        from ..notifications.core import forget_task
+        forget_task(conn, task_id)
         # Landing metadata may reference a task; retain the audit batch but detach its membership.
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_landed'").fetchone():
             conn.execute("DELETE FROM task_landed WHERE task_id=?", (task_id,))

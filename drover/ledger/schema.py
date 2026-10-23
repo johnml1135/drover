@@ -182,4 +182,56 @@ WHERE access.kind='dispatch.access' AND run.role='planner' AND EXISTS (
  AND json_extract(cleared.data,'$.run')=run.id);
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8)]
+V9 = """
+CREATE TABLE director_roles (
+ role_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 1,
+ generation INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL DEFAULT 'active',
+ policy TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL, last_digest REAL NOT NULL);
+CREATE TABLE task_ownership (
+ task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, event_class TEXT NOT NULL DEFAULT '*',
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), revision INTEGER NOT NULL,
+ PRIMARY KEY(task_id,event_class));
+CREATE INDEX task_ownership_role ON task_ownership(role_id,task_id);
+CREATE TABLE subscriptions (
+ id TEXT PRIMARY KEY, role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ revision INTEGER NOT NULL, created_position INTEGER NOT NULL);
+CREATE TABLE subscription_versions (
+ subscription_id TEXT NOT NULL REFERENCES subscriptions(id), revision INTEGER NOT NULL,
+ after_event INTEGER NOT NULL, selectors TEXT NOT NULL, preferences TEXT NOT NULL,
+ PRIMARY KEY(subscription_id,revision));
+CREATE TABLE notification_intents (
+ event_id INTEGER PRIMARY KEY REFERENCES task_events(id), schema_version INTEGER NOT NULL,
+ event_class TEXT NOT NULL, role_id TEXT REFERENCES director_roles(role_id),
+ ownership_revision INTEGER, subscription_id TEXT, subscription_revision INTEGER,
+ preferences TEXT NOT NULL, envelope TEXT NOT NULL, actionable INTEGER NOT NULL DEFAULT 0,
+ resolved INTEGER NOT NULL DEFAULT 0, projected INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX notification_intents_role ON notification_intents(role_id,event_id);
+CREATE TABLE notification_inbox (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL UNIQUE REFERENCES task_events(id),
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), event_class TEXT NOT NULL,
+ ownership_revision INTEGER NOT NULL, subscription_id TEXT, subscription_revision INTEGER,
+ mode TEXT NOT NULL, actionable INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, issue_key TEXT,
+ envelope TEXT NOT NULL, created REAL NOT NULL, offered_at REAL, acknowledged_at REAL,
+ digest_id INTEGER);
+CREATE UNIQUE INDEX notification_open_issue ON notification_inbox(issue_key) WHERE issue_key IS NOT NULL AND resolved=0;
+CREATE INDEX notification_inbox_pending ON notification_inbox(role_id,acknowledged_at,id);
+CREATE TABLE notification_digests (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ created REAL NOT NULL, body TEXT NOT NULL, offered_at REAL, acknowledged_at REAL);
+CREATE TABLE notification_coverage (
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), kind TEXT NOT NULL,
+ count INTEGER NOT NULL DEFAULT 0, first_event INTEGER, last_event INTEGER, summarized_count INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(role_id,kind));
+CREATE TABLE notification_compactions (
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), task_id TEXT NOT NULL,
+ event_class TEXT NOT NULL, count INTEGER NOT NULL, first_event INTEGER NOT NULL,
+ last_event INTEGER NOT NULL, summarized_count INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(role_id,task_id,event_class));
+CREATE TABLE notification_positions (name TEXT PRIMARY KEY, event_id INTEGER NOT NULL);
+INSERT INTO notification_positions(name,event_id) VALUES('inbox',0);
+CREATE TABLE notification_escalations (
+ role_id TEXT PRIMARY KEY REFERENCES director_roles(role_id), reason TEXT NOT NULL,
+ created REAL NOT NULL, question_id INTEGER REFERENCES questions(id) ON DELETE SET NULL);
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9)]
