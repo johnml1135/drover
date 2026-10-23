@@ -64,12 +64,13 @@ def lease_acquire(conn, ticket, slots=DEFAULT_SLOTS, reserved=DEFAULT_RESERVED, 
 
     The last `reserved` slots serve only tickets of rank <= reserved_rank (their own rank: aging never grants the reserve).
     Waiting gains one effective rank per 30 minutes. Tickets that stop heartbeating for
-    `ttl` seconds are dropped, so a crashed gate frees its slot.
+    `ttl` seconds are dropped, except pinned external executions whose cessation
+    still needs reconciliation. Ordinary gate ticket expiry is unchanged.
     """
     at = time.time() if at is None else at
     reserved = max(0, min(reserved, slots - 1))
     with _tx(conn):
-        conn.execute("DELETE FROM gate_tickets WHERE heartbeat < ?", (at - ttl,))
+        conn.execute("DELETE FROM gate_tickets WHERE heartbeat < ? AND pinned=0", (at - ttl,))
         mine = conn.execute("SELECT * FROM gate_tickets WHERE id=?", (ticket,)).fetchone()
         if mine is None:
             raise SlotExpired(f'ticket {ticket} expired or was cancelled')
@@ -95,6 +96,14 @@ def lease_acquire(conn, ticket, slots=DEFAULT_SLOTS, reserved=DEFAULT_RESERVED, 
 
 def lease_heartbeat(conn, ticket, at=None):
     conn.execute("UPDATE gate_tickets SET heartbeat=? WHERE id=?", (time.time() if at is None else at, ticket))
+
+
+def lease_pin(conn, ticket):
+    """Retain an acquired external execution's slot until explicit reconciliation."""
+    with _tx(conn):
+        changed = conn.execute('UPDATE gate_tickets SET pinned=1 WHERE id=? AND slot IS NOT NULL', (ticket,))
+        if not changed.rowcount:
+            raise SlotExpired(f'ticket {ticket} has no acquired slot to retain')
 
 
 def lease_release(conn, ticket):

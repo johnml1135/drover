@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 
 from drover.directors import DirectorRuntime, RunnerDirectorAdapter
 from drover.ledger import actions, ops
@@ -50,6 +51,7 @@ class ControlledAdapter:
                                 [m['delivery_id'] for m in messages], [], 'fixture-process', release=True,
                                 delivery_versions={m['delivery_id']: m['message_version'] for m in messages})
             self.handles[spec['run_id']].result = {'status': 'done', 'usage': {'tokens_in': 0, 'tokens_out': 0}}
+            self.states[spec['nonce']] = 'gone'
         if self.fail_launch:
             raise OSError('lost launch response')
         return self.handles[spec['run_id']]
@@ -100,6 +102,101 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.active_runs(), [])
         self.assertEqual(self.service.role_state('director:a')['tokens_reserved'], 0)
         self.assertIsNone(self.service.role_state('director:a')['session_id'])
+
+    def observer_failure(self, starting=False):
+        from drover import runner
+        from drover.launch import RunnerHandle
+        self.wake()
+        rid, = self.tick()['launched']
+        spec = self.adapter.started[0]
+        path = runner.run_dir(self.tmp.name, rid) / runner.STATUS_FILE
+        path.parent.mkdir(parents=True)
+        runner.write_json_atomic(path, dict(nonce=spec['nonce'], state='starting' if starting else 'running'))
+        handle = RunnerHandle(spec, self.tmp.name, None, clock=lambda: self.time, autostart=False)
+        self.addCleanup(handle.cancel)
+        if starting:
+            self.time += handle.start_timeout_s + 1
+            handle._run()
+        else:
+            with patch.object(handle, '_ingest', side_effect=OSError('observer failed')):
+                handle._run()
+        self.assertEqual(handle.poll()['status'], 'error')
+        launcher = SimpleNamespace(runs_dir=self.tmp.name, scan=lambda _: {rid: {}},
+            adopt=lambda _: handle, cancel=lambda rid, nonce: runner.request_stop(self.tmp.name, rid, nonce=nonce))
+        adapter = RunnerDirectorAdapter(launcher)
+        adapter.capabilities = self.adapter.capabilities
+        self.runtime.adapter = adapter
+        self.runtime.live[rid] = handle
+        session = self.service.role_state('director:a')['session_id']
+        result = self.tick()
+        self.assertEqual(result['launched'], [])
+        self.assertEqual([r['run_id'] for r in self.runtime.active_runs()], [rid])
+        self.assertEqual(self.service.role_state('director:a')['session_id'], session)
+        self.assertEqual(self.service.role_state('director:a')['replacements_used'], 0)
+        self.assertEqual(usage.active_load(self.conn)['fixture'], 1)
+        self.assertIn('observation', str(result['recovery']['held']))
+        stopped = self.service.stop('owner', 'observer-stop')
+        self.tick()
+        self.service.resume('owner', stopped['epoch'], 'observer-resume')
+        path.unlink()
+        self.runtime = DirectorRuntime(self.port, adapter, now=lambda: self.time)
+        self.tick()
+        self.assertEqual([r['run_id'] for r in self.runtime.active_runs()], [rid])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM action_outbox WHERE kind='director.stop'").fetchone()[0], 1)
+        runner.write_json_atomic(path, dict(nonce=spec['nonce'], state='killed'))
+        self.runtime.recover()
+        self.assertEqual(self.runtime.active_runs(), [])
+
+    def test_runner_observation_error_does_not_authorize_replacement(self):
+        self.observer_failure()
+
+    def test_runner_starting_timeout_does_not_authorize_replacement(self):
+        self.observer_failure(starting=True)
+
+    def two_roles(self):
+        self.service.register('director:b', allowed_models=['test-model'], token_budget=100)
+        configs = json.loads(self.port.get_setting('director_execution'))
+        configs['director:b'] = configs['director:a']
+        ops.set_setting(self.conn, 'director_execution', json.dumps(configs))
+        self.service.broadcast('owner', ['director:a', 'director:b'], 'work', urgency='urgent')
+
+    def uncertain_capacity(self, callback=False):
+        self.two_roles()
+        self.adapter.fail_launch = True
+        calls = []
+        def slots():
+            calls.append(len(self.runtime.active_runs()))
+            return 1 - len(self.runtime.active_runs())
+        self.capacity['slots'] = slots if callback else 1
+        result = self.tick()
+        self.assertEqual(len(self.adapter.started), 1)
+        self.assertEqual(len(self.runtime.active_runs()), 1)
+        self.assertEqual(result['launched'], [])
+        self.assertEqual(result['capacity_used'], 1)
+        self.assertIn('capacity-unavailable', str(result['held']))
+        if callback:
+            self.assertIn(1, calls)
+
+    def test_unknown_launch_consumes_static_capacity(self):
+        self.uncertain_capacity()
+
+    def test_unknown_launch_rechecks_durable_capacity(self):
+        self.uncertain_capacity(callback=True)
+
+    def test_pre_effect_refusal_releases_capacity_for_other_role(self):
+        from drover.launch import AdmissionHeld
+        self.two_roles()
+        launch = self.adapter.launch
+        def refuse_first(spec, credential, guard):
+            if spec['role_id'] == 'director:a':
+                raise AdmissionHeld('fixture-pre-effect-refusal')
+            return launch(spec, credential, guard)
+        self.adapter.launch = refuse_first
+        self.capacity['slots'] = 1
+        result = self.tick()
+        self.assertEqual([r['role_id'] for r in self.runtime.active_runs()], ['director:b'])
+        self.assertEqual(len(self.adapter.started), 1)
+        self.assertEqual(result['capacity_used'], 1)
 
     def test_runner_probe_requires_nonce_and_terminal_evidence_when_supervisor_is_missing(self):
         from drover import runner

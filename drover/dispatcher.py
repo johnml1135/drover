@@ -194,10 +194,11 @@ class DispatchRuntime:
     launcher: object = field(default_factory=RunnerLauncher)
     resources: object = resources_mod.tick
     now: object = time.time
+    directors: object = None
 
 
 class Dispatcher:
-    def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide, directors=None):
+    def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide):
         from .usage import Poller
         from .replan import Replanning
         self.port, self.pipeline = port, pipeline
@@ -214,7 +215,7 @@ class Dispatcher:
         self.cancelling = {}                 # run_id -> (task_id, placement): cancelled runner may still exist
         self.finish_tries = {}
         self.live = {}                       # run_id -> (handle, task_id, spec)
-        self.directors = directors
+        self.directors = runtime.directors
         self._control_epoch = None
         self.missed = {}                     # run_id -> consecutive clean scans that did not find its runner
         self.cursor = None                   # last event id seen by the stale-brief check
@@ -1454,8 +1455,8 @@ class Dispatcher:
         if not admitted:
             return out
         in_use = p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
-        director_starts = len(out.get('directors', {}).get('launched', []))
-        slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0) - director_starts)
+        director_capacity = out.get('directors', {}).get('capacity_used', 0)
+        slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0) - director_capacity)
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
         slots -= len(out["reviewed"])
         out["planned"] = self._start_replans(policy, admitted, max(slots, 0))

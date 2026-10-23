@@ -185,8 +185,8 @@ class DispatcherService:
     def _default_dispatcher(self, port):
         from drover.directors import DirectorRuntime, RunnerDirectorAdapter
         launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins)
-        return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), DispatchRuntime(launcher),
-                          directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)))
+        runtime = DispatchRuntime(launcher, directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)))
+        return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), runtime)
 
     @property
     def running(self):

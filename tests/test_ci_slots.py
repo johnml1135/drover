@@ -56,6 +56,43 @@ class LeaseTests(unittest.TestCase):
         with self.assertRaises(gate.SlotExpired):
             self.acq(a, slots=1, at=200)
 
+    def test_uncertain_execution_retains_pinned_ticket_past_expiry(self):
+        a = gate.lease_request(self.conn, 'uncertain', 'P2', at=100)
+        self.assertEqual(self.acq(a, slots=1, at=100), 0)
+        gate.lease_pin(self.conn, a)
+        b = gate.lease_request(self.conn, 'next', 'P2', at=1000)
+        self.assertIsNone(self.acq(b, slots=1, at=1000))
+        self.assertEqual([r['id'] for r in gate.lease_queue(self.conn)], [a, b])
+        gate.lease_release(self.conn, a)
+        self.assertEqual(self.acq(b, slots=1, at=1000), 0)
+
+    def test_v14_preserves_existing_ticket_and_ordinary_expiry(self):
+        from drover.ledger.schema import MIGRATIONS
+        old = ledger_db.connect(Path(self.tmp.name) / 'v13.db', migrate_db=False)
+        self.addCleanup(old.close)
+        ledger_db.migrate(old, MIGRATIONS[:13])
+        ticket = gate.lease_request(old, 'ordinary', 'P2', at=100)
+        old.execute('UPDATE gate_tickets SET slot=0 WHERE id=?', (ticket,))
+        issued = gate.lease_request(old, 'group-ci', 'P1', holder='ci-' + 'a' * 32, at=100)
+        old.execute('UPDATE gate_tickets SET slot=1 WHERE id=?', (issued,))
+        ledger_db.migrate(old)
+        rows = {row['id']: row for row in gate.lease_queue(old)}
+        self.assertEqual(rows[ticket]['pinned'], 0)
+        self.assertEqual(rows[ticket]['slot'], 0)
+        self.assertEqual(rows[issued]['pinned'], 1)
+        ledger_db.migrate(old)
+        new = gate.lease_request(old, 'next', 'P2', at=1000)
+        self.assertEqual(gate.lease_acquire(old, new, slots=2, reserved=0, at=1000), 0)
+        self.assertEqual({row['id'] for row in gate.lease_queue(old)}, {issued, new})
+
+    def test_unacquired_or_expired_ticket_cannot_be_pinned(self):
+        ticket = gate.lease_request(self.conn, 'waiting', 'P2')
+        with self.assertRaises(gate.SlotExpired):
+            gate.lease_pin(self.conn, ticket)
+        gate.lease_release(self.conn, ticket)
+        with self.assertRaises(gate.SlotExpired):
+            gate.lease_pin(self.conn, ticket)
+
     def test_aging_lets_a_starved_ticket_overtake_newer_better_ranks(self):
         old = gate.lease_request(self.conn, 'old', 'P4', at=0)        # rank 5, waiting 3h -> effective 2
         new = gate.lease_request(self.conn, 'new', 'P3', at=10800)    # rank 4

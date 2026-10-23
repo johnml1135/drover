@@ -271,10 +271,17 @@ class CI:
         for request in Path(self.runs_dir).glob('ci-*.json'):
             saved = read_result(request) or {}
             spec = (saved.get('context') or {}).get('spec')
-            if spec:
+            if spec and saved.get('execution') != 'prepared':
                 status = runner.read_status(self.runs_dir, spec['run_id']) or {}
                 if status.get('nonce') == spec['nonce'] and status.get('state') in ('exited', 'killed', 'timeout'):
                     continue
+                try:
+                    slots.lease_pin(conn, saved.get('ticket'))
+                except slots.SlotExpired:
+                    saved['held_reason'] = 'termination-uncertain: capacity reservation missing; reconcile original execution'
+                else:
+                    saved['held_reason'] = 'termination-uncertain: stop requested'
+                runner.write_json_atomic(request, saved)
                 stop_intent(DirectPort(conn), spec, epoch,
                             lambda value: runner.request_stop(self.runs_dir, value['run_id'], nonce=value['nonce']))
 
@@ -296,8 +303,8 @@ class CI:
     def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None):
         """Run all placements in order, or adopt a saved runner after a hub restart.
 
-        A queued CI runner is released by a running ticket's completion or expiry.
-        Its ticket is renewed while waiting and executing, including after adoption.
+        Queued tickets can expire; a possibly-issued execution pins its acquired
+        ticket until terminal reconciliation, even across STOP and long downtime.
         CIInterrupted retains the request and ticket; callers must keep the checkout
         until resume confirms that the saved execution has finished.
         """
@@ -322,30 +329,50 @@ class CI:
                 port.require_admission(saved['control_epoch'])
         for i in range(saved['index'], len(platforms)):
             context = saved.get('context')
-            following = context is not None
+            # Old saved requests had no phase. Treat those as possibly issued.
+            following = context is not None and saved.get('execution') != 'prepared'
             if context is None:
                 guard()
                 rid = 'ci-' + uuid.uuid4().hex
                 context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=platforms[i], base=base,
                                        priority=priority)
                 saved['context'] = context
+                saved['execution'] = 'prepared'
                 runner.write_json_atomic(request, saved)
             spec = dict(context['spec'])
             ticket = saved.get('ticket')
-            status = runner.read_status(self.runs_dir, spec['run_id'])
+            def status_now():
+                value = runner.read_status(self.runs_dir, spec['run_id'])
+                return value if value and value.get('nonce') == spec['nonce'] else None
+            status = status_now()
+            following = following or status is not None
+            terminal = status and status.get('state') in ('exited', 'killed', 'timeout')
             from . import disk
-            if not status and disk.admission(disk.read())['verdict'] == 'hold':
-                if conn is not None and ticket is not None:
-                    slots.lease_release(conn, ticket)
-                saved.pop('ticket', None)
-                runner.write_json_atomic(request, saved)
-                raise CIInterrupted('CI deferred until a healthy disk reading')
             interrupted, capacity_deferred = False, False
             try:
-                if conn is not None:
+                if following and conn is not None and not terminal:
+                    # Preserve the original slot before generic acquisition may
+                    # expire it. An already-lost legacy reservation needs explicit
+                    # reconciliation, never a duplicate launch under a new ticket.
+                    try:
+                        slots.lease_pin(conn, ticket)
+                    except slots.SlotExpired as error:
+                        raise CIInterrupted('termination-uncertain: capacity reservation missing; reconcile original execution') from error
+                if following and not status:
+                    if port is not None:
+                        control = port.admission(epoch=saved['control_epoch'])
+                        if not control['allowed']:
+                            self.stop_active(conn, control['epoch'])
+                    raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
+                if not following and disk.admission(disk.read())['verdict'] == 'hold':
+                    capacity_deferred = True
+                    saved.pop('ticket', None)
+                    runner.write_json_atomic(request, saved)
+                    raise CIInterrupted('CI deferred until a healthy disk reading')
+                if conn is not None and not terminal:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
                     while True:
-                        if not status:
+                        if not following:
                             guard()
                         if ticket is None:
                             ticket = slots.lease_request(conn, key, priority, holder=spec['run_id'])
@@ -355,20 +382,37 @@ class CI:
                             if slots.lease_acquire(conn, ticket, *limits, ttl=600) is not None:
                                 break
                         except slots.SlotExpired:
+                            if following:
+                                raise CIInterrupted('termination-uncertain: capacity reservation missing')
                             ticket = None
                             continue
                         time.sleep(self.poll_s)
-                status = runner.read_status(self.runs_dir, spec['run_id'])
-                if not status and disk.admission(disk.read())['verdict'] == 'hold':
+                if following:
+                    status = status_now()
+                    if not status:
+                        raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
+                if not following and disk.admission(disk.read())['verdict'] == 'hold':
                     capacity_deferred = True
                     saved.pop('ticket', None)
                     runner.write_json_atomic(request, saved)
                     raise CIInterrupted('CI deferred until a healthy disk reading')
-                if not status:
+                if not following:
                     guard()
                     spec['_admission_check'] = guard
-                following = True  # launch may start execution even if returning a handle fails
-                handle = self.launcher.adopt(spec) if status else self.launcher.launch(spec)
+                    if conn is not None:
+                        slots.lease_pin(conn, ticket)
+                    saved['execution'] = 'issued'
+                    runner.write_json_atomic(request, saved)
+                    following = True  # includes a lost launch response
+                    try:
+                        handle = self.launcher.launch(spec)
+                    except AdmissionHeld:
+                        # Only this new attempt is provably unissued. Refusing
+                        # adoption of an older effect cannot clear its reservation.
+                        following = False
+                        raise
+                else:
+                    handle = self.launcher.adopt(spec)
                 next_scan, missed = time.monotonic() + (0 if status else 30), 0
                 while True:
                     execution = handle.poll()
@@ -411,13 +455,12 @@ class CI:
                 saved['index'] = i + 1
                 saved.pop('context', None)
                 saved.pop('ticket', None)
+                saved.pop('execution', None)
+                saved.pop('held_reason', None)
                 runner.write_json_atomic(request, saved)
                 if not evaluated['passed']:
                     request.unlink(missing_ok=True)
                     return receipt
-            except AdmissionHeld:
-                request.unlink(missing_ok=True)
-                raise
             except BaseException as error:
                 if capacity_deferred:
                     raise
@@ -427,6 +470,8 @@ class CI:
                 if interrupted:
                     # The runner owns its timeout. Keep its ticket and request so resume
                     # follows this execution before landing can rebuild the checkout.
+                    saved['held_reason'] = 'termination-uncertain: ' + str(error)
+                    runner.write_json_atomic(request, saved)
                     raise CIInterrupted(f'CI supervision interrupted; resume saved runner: {error}') from error
                 request.unlink(missing_ok=True)
                 raise

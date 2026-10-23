@@ -69,6 +69,31 @@ class WorkerFences(Base):
         self.assertEqual(self.status(worker), 'ready')
         self.assertEqual(self.d._seat_load()[seat['name']], 1)
 
+    def test_unknown_director_launch_consumes_resource_slot_before_worker(self):
+        from drover import config
+        from drover.directors import DirectorRuntime
+        from tests.test_directors import ControlledAdapter
+        import json
+        service = Notifications(self.conn)
+        seat = config.director_seats()[0]
+        service.register('director:a', allowed_models=['fixture'], token_budget=20)
+        service.broadcast('owner', ['director:a'], 'work', urgency='urgent')
+        ops.set_setting(self.conn, 'director_execution_enabled', 'true')
+        ops.set_setting(self.conn, 'parallel_cap', '4')
+        ops.set_setting(self.conn, 'director_execution', json.dumps({'director:a': dict(
+            backend=seat['backend'], model='fixture', seat=seat['name'], max_tokens=20,
+            placement=seat['placement'], cwd=self.tmp.name)}))
+        adapter = ControlledAdapter(service)
+        adapter.fail_launch = True
+        self.d.directors = DirectorRuntime(self.port, adapter)
+        self.verdict = dict(self.verdict, slots=1)
+        worker = self.task()
+        result = self.d.tick()
+        self.assertEqual(len(adapter.started), 1)
+        self.assertEqual(self.fl.specs, [])
+        self.assertEqual(self.status(worker), 'ready')
+        self.assertEqual(result['directors']['capacity_used'], 1)
+
     def test_stop_blocks_all_claimers_and_survives_new_dispatcher(self):
         tid = self.task()
         Notifications(self.conn).stop('owner', 'stop')
@@ -109,6 +134,7 @@ class LandingFences(LandingCase):
         import json
         from drover import runner
         self.task('feature', {'good.txt': 'good'})
+        ops.set_setting(self.conn, 'gate_slots', '1')
         launched = []
         service = Notifications(self.conn)
 
@@ -133,6 +159,60 @@ class LandingFences(LandingCase):
         self.assertEqual(row['state'], 'complete')
         self.assertEqual(json.loads(row['result'])['termination'], 'unknown')
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM action_outbox WHERE kind='run.stop'").fetchone()[0], 1)
+        from pathlib import Path
+        from drover.ledger import ci as slots
+        request, = Path(self.ci.runs_dir).glob('ci-*.json')
+        saved = json.loads(request.read_text())
+        ticket, = slots.lease_queue(self.conn)
+        self.assertEqual(ticket['pinned'], 1)
+        service.resume('owner', service.admission()['epoch'], 'ci-resume')
+        restarted = ci.CI(self.ci.runs_dir, self.ci.launcher)
+        with patch.object(self.ci.launcher, 'launch') as launch_again, \
+                patch.object(self.ci.launcher, 'adopt') as adopt:
+            for status in (None, {'nonce': 'wrong', 'state': 'exited'}):
+                if status is not None:
+                    legacy = json.loads(request.read_text())
+                    legacy.pop('execution', None)
+                    request.write_text(json.dumps(legacy))
+                with patch.object(runner, 'read_status', return_value=status):
+                    with self.assertRaises(ci.CIInterrupted):
+                        restarted.resume(self.prog, self.r.repo, conn=self.conn)
+                self.assertEqual(json.loads(request.read_text())['context']['spec']['nonce'], spec['nonce'])
+                self.assertEqual(slots.lease_queue(self.conn)[0]['id'], ticket['id'])
+            from drover import disk
+            with patch.object(disk, 'admission', return_value={'verdict': 'hold'}):
+                with self.assertRaises(ci.CIInterrupted):
+                    restarted.resume(self.prog, self.r.repo, conn=self.conn)
+            self.assertFalse(launch_again.called)
+            self.assertFalse(adopt.called)
+        self.assertEqual(json.loads(request.read_text())['ticket'], saved['ticket'])
+        other = slots.lease_request(self.conn, 'other', 'P1', at=ticket['heartbeat'] + 1000)
+        self.assertIsNone(slots.lease_acquire(self.conn, other, slots=1, reserved=0, at=ticket['heartbeat'] + 1000))
+        slots.lease_release(self.conn, other)
+        terminal = dict(nonce=spec['nonce'], state='killed')
+        handle = Mock()
+        handle.poll.return_value = dict(status='error', returncode=1)
+        with patch.object(runner, 'read_status', return_value=terminal), \
+                patch.object(self.ci.launcher, 'adopt', return_value=handle):
+            with self.assertRaises(ci.CIError) as raised:
+                restarted.resume(self.prog, self.r.repo, conn=self.conn)
+        self.assertNotIsInstance(raised.exception, ci.CIInterrupted)
+        self.assertFalse(request.exists())
+        self.assertEqual(slots.lease_queue(self.conn), [])
+
+    def test_ci_final_launch_refusal_releases_only_unissued_ticket(self):
+        from pathlib import Path
+        from drover.ledger import ci as slots
+        self.task('feature', {'good.txt': 'good'})
+        def refuse(spec):
+            Notifications(self.conn).stop('owner', 'ci-final-boundary')
+            spec['_admission_check']()
+            self.fail('launch guard should refuse')
+        with patch.object(self.ci.launcher, 'launch', side_effect=refuse):
+            with self.assertRaises(AdmissionHeld):
+                self.ci.run(self.prog, self.r.repo, self.r.git('rev-parse', 'feature'), conn=self.conn)
+        self.assertEqual(slots.lease_queue(self.conn), [])
+        self.assertEqual(list(Path(self.ci.runs_dir).glob('ci-*.json')), [])
 
     def test_ci_stop_after_preparation_prevents_script_launch(self):
         self.task('feature', {'good.txt': 'good'})

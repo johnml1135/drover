@@ -368,4 +368,9 @@ CREATE TABLE director_runs (
 CREATE UNIQUE INDEX director_open_run ON director_runs(role_id) WHERE state<>'finished';
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13)]
+V14 = """
+ALTER TABLE gate_tickets ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1));
+UPDATE gate_tickets SET pinned=1 WHERE slot IS NOT NULL AND holder LIKE 'ci-%';
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14)]

@@ -60,8 +60,16 @@ class Admission(DiskCase):
                 self.assertEqual(slots.lease_queue(conn), [])
             requests = list((self.root / 'runs').glob('ci-*.json'))
             self.assertEqual(len(requests), 2)
-            saved = json.loads(next(p for p in requests if json.loads(p.read_text())['kind'] == 'full').read_text())
+            request = next(p for p in requests if json.loads(p.read_text())['kind'] == 'full')
+            saved = json.loads(request.read_text())
             spec = saved['context']['spec']
+            # Simulate an already-issued execution, including its capacity
+            # reservation. Disk pressure must let that same execution wind down.
+            saved['ticket'] = slots.lease_request(conn, request.stem, 'P1', holder=spec['run_id'])
+            self.assertIsNotNone(slots.lease_acquire(conn, saved['ticket']))
+            slots.lease_pin(conn, saved['ticket'])
+            saved['execution'] = 'issued'
+            runner.write_json_atomic(request, saved)
             runner.write_json_atomic(runner.run_dir(service.runs_dir, spec['run_id']) / runner.STATUS_FILE,
                                      {'state': 'running', 'run_id': spec['run_id'], 'nonce': spec['nonce']})
             receipt = service.run(prog, repo.repo, commit, kind='full', conn=conn)

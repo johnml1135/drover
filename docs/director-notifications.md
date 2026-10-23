@@ -160,7 +160,10 @@ and uncertain termination; dormant roles consume no seat.
 `recover()`, `finish(run_id, result)`, and `stop_active(epoch)`. Tick takes a global
 admission snapshot and a capacity object with `slots` (integer or current-count
 callback) and `admit(spec)` (returns a refusal reason or `None`). Hub construction
-injects it into the one locked dispatcher. Services perform deterministic work
+injects it through `DispatchRuntime.directors` into the one locked dispatcher.
+Tick reports `capacity_used` for new acknowledged or possibly-issued launches;
+the dispatcher charges both before admitting more work. `launched` lists only
+acknowledged launches. Services perform deterministic work
 only and never launch a second supervisor.
 
 Adapters declare `live_offer`, `verified_resume`, `fresh_start`,
@@ -194,8 +197,9 @@ normal task/run APIs cannot impersonate this lifecycle. Launch and stop intents
 share the event/index `action_outbox`, with internal kinds excluded from role
 allowlists and deterministic task execution. Lost launch responses are reconciled
 by nonce before replacement. Unknown liveness consumes capacity and never proves
-death. One automatic replacement is allowed by default; an exhausted failed run
-remains held through restart and new source notifications. Checkpoints, budgets,
+death. Observer errors and starting timeouts also retain the run until its nonce
+has verified terminal evidence. One automatic replacement is allowed by default;
+an exhausted failed run remains held through restart and new source notifications. Checkpoints, budgets,
 child task attempts, statuses and gates are preserved.
 
 STOP is checked at claim, intent acceptance, actual detach, group CI launch, and
@@ -205,3 +209,12 @@ cessation. Stop/resume epochs also fence work admitted before an intervening STO
 that occurred between ticks. A local merge already issued is recorded as landed
 even if a later STOP holds its push. Resume does not rewrite an old effect's
 epoch or make an uncertain effect disappear.
+
+Group CI saves whether its context is prepared or possibly issued. An uncertain
+execution retains its original nonce and checkout across STOP/resume, even when
+status is missing. Its existing acquired CI ticket is pinned against expiry
+until terminal reconciliation explicitly releases it; ordinary queued/gate
+ticket expiry is unchanged. Saved requests expose `held_reason` for uncertainty.
+A legacy execution whose ticket already expired is held for explicit
+reconciliation rather than launched again. Unresolved uncertainty can therefore
+hold CI capacity indefinitely; resume alone does not release it.

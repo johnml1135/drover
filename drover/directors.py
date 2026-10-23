@@ -124,7 +124,7 @@ class DirectorRuntime:
         return [dict(row, spec=json.loads(row['spec'])) for row in self.conn.execute(
             "SELECT * FROM director_runs WHERE state<>'finished' ORDER BY run_id")]
 
-    def _hold(self, role_id, reason, run_id=None):
+    def _record_hold(self, role_id, reason, run_id=None):
         with tx(self.conn):
             held = roles._hold_role(self.service, role_id, reason)
             if run_id is not None:
@@ -218,10 +218,10 @@ class DirectorRuntime:
             # Adapter contract: this exception is only legal before issuing I/O.
             self.finish(run_id, dict(status='admission-held', usage={}))
             actions.complete(self.conn, action['action_id'], dict(issued=False, reason=str(error)))
-            return self._hold(role_id, str(error))
+            return self._record_hold(role_id, str(error))
         except Exception:
             # No exception text: backends can accidentally include credentials.
-            return self._hold(role_id, 'launch-effect-unknown', run_id)
+            return self._record_hold(role_id, 'launch-effect-unknown', run_id)
         self.live[run_id] = handle
         with tx(self.conn):
             self.conn.execute("UPDATE director_runs SET state='running',held_reason=NULL WHERE run_id=?", (run_id,))
@@ -236,19 +236,23 @@ class DirectorRuntime:
         for run in self.active_runs():
             spec, run_id = run['spec'], run['run_id']
             handle = self.live.get(run_id)
-            if handle is not None:
-                result = handle.poll()
-                if result is not None:
-                    self.finish(run_id, result)
-                    out['finished'].append(run_id)
-                    continue
             try:
                 state = self.adapter.probe(spec)
             except Exception:
                 state = 'unknown'
+            # A completed observer can mean an I/O error or starting timeout,
+            # not process cessation. Only the adapter's nonce proof frees a run.
+            if state != 'gone':
+                try:
+                    self._guard(spec)
+                except AdmissionHeld:
+                    out['held'].append(self._stop_one(run, self.service.admission(role_id=run['role_id'])['epoch']))
+                    continue
+                if run['stop_action_id']:
+                    out['held'].append(self._stop_one(run, self.service.admission()['epoch']))
+                    continue
             if state not in ('alive', 'gone'):
-                out['held'].append(self._hold(run['role_id'], 'termination-uncertain' if run['stop_action_id'] else
-                                             'consumer-liveness-uncertain', run_id))
+                out['held'].append(self._record_hold(run['role_id'], 'consumer-liveness-uncertain', run_id))
                 continue
             if state == 'gone':
                 # Recover a terminal receipt when available; no receipt means a
@@ -258,7 +262,10 @@ class DirectorRuntime:
                         handle = self.adapter.adopt(spec)
                     except Exception:
                         handle = None
-                result = handle.poll() if handle is not None else None
+                try:
+                    result = handle.poll() if handle is not None else None
+                except Exception:
+                    result = None
                 self.finish(run_id, result or dict(status='stopped' if run['stop_action_id'] else 'director-gone', usage={}))
                 if actions._action(self.conn, run['launch_action_id'])['state'] == 'pending':
                     actions.complete(self.conn, run['launch_action_id'], dict(run_id=run_id, reconciled='gone'))
@@ -266,15 +273,17 @@ class DirectorRuntime:
             else:
                 if handle is None:
                     try:
-                        self.live[run_id] = self.adapter.adopt(spec)
+                        handle = self.live[run_id] = self.adapter.adopt(spec)
                     except Exception:
-                        out['held'].append(self._hold(run['role_id'], 'adoption-uncertain', run_id))
+                        out['held'].append(self._record_hold(run['role_id'], 'adoption-uncertain', run_id))
                         continue
                     out['adopted'].append(run_id)
                 try:
-                    self._guard(spec)
-                except AdmissionHeld:
-                    out['held'].append(self._stop_one(run, self.service.admission(role_id=run['role_id'])['epoch']))
+                    observed = handle.poll() is not None
+                except Exception:
+                    observed = True
+                if observed:
+                    out['held'].append(self._record_hold(run['role_id'], 'consumer-observation-uncertain', run_id))
                     continue
                 with tx(self.conn):
                     self.conn.execute("UPDATE director_runs SET state='running',held_reason=NULL WHERE run_id=?", (run_id,))
@@ -330,18 +339,18 @@ class DirectorRuntime:
         action = stop_intent(self.port, run['spec'], epoch, self.adapter.stop, 'director.stop')
         with tx(self.conn):
             self.conn.execute('UPDATE director_runs SET stop_action_id=? WHERE run_id=?', (action['action_id'], run['run_id']))
-        return self._hold(run['role_id'], 'termination-uncertain', run['run_id'])
+        return self._record_hold(run['role_id'], 'termination-uncertain', run['run_id'])
 
     def tick(self, admission, capacity):
-        out = dict(service=service_tick(self.port, self.now), recovery=self.recover(), launched=[], held=[])
+        out = dict(service=service_tick(self.port, self.now), recovery=self.recover(), launched=[], held=[], capacity_used=0)
         current = self.service.admission(epoch=admission['epoch'])
         if not admission['allowed']:
             current.update(allowed=False, reason=admission['reason'])
         if not current['allowed']:
             out['stopped'] = self.stop_active(current['epoch'])
         active = {run['role_id'] for run in self.active_runs()}
-        slots = capacity.get('slots', 0)
-        slots = slots() if callable(slots) else slots
+        available = capacity.get('slots', 0)
+        slots = available() if callable(available) else available
         enabled = str(self.port.get_setting('director_execution_enabled', 'false')).lower() in ('true', '1', 'yes', 'on')
         capabilities = getattr(self.adapter, 'capabilities', {})
         for row in self.conn.execute("SELECT role_id FROM director_roles WHERE state<>'retired' ORDER BY role_id").fetchall():
@@ -350,6 +359,8 @@ class DirectorRuntime:
             role_epoch = self.service.admission(role_id=role_id)['epoch']
             if role_id in active or not state['pending_wake']:
                 continue
+            if callable(available):
+                slots = min(slots, available())
             reason = current['reason'] if not current['allowed'] else None
             if reason is None and not enabled:
                 reason = 'execution-disabled'
@@ -385,14 +396,17 @@ class DirectorRuntime:
                             if not replaced['accepted']:
                                 reason = replaced['reason']
                     if reason is None:
+                        before = {run['run_id'] for run in self.active_runs()}
                         started = self._start(role_id, config, role_epoch, current['epoch'], mode, previous)
+                        charged = len({run['run_id'] for run in self.active_runs()} - before)
+                        out['capacity_used'] += charged
+                        slots -= charged
                         if started and started.get('launched'):
                             out['launched'].append(started['run_id'])
-                            slots -= 1
                         elif started:
                             out['held'].append(started)
             except (ValueError, PermissionError, Conflict, AdmissionHeld) as error:
                 reason = str(error)
             if reason:
-                out['held'].append(self._hold(role_id, reason))
+                out['held'].append(self._record_hold(role_id, reason))
         return out
