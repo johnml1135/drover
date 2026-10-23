@@ -1,6 +1,6 @@
 # Durable subscriptions and director recovery
 
-Date: 2026-10-23. Status: draft for owner review.
+Date: 2026-10-23. Status: revised after independent literature, design, and code reviews; owner authorized final review and implementation on 2026-10-23.
 
 ## Intent and decisions
 
@@ -141,7 +141,7 @@ A director role stores its purpose, owned event partition, approved capabilities
 
 Ordinary dispatcher recovery continues to adopt a living worker and reconcile terminal run evidence. Director recovery does not restart child workers merely because their director disappeared. Unknown process/session state is not proof of death.
 
-Handling an issue acquires a time-bounded lease on `(role, issue identity)`; executing a role also requires a single active role lease. A generation/lease token fences old agents from acknowledging or acting after replacement. All action requests validate both current lease authority and expected task revision. Multiple observers never imply multiple recovery actors.
+Handling an issue acquires a time-bounded lease unique by issue identity, bound to its current owning role; executing a role also requires a single active role lease. A generation/lease token fences old agents from acknowledging or acting after replacement. All action requests validate both current lease authority and expected task revision. Multiple observers never imply multiple recovery actors.
 
 When a role is needed but its consumer is confirmed gone or its lease has expired, inspect existing run/session evidence first. Resume the verified compatible backend session if available. Otherwise launch a fresh run from the durable brief, current scoped state, accepted results, recorded decisions, checkpoint, and unread inbox. Do not duplicate a possibly active run when evidence is uncertain; record the uncertainty and escalate through the fallback policy.
 
@@ -201,3 +201,37 @@ Implement in this order so each increment has an observable purpose:
 3. Explicit groups and accepted-result joins wired into those same subscriptions and role wakeups.
 
 Webhooks are an optional adapter after the core is reliable; pipes are deferred until a concrete consumer needs one. Existing task-type work and T-b7 must be reconciled before assigning implementation so parallel workers do not independently create competing outboxes, recovery loops, or event taxonomies.
+
+## Review resolutions and implementation contracts
+
+The owner requested updating the plan, a final review, and implementation in that order. The following resolves the review findings without changing the accepted ADRs. Implement and review the increments on the existing isolated design branch; do not deploy, merge, or operate T-b7 as part of this change.
+
+### Identity and processing
+
+Only an authenticated human owner or trusted in-process hub service registers a director and issues its session credential. Generate an opaque random credential, store only its hash, and bind it to role, generation, expiry, and explicit capabilities. A selected role ID is never proof of identity. Replacement revokes old credentials and leases. Director credentials are accepted only on scoped notification/director endpoints; they never fall back to the shared worker bearer, owner authority, or unrestricted legacy API reads. Revalidate current identity and mutable authority inside each mutation transaction.
+
+A processing commit atomically saves the role's versioned checkpoint, acknowledges selected deliveries, and records ordered durable action intents under stable operation keys. Reusing a key with different content conflicts. External effects execute after commit, with durable receipts and destination-side idempotency; unknown effects are held for reconciliation. Use one shared `action_outbox` contract, compatible with task-types transition event/action-index identities, rather than a private adapter queue. The baseline has no such outbox, so implement this shared subset explicitly.
+
+Each new processing request appends one internal `director.checkpoint` ledger event in that same transaction. Its processing receipt is unique by `(role_id, request_key)`, binds a canonical request-content hash to that source event, and returns the original receipt on an identical retry. Action identities are `(checkpoint_event_id, action_index)` in request order, including processing commits that acknowledge no deliveries. Internal checkpoint events are audit facts, not routable inbox messages. A request-key/content conflict appends no event and creates no actions.
+
+Persist a monotonically increasing wake position. Releasing a role lease and checking for actionable work is one transaction: either the role becomes dormant with no work, or durable wake intent remains. An event arriving after that transaction recreates wake intent. An active role never launches a second invocation merely because more messages arrive. Acknowledgement of notification receipt alone cannot erase an unsaved continuation.
+
+### Routing and retention
+
+Capture event classification, subscription/profile revision, and routing intent transactionally with the source event. Notification projection reads `id > cursor ORDER BY id LIMIT n`; insertion and cursor advancement commit together. Transfer updates both materialized pending deliveries and not-yet-projected routing intents under the expected ownership revision. Recheck current authority before offers, acknowledgements, and resulting actions. Processed history remains immutable and never becomes new work for a successor.
+
+Bound delivery batches, payloads, digest bodies, and outstanding routine inbox entries per role. Compact superseded routine updates into a durable coverage/resync record; compaction is not processing acknowledgement. Preserve unresolved actionable issue facts independently. At a configured actionable/storage high-water mark, retain a visible owner escalation and refuse additional admission for the affected scope rather than silently deleting required work or letting an offline consumer exhaust storage. Other directors continue independently. The append-only event audit is distinct from the bounded delivery queue.
+
+### Runs, controls, and joins
+
+A director invocation has its own lifecycle within existing dispatcher admission, runner supervision, and run accounting. Use an explicitly marked, archived system control task as the existing `runs.task_id` accounting anchor, plus a durable director-run association with role, generation, launch nonce, control epoch, and checkpoint. Director start/finish/recovery must not increment ordinary work attempts, change a child's status, enter worker completion/gate logic, or restart children. Existing process scans and nonce-checked stop requests remain authoritative. Unsupported push/resume/fresh-start capabilities yield a durable held reason, never a fabricated delivery success. Automatic wake execution remains opt-in until a compatible adapter is configured and verified.
+
+STOP establishes a durable admission boundary, separate from the ordinary pause switch. Check its epoch at claim, launch-intent acceptance, actual launch, action acceptance, and merge/other external-effect safe points. Supervise already admitted operations through nonce-checked stop requests and record uncertain cessation. An irreversible effect already issued cannot be retroactively cancelled: reconcile it and report its actual outcome. Resume is a separate owner action. Skill requirements are session-specific fences and must be satisfied again after replacement. Persist controls and apply them before new sessions receive ordinary work.
+
+Evaluate joins whenever any predicate input changes: sealing, accepted child completion, or authorized membership replacement. Read existing accepted results while enrolling and sealing, so children may finish before sealing. Reject cycles over task dependencies, group membership, and group-to-parent progression, including a child depending on its own collecting parent. Cancellation is never successful completion. Commit a satisfied sealed group, immutable manifest, dependent readiness, and one group-ready event together. Collection-only completion must still use the parent's declared accepted lifecycle; synthesis parents merely become eligible.
+
+Additional acceptance cases: authenticate two roles and attempt cross-role operations; transfer while projection is behind; enqueue between the last inbox read and lease release; crash around checkpoint/action/ack commit; finish all children before sealing; reject a group-only dependency cycle; compact an offline verbose consumer; race STOP with launch and merge; and finish/recover a director run without modifying worker attempts or child status. Test all through public ledger, HTTP/CLI, and supervised-adapter seams with fake time and isolated databases. Never use the live ledger or spend model tokens in automated tests.
+
+### Research basis
+
+These are applications of established reliability patterns, not a dependency on another service: [Durable Task buffered external events](https://learn.microsoft.com/en-us/azure/durable-task/common/durable-task-external-events), [Kafka processing/offset transaction boundaries](https://kafka.apache.org/40/design/design/#message-delivery-semantics), [Chubby resource-side generation checks](https://static.usenix.org/events/osdi06/tech/full_papers/burrows/burrows_html/), and [SEDA per-stage admission control](https://www.usenix.org/legacy/event/usits03/tech/full_papers/welsh/welsh_html/usits.html). Keep the ledger local to the Windows hub and transactions short.
