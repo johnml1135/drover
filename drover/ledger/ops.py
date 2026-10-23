@@ -304,6 +304,8 @@ def update_task(conn, task_id, actor="owner", **fields):
         fields['model_pin'] = pin or None
     with tx(conn):
         old = get_task(conn, task_id)
+        if old.get('internal'):
+            raise PermissionError('internal director accounting task is immutable')
         if "kind" in fields:
             task_context.check_kind(fields["kind"])
         if "write" in fields and not isinstance(fields["write"], bool):
@@ -442,6 +444,8 @@ def set_status(conn, task_id, new, actor="system", reason=None, data=None):
     """
     with tx(conn):
         t = get_task(conn, task_id)
+        if t.get('internal'):
+            raise PermissionError('internal director accounting task is immutable')
         old = t["status"]
         from .waiting import Waiting
         if new == states.READY:
@@ -583,6 +587,9 @@ def claim_next(conn, worker=None, now=None, exclude=()):
     actor = worker.get("actor") or worker.get("owner_kind") or "worker"
     with tx(conn):
         skip = set(exclude or ())
+        from ..notifications.controls import admission
+        if not admission(conn)['allowed']:
+            return None
         from .waiting import Waiting
         waiting, runs = Waiting(conn, actor), None
         from .. import dispatch_repos      # the owner's repo filter binds every claimer: dispatcher, hub API, CLI
@@ -612,6 +619,12 @@ def start_run(conn, task_id, role, backend, model=None, effort=None, policy_vers
     actor = actor or role
     with tx(conn):
         t = get_task(conn, task_id)
+        if role == 'director' or role.startswith('director:') or t.get('internal'):
+            raise PermissionError('director runs require the supervised runtime')
+        from ..notifications.controls import admission
+        control = admission(conn)
+        if not control['allowed']:
+            raise PermissionError(control['reason'])
         cur = conn.execute(
             "INSERT INTO runs(task_id,role,backend,model,effort,policy_version,started) VALUES(?,?,?,?,?,?,?)",
             (task_id, role, backend, model, effort, policy_version or t["policy_version"] or current_policy(conn),
@@ -633,6 +646,8 @@ def finish_run(conn, run_id, outcome, actor="system", tokens_in=None, tokens_out
         r = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if r is None:
             raise NotFound(f"run {run_id}")
+        if r['role'] == 'director' or r['role'].startswith('director:') or conn.execute('SELECT 1 FROM director_runs WHERE run_id=?', (run_id,)).fetchone():
+            raise PermissionError('director runs require the supervised runtime')
         if r["ended"]:
             raise ValueError(f"run {run_id} already finished")
         now = stamp()
@@ -659,6 +674,8 @@ def amend_run(conn, run_id, outcome=None, gate_receipt=None, note=None):
         r = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if r is None:
             raise NotFound(f"run {run_id}")
+        if r['role'] == 'director' or r['role'].startswith('director:') or conn.execute('SELECT 1 FROM director_runs WHERE run_id=?', (run_id,)).fetchone():
+            raise PermissionError('director runs require the supervised runtime')
         if not r["ended"]:
             raise ValueError(f"run {run_id} is still open; finish it first")
         conn.execute("UPDATE runs SET outcome=COALESCE(?,outcome), gate_receipt=COALESCE(?,gate_receipt), "
@@ -879,6 +896,8 @@ def archive_task(conn, task_id, archived=True, actor="owner"):
         raise PermissionError("only the owner may archive tasks")
     with tx(conn):
         t = get_task(conn, task_id)
+        if t.get('internal'):
+            raise PermissionError('internal director accounting task is immutable')
         if t["status"] in ("claimed", "running", "gated", "reviewed") or conn.execute(
                 "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL AND role<>'planner'", (task_id,)).fetchone():
             raise ValueError("finish or cancel active work before archiving")
@@ -894,6 +913,8 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
         raise ValueError("confirm deletion explicitly")
     with tx(conn):
         t = get_task(conn, task_id)
+        if t.get('internal'):
+            raise PermissionError('internal director accounting task is immutable')
         if t["status"] in ("claimed", "running", "gated", "reviewed") or conn.execute(
                 "SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL", (task_id,)).fetchone():
             raise ValueError("finish or cancel active work before deleting")

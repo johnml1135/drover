@@ -103,6 +103,9 @@ class Services:
     def tick(self):
         """Once per wake: tools when WSL first comes up, the tuner when a day has passed."""
         from drover.ledger import disk_notices
+        from drover.directors import service_tick
+        from drover.port import DirectPort
+        service_tick(DirectPort(self.store.conn), now=self.clock)
         delivered = disk_notices.replay(self.store.conn, config.get(), self.clock())
         if delivered:
             self.store.publish('disk.notice', {'ids': delivered})

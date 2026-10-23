@@ -100,6 +100,11 @@ class LandingService:
     def tick(self):
         """One pass over every repo that has reviewed tasks. Returns {repo: batch result}."""
         conn = self.store.conn
+        from drover.notifications.controls import admission
+        control = admission(conn)
+        if not control['allowed']:
+            self.ci.stop_active(conn, control['epoch'])
+            return {}
         if not truthy(ops.get_setting(conn, "dispatch_enabled", "false")):
             return {}
         allow = dispatch_repos.allowed(lambda k, d=None: ops.get_setting(conn, k, d))
@@ -115,6 +120,8 @@ class LandingService:
         return out
 
     def _land_repo(self, conn, name, prog):
+        from drover.notifications.controls import admission
+        epoch = admission(conn)['epoch']
         repo = repos.native(repos.repo_path(prog))
         land = repos.landing_config(prog)
         push = land["push"]
@@ -140,8 +147,8 @@ class LandingService:
         ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": tasks}))
         try:
             r = landing.run_batch(conn, repo, lambda checkout, commit, tasks: self.ci.run(
-                                      prog, checkout, commit, base=base_ref, conn=conn), remote=repos.remote_name(prog),
-                                  branch=base_ref, size=size, repo_name=name, workdir=work, push=push)
+                                      prog, checkout, commit, base=base_ref, conn=conn, control_epoch=epoch), remote=repos.remote_name(prog),
+                                  branch=base_ref, size=size, repo_name=name, workdir=work, push=push, control_epoch=epoch)
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)
@@ -176,8 +183,10 @@ class DispatcherService:
         return {n: s.get(k) for n, k in WSL_BIN_KEYS.items() if s.get(k)}
 
     def _default_dispatcher(self, port):
+        from drover.directors import DirectorRuntime, RunnerDirectorAdapter
         launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins)
-        return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), DispatchRuntime(launcher))
+        return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), DispatchRuntime(launcher),
+                          directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)))
 
     @property
     def running(self):

@@ -6,6 +6,7 @@ from .db import tx
 
 
 KINDS = frozenset(('task.retry', 'task.comment', 'issue.resolve'))
+SUPERVISED_KINDS = frozenset(('director.launch', 'director.stop', 'run.stop'))
 
 
 def _action(conn, action_id):
@@ -18,11 +19,11 @@ def _action(conn, action_id):
     return result
 
 
-def enqueue(conn, event_id, action_index, kind, payload):
+def enqueue(conn, event_id, action_index, kind, payload, *, supervised=False):
     """One immutable ordered intent, joining the source transaction when present."""
     from ..notifications.core import Conflict
     from ..notifications.roles import _artifact, canonical, hashed
-    if not isinstance(kind, str) or kind not in KINDS:
+    if not isinstance(kind, str) or kind not in (KINDS | SUPERVISED_KINDS if supervised else KINDS):
         raise ValueError('unsupported action kind')
     if isinstance(event_id, bool) or not isinstance(event_id, int) or not 0 < event_id < 2**63:
         raise ValueError('source event identity must be a positive integer')
@@ -44,7 +45,8 @@ def pending(conn, limit=32):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError('action batch limit must be between 1 and 100')
     return [_action(conn, row['action_id']) for row in conn.execute(
-        "SELECT action_id FROM action_outbox WHERE state='pending' ORDER BY event_id,action_index LIMIT ?", (limit,))]
+        "SELECT action_id FROM action_outbox WHERE state='pending' AND kind IN ('task.retry','task.comment','issue.resolve') "
+        "ORDER BY event_id,action_index LIMIT ?", (limit,))]
 
 
 def complete(conn, action_id, result):
@@ -151,6 +153,8 @@ def execute(conn, action_id, now=None):
     service = Notifications(conn, now=now)
     with tx(conn):
         action = _action(conn, action_id)
+        if action['kind'] in SUPERVISED_KINDS:
+            return action  # Only the supervising destination can reconcile external effects.
         if action['state'] != 'pending':
             return action
         payload = action['payload']

@@ -75,6 +75,10 @@ class LaunchError(RuntimeError):
         self.cancel_requested = cancel_requested   # a runner may still come up; a stop-request was written for it
 
 
+class AdmissionHeld(RuntimeError):
+    """A pre-effect control barrier refused; no external launch was issued."""
+
+
 def _git_dirs(cwd):
     workspace = Path(placement_mod.native(cwd)).resolve()
 
@@ -679,6 +683,10 @@ class RunnerLauncher(Launcher):
         argv, stdin_text = build_argv(spec)
         (d / IN_FILE).write_text(stdin_text, encoding="utf-8")
         cmd, env = self.command(spec, d, argv)
+        # Recheck after command/file preparation, immediately before the detach effect.
+        # This callback is in-memory authority, never part of argv or a runner config.
+        if spec.get('_admission_check'):
+            spec['_admission_check']()
         info, err = None, None
         try:
             r = self.run(cmd, capture_output=True, text=True, timeout=DETACH_TIMEOUT_S, env=env, stdin=subprocess.DEVNULL,

@@ -270,8 +270,22 @@ def requeue(conn, task_id, failures, why):
 
 # ---- landing ------------------------------------------------------------------------------------------------
 
-def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
+def _control_guard(conn, epoch=None):
+    from .port import DirectPort
+    return DirectPort(conn).require_admission(epoch)['epoch']
+
+
+def _controlled_git(conn, epoch):
+    def run(repo, *args, **kwargs):
+        if args and args[0] in ('merge', 'update-ref', 'push'):
+            _control_guard(conn, epoch)
+        return git(repo, *args, **kwargs)
+    return run
+
+
+def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch=None):
     """Advance local main and its checkout, with a receipt and an explicit ancestry check."""
+    control_epoch = _control_guard(conn, control_epoch)
     found = ci.problems(receipt, worktree, branch)
     sha = ci.head(worktree)
     if sha != tip or receipt.get('sha') != sha or not re.fullmatch(r'[0-9a-f]{40}', sha):
@@ -289,7 +303,7 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
         if git(repo, 'merge-base', '--is-ancestor', old, sha, check=False).returncode:
             raise ci.CIError('local main moved; rebase and regate')
         try:
-            origin.fast_forward(repo, branch, sha, old, run=git)
+            origin.fast_forward(repo, branch, sha, old, run=_controlled_git(conn, control_epoch))
         except origin.MainMoved as e:
             raise ci.CIError('local main moved; rebase and regate') from e
         except origin.DirtyCheckout:
@@ -302,9 +316,10 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt):
 
 def fast_forward(conn, worktree, remote, branch, tip, receipt):
     """Compatibility entry point: sync, land locally, then push without force."""
-    origin.sync(worktree, remote, branch)
-    local_fast_forward(conn, worktree, worktree, branch, tip, receipt)
-    origin.push_main(worktree, remote, branch)
+    epoch = _control_guard(conn)
+    origin.sync(worktree, remote, branch, run=_controlled_git(conn, epoch))
+    local_fast_forward(conn, worktree, worktree, branch, tip, receipt, control_epoch=epoch)
+    origin.push_main(worktree, remote, branch, guard=lambda: _control_guard(conn, epoch))
 
 
 # ---- base red ------------------------------------------------------------------------------------------------
@@ -360,9 +375,14 @@ def _dirty_wait(conn, repo, repo_name, error):
     return {'outcome': 'refused', 'error': str(error)}
 
 
-def sync_main(conn, repo, remote, branch, repo_name=None):
+def sync_main(conn, repo, remote, branch, repo_name=None, control_epoch=None):
     """Sync or return the repo hold, recording an owner alert on fetch failure."""
     from .ledger.waiting import Waiting, OWNER_ANSWER, cause_key, repo_key
+    from .launch import AdmissionHeld
+    try:
+        control_epoch = _control_guard(conn, control_epoch)
+    except AdmissionHeld as error:
+        return {'outcome': 'held', 'reason': str(error)}
     name = repo_key(repo_name, repo)
     waiting = Waiting(conn, 'landing')
     dirty = cause_key('dirty', name)
@@ -379,10 +399,12 @@ def sync_main(conn, repo, remote, branch, repo_name=None):
         dirty_probe = waiting.state(dirty) == 'authorized' and waiting.consume_retry(dirty)
         origin_probe = waiting.state(cause) == 'authorized' and waiting.consume_retry(cause)
     try:
-        origin.sync(repo, remote, branch, run=git, timeout=FETCH_TIMEOUT_S)
+        origin.sync(repo, remote, branch, run=_controlled_git(conn, control_epoch), timeout=FETCH_TIMEOUT_S)
         if dirty_probe:
             sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
-            origin.fast_forward(repo, branch, sha, sha, run=git)
+            origin.fast_forward(repo, branch, sha, sha, run=_controlled_git(conn, control_epoch))
+    except AdmissionHeld as error:
+        return {'outcome': 'held', 'reason': str(error)}
     except origin.DirtyCheckout as e:
         if origin_probe:
             ops.event(conn, 'origin-sync-failed', 'landing', {'repo': name, 'reason': str(e)})
@@ -415,7 +437,7 @@ def sync_main(conn, repo, remote, branch, repo_name=None):
 
 
 def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', size=None, repo_name=None,
-              decider=None, actor='landing', push=False):
+              decider=None, actor='landing', push=False, control_epoch=None):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
 
     The hub supplies a stable per-repo workdir and calls CI.resume before rebuilding it.
@@ -425,8 +447,13 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     repo = Path(repo)
     result = {'outcome': 'empty', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
               'decisions': 0, 'gate_s': [], 'batch': []}
+    from .launch import AdmissionHeld
+    try:
+        result['control_epoch'] = _control_guard(conn, control_epoch)
+    except AdmissionHeld as error:
+        return {**result, 'outcome': 'held', 'reason': str(error)}
     base_ref = branch
-    sync_result = sync_main(conn, repo, remote, branch, repo_name)
+    sync_result = sync_main(conn, repo, remote, branch, repo_name, control_epoch=result['control_epoch'])
     if sync_result:
         result.update(sync_result)
         return result
@@ -455,6 +482,8 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     work = Path(workdir)
     try:
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
+    except AdmissionHeld as error:
+        result.update(outcome='held', reason=str(error))
     except BaseException as e:
         interrupted = isinstance(e, ci.CIInterrupted)
         result['outcome'], result['error'] = 'error', repr(e)
@@ -490,6 +519,7 @@ def _failures(receipt, tasks):
 def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None):
     stale_retries = 0
     while tasks:
+        _control_guard(conn, result.get('control_epoch'))
         base_sha = git(repo, 'rev-parse', base_ref).stdout.strip()
         tip, tasks, conflicts = build_tip(repo, work, base_sha, tasks)
         for tid in conflicts:
@@ -498,6 +528,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         if not tasks:
             result['outcome'] = 'conflict'
             return
+        _control_guard(conn, result.get('control_epoch'))
         receipt, red = _gate(gate_fn, work, tip, tasks, result)
         if not red:
             _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name)
@@ -532,12 +563,13 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
             result['outcome'] = 'refused'
             result['error'] = f'{t["id"]} has no review LAND for the gated commit {t["head"][:12]}'
             return
-    sync_result = sync_main(conn, repo, remote, branch, repo_name)
+    epoch = _control_guard(conn, result.get('control_epoch'))
+    sync_result = sync_main(conn, repo, remote, branch, repo_name, control_epoch=epoch)
     if sync_result:
         result.update(sync_result)
         return
     try:
-        local_fast_forward(conn, repo, work, branch, tip, receipt)
+        local_fast_forward(conn, repo, work, branch, tip, receipt, control_epoch=epoch)
     except origin.DirtyCheckout as e:
         result.update(_dirty_wait(conn, repo, repo_name, e))
         return
@@ -552,8 +584,13 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
         result['landed'].append(t['id'])
     result['outcome'] = 'landed'
     if push:
+        from .launch import AdmissionHeld
         try:
-            origin.push_main(repo, remote, branch)
+            _control_guard(conn, epoch)
+            origin.push_main(repo, remote, branch, guard=lambda: _control_guard(conn, epoch))
+        except AdmissionHeld as e:
+            result['alert'] = str(e) + ': local landing retained; push held'
+            ops.event(conn, 'landing.push-held', actor='landing', data=dict(tip=tip, reason=str(e)))
         except origin.SyncError as e:
             result['alert'] = str(e)
             ops.ask_question(conn, 'epic', _epic(conn, 'Landing'), 'Push main failed', str(e),

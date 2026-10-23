@@ -13,6 +13,8 @@ from .ledger import ops
 
 class LedgerPort(Protocol):
     waiting: "Waiting"
+    def admission(self, epoch=None): ...
+    def require_admission(self, epoch=None): ...
     def claim_next(self, worker=None, exclude=()): ...
     def get_task(self, task_id): ...
     def list_tasks(self, status=None): ...
@@ -43,6 +45,17 @@ class DirectPort:
         from .ledger.waiting import Waiting
         self.conn, self.actor, self.now = conn, actor, now
         self.waiting = Waiting(conn, actor)
+
+    def admission(self, epoch=None):
+        from .notifications.controls import admission
+        return admission(self.conn, epoch=epoch)
+
+    def require_admission(self, epoch=None):
+        from .launch import AdmissionHeld
+        state = self.admission(epoch)
+        if not state['allowed']:
+            raise AdmissionHeld(state['reason'])
+        return state
 
     def claim_next(self, worker=None, exclude=()):
         return ops.claim_next(self.conn, {"actor": self.actor, **(worker or {})}, exclude=exclude)

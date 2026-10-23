@@ -197,7 +197,7 @@ class DispatchRuntime:
 
 
 class Dispatcher:
-    def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide):
+    def __init__(self, port, pipeline, runtime=None, usage=None, route=route_mod.choose, decide=_real_decide, directors=None):
         from .usage import Poller
         from .replan import Replanning
         self.port, self.pipeline = port, pipeline
@@ -214,6 +214,8 @@ class Dispatcher:
         self.cancelling = {}                 # run_id -> (task_id, placement): cancelled runner may still exist
         self.finish_tries = {}
         self.live = {}                       # run_id -> (handle, task_id, spec)
+        self.directors = directors
+        self._control_epoch = None
         self.missed = {}                     # run_id -> consecutive clean scans that did not find its runner
         self.cursor = None                   # last event id seen by the stale-brief check
         self.last_verdict = None
@@ -529,6 +531,8 @@ class Dispatcher:
         return started
 
     def _begin_gate(self, task, runs):
+        if not self._launch_allowed(task):
+            return False
         if self.resources_fn(new_workers=0)['verdict'] == 'hold':
             return False
         p, pl, tid = self.port, self.pipeline, task["id"]
@@ -559,12 +563,19 @@ class Dispatcher:
             plan = pl.ci.prepare(prog, task["worktree"], sha, gate_run, platform=platform,
                                  priority=task["priority"])
             receipt = plan["receipt"]
-            spec = {**plan["spec"], "nonce": nonce, "task": task}
+            spec = {**plan["spec"], "nonce": nonce, "task": task, 'control_epoch': self._control_epoch}
             p.append_event("gate-started", {"run": worker["id"], "gate_run": gate_run, "sha": sha, "kind": plan["kind"],
                                             "platform": platform, "receipt": str(receipt), "diff_lines": plan["diff_lines"],
                                             "files": plan["files"][:200], "scope": plan["scope"]}, tid)
-            p.append_event("run-launching", {"run": gate_run, "placement": spec["placement"], "nonce": nonce}, tid)
+            p.append_event("run-launching", {"run": gate_run, "placement": spec["placement"], "nonce": nonce,
+                                           'control_epoch': self._control_epoch}, tid)
+            spec['_admission_check'] = self._launch_guard
+            self._launch_guard()
             handle = self.launcher.launch(spec)
+        except launch_mod.AdmissionHeld as error:
+            self.ci_runners.release(tid)
+            p.finish_run(gate_run, 'control-held', note=str(error))
+            return False
         except Exception as e:
             self.ci_runners.release(tid)
             self._launch_error(task, gate_run, {"backend": "local"}, platform, e, nonce, role="gate")
@@ -699,6 +710,8 @@ class Dispatcher:
         allow = dispatch_repos.allowed(self.port.get_setting)
         started, inspected = [], {}                  # inspections are cached for this tick only
         for _ in range(slots):
+            if not self._launch_allowed():
+                break
             batch = self.replanning.prepare(assign, now=self.now(), inspected=inspected,
                                             allow=lambda t: dispatch_repos.permits(allow, t["repo"]))
             if batch is None:
@@ -898,6 +911,10 @@ class Dispatcher:
     def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
         """Start one run of `role` (worker or review) for the brief `b`; returns its run id, or None on a launch error."""
         p = self.port
+        if not self._launch_allowed(task):
+            if run_id is not None and role == 'planner':
+                self.replanning.finish(run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=self.now())
+            return None
         effort = route.get("effort") if role == "review" and route.get("effort") else effort_for(
             route["model"], route.get("effort"))
         if run_id is None:
@@ -918,6 +935,7 @@ class Dispatcher:
                 "read_checkouts": task.get("read_checkouts", []),
                 "sandbox": "read-only" if role in ("review", "planner") or task.get("write") is False else (seat or {}).get("sandbox", "workspace-write"),
                 "cwd": cwd, "placement": placement, "nonce": nonce, "task": task, "wall_s": self._wall_s(task, policy),
+                'control_epoch': self._control_epoch,
                 "idle_s": self._idle_s(policy), "system_append": b["system_append"], "user_prompt": b["user_prompt"],
                 "allowance_before": contract.used_from_headroom(self._reading_for_route(route)), **(extra or {})}
         if role == "planner":
@@ -927,9 +945,20 @@ class Dispatcher:
                            task["id"])
         p.append_event("dispatch.access", {"run": run_id, "read_checkouts": spec["read_checkouts"],
                                            "write": spec["write"], **({k: spec[k] for k in ("request_ids", "task_ids")} if role == "planner" else {})}, task["id"])
-        p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce}, task["id"])  # before any start
+        p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce,
+                                       'control_epoch': self._control_epoch}, task["id"])  # before any start
         try:
+            spec['_admission_check'] = self._launch_guard
+            self._launch_guard()
             handle = self.launcher.launch(spec)
+        except launch_mod.AdmissionHeld as error:
+            if role == 'planner':
+                self.replanning.finish(run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=self.now())
+            else:
+                p.finish_run(run_id, 'control-held', note=str(error))
+                if role == 'worker':
+                    p.set_status(task['id'], 'ready', reason=str(error))
+            return None
         except Exception as e:
             return self._launch_error(task, run_id, route, placement, e, nonce, role)
         self.live[run_id] = (handle, task["id"], spec)
@@ -1084,9 +1113,12 @@ class Dispatcher:
         return recovered
 
     def _adopt(self, task, run, placement, policy):
+        launched = next((e['data'] for e in reversed(self.port.events('run-launching'))
+                         if e['data'].get('run') == run['id']), {})
         spec = {"run_id": run["id"], "role": run["role"], "backend": run["backend"], "model": run["model"], "task": task,
                 "adopted": True, "placement": placement, "wall_s": self._wall_s(task, policy),
-                "idle_s": self._idle_s(policy)}
+                "idle_s": self._idle_s(policy), 'nonce': launched.get('nonce'),
+                'control_epoch': launched.get('control_epoch') or 0}
         saved = next((e["data"] for e in self.port.events("dispatch.access")
                       if e["data"].get("run") == run["id"]), {})
         if "read_checkouts" in saved:
@@ -1184,7 +1216,59 @@ class Dispatcher:
                 continue
             name = spec.get("seat") or (seat_of(spec) or {}).get("name")
             load[name] = load.get(name, 0) + 1
+        # Durable associations count even when adoption or termination is unknown.
+        for row in self.port.conn.execute("SELECT spec FROM director_runs WHERE state<>'finished'"):
+            name = json.loads(row['spec'])['seat']
+            load[name] = load.get(name, 0) + 1
         return load
+
+    def _launch_guard(self):
+        return self.port.require_admission(self._control_epoch)
+
+    def _launch_allowed(self, task=None):
+        try:
+            self._launch_guard()
+            return True
+        except launch_mod.AdmissionHeld as error:
+            if task and self.port.get_task(task['id'])['status'] == 'claimed':
+                self.port.set_status(task['id'], 'ready', reason=str(error))
+            return False
+
+    def _stop_for_control(self, epoch, changed_only=False):
+        from .directors import stop_intent
+        # Include durable launch intents even if a restart has not adopted them.
+        specs = {rid: spec for rid, (_, _, spec) in self.live.items()}
+        launches = {e['data'].get('run'): e['data'] for e in self.port.events('run-launching')}
+        for task, run in self._open_runs():
+            saved = launches.get(run['id'], {})
+            specs.setdefault(run['id'], dict(run_id=run['id'], nonce=saved.get('nonce'),
+                                             control_epoch=saved.get('control_epoch') or 0))
+        for spec in specs.values():
+            if changed_only and (spec.get('control_epoch') or 0) == epoch:
+                continue
+            stop_intent(self.port, spec, epoch, lambda value: self.launcher.cancel(value['run_id'], value['nonce']))
+
+    def _director_admission(self, spec):
+        seat = config_mod.seat_by_name(spec['seat'])
+        if seat is None or seat['backend'] != spec['backend']:
+            return 'seat-not-configured'
+        if seat['name'] not in [s['name'] for s in config_mod.director_seats()]:
+            return 'seat-not-authorized-for-director'
+        if spec['placement'] not in route_mod.seat_placements(seat):
+            return 'seat-placement-incompatible'
+        if self.last_resources.get('verdict') != 'go':
+            return 'resources-unavailable'
+        if self._ram_blocked(spec['placement']):
+            return 'resources-unavailable'
+        if spec['placement'] == 'wsl' and (not self.launcher.wsl_up() or self._wsl_blocked()):
+            return 'wsl-unavailable'
+        if seat['max_workers'] and self._seat_load().get(seat['name'], 0) >= seat['max_workers']:
+            return 'seat-capacity-unavailable'
+        if self._is_unavailable(spec['backend'], spec['placement']):
+            return 'backend-unavailable'
+        if not route_mod._seat_admits(seat, self.usage_poller.refresh(seat), protected=not seat['director']):
+            return 'allowance-unavailable'
+        return None
 
     def _route_inputs(self, task, admitted):
         """One router call shape: seat load, repo platforms and measured per-seat allowance."""
@@ -1312,6 +1396,7 @@ class Dispatcher:
 
 
     def tick(self):
+        self._control_epoch = self.port.admission()['epoch']
         self._seat_tick()
         p = self.port
         policy = p.get_policy()
@@ -1338,6 +1423,21 @@ class Dispatcher:
             for token in res.get('critical_tokens', []):
                 # Tokens are consumed only after the sticky ledger pause commits.
                 (config_mod.state_dir(config_mod.get()) / 'disk' / token).unlink(missing_ok=True)
+        if self.directors is not None:
+            def director_slots():
+                used = p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
+                return max(0, min(policy['parallel_cap'] - used, res.get('slots', 0)))
+            out['directors'] = self.directors.tick(p.admission(epoch=self._control_epoch),
+                dict(slots=director_slots, admit=self._director_admission))
+        else:
+            from .directors import service_tick
+            service_tick(p, self.now)
+        control = p.admission(epoch=self._control_epoch)
+        if not control['allowed']:
+            self._stop_for_control(control['epoch'])
+            out['control'] = control
+            return out
+        self._stop_for_control(control['epoch'], changed_only=True)
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
             return out
         out["verdict"] = res["verdict"]
@@ -1353,8 +1453,9 @@ class Dispatcher:
         out["admitted"] = admitted
         if not admitted:
             return out
-        in_use = sum(1 for _, _, sp in self.live.values() if sp.get("role") != "gate")
-        slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0))
+        in_use = p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
+        director_starts = len(out.get('directors', {}).get('launched', []))
+        slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0) - director_starts)
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
         slots -= len(out["reviewed"])
         out["planned"] = self._start_replans(policy, admitted, max(slots, 0))

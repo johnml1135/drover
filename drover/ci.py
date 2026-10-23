@@ -264,6 +264,20 @@ class CI:
         lines += _tail(d / runner.OUT_FILE, contract.EXCERPT_LINES - len(lines))
         return {'receipt': receipt, 'passed': passed, 'infra': infra, 'excerpt': '\n'.join(lines)}
 
+    def stop_active(self, conn, epoch):
+        """Stop saved group CI by nonce, including a hub restart during STOP."""
+        from .directors import stop_intent
+        from .port import DirectPort
+        for request in Path(self.runs_dir).glob('ci-*.json'):
+            saved = read_result(request) or {}
+            spec = (saved.get('context') or {}).get('spec')
+            if spec:
+                status = runner.read_status(self.runs_dir, spec['run_id']) or {}
+                if status.get('nonce') == spec['nonce'] and status.get('state') in ('exited', 'killed', 'timeout'):
+                    continue
+                stop_intent(DirectPort(conn), spec, epoch,
+                            lambda value: runner.request_stop(self.runs_dir, value['run_id'], nonce=value['nonce']))
+
     def resume(self, prog, checkout, *, conn=None):
         """Finish any saved full CI before its checkout is rebuilt for a changed merge queue.
 
@@ -279,7 +293,7 @@ class CI:
                                   priority=saved.get('priority', 'P1'))
                 self._resumed[str(checkout)] = (key, result)
 
-    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1'):
+    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None):
         """Run all placements in order, or adopt a saved runner after a hub restart.
 
         A queued CI runner is released by a running ticket's completion or expiry.
@@ -298,16 +312,25 @@ class CI:
             return cached[1]
         saved = read_result(request) or {'index': 0, 'results': [], 'checkout': str(checkout),
                                         'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority}
+        from .launch import AdmissionHeld
+        from .port import DirectPort
+        port = DirectPort(conn) if conn is not None else None
+        if port is not None:
+            saved.setdefault('control_epoch', port.admission()['epoch'] if control_epoch is None else control_epoch)
+        def guard():
+            if port is not None:
+                port.require_admission(saved['control_epoch'])
         for i in range(saved['index'], len(platforms)):
             context = saved.get('context')
             following = context is not None
             if context is None:
+                guard()
                 rid = 'ci-' + uuid.uuid4().hex
                 context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=platforms[i], base=base,
                                        priority=priority)
                 saved['context'] = context
                 runner.write_json_atomic(request, saved)
-            spec = context['spec']
+            spec = dict(context['spec'])
             ticket = saved.get('ticket')
             status = runner.read_status(self.runs_dir, spec['run_id'])
             from . import disk
@@ -322,6 +345,8 @@ class CI:
                 if conn is not None:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
                     while True:
+                        if not status:
+                            guard()
                         if ticket is None:
                             ticket = slots.lease_request(conn, key, priority, holder=spec['run_id'])
                             saved['ticket'] = ticket
@@ -339,6 +364,9 @@ class CI:
                     saved.pop('ticket', None)
                     runner.write_json_atomic(request, saved)
                     raise CIInterrupted('CI deferred until a healthy disk reading')
+                if not status:
+                    guard()
+                    spec['_admission_check'] = guard
                 following = True  # launch may start execution even if returning a handle fails
                 handle = self.launcher.adopt(spec) if status else self.launcher.launch(spec)
                 next_scan, missed = time.monotonic() + (0 if status else 30), 0
@@ -348,6 +376,10 @@ class CI:
                         break
                     if conn is not None:
                         slots.lease_heartbeat(conn, ticket)
+                        control = port.admission(epoch=saved['control_epoch'])
+                        if not control['allowed']:
+                            self.stop_active(conn, control['epoch'])
+                            raise CIInterrupted('termination-uncertain: ' + control['reason'])
                     if time.monotonic() >= next_scan:
                         next_scan = time.monotonic() + 30
                         try:
@@ -383,6 +415,9 @@ class CI:
                 if not evaluated['passed']:
                     request.unlink(missing_ok=True)
                     return receipt
+            except AdmissionHeld:
+                request.unlink(missing_ok=True)
+                raise
             except BaseException as error:
                 if capacity_deferred:
                     raise

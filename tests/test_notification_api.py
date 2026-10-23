@@ -164,8 +164,44 @@ class NotificationApiTests(unittest.TestCase):
             self.assertEqual(r.status_code, 403, r.text)
         task = self.app.state.store.create_task('Accounting')['id']
         self.assertEqual(self.c.post('/api/v1/runs', headers=WORKER, json={'task_id': task, 'role': 'director', 'backend': 'fake'}).status_code, 403)
-        rid = self.app.state.store.start_run(task, 'director', 'local')['id']
+        from drover.directors import DirectorRuntime
+        from drover.port import DirectPort
+        from drover.notifications import Notifications
+        from drover.ledger import ops
+        from tests.test_directors import ControlledAdapter
+        conn = self.app.state.store.conn
+        service = Notifications(conn)
+        service.register('accounting', allowed_models=['fixture'], token_budget=10)
+        service.broadcast('owner', ['accounting'], 'work', urgency='urgent')
+        ops.set_setting(conn, 'dispatch_enabled', 'true')
+        ops.set_setting(conn, 'director_execution_enabled', 'true')
+        ops.set_setting(conn, 'director_execution', json_text({'accounting': dict(backend='local',
+            model='fixture', seat='fixture', max_tokens=10, placement='windows', cwd=self.tmp.name)}))
+        runtime = DirectorRuntime(DirectPort(conn), ControlledAdapter(service))
+        rid, = runtime.tick(service.admission(), {'slots': 1, 'admit': lambda spec: None})['launched']
         self.assertEqual(self.c.post(f'/api/v1/runs/{rid}/finish', headers=WORKER, json={'outcome': 'done'}).status_code, 403)
+
+    def test_committed_action_executes_once_on_deterministic_tick_with_paid_execution_disabled(self):
+        from drover.directors import service_tick
+        from drover.port import DirectPort
+        from drover.ledger import ops
+        who = self.role(action_allowlist=['task.comment'])
+        task = self.submit(who)
+        self.app.state.store.approve(task)
+        conn = self.app.state.store.conn
+        ops.set_setting(conn, 'dispatch_enabled', 'true')
+        lease = self.lease(who)
+        action = {'kind': 'task.comment', 'payload': {'task_id': task, 'event_class': 'progress',
+                  'expected_status': 'ready', 'expected_revision': ops.events(conn, task_id=task)[-1]['id'], 'text': 'bounded effect'}}
+        response = self.post('/commit', {'lease_token': lease, 'checkpoint': {'saved': True},
+            'delivery_ids': [], 'actions': [action], 'request_key': 'effect', 'release': True}, who)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(ops.list_comments(conn, 'task', task), [])
+        service_tick(DirectPort(conn))
+        service_tick(DirectPort(conn))
+        self.assertEqual([row['body'] for row in ops.list_comments(conn, 'task', task)], ['bounded effect'])
+        self.assertEqual(conn.execute('SELECT state FROM action_outbox').fetchone()[0], 'complete')
+        self.assertEqual(conn.execute('SELECT COUNT(*) FROM director_runs').fetchone()[0], 0)
 
     def test_replay_pending_transfer_late_projection_restart_and_processed_history(self):
         a, b = self.role(), self.role('beta')

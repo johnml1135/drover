@@ -139,3 +139,69 @@ health and a fresh cursor; SSE uses an explicit `resync` event. Reconcile the
 snapshot and current `/inbox`, then continue with that cursor. Replay batches are
 bounded and can require multiple projection passes for a large source backlog.
 The existing owner UI `/events` bus retains its original behavior.
+
+## Supervised execution
+
+Dispatcher and service ticks project at most 100 source events, build deterministic
+digests, and execute at most 32 accepted local actions. Those operations run even
+when automatic director execution is disabled. Action admission and destination
+checks still obey dispatch pause, STOP, role generation and scoped authority.
+
+Automatic execution defaults off. The trusted settings seam is
+`director_execution_enabled=true` plus `director_execution`, a JSON mapping from
+role ID to exactly `backend`, `model`, `seat`, `max_tokens`, `placement`, and `cwd`.
+These are runtime settings, separate from the owner notification Policy schema.
+Role policy must explicitly allow the model and provide token and wake budgets.
+The dispatcher applies its existing account allowance, reserve, seat, platform,
+resource and parallel capacity checks. Open director runs count across restart
+and uncertain termination; dormant roles consume no seat.
+
+`DirectorRuntime(port, adapter=None, now=None)` provides `tick(admission, capacity)`,
+`recover()`, `finish(run_id, result)`, and `stop_active(epoch)`. Tick takes a global
+admission snapshot and a capacity object with `slots` (integer or current-count
+callback) and `admit(spec)` (returns a refusal reason or `None`). Hub construction
+injects it into the one locked dispatcher. Services perform deterministic work
+only and never launch a second supervisor.
+
+Adapters declare `live_offer`, `verified_resume`, `fresh_start`,
+`enforced_token_cap`, `authenticated_processing`, and `secure_handoff` booleans.
+They implement `launch(spec, credential, guard)`, `probe(spec)` returning
+`alive`/`gone`/`unknown` for the exact nonce, `adopt(spec)`, and `stop(spec)`.
+An optional `verify_resume(previous_spec)` must positively verify compatibility
+before `mode=resume` is selected; otherwise a supported fresh run is required.
+Live offers are capability metadata; this increment makes no interactive push
+claim. An active invocation reads its durable inbox and coalesces new wakes.
+
+The credential is handed off once, separately from the durable spec; it remains
+a scoped bearer until expiry or revocation. A compatible adapter must enforce
+the reserved token maximum, preserve the read-only director sandbox, securely
+deliver credentials through a private file/pipe or equivalent, and perform the
+authenticated acquire/checkpoint/acknowledgement protocol. It calls `guard()` at
+its actual launch boundary. It may raise `AdmissionHeld` only before an effect
+was issued; other launch errors retain an unknown-effect hold for reconciliation.
+Credentials must never enter argv, logs, durable specs, receipts or checkpoints.
+
+`RunnerDirectorAdapter(launcher, executor=None)` bridges the existing runner's
+nonce, scan, adoption and stop-request mechanisms. A compatible injected executor
+implements `launch(launcher, spec, credential, guard)` and optional
+`verify_resume(launcher, previous_spec)`. Existing model CLI launchers do not
+provide verified hard token-cap/authenticated-processing integration; the default
+adapter therefore reports an explicit unsupported hold and does not launch.
+Enabling the setting alone cannot supply these missing capabilities.
+
+Director accounting uses an archived internal task and dedicated run associations;
+normal task/run APIs cannot impersonate this lifecycle. Launch and stop intents
+share the event/index `action_outbox`, with internal kinds excluded from role
+allowlists and deterministic task execution. Lost launch responses are reconciled
+by nonce before replacement. Unknown liveness consumes capacity and never proves
+death. One automatic replacement is allowed by default; an exhausted failed run
+remains held through restart and new source notifications. Checkpoints, budgets,
+child task attempts, statuses and gates are preserved.
+
+STOP is checked at claim, intent acceptance, actual detach, group CI launch, and
+final merge/push boundaries. Active runs get nonce-addressed stop requests;
+request receipts explicitly leave termination unknown until supervision observes
+cessation. Stop/resume epochs also fence work admitted before an intervening STOP
+that occurred between ticks. A local merge already issued is recorded as landed
+even if a later STOP holds its push. Resume does not rewrite an old effect's
+epoch or make an uncertain effect disappear.

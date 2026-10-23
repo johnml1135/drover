@@ -86,12 +86,14 @@ def ahead(repo, remote='origin', main='main'):
     return int(r.stdout.strip()) if r.returncode == 0 else 0
 
 
-def push_main(repo, remote='origin', main='main'):
+def push_main(repo, remote='origin', main='main', *, guard=None):
     """Push a snapshot of local main without force. Failure never rolls back a landing."""
     sha = git(repo, 'rev-parse', '--verify', f'refs/heads/{main}^{{commit}}').stdout.strip()
     tracking = f'refs/remotes/{remote}/{main}'
     previous = git(repo, 'rev-parse', '--verify', tracking, check=False)
     old = previous.stdout.strip() if previous.returncode == 0 else '0' * 40
+    if guard is not None:
+        guard()
     if git(repo, 'push', remote, f'{sha}:refs/heads/{main}', check=False, timeout=FETCH_TIMEOUT_S).returncode:
         raise SyncError(f'push failed: {remote}/{main}; local landing is retained')
     # Push may not update tracking when remote.fetch excludes main. Preserve concurrent fetches.

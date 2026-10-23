@@ -357,4 +357,15 @@ DROP TABLE comments_v11;
 CREATE INDEX comments_target ON comments(target_kind,target_id);
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12)]
+V13 = """
+ALTER TABLE tasks ADD COLUMN internal INTEGER NOT NULL DEFAULT 0 CHECK(internal IN (0,1));
+CREATE TABLE director_runs (
+ run_id INTEGER PRIMARY KEY REFERENCES runs(id), role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ generation INTEGER NOT NULL, checkpoint_revision INTEGER NOT NULL, control_epoch INTEGER NOT NULL,
+ nonce TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, spec TEXT NOT NULL,
+ state TEXT NOT NULL DEFAULT 'launching', held_reason TEXT,
+ launch_action_id TEXT REFERENCES action_outbox(action_id), stop_action_id TEXT REFERENCES action_outbox(action_id));
+CREATE UNIQUE INDEX director_open_run ON director_runs(role_id) WHERE state<>'finished';
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13)]

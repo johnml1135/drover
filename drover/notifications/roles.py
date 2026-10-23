@@ -139,6 +139,10 @@ def role_state(service, role_id):
             'SELECT model,SUM(tokens) AS tokens FROM director_budget_entries WHERE role_id=? AND model IS NOT NULL GROUP BY model', (role_id,))}
         state['coalesced_wakes'] = service.conn.execute(
             "SELECT COUNT(*) FROM director_budget_entries WHERE role_id=? AND json_extract(receipt,'$.coalesced')=1", (role_id,)).fetchone()[0]
+        state['runs'] = [dict(row) for row in service.conn.execute(
+            'SELECT d.run_id,d.generation,d.checkpoint_revision,d.control_epoch,d.state,d.held_reason,'
+            'd.launch_action_id,d.stop_action_id,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
+            'WHERE role_id=? ORDER BY run_id DESC LIMIT 20', (role_id,))]
         state['issues'] = []
         for row in service.conn.execute('SELECT * FROM director_issue_leases WHERE role_id=?', (role_id,)):
             try:
