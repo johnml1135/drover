@@ -616,6 +616,23 @@ class SettingsGuardTests(HubCase):
             r = c.put("/api/v1/settings", json={"wsl_user": bad}, headers=SAME)
             self.assertEqual(r.status_code, 400, bad)
 
+    def test_director_execution_settings_require_owner_and_csrf(self):
+        body = {'director_execution_enabled': 'true', 'director_execution': '{}'}
+        original = self.get('/settings').json()
+        for key, value in body.items():
+            self.assertEqual(self.put({key: value}).status_code, 403, key)
+        self.assertEqual(self.put(body).status_code, 403)
+        self.assertEqual(self.get('/settings').json(), original)
+        tmp, app = make(trusted_ui_hosts=('testclient',))
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(app.state.store.close)
+        client = TestClient(app)
+        self.assertEqual(client.put('/api/v1/settings', json=body).status_code, 403)
+        response = client.put('/api/v1/settings', json=body, headers=SAME)
+        self.assertEqual(response.status_code, 200)
+        saved = client.get('/api/v1/settings', headers=AUTH).json()
+        self.assertEqual({key: saved[key] for key in body}, body)
+
 
 class BusBoundTests(unittest.TestCase):
     def test_slow_subscriber_is_bounded_and_told_to_resync(self):

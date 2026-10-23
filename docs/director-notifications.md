@@ -176,6 +176,8 @@ Automatic execution defaults off. The trusted settings seam is
 `director_execution_enabled=true` plus `director_execution`, a JSON mapping from
 role ID to exactly `backend`, `model`, `seat`, `max_tokens`, `placement`, and `cwd`.
 These are runtime settings, separate from the owner notification Policy schema.
+Changing them through `PUT /api/v1/settings` requires owner UI authentication and
+valid CSRF metadata; shared worker bearers cannot enable or configure execution.
 Role policy must explicitly allow the model and provide token and wake budgets.
 The dispatcher applies its existing account allowance, reserve, seat, platform,
 resource and parallel capacity checks. Open director runs count across restart
