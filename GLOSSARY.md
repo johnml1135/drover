@@ -13,7 +13,16 @@ The path of one change: task -> run -> checks -> review -> merge queue -> merge 
 The human who plans the work, makes decisions only a person may make, and authorizes installs, policy changes and pushes.
 
 **Director**:
-A strong model called fresh for one judgement, such as re-planning an epic, and then released.
+A named role responsible for a defined scope of work and its decisions, continuing across individual sessions and judgements. Several directors may work independently on separate scopes.
+
+**Owning director**:
+The one director responsible for an ordinary event and any response it needs. Other directors receive it only through an explicit broadcast or a separate event concerning their own work.
+
+**Director summary**:
+One director's periodic account of relevant progress, recorded decisions, and notices, with its own scope and frequency.
+
+**Broadcast**:
+A notice intentionally addressed to every director, either for their summaries or for immediate attention.
 
 **Default director**:
 The seat, model and effort level used for a director judgement unless that kind of judgement names its own.
@@ -132,8 +141,14 @@ Ending a session and starting a fresh one that receives a written account of whe
 _Avoid_: Handoff (unqualified), rotation, reset
 
 **Director session**:
-A named session between the owner and a director, belonging to no task, that may draw on other sessions' transcripts.
+A named conversation serving a director, belonging to no single task, that can be resumed or replaced while the director's responsibility continues.
 _Avoid_: Planning chat, console
+
+**Task group**:
+An explicitly bounded set of tasks whose accepted results satisfy a shared completion condition. Its membership must be settled before it can complete.
+
+**Join**:
+The condition that a task group must satisfy before its collected results are ready for the next step.
 
 **Epic**:
 A group of related tasks sharing one written plan that keeps them coherent; its tasks may be in different repos.
