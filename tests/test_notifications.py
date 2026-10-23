@@ -143,8 +143,12 @@ class NotificationsTests(unittest.TestCase):
         for task in (research, implementation, mechanical):
             ops.event(self.conn, 'run-finished', 'worker', {'outcome': 'done'}, task_id=task['id'])
             ops.event(self.conn, 'task.result-accepted', 'owner', {'result': 'report'}, task_id=task['id'])
-        ops.event(self.conn, 'status', 'owner', {'from': 'reviewed', 'to': 'landed'}, task_id=implementation['id'])
-        ops.event(self.conn, 'status', 'owner', {'from': 'reviewed', 'to': 'landed'}, task_id=mechanical['id'])
+        from drover.ledger import landing
+        for task in (implementation, mechanical):
+            ops.approve(self.conn, task['id'])
+            for status in ('claimed', 'running', 'gated', 'reviewed', 'landed'):
+                ops.set_status(self.conn, task['id'], status)
+            landing.record_merged(self.conn, dict(task, last_sha='child-sha'), 'main-tip', 'receipt')
         self.service.project()
         self.assertEqual([(m['task_id'], m['event_class']) for m in self.service.receive('director:a')],
                          [(research['id'], 'result-accepted'), (implementation['id'], 'landed')])

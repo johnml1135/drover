@@ -14,6 +14,55 @@ from tests.test_replans import PlannerDispatchCase
 
 
 class WorkerFences(Base):
+    def storage_scope(self):
+        service = Notifications(self.conn)
+        service.register('held', max_pending_actionable=1)
+        service.register('free')
+        held, free = self.task(), self.task()
+        source = self.task(ready=False)
+        for task, role in ((held, 'held'), (free, 'free'), (source, 'held')):
+            service.assign(task, role)
+        def pressure():
+            ops.event(self.conn, 'progress.stalled', 'dispatcher', {'cause': 'offline'}, task_id=source)
+            service.project()
+        return service, held, free, source, pressure
+
+    def test_storage_hold_filters_claim_and_releases_after_actual_issue_transfer(self):
+        service, held, free, source, pressure = self.storage_scope()
+        pressure()
+        issue, = service.receive('held')
+        self.assertEqual(ops.claim_next(self.conn)['id'], free)
+        self.assertIsNone(ops.claim_next(self.conn))
+        self.assertEqual(self.status(held), 'ready')
+        service.assign(source, 'free', expected_revision=1)
+        self.assertEqual(service.receive('free')[0]['event_id'], issue['event_id'])
+        self.assertEqual(ops.claim_next(self.conn)['id'], held)
+
+    def test_storage_hold_after_claim_blocks_run_and_resolution_reopens_admission(self):
+        service, held, free, source, pressure = self.storage_scope()
+        self.assertEqual(ops.claim_next(self.conn, exclude=[free])['id'], held)
+        pressure()
+        with self.assertRaisesRegex(PermissionError, 'storage'):
+            ops.start_run(self.conn, held, 'worker', 'local')
+        self.assertEqual(ops.list_runs(self.conn, held), [])
+        ops.event(self.conn, 'progress.recovered', 'dispatcher', {'cause': 'offline'}, task_id=source)
+        self.assertFalse(service.health('held')['admission_held'])
+        self.assertIsInstance(ops.start_run(self.conn, held, 'worker', 'local'), int)
+
+    def test_storage_hold_at_final_launch_boundary_only_fences_affected_task(self):
+        service, held, free, source, pressure = self.storage_scope()
+        launch = self.fl.launch
+        def boundary(spec):
+            if spec['task']['id'] == held:
+                pressure()
+            spec['_admission_check']()
+            return launch(spec)
+        with patch.object(self.fl, 'launch', side_effect=boundary):
+            self.d.tick()
+        self.assertEqual([spec['task']['id'] for spec in self.fl.specs], [free])
+        self.assertEqual(self.status(held), 'ready')
+        self.assertEqual(service.receive('held')[0]['task_id'], source)
+
     def test_stop_then_resume_between_ticks_still_stops_previously_admitted_run(self):
         self.task()
         self.d.tick()

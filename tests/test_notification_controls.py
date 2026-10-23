@@ -249,11 +249,12 @@ class NotificationControlsTests(unittest.TestCase):
         self.assertEqual(actions.execute(self.conn, new['action_id'], now=lambda: self.now)['state'], 'complete')
 
     def test_v10_migration_never_reuses_a_compacted_delivery_identity(self):
-        from drover.ledger.db import migrate
+        from drover.ledger.db import migrate, schema_version
         from drover.ledger.schema import MIGRATIONS
         legacy = connect(Path(self.tmp.name) / 'legacy.db', migrate_db=False)
         self.addCleanup(legacy.close)
-        migrate(legacy, MIGRATIONS[:-1])
+        migrate(legacy, [(version, sql) for version, sql in MIGRATIONS if version <= 10])
+        self.assertEqual(schema_version(legacy), 10)
         # An isolated historical V10 fixture: its last inbox identity was compacted.
         legacy.execute("INSERT INTO director_roles(role_id,policy,created,last_digest) VALUES('director:a','{}',1000,1000)")
         legacy.execute("INSERT INTO task_events(id,at,kind,actor,data) VALUES(1,'2026-10-23T00:00:00Z','progress','legacy','{}')")
@@ -261,6 +262,7 @@ class NotificationControlsTests(unittest.TestCase):
                        "VALUES(41,1,'director:a','progress',1,'digest',0,'{}',1000)")
         legacy.execute('DELETE FROM notification_inbox WHERE id=41')
         migrate(legacy)
+        self.assertEqual(schema_version(legacy), MIGRATIONS[-1][0])
         service = Notifications(legacy, now=lambda: self.now)
         service.broadcast('owner', ['director:a'], 'New notice', urgency='urgent')
         service.project()

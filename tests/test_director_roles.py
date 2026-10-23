@@ -36,6 +36,44 @@ class DirectorRolesTests(unittest.TestCase):
             self.service.authenticate(session['credential'])
         self.assertEqual(self.service.authenticate(fresh['credential'])['session_id'], 'session:2')
 
+    def test_first_issue_assignment_promotes_recipient_preferences_before_or_after_projection(self):
+        for projected in (False, True):
+            for muted in (False, True):
+                with self.subTest(projected=projected, muted=muted):
+                    role = f'recovery-{projected}-{muted}'
+                    self.service.register(role, notifications={'mode': 'muted' if muted else 'profile'})
+                    task = ops.create_task(self.conn, 'Unassigned stalled task', 'repo')
+                    source = ops.event(self.conn, 'progress.stalled', 'dispatcher',
+                        {'cause': 'offline', 'reason': 'worker unavailable'}, task_id=task['id'])
+                    ops.event(self.conn, 'comment', 'owner', {'urgent': True, 'text': 'separate decision'},
+                        task_id=task['id'])
+                    if projected:
+                        self.service.project()
+                    self.service.assign(task['id'], role, event_class='issue')
+                    state = self.service.role_state(role)
+                    self.assertEqual(bool(state['pending_wake']), not muted)
+                    if not muted:
+                        self.assertEqual(state['wake_position'], source)
+                    self.service.project()
+                    message, = self.service.receive(role)
+                    self.assertEqual((message['event_id'], message['event_class'], message['cause_id']),
+                                     (source, 'issue', 'offline'))
+                    self.assertEqual(message['mode'], 'muted' if muted else 'immediate')
+                    self.service.assign(task['id'], role, event_class='issue')
+                    self.service.project()
+                    self.assertEqual(self.service.receive(role), [message])
+                    attention = [item for item in self.service.owner_attention() if item['target_id'] == task['id']]
+                    self.assertEqual([item['title'] for item in attention], ['Unassigned notification: decision-needed'])
+                    session = 'session-' + role
+                    token = self.lease(role, session)
+                    versions = {message['delivery_id']: message['message_version']}
+                    receipt = self.service.commit(role, token, {}, [message['delivery_id']], [], 'handled',
+                        release=True, delivery_versions=versions)
+                    self.assertFalse(self.service.role_state(role)['pending_wake'])
+                    self.service.assign(task['id'], 'director:a', expected_revision=1, event_class='issue')
+                    self.assertEqual(self.service.commit(role, token, {}, [message['delivery_id']], [],
+                        'handled', release=True, delivery_versions=versions), receipt)
+
     def lease(self, role='director:a', session='session:1'):
         self.service.issue_session(role, session)
         return self.service.acquire(role, session)['lease_token']

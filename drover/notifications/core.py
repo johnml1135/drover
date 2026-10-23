@@ -17,7 +17,7 @@ EVENT_CLASSES = frozenset(('progress', 'stage', 'result-accepted', 'landed', 'gr
 PROFILE_VERSION = 1
 
 
-def classify(event):
+def classify(conn, event):
     """Map ledger facts, never process exit, to semantic notification classes (v1)."""
     kind, data = event['kind'], event['data']
     if kind in ('deps-set', 'related-set') and not any(data.values()):
@@ -26,6 +26,13 @@ def classify(event):
         return None
     if kind in ('task.result-accepted', 'result.accepted'):
         return 'result-accepted'
+    if kind == 'task.landed':
+        from .groups import accepted_result
+        result = accepted_result(conn, event['task_id'], 'legacy-merged')
+        if result and (data.get('land_sha'), data.get('tip'), data.get('receipt')) == (
+                result['commit'], result['tip'], result['receipt']):
+            return 'landed'
+        return 'stage'
     if kind == 'group.issue':
         return 'issue'
     if kind == 'group.ready':
@@ -42,7 +49,12 @@ def classify(event):
         return 'role-unavailable'
     if kind == 'status':
         if data.get('to') == 'landed':
-            return 'landed'
+            # A worker can report a legal status transition without a merge.
+            # Merged acceptance is emitted by the receipt seam; read-only
+            # acceptance must match the owner's frozen result evidence.
+            from .groups import accepted_result
+            result = accepted_result(conn, event['task_id'], 'legacy-read-only')
+            return 'landed' if result and result['revision'] == event['id'] else 'stage'
         if data.get('to') in ('needs-owner', 'stuck'):
             return 'issue'
         return 'stage'
@@ -213,7 +225,7 @@ def _matching_subscription(conn, role_id, task, event):
     while disjoint event/reason filters continue to select their union of facts.
     """
     candidates = []
-    event_class = classify(event)
+    event_class = classify(conn, event)
     for row in conn.execute('SELECT id FROM subscriptions WHERE role_id=? ORDER BY id', (role_id,)):
         sub = _subscription(conn, row['id'])
         prefs = sub['preferences']
@@ -299,6 +311,13 @@ def bound_envelope(envelope):
     return envelope
 
 
+def bound_digest(message):
+    """Validate the complete digest without changing its retained body or identity."""
+    if serialized_size(message) > 32768:
+        raise ValueError('digest exceeds the serialized message byte limit')
+    return message
+
+
 def issue_key(conn, envelope):
     """Use typed source identity, independently of bounded display evidence."""
     source = conn.execute('SELECT data FROM task_events WHERE id=?',
@@ -321,30 +340,30 @@ def coalesce_issue(previous, following):
     return updated, previous['evidence'] != following['evidence']
 
 
-def _resolve_issue(conn, event):
-    if event['kind'] == 'status' and event['data'].get('to') == 'landed':
-        for table in ('notification_intents', 'notification_inbox'):
-            conn.execute(f"UPDATE {table} SET resolved=1 WHERE actionable=1 AND json_extract(envelope,'$.task_id')=? "
-                         "AND json_extract(envelope,'$.evidence.to')='needs-owner'", (event['task_id'],))
-    if event['kind'] not in ('progress.recovered', 'recovery.resolved', 'question-answered'):
-        return
-    cause, question = _cause_identity(event['data'].get('cause')), event['data'].get('question')
-    if cause is None and question is None:
-        return
-    # Display excerpts may stringify a question ID. Resolution uses the same
-    # immutable source question that defines its coalescing/handling episode.
-    source_question = ("(SELECT json_extract(e.data,'$.question') FROM task_events e WHERE "
-                       "e.id=COALESCE(json_extract(envelope,'$.latest_event_id'),json_extract(envelope,'$.event_id')))")
-    matches = ("actionable=1 AND json_extract(envelope,'$.task_id') IS ? "
-               "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
-               f"(? IS NOT NULL AND {source_question}=?))")
+def _resolve_issue(conn, event, event_class):
+    if event_class == 'landed':
+        matches = ("actionable=1 AND json_extract(envelope,'$.task_id')=? "
+                   "AND json_extract(envelope,'$.evidence.to')='needs-owner'")
+        parameters = (event['task_id'],)
+    else:
+        if event['kind'] not in ('progress.recovered', 'recovery.resolved', 'question-answered'):
+            return
+        cause, question = _cause_identity(event['data'].get('cause')), event['data'].get('question')
+        if cause is None and question is None:
+            return
+        # Resolve using the immutable source, independently of display excerpts.
+        source_question = ("(SELECT json_extract(e.data,'$.question') FROM task_events e WHERE "
+                           "e.id=COALESCE(json_extract(envelope,'$.latest_event_id'),json_extract(envelope,'$.event_id')))")
+        matches = ("actionable=1 AND json_extract(envelope,'$.task_id') IS ? "
+                   "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
+                   f"(? IS NOT NULL AND {source_question}=?))")
+        parameters = (event['task_id'], cause, cause, question, question)
     affected_roles = set()
     for table in ('notification_intents', 'notification_inbox'):
         affected_roles.update(row['role_id'] for row in conn.execute(
             f"SELECT DISTINCT role_id FROM {table} WHERE resolved=0 AND {matches}",
-            (event['task_id'], cause, cause, question, question)) if row['role_id'])
-        conn.execute(f"UPDATE {table} SET resolved=1 WHERE {matches}",
-                     (event['task_id'], cause, cause, question, question))
+            parameters) if row['role_id'])
+        conn.execute(f"UPDATE {table} SET resolved=1 WHERE {matches}", parameters)
     for role in conn.execute('SELECT role_id FROM notification_escalations').fetchall():
         reconcile_storage_hold(conn, role['role_id'])
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='director_runtime'").fetchone():
@@ -374,7 +393,7 @@ def capture_event(conn, event, *, subscription=None, replay=False):
     """Called inside the source event transaction, including nested waiting events."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='notification_intents'").fetchone():
         return  # Waiting's historical migrations precede V9.
-    event_class = classify(event)
+    event_class = classify(conn, event)
     if event_class is None:
         return
     group_id = event['data'].get('group_id') if event['task_id'] is None else None
@@ -388,7 +407,7 @@ def capture_event(conn, event, *, subscription=None, replay=False):
     else:
         return
     if not replay:
-        _resolve_issue(conn, event)
+        _resolve_issue(conn, event, event_class)
     ownership = dict(role_id=group['role_id'], revision=1) if group_id else effective_owner(conn, task['id'], event_class)
     role_id = ownership['role_id'] if ownership else None
     task['_joined'] = bool(role_id and task['id'] and conn.execute(
@@ -603,6 +622,31 @@ class Notifications:
                 owner = effective_owner(self.conn, task_id, intent['event_class'])
                 if owner is None or owner['role_id'] != role_id:
                     continue
+                if intent['role_id'] is None:
+                    # First responsibility resolves real recipient preferences;
+                    # the unassigned placeholder mute was never a user choice.
+                    source = dict(self.conn.execute('SELECT * FROM task_events WHERE id=?', (intent['event_id'],)).fetchone())
+                    source['data'] = json.loads(source['data'])
+                    task = scope_task(self.conn, ops.get_task(self.conn, task_id))
+                    task['_joined'] = bool(self.conn.execute(
+                        'SELECT 1 FROM task_group_members m JOIN task_groups g USING(group_id) WHERE m.child_id=? AND g.role_id=?',
+                        (task_id, role_id)).fetchone())
+                    sub = _matching_subscription(self.conn, role_id, task, source)
+                    preferences = sub['preferences'] if sub else _preferences(mode='muted')
+                    envelope = json.loads(intent['envelope'])
+                    envelope.update(mode=_delivery_mode(task, intent['event_class'], preferences),
+                                    subscription_id=sub['id'] if sub else None,
+                                    subscription_revision=sub['revision'] if sub else None)
+                    self.conn.execute('UPDATE notification_intents SET preferences=?,envelope=?,subscription_id=?,'
+                                      'subscription_revision=?,projected=0 WHERE event_id=?',
+                                      (ops._j(preferences), ops._j(envelope), envelope['subscription_id'],
+                                       envelope['subscription_revision'], intent['event_id']))
+                    self.conn.execute('UPDATE notification_inbox SET envelope=?,mode=?,subscription_id=?,subscription_revision=? '
+                                      'WHERE event_id=? AND acknowledged_at IS NULL',
+                                      (ops._j(envelope), envelope['mode'], envelope['subscription_id'],
+                                       envelope['subscription_revision'], intent['event_id']))
+                    self.conn.execute("UPDATE notification_positions SET event_id=MIN(event_id,?) WHERE name='inbox'",
+                                      (intent['event_id'] - 1,))
                 self.conn.execute('UPDATE notification_intents SET role_id=?,ownership_revision=? WHERE event_id=?',
                                   (role_id, owner['revision'], intent['event_id']))
                 self.conn.execute('UPDATE notification_inbox SET role_id=?,ownership_revision=?,offered_at=NULL,digest_id=NULL '
@@ -677,7 +721,7 @@ class Notifications:
             if target and recipient_owner(self.conn, json.loads(target['envelope'])):
                 sub['preview'].append(dict(event_id=event['id'], event_class=json.loads(target['envelope'])['event_class']))
                 continue
-            event_class = classify(event)
+            event_class = classify(self.conn, event)
             task = event_scope(self.conn, event)
             if event_class is None or task is None:
                 continue
@@ -777,7 +821,7 @@ class Notifications:
                 if not target['projected']:
                     first = event['id'] if first is None else first
                 continue  # Explicit targeting retains its original delivery preferences.
-            event_class = classify(event)
+            event_class = classify(self.conn, event)
             task = event_scope(self.conn, event)
             if not event_class or task is None:
                 continue
@@ -898,9 +942,11 @@ class Notifications:
             for message in items[:limit]:
                 if message['delivery_id'].startswith('digest:'):
                     digest_after = max(digest_after, message['message_version'])
+                    message = bound_digest(message)
                 else:
                     event_after = max(event_after, message['message_version'])
-                result.append(dict(cursor=f'v1:{event_after}:{digest_after}', message=bound_envelope(message)))
+                    message = bound_envelope(message)
+                result.append(dict(cursor=f'v1:{event_after}:{digest_after}', message=message))
             return dict(items=result, cursor=f'v1:{event_after}:{digest_after}', more=more, resync_required=False)
 
     def owner_attention(self):

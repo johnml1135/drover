@@ -625,11 +625,19 @@ class UiView:
 
     def push_main(self, name):
         """Owner action; repo paths and remote names come only from validated configuration."""
+        from drover.notifications.controls import admission
+        control = admission(self.c)
+        def guard():
+            current = admission(self.c, epoch=control['epoch'])
+            if not current['allowed']:
+                raise BadRequest(current['reason'])
+        guard()
         prog = repos.load_all().get(name.lower())
         if prog is None:
             raise NotFound("unknown repo")
         try:
-            origin.push_main(repos.native(repos.repo_path(prog)), repos.remote_name(prog), repos.default_branch(prog))
+            origin.push_main(repos.native(repos.repo_path(prog)), repos.remote_name(prog), repos.default_branch(prog),
+                             guard=guard)
         except origin.SyncError as e:
             ops.ask_question(self.c, 'epic', landing._epic(self.c, 'Landing'), 'Push main failed', str(e),
                              options=[{'label': 'Acknowledged'}], actor='owner')

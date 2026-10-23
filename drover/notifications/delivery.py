@@ -3,7 +3,7 @@ import json
 
 from ..ledger import ops
 from ..ledger.db import tx
-from .core import (_role, _preferences, bound_envelope, coalesce_issue, effective_owner,
+from .core import (_role, _preferences, bound_digest, bound_envelope, coalesce_issue, effective_owner,
                    issue_key, recipient_owner, reconcile_storage_hold, serialized_size)
 
 
@@ -81,7 +81,7 @@ def receive(service, role_id, limit):
                                (owner := recipient_owner(conn, entry)) and
                                owner['role_id'] == role_id]
             body.update(delivery_id=f"digest:{row['id']}", digest_id=f"digest:{row['id']}", message_version=row['id'])
-            result.append(body)
+            result.append(bound_digest(body))
             conn.execute('UPDATE notification_digests SET offered_at=? WHERE id=?', (service.now(), row['id']))
         return result
 

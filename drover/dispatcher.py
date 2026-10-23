@@ -570,8 +570,8 @@ class Dispatcher:
                                             "files": plan["files"][:200], "scope": plan["scope"]}, tid)
             p.append_event("run-launching", {"run": gate_run, "placement": spec["placement"], "nonce": nonce,
                                            'control_epoch': self._control_epoch}, tid)
-            spec['_admission_check'] = self._launch_guard
-            self._launch_guard()
+            spec['_admission_check'] = lambda: p.require_admission(spec['control_epoch'], tid)
+            spec['_admission_check']()
             handle = self.launcher.launch(spec)
         except launch_mod.AdmissionHeld as error:
             self.ci_runners.release(tid)
@@ -949,8 +949,8 @@ class Dispatcher:
         p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce,
                                        'control_epoch': self._control_epoch}, task["id"])  # before any start
         try:
-            spec['_admission_check'] = self._launch_guard
-            self._launch_guard()
+            spec['_admission_check'] = lambda: p.require_admission(spec['control_epoch'], task['id'])
+            spec['_admission_check']()
             handle = self.launcher.launch(spec)
         except launch_mod.AdmissionHeld as error:
             if role == 'planner':
@@ -1223,12 +1223,12 @@ class Dispatcher:
             load[name] = load.get(name, 0) + 1
         return load
 
-    def _launch_guard(self):
-        return self.port.require_admission(self._control_epoch)
+    def _launch_guard(self, task=None):
+        return self.port.require_admission(self._control_epoch, task['id'] if task else None)
 
     def _launch_allowed(self, task=None):
         try:
-            self._launch_guard()
+            self._launch_guard(task)
             return True
         except launch_mod.AdmissionHeld as error:
             if task and self.port.get_task(task['id'])['status'] == 'claimed':

@@ -76,7 +76,12 @@ def record_base(conn, repo, sha, status):
 
 def record_merged(conn, task, tip, receipt):
     with tx(conn):
+        previous = conn.execute('SELECT land_sha,tip,receipt FROM task_landed WHERE task_id=?', (task['id'],)).fetchone()
         conn.execute("INSERT OR REPLACE INTO task_landed(task_id,land_sha,tip,receipt,at) VALUES(?,?,?,?,?)",
                      (task['id'], task['last_sha'], tip, receipt, ops.stamp()))
+        if (previous is None or tuple(previous) != (task['last_sha'], tip, receipt)) and conn.execute(
+                'SELECT 1 FROM tasks WHERE id=?', (task['id'],)).fetchone():
+            ops.event(conn, 'task.landed', 'landing',
+                      {'land_sha': task['last_sha'], 'tip': tip, 'receipt': receipt}, task_id=task['id'])
         from ..notifications.groups import changed
         changed(conn, task['id'])

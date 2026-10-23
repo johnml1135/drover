@@ -587,7 +587,7 @@ def claim_next(conn, worker=None, now=None, exclude=()):
     actor = worker.get("actor") or worker.get("owner_kind") or "worker"
     with tx(conn):
         skip = set(exclude or ())
-        from ..notifications.controls import admission
+        from ..notifications.controls import admission, task_admission
         if not admission(conn)['allowed']:
             return None
         from .waiting import Waiting
@@ -596,6 +596,8 @@ def claim_next(conn, worker=None, now=None, exclude=()):
         allow = dispatch_repos.allowed(lambda k, d=None: get_setting(conn, k, d))
         for cand in ready_tasks(conn, worker.get("repo"), worker.get("repo_path"), now):
             if cand["id"] in skip or not dispatch_repos.permits(allow, cand["repo"]):
+                continue
+            if not task_admission(conn, cand['id'])['allowed']:
                 continue
             runs = waiting.replan_runs() if runs is None else runs     # one snapshot per call (inside tx)
             if waiting.replan_busy(cand["id"], runs):
@@ -621,8 +623,8 @@ def start_run(conn, task_id, role, backend, model=None, effort=None, policy_vers
         t = get_task(conn, task_id)
         if role == 'director' or role.startswith('director:') or t.get('internal'):
             raise PermissionError('director runs require the supervised runtime')
-        from ..notifications.controls import admission
-        control = admission(conn)
+        from ..notifications.controls import task_admission
+        control = task_admission(conn, task_id)
         if not control['allowed']:
             raise PermissionError(control['reason'])
         cur = conn.execute(

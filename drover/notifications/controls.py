@@ -42,6 +42,20 @@ def admission(conn, role_id=None, generation=None, epoch=None):
     return result
 
 
+def task_admission(conn, task_id, epoch=None):
+    """Fence new task work using global controls and its current owning scopes."""
+    from .core import EVENT_CLASSES, effective_owner
+    result = admission(conn, epoch=epoch)
+    if not result['allowed']:
+        return result
+    owners = {owner['role_id'] for event_class in EVENT_CLASSES
+              if (owner := effective_owner(conn, task_id, event_class))}
+    for role_id in sorted(owners):
+        if conn.execute('SELECT 1 FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone():
+            return dict(result, allowed=False, reason='actionable-storage-high-water', role_id=role_id)
+    return result
+
+
 def _issuer(conn, issuer, global_control=False):
     """Trusted owner/service strings and explicit director principals are distinct.
 

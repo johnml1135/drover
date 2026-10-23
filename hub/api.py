@@ -320,12 +320,12 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "task.result-accepted", "result.accepted")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "task.result-accepted", "task.landed", "result.accepted")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)
 def add_event(body: EventIn, request: Request, who: str = Depends(auth.require_api)):
-    if not is_owner(who) and body.kind.startswith(OWNER_EVENT_KINDS):
+    if not is_owner(who) and (body.kind == 'status' or body.kind.startswith(OWNER_EVENT_KINDS)):
         raise HTTPException(403, f"owner-reserved event kind: {body.kind}")
     return guard(_store(request).add_event, body.kind, actor(who), body.data, body.task_id,
                  body.epic_id)

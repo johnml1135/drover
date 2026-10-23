@@ -55,6 +55,12 @@ owner decision; it does not reset budgets, accept child results, clear holds or
 resume STOP. Director/group comments support ordinary discussion; urgent/replan
 comments require a task or epic target.
 
+First assignment applies the recipient's current preferences to pending unassigned
+facts, including immediate issue wakes; an explicit mute remains effective.
+Storage pressure holds new claims, runs and launches for tasks currently owned
+by the affected role. Resolving or transferring the actual issues releases that
+hold without deleting them. Other roles continue normally.
+
 Defaults for a newly registered role and its subscriptions:
 
 | Setting | Default |
@@ -75,6 +81,12 @@ the digest while the group's accepted completion produces the final wake.
 Empty digest intervals produce no message. Quiet/verbose profiles, event-class
 overrides and explicit modes change delivery preferences within existing
 authority; they cannot grant task access or actions.
+
+Accepted landing requires a persisted merge receipt or the owner's accepted
+read-only result receipt. A worker's status report alone remains a stage update:
+it cannot resolve needs-owner notifications or expire completion follows.
+Workers use the status mutation route for lifecycle observations; generic event
+submission reserves `status`, `task.landed` and accepted-result event names.
 
 ## Director CLI
 
@@ -158,6 +170,10 @@ Only retained deliveries addressed to the authenticated director and currently
 authorized are replayed; a successor never inherits processed predecessor
 history. Delivery is at least once: deduplicate by delivery identity/version and
 use idempotent processing request keys.
+
+Complete ordinary messages are bounded to 16,384 serialized JSON bytes and
+personal digests to 32,768 bytes, including delivery identity and version fields.
+Replay and SSE preserve each retained digest body within its larger budget.
 
 A compacted replay range returns `resync_required`, a scoped ownership snapshot,
 health and a fresh cursor; SSE uses an explicit `resync` event. Reconcile the
@@ -249,6 +265,9 @@ cessation. Stop/resume epochs also fence work admitted before an intervening STO
 that occurred between ticks. A local merge already issued is recorded as landed
 even if a later STOP holds its push. Resume does not rewrite an old effect's
 epoch or make an uncertain effect disappear.
+The owner's manual Push main action captures the same global epoch and checks
+it again immediately before push; STOP/resume during preparation requires a
+fresh owner request.
 
 Group CI saves whether its context is prepared or possibly issued. An uncertain
 execution retains its original nonce and checkout across STOP/resume, even when

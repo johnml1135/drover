@@ -181,6 +181,70 @@ class NotificationApiTests(unittest.TestCase):
         rid, = runtime.tick(service.admission(), {'slots': 1, 'admit': lambda spec: None})['launched']
         self.assertEqual(self.c.post(f'/api/v1/runs/{rid}/finish', headers=WORKER, json={'outcome': 'done'}).status_code, 403)
 
+    def landing_follow(self):
+        from drover.notifications import Notifications
+        a = self.role()
+        self.role('collector')
+        task = self.submit(a)
+        service = Notifications(self.app.state.store.conn)
+        group = service.create_group('merged', 'collector')
+        group = service.enroll('merged', task, group['revision'], 'enroll')
+        service.seal('merged', group['revision'], 'seal')
+        follow, = service.health('alpha')['subscriptions']
+        follow = self.c.patch(BASE + '/subscriptions/' + follow['id'], headers=a,
+            json={'expected_revision': follow['revision'], 'preferences': {'stop_on_completion': True}}).json()
+        self.app.state.store.approve(task)
+        self.app.state.store.set_status(task, 'needs-owner', 'dispatcher', 'awaiting acceptance')
+        issue, = self.get('/inbox', a).json()
+        return a, task, service, follow, issue
+
+    def test_worker_generic_lifecycle_injection_keeps_issue_follow_and_join(self):
+        a, task, service, follow, issue = self.landing_follow()
+        for kind, data in (('status', {'from': 'reviewed', 'to': 'landed'}),
+                           ('status', {'to': 'cancelled'}),
+                           ('task.landed', {'land_sha': 'forged', 'tip': 'forged'})):
+            with self.subTest(kind=kind, data=data):
+                result = self.c.post('/api/v1/events', headers=WORKER,
+                    json={'kind': kind, 'task_id': task, 'data': data})
+                self.assertEqual(result.status_code, 403, result.text)
+                self.assertEqual(self.get('/inbox', a).json(), [issue])
+                self.assertTrue(next(s for s in service.health('alpha')['subscriptions']
+                    if s['id'] == follow['id'])['preferences']['enabled'])
+                self.assertFalse(service.get_group('merged')['ready'])
+        observation = self.c.post('/api/v1/events', headers=WORKER,
+            json={'kind': 'worker-observation', 'task_id': task, 'data': {'message': 'still checking'}})
+        self.assertEqual(observation.status_code, 201, observation.text)
+
+    def test_worker_status_chain_needs_real_merge_receipt_for_semantic_completion(self):
+        from drover.ledger import landing
+        a, task, service, follow, issue = self.landing_follow()
+        lease = self.lease(a)
+        ack = self.post('/commit', {'lease_token': lease, 'checkpoint': {},
+            'delivery_ids': [issue['delivery_id']],
+            'delivery_versions': {issue['delivery_id']: issue['message_version']},
+            'request_key': 'observed-issue', 'release': True}, a)
+        self.assertEqual(ack.status_code, 200, ack.text)
+        for status in ('ready', 'claimed', 'running', 'gated', 'reviewed', 'landed'):
+            result = self.c.post(f'/api/v1/tasks/{task}/status', headers=WORKER, json={'status': status})
+            self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(self.get('/inbox', a).json(), [])
+        health = service.health('alpha')
+        self.assertEqual(health['pending_actionable'], 1)
+        self.assertFalse(health['runtime']['pending_wake'])
+        self.assertTrue(next(s for s in health['subscriptions'] if s['id'] == follow['id'])['preferences']['enabled'])
+        self.assertFalse(service.get_group('merged')['ready'])
+        landing.record_merged(service.conn, {'id': task, 'last_sha': 'a' * 40}, 'b' * 40, 'fixture merge receipt')
+        landed, = self.get('/inbox', a).json()
+        self.assertEqual((landed['task_id'], landed['event_class']), (task, 'landed'))
+        self.assertEqual(landed['evidence']['land_sha'], 'a' * 40)
+        health = service.health('alpha')
+        self.assertEqual(health['pending_actionable'], 0)
+        self.assertTrue(health['runtime']['pending_wake'])
+        self.assertFalse(next(s for s in health['subscriptions'] if s['id'] == follow['id'])['preferences']['enabled'])
+        self.assertTrue(service.get_group('merged')['ready'])
+        landing.record_merged(service.conn, {'id': task, 'last_sha': 'a' * 40}, 'b' * 40, 'fixture merge receipt')
+        self.assertEqual(self.get('/inbox', a).json(), [landed])
+
     def test_committed_action_executes_once_on_deterministic_tick_with_paid_execution_disabled(self):
         from drover.directors import service_tick
         from drover.port import DirectPort
@@ -465,6 +529,40 @@ class NotificationApiTests(unittest.TestCase):
                     after = batch['cursor']
                 self.assertEqual(seen, expected)
                 self.assertEqual(self.get('/replay?after=' + after + '&limit=1', a).json()['items'], [])
+
+    def test_large_legal_digest_replays_over_http_and_sse_with_cursor_continuation(self):
+        import json
+        import time
+        from drover.notifications import Notifications
+        a = self.role(notifications={'digest_interval': 1})
+        task = self.submit(a)
+        service = Notifications(self.app.state.store.conn, now=lambda: time.time() + 2)
+        for index in range(51):
+            self.app.state.store.add_event('decision.recorded', 'dispatcher',
+                {'decision': f'Decision {index}: ' + 'detail ' * 20}, task_id=task)
+        service.project()
+        digest = service.digest('alpha')
+        self.assertEqual(len(digest['entries']), 50)
+        expected, = self.get('/inbox', a).json()
+        self.assertGreater(len(json.dumps(expected).encode()), 16384)
+        self.assertLessEqual(len(json.dumps(expected).encode()), 32768)
+        response = self.get('/replay?limit=1', a)
+        self.assertEqual(response.status_code, 200, response.text)
+        batch = response.json()
+        self.assertEqual(batch['items'][0]['message'], expected)
+        sse = self.get('/events?limit=1', a)
+        self.assertEqual(sse.status_code, 200, sse.text)
+        messages = [json.loads(line.removeprefix('data: ')) for line in sse.text.splitlines()
+                    if line.startswith('data: ')]
+        self.assertEqual(messages[0], expected)
+        self.assertIn('id: ' + batch['cursor'], sse.text)
+        lease = self.lease(a)
+        ack = self.post('/commit', {'lease_token': lease, 'checkpoint': {},
+            'delivery_ids': [expected['delivery_id']],
+            'delivery_versions': {expected['delivery_id']: expected['message_version']},
+            'request_key': 'large-digest'}, a)
+        self.assertEqual(ack.status_code, 200, ack.text)
+        self.assertEqual(self.get('/replay?after=' + batch['cursor'], a).json()['items'], [])
 
     def test_replay_authority_filtered_predecessor_rows_do_not_hide_later_owned_work(self):
         a, b = self.role(), self.role('beta')

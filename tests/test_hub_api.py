@@ -623,7 +623,7 @@ class SettingsGuardTests(HubCase):
             self.assertEqual(self.put({key: value}).status_code, 403, key)
         self.assertEqual(self.put(body).status_code, 403)
         self.assertEqual(self.get('/settings').json(), original)
-        tmp, app = make(trusted_ui_hosts=('testclient',))
+        tmp, app = make(trusted_ui_hosts=('testclient',), use_tailscale=False)
         self.addCleanup(tmp.cleanup)
         self.addCleanup(app.state.store.close)
         client = TestClient(app)

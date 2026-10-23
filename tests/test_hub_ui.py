@@ -61,6 +61,36 @@ class UiTests(unittest.TestCase):
             self.assertEqual(len(self.st.list_questions(open_only=True)), 1)
             self.assertEqual(self.c.post('/repos/missing/push-main', headers=SAME).status_code, 404)
 
+    def test_owner_push_obeys_stop_and_captured_epoch_at_final_git_boundary(self):
+        import subprocess
+        from drover.notifications import Notifications
+        prog = repos.normalize({'name': 'acme-lib', 'repo': self.tmp.name})
+        service = Notifications(self.st.conn)
+        for scenario in ('already-stopped', 'stop-during-prepare', 'stop-resume-during-prepare'):
+            with self.subTest(scenario=scenario):
+                state = service.admission()
+                if not state['allowed']:
+                    service.resume('owner', state['epoch'], scenario + '-reset')
+                if scenario == 'already-stopped':
+                    service.stop('owner', scenario)
+                calls = []
+                def git(repo, *args, **kwargs):
+                    calls.append(args)
+                    if len(calls) == 1 and scenario != 'already-stopped':
+                        control = Notifications(self.st.conn)
+                        stopped = control.stop('owner', scenario)
+                        if scenario == 'stop-resume-during-prepare':
+                            control.resume('owner', stopped['epoch'], scenario + '-resume')
+                    return subprocess.CompletedProcess(args, 0, 'a' * 40, '')
+                with patch('hub.store.repos.load_all', return_value={'acme-lib': prog}), \
+                        patch('drover.origin.git', side_effect=git):
+                    response = self.c.post('/repos/acme-lib/push-main', headers=SAME)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn('control-epoch-changed' if scenario.endswith('resume-during-prepare')
+                              else 'stop-work', response.text)
+                self.assertFalse(any(args[0] == 'push' for args in calls), calls)
+                self.assertFalse(any(args[0] == 'update-ref' for args in calls), calls)
+
     def epic(self, title):
         return self.st.create_epic("p", title)["id"]
 
