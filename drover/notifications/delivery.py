@@ -3,7 +3,8 @@ import json
 
 from ..ledger import ops
 from ..ledger.db import tx
-from .core import _role, _preferences, bound_envelope, effective_owner, reconcile_storage_hold, serialized_size
+from .core import (_role, _preferences, bound_envelope, coalesce_issue, effective_owner,
+                   issue_key, reconcile_storage_hold, serialized_size)
 
 
 def project(service, limit):
@@ -18,28 +19,24 @@ def project(service, limit):
             if intent and not intent['projected'] and intent['role_id']:
                 envelope = json.loads(intent['envelope'])
                 if envelope['mode'] != 'muted' or intent['actionable']:
-                    issue_key = None
-                    if intent['actionable']:
-                        issue_key = ops._j([envelope['task_id'], intent['event_class'],
-                                           envelope['cause_id'] or envelope['reason'] or event['data'].get('question')])
+                    episode = issue_key(envelope) if intent['actionable'] else None
                     existing = conn.execute('SELECT * FROM notification_inbox WHERE issue_key=? AND resolved=0',
-                                            (issue_key,)).fetchone() if issue_key else None
+                                            (episode,)).fetchone() if episode else None
                     if existing:
                         previous = json.loads(existing['envelope'])
-                        if event['id'] > previous.get('latest_event_id', existing['event_id']):
-                            changed = previous['evidence'] != envelope['evidence']
-                            envelope['event_id'] = existing['event_id']
-                            envelope['latest_event_id'] = event['id']
-                            conn.execute('UPDATE notification_inbox SET envelope=?,digest_id=NULL,'
+                        updated = coalesce_issue(previous, envelope)
+                        if updated is not None:
+                            envelope, changed = updated
+                            conn.execute('UPDATE notification_inbox SET envelope=?,mode=?,digest_id=NULL,'
                                          'acknowledged_at=CASE WHEN ? THEN NULL ELSE acknowledged_at END,'
                                          'offered_at=CASE WHEN ? THEN NULL ELSE offered_at END WHERE id=?',
-                                         (ops._j(envelope), changed, changed, existing['id']))
+                                         (ops._j(envelope), envelope['mode'], changed, changed, existing['id']))
                     else:
                         conn.execute('INSERT OR IGNORE INTO notification_inbox(event_id,role_id,event_class,ownership_revision,'
                                      'subscription_id,subscription_revision,mode,actionable,resolved,issue_key,envelope,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                                      (intent['event_id'], intent['role_id'], intent['event_class'], intent['ownership_revision'],
                                       intent['subscription_id'], intent['subscription_revision'], envelope['mode'],
-                                      intent['actionable'], intent['resolved'], issue_key, intent['envelope'], service.now()))
+                                      intent['actionable'], intent['resolved'], episode, intent['envelope'], service.now()))
                     compact(service, intent['role_id'])
             if intent:
                 conn.execute('UPDATE notification_intents SET projected=1 WHERE event_id=?', (event['id'],))

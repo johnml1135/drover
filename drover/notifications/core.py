@@ -248,6 +248,21 @@ def bound_envelope(envelope):
     return envelope
 
 
+def issue_key(envelope):
+    """One unresolved episode, shared by capture, coalescing and wake recovery."""
+    return ops._j([envelope['task_id'], envelope['event_class'],
+                   envelope['cause_id'] or envelope['reason'] or envelope['evidence'].get('question')])
+
+
+def coalesce_issue(previous, following):
+    """Return the newer envelope and whether it makes processed evidence unread."""
+    latest = previous.get('latest_event_id', previous['event_id'])
+    if following['event_id'] <= latest:
+        return None
+    updated = dict(following, event_id=previous['event_id'], latest_event_id=following['event_id'])
+    return updated, previous['evidence'] != following['evidence']
+
+
 def _resolve_issue(conn, event):
     if event['kind'] not in ('progress.recovered', 'recovery.resolved', 'question-answered'):
         return
@@ -325,11 +340,16 @@ def capture_event(conn, event, *, subscription=None, replay=False):
     if not replay and role_id and mode == 'immediate':
         from .roles import signal
         # Identical observations of one unresolved episode do not create wakes.
-        prior = conn.execute('SELECT envelope FROM notification_intents WHERE event_id<? AND role_id=? '
-                             "AND event_class=? AND json_extract(envelope,'$.task_id')=? "
-                             "AND json_extract(envelope,'$.cause_id') IS ? AND resolved=0 ORDER BY event_id DESC LIMIT 1",
-                             (event['id'], role_id, event_class, task['id'], envelope['cause_id'])).fetchone() if actionable else None
-        if not prior or json.loads(prior['envelope'])['evidence'] != envelope['evidence']:
+        prior = None
+        if actionable:
+            for row in conn.execute('SELECT envelope FROM notification_intents WHERE event_id<? AND role_id=? '
+                                     "AND event_class=? AND json_extract(envelope,'$.task_id')=? "
+                                     'AND resolved=0 ORDER BY event_id DESC', (event['id'], role_id, event_class, task['id'])):
+                candidate = json.loads(row['envelope'])
+                if issue_key(candidate) == issue_key(envelope):
+                    prior = candidate
+                    break
+        if prior is None or prior['evidence'] != envelope['evidence']:
             signal(conn, role_id, event['id'])
     if not replay and sub and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
             (event_class == 'result-accepted' and task['kind'] in ('research', 'investigation')) or

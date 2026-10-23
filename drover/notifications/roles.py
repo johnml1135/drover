@@ -6,7 +6,7 @@ import secrets
 
 from ..ledger import ops
 from ..ledger.db import tx
-from .core import Conflict, _role, effective_owner
+from .core import Conflict, _role, coalesce_issue, effective_owner, issue_key
 
 
 CAPABILITIES = frozenset(('notifications.read', 'notifications.process', 'notifications.tune'))
@@ -172,6 +172,7 @@ def _artifact(conn, value):
                     raise ValueError('artifact keys must be strings')
                 if key.lower() in ('credential', 'authorization', 'access_token', 'lease_token', 'issue_token'):
                     raise ValueError('credentials cannot be persisted in artifacts')
+                visit(key)
                 visit(child)
         elif isinstance(item, list):
             for child in item:
@@ -380,11 +381,38 @@ def refresh_wake(service, role_id):
     """Reconcile pending work while holding the same lock as checkpoint/release."""
     conn = service.conn
     runtime = _runtime(conn, role_id)
-    rows = conn.execute("SELECT i.event_id FROM notification_intents i LEFT JOIN notification_inbox n ON n.event_id=i.event_id "
-                         "WHERE i.role_id=? AND i.resolved=0 AND json_extract(i.envelope,'$.mode')='immediate' "
-                         "AND ((i.projected=0 AND n.id IS NULL) OR (n.acknowledged_at IS NULL AND n.id IS NOT NULL AND n.resolved=0))",
-                         (role_id,)).fetchall()
-    positions = [row['event_id'] for row in rows]
+    # Reconcile the state projection will produce, including already processed
+    # issues whose identical observations must not become new work on release.
+    deliveries = {}
+    for row in conn.execute('SELECT * FROM notification_inbox WHERE role_id=? AND resolved=0 '
+                             'AND (actionable=1 OR acknowledged_at IS NULL)', (role_id,)):
+        envelope = json.loads(row['envelope'])
+        key = ('issue', row['issue_key']) if row['actionable'] else ('event', row['event_id'])
+        deliveries[key] = envelope, row['acknowledged_at'] is None
+    for row in conn.execute('SELECT i.* FROM notification_intents i LEFT JOIN notification_inbox n ON n.event_id=i.event_id '
+                             'WHERE i.role_id=? AND i.resolved=0 AND i.projected=0 AND (i.actionable=1 OR n.id IS NULL) '
+                             'ORDER BY i.event_id', (role_id,)):
+        envelope = json.loads(row['envelope'])
+        if not row['actionable'] and envelope['mode'] == 'muted':
+            continue
+        key = ('issue', issue_key(envelope)) if row['actionable'] else ('event', row['event_id'])
+        previous = deliveries.get(key)
+        if previous is not None:
+            if not row['actionable']:
+                continue  # Replay cannot change an existing immutable delivery.
+            updated = coalesce_issue(previous[0], envelope)
+            if updated is None:
+                continue
+            envelope, changed = updated
+            unread = previous[1] or changed
+        else:
+            unread = True
+        deliveries[key] = envelope, unread
+    positions = []
+    for envelope, unread in deliveries.values():
+        owner = effective_owner(conn, envelope['task_id'], envelope['event_class'])
+        if unread and envelope['mode'] == 'immediate' and owner and owner['role_id'] == role_id:
+            positions.append(envelope.get('latest_event_id', envelope['event_id']))
     for row in conn.execute('SELECT body FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL', (role_id,)):
         body = json.loads(row['body'])
         if body.get('wake') and any((owner := effective_owner(conn, entry['task_id'], entry['event_class'])) and

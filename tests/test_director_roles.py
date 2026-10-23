@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from drover.ledger import ops
+from drover.ledger import actions, ops
 from drover.ledger.db import connect
 from drover.notifications import Conflict, Notifications
 
@@ -301,6 +301,53 @@ class DirectorRolesTests(unittest.TestCase):
         for capabilities in ({'notifications.process': False}, True, ['owner'], ['notifications.process', {}]):
             with self.subTest(capabilities=capabilities), self.assertRaises(ValueError):
                 self.service.issue_session('director:a', 'bad', capabilities=capabilities)
+
+    def test_secret_keys_are_refused_in_checkpoints_nested_config_and_action_artifacts(self):
+        issued = self.service.issue_session('director:a', 'session:keys')
+        token = self.service.acquire('director:a', 'session:keys')['lease_token']
+        secret = issued['credential']
+        for checkpoint in ({secret: 'copied'}, {'nested': [{f'Bearer {secret}': 'copied'}]}):
+            with self.assertRaises(ValueError):
+                self.service.commit('director:a', token, checkpoint, [], [], 'secret-key')
+        with self.assertRaises(ops.NotFound):
+            self.service.get_checkpoint('director:a')
+        with self.assertRaises(ValueError):
+            self.service.register('director:bad-keys', annotations={'nested': {secret: 'copied'}})
+        source = ops.event(self.conn, 'test.artifact-source', 'system')
+        with self.assertRaises(ValueError):
+            actions.enqueue(self.conn, source, 0, 'task.comment', {'nested': {secret: 'copied'}})
+        self.assertEqual(actions.pending(self.conn), [])
+        self.assertNotIn(secret, str(self.service.health()))
+
+    def test_release_preserves_changed_immediate_issue_after_initial_muted_observation(self):
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        sub, = self.service.health('director:a')['subscriptions']
+        self.service.tune(sub['id'], 1, mode='muted')
+        ops.event(self.conn, 'recovery.exhausted', 'system', {'cause': 'incident', 'evidence': 'first'}, task_id=task['id'])
+        self.service.project()
+        token = self.lease()
+        self.service.tune(sub['id'], 2, mode='immediate')
+        later = ops.event(self.conn, 'recovery.exhausted', 'system', {'cause': 'incident', 'evidence': 'changed'}, task_id=task['id'])
+        self.service.project()
+        self.assertTrue(self.service.role_state('director:a')['pending_wake'])
+        self.service.commit('director:a', token, {}, [], [], 'release-unread', release=True)
+        self.assertTrue(self.service.role_state('director:a')['pending_wake'])
+        self.assertEqual(self.service.role_state('director:a')['wake_position'], later)
+        unread, = self.service.receive('director:a')
+        self.assertEqual((unread['mode'], unread['evidence']['evidence']), ('immediate', 'changed'))
+
+    def test_release_suppresses_identical_unprojected_observation_of_acknowledged_issue(self):
+        task, issue = self.issue()
+        token = self.lease()
+        self.service.commit('director:a', token, {}, [issue['delivery_id']], [], 'first', release=True,
+                            delivery_versions={issue['delivery_id']: issue['message_version']})
+        token = self.service.acquire('director:a', 'session:1')['lease_token']
+        ops.event(self.conn, 'recovery.exhausted', 'system', {'cause': 'incident:1'}, task_id=task['id'])
+        self.assertFalse(self.service.role_state('director:a')['pending_wake'])
+        self.service.commit('director:a', token, {}, [], [], 'identical-release', release=True)
+        self.assertFalse(self.service.role_state('director:a')['pending_wake'])
+        self.service.project()
+        self.assertEqual(self.service.receive('director:a'), [])
 
 
 if __name__ == '__main__':
