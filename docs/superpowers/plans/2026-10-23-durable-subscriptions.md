@@ -97,12 +97,12 @@
 
 ### Task 6: Final acceptance, review and operational handoff
 
-**Files:** Update this plan and feature usage documentation; add `tests/test_notification_acceptance.py` only for cross-component scenarios not covered above. Diagnose and correct owner Inbox compatibility in `hub/store.py` / `drover/notifications/` with `tests/test_hub_stats.py` regressions. Record live work and issues under Drover epic E-16; see [dogfood tracking](2026-10-23-durable-subscriptions-dogfood.md).
+**Files:** Update this plan and feature usage documentation; add `tests/test_notification_acceptance.py` only for cross-component scenarios not covered above. Diagnose and correct owner Inbox compatibility in `hub/store.py` / `drover/notifications/` with `tests/test_hub_stats.py` regressions. Enforce owner authority for director runtime settings in `hub/api.py` with public worker-denial/owner-CSRF tests. Record live work and issues under Drover epic E-16; see [dogfood tracking](2026-10-23-durable-subscriptions-dogfood.md).
 
 **Interfaces:** Use the public service, HTTP/CLI and supervised-adapter seams above; no private database assertions as a substitute for observable behavior.
 
-- [ ] Exercise every numbered spec acceptance scenario and review-resolution race; add missing cross-component tests with controlled time/adapters and zero model calls.
-- [ ] Run the existing full test suite in its authorized environment, recording baseline/platform skips separately from regressions. Run formatting/reference checks and `git diff --check`.
+- [x] Exercise every numbered spec acceptance scenario and review-resolution race; add missing cross-component tests with controlled time/adapters and zero model calls.
+- [x] Run the existing full test suite in its authorized environment, recording baseline/platform skips separately from regressions. Run formatting/reference checks and `git diff --check`.
 - [ ] Dispatch a fresh whole-change review; fix important findings with regression tests, then rerun affected checks. Document exact supported adapter capabilities and configuration defaults.
-- [ ] Attempt Windows-hub/WSL integration only through an isolated test process/database with available existing tooling. If unavailable, record this as an unverified deployment gate; do not claim interactive-session push has been proven.
+- [x] Attempt Windows-hub/WSL integration only through an isolated test process/database with available existing tooling. If unavailable, record this as an unverified deployment gate; do not claim interactive-session push has been proven.
 - [ ] Mark verified steps complete, commit, and report branch/commits, test results, and remaining environmental verification limits. Leave integration/deployment to a separate authorized action.
