@@ -13,7 +13,7 @@ class Conflict(ValueError):
 
 EVENT_CLASSES = frozenset(('progress', 'stage', 'result-accepted', 'landed', 'group-ready',
                            'decision-needed', 'decision-recorded', 'issue', 'recovered',
-                           'role-unavailable'))
+                           'role-unavailable', 'broadcast', 'control'))
 PROFILE_VERSION = 1
 
 
@@ -26,6 +26,8 @@ def classify(event):
         return None
     if kind in ('task.result-accepted', 'result.accepted'):
         return 'result-accepted'
+    if kind == 'group.issue':
+        return 'issue'
     if kind == 'group.ready':
         return 'group-ready'
     if kind in ('question-asked', 'decision-needed'):
@@ -66,7 +68,47 @@ def effective_owner(conn, task_id, event_class):
     return dict(row) if row else None
 
 
-SCOPE_KEYS = frozenset(('tasks', 'epics', 'repos'))
+def recipient_owner(conn, envelope):
+    """Current authority for an ordinary partition, group fact or explicit target."""
+    if envelope.get('notice_id'):
+        row = conn.execute('SELECT t.role_id FROM notification_targets t JOIN notification_notices n USING(event_id) '
+                           'LEFT JOIN notification_controls c ON c.control_id=n.control_id WHERE t.event_id=? AND t.role_id=? '
+                           'AND (n.control_id IS NULL OR (t.superseded=0 AND c.active=1))',
+                           (envelope['event_id'], envelope.get('target_role'))).fetchone()
+        return dict(role_id=row['role_id'], revision=1) if row else None
+    if envelope.get('group_id') and envelope.get('task_id') is None:
+        row = conn.execute('SELECT role_id FROM task_groups WHERE group_id=?', (envelope['group_id'],)).fetchone()
+        return dict(role_id=row['role_id'], revision=1) if row else None
+    return effective_owner(conn, envelope.get('task_id'), envelope['event_class'])
+
+
+def scope_task(conn, task):
+    task = dict(task)
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='task_groups'").fetchone():
+        return task
+    task['_groups'] = [r[0] for r in conn.execute('SELECT group_id FROM task_group_members WHERE child_id=?', (task['id'],))]
+    task['_ancestors'] = []
+    parent = task.get('parent_id')
+    while parent and parent not in task['_ancestors']:
+        task['_ancestors'].append(parent)
+        row = conn.execute('SELECT parent_id FROM tasks WHERE id=?', (parent,)).fetchone()
+        parent = row[0] if row else None
+    return task
+
+
+def event_scope(conn, event):
+    if event['task_id'] is not None:
+        try:
+            return scope_task(conn, ops.get_task(conn, event['task_id']))
+        except ops.NotFound:
+            return None
+    group_id = event['data'].get('group_id')
+    if group_id and conn.execute('SELECT 1 FROM task_groups WHERE group_id=?', (group_id,)).fetchone():
+        return dict(id=None, kind='research', epic_id=None, repo=None, _groups=[group_id])
+    return None
+
+
+SCOPE_KEYS = frozenset(('tasks', 'groups', 'descendants', 'epics', 'repos'))
 FILTER_KEYS = frozenset(('types', 'events', 'reasons'))
 
 
@@ -93,16 +135,22 @@ def _selectors(selectors):
     return result
 
 
+def _scope_values(task):
+    return {'tasks': [task['id']], 'groups': task.get('_groups', []),
+            'descendants': task.get('_ancestors', []), 'epics': [task['epic_id']], 'repos': [task['repo']]}
+
+
 def _matches(task, event_class, reason, selectors):
-    scope_values = {'tasks': task['id'], 'epics': task['epic_id'], 'repos': task['repo']}
-    scopes = [scope_values[key] in selectors[key] for key in SCOPE_KEYS if key in selectors]
+    scope_values = _scope_values(task)
+    scopes = [bool(set(scope_values[key]) & set(selectors[key])) for key in SCOPE_KEYS if key in selectors]
     if scopes and not any(scopes):
         return False
     values = {'types': task['kind'], 'events': event_class, 'reasons': reason}
     if any(key in selectors and value not in selectors[key] for key, value in values.items()):
         return False
     exclusions = selectors.get('exclude', {})
-    return not any(value in exclusions.get(key, []) for key, value in {**scope_values, **values}.items())
+    return not (any(set(value) & set(exclusions.get(key, [])) for key, value in scope_values.items()) or
+                any(value in exclusions.get(key, []) for key, value in values.items()))
 
 
 def _preferences(**values):
@@ -148,8 +196,9 @@ def _subscription(conn, sub_id):
 
 def _specificity(task, selectors):
     """Scope unions take the specificity of the arm matching this task."""
-    for key, value, rank in (('tasks', task['id'], 3), ('epics', task['epic_id'], 2), ('repos', task['repo'], 1)):
-        if value in selectors.get(key, []):
+    scopes = _scope_values(task)
+    for key, rank in (('tasks', 4), ('groups', 3), ('descendants', 3), ('epics', 2), ('repos', 1)):
+        if set(scopes[key]) & set(selectors.get(key, [])):
             return rank
     return 0
 
@@ -188,6 +237,8 @@ def _mode(task, event_class, preferences):
         return preferences['mode']
     if event_class in ('decision-needed', 'issue', 'role-unavailable'):
         return 'immediate'
+    if task.get('_joined') and event_class in ('result-accepted', 'landed'):
+        return 'digest'
     preset = preferences['preset']
     if preset == 'verbose':
         return 'immediate'
@@ -271,6 +322,10 @@ def coalesce_issue(previous, following):
 
 
 def _resolve_issue(conn, event):
+    if event['kind'] == 'status' and event['data'].get('to') == 'landed':
+        for table in ('notification_intents', 'notification_inbox'):
+            conn.execute(f"UPDATE {table} SET resolved=1 WHERE actionable=1 AND json_extract(envelope,'$.task_id')=? "
+                         "AND json_extract(envelope,'$.evidence.to')='needs-owner'", (event['task_id'],))
     if event['kind'] not in ('progress.recovered', 'recovery.resolved', 'question-answered'):
         return
     cause, question = _cause_identity(event['data'].get('cause')), event['data'].get('question')
@@ -280,7 +335,7 @@ def _resolve_issue(conn, event):
     # immutable source question that defines its coalescing/handling episode.
     source_question = ("(SELECT json_extract(e.data,'$.question') FROM task_events e WHERE "
                        "e.id=COALESCE(json_extract(envelope,'$.latest_event_id'),json_extract(envelope,'$.event_id')))")
-    matches = ("actionable=1 AND json_extract(envelope,'$.task_id')=? "
+    matches = ("actionable=1 AND json_extract(envelope,'$.task_id') IS ? "
                "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
                f"(? IS NOT NULL AND {source_question}=?))")
     affected_roles = set()
@@ -301,7 +356,8 @@ def _resolve_issue(conn, event):
 def reconcile_storage_hold(conn, role_id):
     """Release pressure and its owner escalation when current issues leave scope."""
     role = _role(conn, role_id)
-    count = conn.execute('SELECT COUNT(*) FROM notification_inbox WHERE role_id=? AND actionable=1 AND resolved=0',
+    count = conn.execute("SELECT COUNT(*) FROM notification_inbox WHERE role_id=? AND ((actionable=1 AND resolved=0) "
+                         "OR (acknowledged_at IS NULL AND mode='immediate' AND json_extract(envelope,'$.notice_id') IS NOT NULL))",
                          (role_id,)).fetchone()[0]
     if count < json.loads(role['policy']).get('max_pending_actionable', 10000):
         escalation = conn.execute('SELECT question_id FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone()
@@ -319,19 +375,31 @@ def capture_event(conn, event, *, subscription=None, replay=False):
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='notification_intents'").fetchone():
         return  # Waiting's historical migrations precede V9.
     event_class = classify(event)
-    if event_class is None or event['task_id'] is None:
+    if event_class is None:
         return
-    task = ops.get_task(conn, event['task_id'])
+    group_id = event['data'].get('group_id') if event['task_id'] is None else None
+    if group_id:
+        group = conn.execute('SELECT role_id FROM task_groups WHERE group_id=?', (group_id,)).fetchone()
+        if not group:
+            return
+        task = dict(id=None, kind='research', epic_id=None, repo=None, _groups=[group_id])
+    elif event['task_id'] is not None:
+        task = scope_task(conn, ops.get_task(conn, event['task_id']))
+    else:
+        return
     if not replay:
         _resolve_issue(conn, event)
-    ownership = effective_owner(conn, task['id'], event_class)
+    ownership = dict(role_id=group['role_id'], revision=1) if group_id else effective_owner(conn, task['id'], event_class)
     role_id = ownership['role_id'] if ownership else None
+    task['_joined'] = bool(role_id and task['id'] and conn.execute(
+        'SELECT 1 FROM task_group_members m JOIN task_groups g USING(group_id) WHERE m.child_id=? AND g.role_id=?',
+        (task['id'], role_id)).fetchone())
     sub = subscription or _matching_subscription(conn, role_id, task, event)
     preferences = sub['preferences'] if sub else _preferences(mode='muted')
     mode = _delivery_mode(task, event_class, preferences)
     severity = 'warning' if event_class in ('decision-needed', 'issue', 'role-unavailable') else 'info'
     envelope = dict(schema_version=1, event_id=event['id'], event_class=event_class,
-                    task_id=task['id'], group_id=None,
+                    task_id=task['id'], group_id=group_id,
                     cause_id=_cause_identity(event['data'].get('cause')),
                     at=_text_excerpt(event['at'], 64), actor=_text_excerpt(event['actor'], 256), severity=severity,
                     reason=_text_excerpt(event['data']['reason'], 512) if event['data'].get('reason') is not None else None,
@@ -354,7 +422,7 @@ def capture_event(conn, event, *, subscription=None, replay=False):
         if actionable:
             episode = issue_key(conn, envelope)
             for row in conn.execute('SELECT envelope FROM notification_intents WHERE event_id<? AND role_id=? '
-                                     "AND event_class=? AND json_extract(envelope,'$.task_id')=? "
+                                     "AND event_class=? AND json_extract(envelope,'$.task_id') IS ? "
                                      'AND resolved=0 ORDER BY event_id DESC', (event['id'], role_id, event_class, task['id'])):
                 candidate = json.loads(row['envelope'])
                 if issue_key(conn, candidate) == episode:
@@ -362,7 +430,9 @@ def capture_event(conn, event, *, subscription=None, replay=False):
                     break
         if prior is None or prior['evidence'] != envelope['evidence']:
             signal(conn, role_id, event['id'])
-    if not replay and sub and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
+    group_following_child = bool(sub and sub['selectors'].get('groups') and not group_id and
+                                 task['id'] not in sub['selectors'].get('tasks', []))
+    if not replay and sub and not group_following_child and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
             (event_class == 'result-accepted' and task['kind'] in ('research', 'investigation')) or
             (event['kind'] == 'status' and event['data'].get('to') == 'cancelled')):
         Notifications(conn).tune(sub['id'], sub['revision'], enabled=False)
@@ -406,6 +476,8 @@ class Notifications:
             self.conn.execute('INSERT INTO director_roles(role_id,policy,created,last_digest) VALUES(?,?,?,?) '
                               'ON CONFLICT(role_id) DO NOTHING',
                               (role_id, saved_policy, self.now(), self.now()))
+            from .controls import apply_persistent
+            apply_persistent(self, role_id)
             return self._role_envelope(role_id)
 
     def issue_session(self, role_id, session_id, ttl=3600, capabilities=None):
@@ -447,6 +519,50 @@ class Notifications:
     def replace(self, role_id, expected_generation, *, confirmed_dead=False, reason='consumer-confirmed-gone'):
         from .roles import replace
         return replace(self, role_id, expected_generation, confirmed_dead=confirmed_dead, reason=reason)
+
+    def create_group(self, group_id, role_id, parent_id=None, mode='synthesis'):
+        from .groups import create_group
+        return create_group(self, group_id, role_id, parent_id, mode)
+
+    def get_group(self, group_id):
+        from .groups import get_group
+        return get_group(self, group_id)
+
+    def enroll(self, group_id, child_id, expected_revision, request_key):
+        from .groups import enroll
+        return enroll(self, group_id, child_id, expected_revision, request_key)
+
+    def seal(self, group_id, expected_revision, request_key):
+        from .groups import seal
+        return seal(self, group_id, expected_revision, request_key)
+
+    def broadcast(self, issuer, targets, body, urgency='summary', control=None, request_key=None):
+        from .controls import broadcast
+        return broadcast(self, issuer, targets, body, urgency, control, request_key)
+
+    def stop(self, issuer, request_key):
+        from .controls import stop
+        return stop(self, issuer, request_key)
+
+    def resume(self, issuer, expected_epoch, request_key):
+        from .controls import resume
+        return resume(self, issuer, expected_epoch, request_key)
+
+    def require_skill(self, issuer, skill, digest, targets, request_key):
+        from .controls import require_skill
+        return require_skill(self, issuer, skill, digest, targets, request_key)
+
+    def ack_control(self, role_id, lease_token, control_id, digest=None):
+        from .controls import ack_control
+        return ack_control(self, role_id, lease_token, control_id, digest)
+
+    def admission(self, role_id=None, generation=None, epoch=None):
+        from .controls import admission
+        return admission(self.conn, role_id, generation, epoch)
+
+    def control_state(self, role_id=None):
+        from .controls import control_state
+        return control_state(self, role_id)
 
     def _role_envelope(self, role_id):
         row = _role(self.conn, role_id)
@@ -504,6 +620,15 @@ class Notifications:
             return dict(task_id=task_id, role_id=role_id, event_class=event_class, revision=revision)
 
     def _validate_scope(self, role_id, selectors):
+        for group_id in selectors.get('groups', []):
+            group = self.get_group(group_id)
+            if group['role_id'] != role_id:
+                raise Conflict('following does not grant another director group authority')
+        for parent_id in selectors.get('descendants', []):
+            ops.get_task(self.conn, parent_id)
+            if not any((owner := effective_owner(self.conn, parent_id, cls)) and owner['role_id'] == role_id
+                       for cls in selectors.get('events', EVENT_CLASSES)):
+                raise Conflict('descendant scope requires owned parent authority')
         for task_id in selectors.get('tasks', []):
             ops.get_task(self.conn, task_id)
             classes = selectors.get('events', EVENT_CLASSES)
@@ -547,14 +672,19 @@ class Notifications:
         sub['preview'] = []
         for row in self.conn.execute('SELECT * FROM task_events ORDER BY id DESC LIMIT 50'):
             event = ops._jrow(row, 'data')
-            if event['task_id'] is None:
+            target = self.conn.execute('SELECT envelope FROM notification_targets WHERE event_id=? AND role_id=?',
+                                       (event['id'], sub['role_id'])).fetchone()
+            if target and recipient_owner(self.conn, json.loads(target['envelope'])):
+                sub['preview'].append(dict(event_id=event['id'], event_class=json.loads(target['envelope'])['event_class']))
                 continue
             event_class = classify(event)
-            if event_class is None:
+            task = event_scope(self.conn, event)
+            if event_class is None or task is None:
                 continue
-            owner = effective_owner(self.conn, event['task_id'], event_class)
+            envelope = dict(task_id=event['task_id'], group_id=event['data'].get('group_id'), event_class=event_class)
+            owner = recipient_owner(self.conn, envelope)
             if owner and owner['role_id'] == sub['role_id'] and _matches(
-                    ops.get_task(self.conn, event['task_id']), event_class, event['data'].get('reason'), sub['selectors']):
+                    task, event_class, event['data'].get('reason'), sub['selectors']):
                 sub['preview'].append(dict(event_id=event['id'], event_class=event_class))
         sub['preview'].reverse()
         return sub
@@ -579,12 +709,15 @@ class Notifications:
 
     def health(self, role_id=None):
         if role_id is None:
-            return dict(roles=[self.health(row['role_id']) for row in self.conn.execute(
+            return dict(controls=self.control_state(), roles=[self.health(row['role_id']) for row in self.conn.execute(
                 'SELECT role_id FROM director_roles ORDER BY role_id')],
                 unassigned=self.conn.execute('SELECT COUNT(*) FROM notification_intents WHERE role_id IS NULL').fetchone()[0],
                 projection_position=self.conn.execute("SELECT event_id FROM notification_positions WHERE name='inbox'").fetchone()[0])
         role = self._role_envelope(role_id)
         role['runtime'] = self.role_state(role_id)
+        role['controls'] = self.control_state(role_id)
+        role['admission'] = self.admission(role_id=role_id)
+        role['groups'] = [self.get_group(r[0]) for r in self.conn.execute('SELECT group_id FROM task_groups WHERE role_id=? ORDER BY group_id', (role_id,))]
         role['subscriptions'] = [self._subscription_envelope(row['id']) for row in self.conn.execute(
             'SELECT id FROM subscriptions WHERE role_id=? ORDER BY rowid', (role_id,))]
         role['coverage'] = {row['kind']: dict(row) for row in self.conn.execute(
@@ -618,6 +751,10 @@ class Notifications:
         return digest(self, role_id)
 
     def check_admission(self, role_id):
+        from .controls import admission
+        result = admission(self.conn, role_id=role_id)
+        if not result['allowed']:
+            raise Conflict(result['reason'])
         if self.conn.execute('SELECT 1 FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone():
             raise Conflict('notification storage high-water mark holds admission for this director')
 
@@ -634,16 +771,23 @@ class Notifications:
         events = ops.events(self.conn, after=replay_after, limit=1000)
         first = None
         for event in events:
+            target = self.conn.execute('SELECT * FROM notification_targets WHERE event_id=? AND role_id=?',
+                                       (event['id'], sub['role_id'])).fetchone()
+            if target:
+                if not target['projected']:
+                    first = event['id'] if first is None else first
+                continue  # Explicit targeting retains its original delivery preferences.
             event_class = classify(event)
-            if not event_class or not event['task_id']:
+            task = event_scope(self.conn, event)
+            if not event_class or task is None:
                 continue
-            owner = effective_owner(self.conn, event['task_id'], event_class)
+            envelope = dict(task_id=event['task_id'], group_id=event['data'].get('group_id'), event_class=event_class)
+            owner = recipient_owner(self.conn, envelope)
             if not owner or owner['role_id'] != sub['role_id']:
                 continue
-            task = ops.get_task(self.conn, event['task_id'])
             if not _matches(task, event_class, event['data'].get('reason'), sub['selectors']):
                 continue
-            if self.conn.execute('SELECT 1 FROM notification_inbox WHERE event_id=?', (event['id'],)).fetchone():
+            if self.conn.execute('SELECT 1 FROM notification_inbox WHERE event_id=? AND role_id=?', (event['id'], sub['role_id'])).fetchone():
                 continue
             capture_event(self.conn, event, subscription=sub, replay=True)
             first = event['id'] if first is None else first

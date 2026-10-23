@@ -6,7 +6,7 @@ import secrets
 
 from ..ledger import ops
 from ..ledger.db import tx
-from .core import Conflict, _role, coalesce_issue, effective_owner, issue_key
+from .core import Conflict, _role, coalesce_issue, issue_key, recipient_owner
 
 
 CAPABILITIES = frozenset(('notifications.read', 'notifications.process', 'notifications.tune'))
@@ -99,13 +99,15 @@ def acquire(service, role_id, session_id, ttl=60):
             raise Conflict('director already has an active execution lease')
         token = secrets.token_urlsafe(32)
         expires = min(service.now() + ttl, session['expires'])
-        conn.execute('INSERT INTO director_leases VALUES(?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET '
-                     'session_id=excluded.session_id,generation=excluded.generation,token_hash=excluded.token_hash,expires=excluded.expires',
-                     (role_id, session_id, role['generation'], hashed(token), expires))
+        control_epoch = service.admission()['epoch']
+        conn.execute('INSERT INTO director_leases VALUES(?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET '
+                     'session_id=excluded.session_id,generation=excluded.generation,token_hash=excluded.token_hash,'
+                     'expires=excluded.expires,control_epoch=excluded.control_epoch',
+                     (role_id, session_id, role['generation'], hashed(token), expires, control_epoch))
         runtime = _runtime(conn, role_id)
         conn.execute('UPDATE director_runtime SET pending_wake=0 WHERE role_id=?', (role_id,))
         return dict(role_id=role_id, session_id=session_id, generation=role['generation'],
-                    lease_token=token, expires_at=expires, wake_position=runtime['wake_position'])
+                    lease_token=token, expires_at=expires, wake_position=runtime['wake_position'], control_epoch=control_epoch)
 
 
 def validate_lease(service, role_id, token):
@@ -126,7 +128,7 @@ def role_state(service, role_id):
         state = _runtime(service.conn, role_id)
         state['checkpoint'] = json.loads(state['checkpoint'])
         state['generation'] = _role(service.conn, role_id)['generation']
-        lease = service.conn.execute('SELECT session_id,generation,expires FROM director_leases WHERE role_id=?',
+        lease = service.conn.execute('SELECT session_id,generation,expires,control_epoch FROM director_leases WHERE role_id=?',
                                      (role_id,)).fetchone()
         state['lease'] = dict(lease) if lease else None
         budget = service.conn.execute('SELECT COALESCE(SUM(tokens),0) AS tokens,COALESCE(SUM(wakes),0) AS wakes '
@@ -143,7 +145,7 @@ def role_state(service, role_id):
                 _, envelope, _ = _issue(service, role_id, row['issue_id'])
             except (Conflict, PermissionError):
                 continue
-            state['issues'].append(dict(issue_id=row['issue_id'], task_id=envelope['task_id'], generation=row['generation'],
+            state['issues'].append(dict(issue_id=row['issue_id'], task_id=envelope['task_id'], group_id=envelope.get('group_id'), generation=row['generation'],
                                         attempts=row['attempts'], attempt_limit=row['attempt_limit'], expires_at=row['expires'],
                                         held_reason=row['held_reason'], question_id=row['fallback_question']))
         return state
@@ -211,14 +213,14 @@ def _acknowledge(service, role_id, delivery_id, versions):
         raise PermissionError('delivery belongs to another director')
     if prefix == 'notification':
         envelope = json.loads(row['envelope'])
-        owner = effective_owner(conn, envelope['task_id'], row['event_class'])
+        owner = recipient_owner(conn, envelope)
         if not owner or owner['role_id'] != role_id or owner['revision'] != row['ownership_revision']:
             raise PermissionError('delivery ownership changed')
         version = envelope.get('latest_event_id', row['event_id'])
         if row['actionable']:
             for candidate in conn.execute('SELECT event_id,envelope FROM notification_intents WHERE role_id=? '
                                            'AND event_class=? AND actionable=1 AND resolved=0 AND event_id>? '
-                                           "AND json_extract(envelope,'$.task_id')=? ORDER BY event_id DESC",
+                                           "AND json_extract(envelope,'$.task_id') IS ? ORDER BY event_id DESC",
                                            (role_id, row['event_class'], version, envelope['task_id'])):
                 if issue_key(conn, json.loads(candidate['envelope'])) == row['issue_key']:
                     version = candidate['event_id']
@@ -298,7 +300,7 @@ def _issue(service, role_id, issue_id):
     if not row:
         raise Conflict('issue is no longer unresolved')
     envelope = json.loads(row['envelope'])
-    owner = effective_owner(service.conn, envelope['task_id'], row['event_class'])
+    owner = recipient_owner(service.conn, envelope)
     if row['role_id'] != role_id or not owner or owner['role_id'] != role_id:
         raise PermissionError('issue is owned by another director')
     return dict(row), envelope, owner
@@ -349,7 +351,7 @@ def _hold_issue(service, role_id, issue_id, reason):
     question = prior['fallback_question'] if prior else None
     if question is None:
         question = conn.execute('INSERT INTO questions(target_kind,target_id,title,body,asked) VALUES(?,?,?,?,?)',
-                                ('task', envelope['task_id'], f'Director issue needs attention: {role_id}', reason, ops.stamp())).lastrowid
+                                ('task' if envelope['task_id'] else 'group', envelope['task_id'] or envelope['group_id'], f'Director issue needs attention: {role_id}', reason, ops.stamp())).lastrowid
         ops.event(conn, 'director.issue-held', 'system', dict(role_id=role_id, issue_id=issue_id,
                   reason=reason, question=question), task_id=envelope['task_id'])
     conn.execute('INSERT INTO director_issue_leases(issue_id,role_id,generation,token_hash,expires,ownership_revision,held_reason,fallback_question) '
@@ -408,14 +410,18 @@ def refresh_wake(service, role_id):
         else:
             unread = True
         deliveries[key] = envelope, unread
+    for row in conn.execute('SELECT t.* FROM notification_targets t LEFT JOIN notification_inbox n '
+                             'ON n.event_id=t.event_id AND n.role_id=t.role_id WHERE t.role_id=? AND t.projected=0 AND n.id IS NULL', (role_id,)):
+        envelope = json.loads(row['envelope'])
+        deliveries[('event', row['event_id'])] = envelope, True
     positions = []
     for envelope, unread in deliveries.values():
-        owner = effective_owner(conn, envelope['task_id'], envelope['event_class'])
+        owner = recipient_owner(conn, envelope)
         if unread and envelope['mode'] == 'immediate' and owner and owner['role_id'] == role_id:
             positions.append(envelope.get('latest_event_id', envelope['event_id']))
     for row in conn.execute('SELECT body FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL', (role_id,)):
         body = json.loads(row['body'])
-        if body.get('wake') and any((owner := effective_owner(conn, entry['task_id'], entry['event_class'])) and
+        if body.get('wake') and any((owner := recipient_owner(conn, entry)) and
                                     owner['role_id'] == role_id for entry in body['entries']):
             positions.append(body['last_event'])
     continuation = bool(json.loads(runtime['checkpoint']).get('continuation', False))
@@ -425,6 +431,8 @@ def refresh_wake(service, role_id):
 
 def validate_policy(policy):
     from ..ledger.actions import KINDS
+    if 'broadcast_summary' in policy and not isinstance(policy['broadcast_summary'], bool):
+        raise ValueError('broadcast_summary must be a boolean')
     allowlist = policy.get('action_allowlist', [])
     if not isinstance(allowlist, list) or any(not isinstance(kind, str) or kind not in KINDS for kind in allowlist):
         raise ValueError('action_allowlist must contain only supported safe actions')

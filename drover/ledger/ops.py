@@ -107,6 +107,9 @@ def event(conn, kind, actor, data=None, task_id=None, epic_id=None, at=None):
                "epic_id": epic_id, "data": data or {}, "at": when}
         from ..notifications.core import capture_event
         capture_event(conn, row)
+        if task_id is not None:
+            from ..notifications.groups import changed
+            changed(conn, task_id)
         contexts = _event_queues.get() or {}
         if conn in contexts:
             contexts[conn].append(row)
@@ -232,9 +235,7 @@ def _check_handoff(text):
 def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", acceptance=(), scope_files=(),
                 priority="P2", size="M", risk="low", status="proposed", actor="owner", deps=(), rank=None,
                 kind="implementation", write=None, read_access=None, branch=None, related=(), description=None,
-                initiating_role=None, group_id=None):
-    if group_id is not None:
-        raise ValueError("task groups are not supported yet")
+                initiating_role=None, group_id=None, parent_id=None):
     if status not in states.CREATION_STATES:
         raise ValueError("a new task starts as proposed or draft")
     task_context.check_kind(kind)
@@ -248,6 +249,19 @@ def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", accept
     with tx(conn):
         if epic_id is not None:
             get_epic(conn, epic_id)
+        if parent_id is not None:
+            get_task(conn, parent_id)
+        if initiating_role is None and parent_id is not None:
+            inherited = conn.execute("SELECT role_id FROM task_ownership WHERE task_id=? AND event_class='*'", (parent_id,)).fetchone()
+            initiating_role = inherited['role_id'] if inherited else None
+        if group_id is not None:
+            from ..notifications import Notifications
+            try:
+                group = Notifications(conn).get_group(group_id)
+            except NotFound as error:
+                raise ValueError(f'unknown task group: {group_id}') from error
+            if initiating_role is None:
+                initiating_role = group['role_id']
         tid, now = _next_id(conn, "T"), stamp()
         if rank is None:
             rank = _next_rank(conn, "tasks", "epic_id IS ?", (epic_id,))
@@ -256,9 +270,13 @@ def create_task(conn, title, repo, epic_id=None, repo_path=None, goal="", accept
             "status,created,updated,kind,\"write\",read_access,branch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, epic_id, repo, repo_path, title, goal, _j(list(acceptance)), _j(list(scope_files)), priority, size,
              risk, rank, status, now, now, kind, write, _j(read_access), branch))
+        if parent_id is not None:
+            conn.execute('UPDATE tasks SET parent_id=? WHERE id=?', (parent_id, tid))
         if initiating_role is not None:
             from ..notifications import Notifications
             Notifications(conn).assign(tid, initiating_role)
+        if group_id is not None:
+            Notifications(conn).enroll(group_id, tid, group['revision'], f'create:{tid}')
         event(conn, "task-created", actor, {"title": title, "status": status}, task_id=tid, epic_id=epic_id)
         _replace_connections(conn, tid, deps, related, actor)
         return get_task(conn, tid)
@@ -361,7 +379,8 @@ def add_dep(conn, task_id, depends_on, kind="blocks", actor="owner"):
     with tx(conn):
         get_task(conn, task_id)
         get_task(conn, depends_on)
-        if task_id == depends_on or _reaches(conn, depends_on, task_id):
+        from ..notifications.groups import reaches
+        if task_id == depends_on or reaches(conn, depends_on, task_id):
             raise ValueError(f"dependency {task_id} -> {depends_on} would make a cycle")
         conn.execute("INSERT INTO task_deps(task_id,depends_on,kind) VALUES(?,?,?) "
                      "ON CONFLICT(task_id,depends_on) DO UPDATE SET kind=excluded.kind", (task_id, depends_on, kind))
@@ -517,6 +536,7 @@ def _candidates(conn, repo=None, repo_path=None):
          " AND x.status NOT IN ('landed','cancelled')) AS dependents "
          "FROM tasks t LEFT JOIN epics e ON e.id=t.epic_id WHERE t.status='ready' AND t.archived=0 "
          "AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.subject_kind='task' AND w.subject_key=t.id AND w.released_event IS NULL) "
+         "AND NOT EXISTS (SELECT 1 FROM task_groups g WHERE g.parent_id=t.id AND g.ready=0) "
          "AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks p ON p.id=d.depends_on "
          "WHERE d.task_id=t.id AND d.kind='blocks' AND p.status<>'landed')")
     a = []
@@ -868,5 +888,7 @@ def delete_task(conn, task_id, confirm=False, actor="owner"):
         for table in ("comments", "questions"):
             conn.execute(f"DELETE FROM {table} WHERE target_kind='task' AND target_id=?", (task_id,))
         conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        from ..notifications.groups import changed
+        changed(conn, task_id)
         # Append-only events and anonymous hourly/daily aggregates are retained.
         return {"deleted": task_id}

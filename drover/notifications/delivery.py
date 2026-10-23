@@ -4,7 +4,7 @@ import json
 from ..ledger import ops
 from ..ledger.db import tx
 from .core import (_role, _preferences, bound_envelope, coalesce_issue, effective_owner,
-                   issue_key, reconcile_storage_hold, serialized_size)
+                   issue_key, recipient_owner, reconcile_storage_hold, serialized_size)
 
 
 def project(service, limit):
@@ -38,6 +38,14 @@ def project(service, limit):
                                       intent['subscription_id'], intent['subscription_revision'], envelope['mode'],
                                       intent['actionable'], intent['resolved'], episode, intent['envelope'], service.now()))
                     compact(service, intent['role_id'])
+            for target in conn.execute('SELECT * FROM notification_targets WHERE event_id=? AND projected=0', (event['id'],)).fetchall():
+                envelope = json.loads(target['envelope'])
+                if recipient_owner(conn, envelope):
+                    conn.execute('INSERT OR IGNORE INTO notification_inbox(event_id,role_id,event_class,ownership_revision,'
+                                 'mode,actionable,envelope,created) VALUES(?,?,?,1,?,0,?,?)',
+                                 (event['id'], target['role_id'], envelope['event_class'], envelope['mode'], target['envelope'], service.now()))
+                conn.execute('UPDATE notification_targets SET projected=1 WHERE event_id=? AND role_id=?', (event['id'], target['role_id']))
+                compact(service, target['role_id'])
             if intent:
                 conn.execute('UPDATE notification_intents SET projected=1 WHERE event_id=?', (event['id'],))
         if events:
@@ -56,7 +64,7 @@ def receive(service, role_id, limit):
         result = []
         for row in rows:
             envelope = json.loads(row['envelope'])
-            owner = effective_owner(conn, envelope['task_id'], row['event_class'])
+            owner = recipient_owner(conn, envelope)
             if not owner or owner['role_id'] != role_id:
                 continue
             envelope.update(delivery_id=f"notification:{row['id']}", subscriber=role_id,
@@ -70,7 +78,7 @@ def receive(service, role_id, limit):
             # Ownership may have changed since summary construction. Historical
             # records stay intact, while a new offer respects current read scope.
             body['entries'] = [entry for entry in body['entries'] if
-                               (owner := effective_owner(conn, entry['task_id'], entry['event_class'])) and
+                               (owner := recipient_owner(conn, entry)) and
                                owner['role_id'] == role_id]
             body.update(delivery_id=f"digest:{row['id']}", digest_id=f"digest:{row['id']}", message_version=row['id'])
             result.append(body)
@@ -158,10 +166,12 @@ def compact(service, role_id):
                                    (role_id,)).fetchone()[0]
     routine_cap = max(0, cap - pending_digests)
     rows = conn.execute('SELECT id,event_id,digest_id,event_class,envelope FROM notification_inbox WHERE role_id=? AND actionable=0 '
-                        'AND acknowledged_at IS NULL ORDER BY id DESC LIMIT -1 OFFSET ?', (role_id, routine_cap)).fetchall()
+                        "AND acknowledged_at IS NULL AND NOT(mode='immediate' AND json_extract(envelope,'$.notice_id') IS NOT NULL) "
+                        'ORDER BY id DESC LIMIT -1 OFFSET ?', (role_id, routine_cap)).fetchall()
     if rows:
         for row in rows:
-            task_id = json.loads(row['envelope'])['task_id']
+            envelope = json.loads(row['envelope'])
+            task_id = envelope['task_id'] or ('notice:' + envelope['notice_id'] if envelope.get('notice_id') else 'group:' + envelope['group_id'])
             conn.execute('INSERT INTO notification_compactions(role_id,task_id,event_class,count,first_event,last_event,summarized_count) '
                          'VALUES(?,?,?,1,?,?,?) ON CONFLICT(role_id,task_id,event_class) DO UPDATE SET '
                          'count=count+1,first_event=MIN(first_event,excluded.first_event),last_event=MAX(last_event,excluded.last_event),'
@@ -171,12 +181,13 @@ def compact(service, role_id):
     actionable = reconcile_storage_hold(conn, role_id)
     if actionable >= policy.get('max_pending_actionable', 10000) and not conn.execute(
             'SELECT 1 FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone():
-        task_id = conn.execute("SELECT json_extract(envelope,'$.task_id') FROM notification_inbox "
-                               'WHERE role_id=? AND actionable=1 LIMIT 1', (role_id,)).fetchone()[0]
+        first = conn.execute("SELECT json_extract(envelope,'$.task_id') FROM notification_inbox "
+                             'WHERE role_id=? AND actionable=1 AND resolved=0 LIMIT 1', (role_id,)).fetchone()
+        task_id = first[0] if first else None
         # This is an owner question, not another director issue contributing to
         # the same storage pressure. The existing owner Inbox reads this table.
         question = conn.execute('INSERT INTO questions(target_kind,target_id,title,body,asked) VALUES(?,?,?,?,?)',
-                                ('task', task_id, f'Notification storage needs attention: {role_id}',
+                                ('task' if task_id else 'director', task_id or role_id, f'Notification storage needs attention: {role_id}',
                                  'Unresolved actionable notifications reached the configured storage limit. '
                                  'New work for this director is held.', ops.stamp())).lastrowid
         ops.event(conn, 'notification.owner-escalation', 'system', {'role_id': role_id, 'question': question}, task_id=task_id)

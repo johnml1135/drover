@@ -71,6 +71,9 @@ def _validate_destination(service, kind, payload, authority):
     role = _role(conn, role_id)
     if role['generation'] != authority['generation']:
         raise PermissionError('director generation changed')
+    control = service.admission(role_id=role_id, epoch=authority.get('control_epoch', 0))
+    if not control['allowed']:
+        raise Conflict(control['reason'])
     if kind not in json.loads(role['policy']).get('action_allowlist', []):
         raise PermissionError('action is outside director allowlist')
     event_class = payload.get('event_class')
@@ -122,7 +125,7 @@ def authorize(service, role_id, lease, request):
     if request['kind'] == 'task.comment' and (not isinstance(payload['text'], str) or not 0 < len(payload['text']) <= 8192):
         raise ValueError('bounded comment text required')
     owner = effective_owner(service.conn, payload['task_id'], payload['event_class'])
-    authority = dict(role_id=role_id, generation=lease['generation'],
+    authority = dict(role_id=role_id, generation=lease['generation'], control_epoch=lease.get('control_epoch', 0),
                      ownership_revision=owner['revision'] if owner else None)
     saved = dict(payload)
     if 'issue_token' in saved:

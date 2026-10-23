@@ -75,5 +75,8 @@ def record_base(conn, repo, sha, status):
 
 
 def record_merged(conn, task, tip, receipt):
-    conn.execute("INSERT OR REPLACE INTO task_landed(task_id,land_sha,tip,receipt,at) VALUES(?,?,?,?,?)",
-                 (task['id'], task['last_sha'], tip, receipt, ops.stamp()))
+    with tx(conn):
+        conn.execute("INSERT OR REPLACE INTO task_landed(task_id,land_sha,tip,receipt,at) VALUES(?,?,?,?,?)",
+                     (task['id'], task['last_sha'], tip, receipt, ops.stamp()))
+        from ..notifications.groups import changed
+        changed(conn, task['id'])

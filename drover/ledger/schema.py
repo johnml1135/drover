@@ -278,4 +278,65 @@ CREATE TABLE action_outbox (
  UNIQUE(event_id,action_index));
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10)]
+V11 = """
+ALTER TABLE director_leases ADD COLUMN control_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL;
+CREATE INDEX task_parent ON tasks(parent_id);
+CREATE TABLE task_groups (
+ group_id TEXT PRIMARY KEY, role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL, mode TEXT NOT NULL CHECK(mode='synthesis'),
+ revision INTEGER NOT NULL DEFAULT 1, sealed INTEGER NOT NULL DEFAULT 0,
+ ready INTEGER NOT NULL DEFAULT 0, manifest TEXT, completion_event INTEGER UNIQUE REFERENCES task_events(id),
+ failure_reason TEXT, issue_event INTEGER REFERENCES task_events(id));
+CREATE TABLE task_group_members (
+ group_id TEXT NOT NULL REFERENCES task_groups(group_id), child_id TEXT NOT NULL,
+ lifecycle TEXT NOT NULL, PRIMARY KEY(group_id,child_id));
+CREATE INDEX task_group_child ON task_group_members(child_id,group_id);
+CREATE TABLE task_group_requests (
+ group_id TEXT NOT NULL REFERENCES task_groups(group_id), request_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(group_id,request_key));
+CREATE TABLE notification_notices (
+ notice_id TEXT PRIMARY KEY, event_id INTEGER NOT NULL UNIQUE REFERENCES task_events(id),
+ issuer TEXT NOT NULL, urgency TEXT NOT NULL, body TEXT NOT NULL,
+ control_id TEXT, targets_all INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE notification_targets (
+ event_id INTEGER NOT NULL REFERENCES task_events(id), role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ envelope TEXT NOT NULL, projected INTEGER NOT NULL DEFAULT 0, superseded INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(event_id,role_id));
+CREATE INDEX notification_targets_role ON notification_targets(role_id,event_id);
+ALTER TABLE notification_inbox RENAME TO notification_inbox_v10;
+DROP INDEX notification_open_issue;
+DROP INDEX notification_inbox_pending;
+CREATE TABLE notification_inbox (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL REFERENCES task_events(id),
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), event_class TEXT NOT NULL,
+ ownership_revision INTEGER NOT NULL, subscription_id TEXT, subscription_revision INTEGER,
+ mode TEXT NOT NULL, actionable INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, issue_key TEXT,
+ envelope TEXT NOT NULL, created REAL NOT NULL, offered_at REAL, acknowledged_at REAL, digest_id INTEGER,
+ UNIQUE(event_id,role_id));
+INSERT INTO notification_inbox SELECT * FROM notification_inbox_v10;
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='notification_inbox_v10'),0))
+ WHERE name='notification_inbox';
+INSERT INTO sqlite_sequence(name,seq)
+ SELECT 'notification_inbox',seq FROM sqlite_sequence WHERE name='notification_inbox_v10'
+ AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='notification_inbox');
+DROP TABLE notification_inbox_v10;
+CREATE UNIQUE INDEX notification_open_issue ON notification_inbox(issue_key) WHERE issue_key IS NOT NULL AND resolved=0;
+CREATE INDEX notification_inbox_pending ON notification_inbox(role_id,acknowledged_at,id);
+CREATE TABLE notification_control_state (
+ id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, stopped INTEGER NOT NULL);
+INSERT INTO notification_control_state VALUES(1,0,0);
+CREATE TABLE notification_controls (
+ control_id TEXT PRIMARY KEY, event_id INTEGER UNIQUE REFERENCES task_events(id), kind TEXT NOT NULL,
+ epoch INTEGER NOT NULL, skill TEXT, digest TEXT, active INTEGER NOT NULL DEFAULT 1,
+ targets_all INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE notification_control_applications (
+ control_id TEXT NOT NULL REFERENCES notification_controls(control_id), role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ generation INTEGER NOT NULL, session_id TEXT NOT NULL, status TEXT NOT NULL, digest TEXT, applied_at REAL NOT NULL,
+ PRIMARY KEY(control_id,role_id,generation,session_id));
+CREATE TABLE notification_control_requests (
+ issuer TEXT NOT NULL, request_key TEXT NOT NULL, request_hash TEXT NOT NULL, receipt TEXT NOT NULL,
+ PRIMARY KEY(issuer,request_key));
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11)]
