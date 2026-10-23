@@ -45,11 +45,36 @@ A role policy may explicitly grant `broadcast_summary`; it grants summary
 notices only. A role named `owner` or `service` still has director authority.
 
 The owner Inbox displays deduplicated unassigned issues and retained director,
-group and task questions. Health displays controls, held reasons, pending issues,
+group and task questions. An existing question or needs-owner task keeps its
+usual card; its notification fact does not add another card. Archived tasks hide
+their unassigned issues until restored. Separate unresolved recovery causes stay
+visible independently, and assigning one event class leaves other unassigned
+classes with the owner. Health displays controls, held reasons, pending issues,
 and group readiness. Answering or commenting on a fallback question records an
 owner decision; it does not reset budgets, accept child results, clear holds or
 resume STOP. Director/group comments support ordinary discussion; urgent/replan
 comments require a task or epic target.
+
+Defaults for a newly registered role and its subscriptions:
+
+| Setting | Default |
+| --- | --- |
+| Notification profile | `normal`, `mode=profile`, minimum severity `info` |
+| Personal digest | Every 900 seconds, at most 50 detailed entries, `digest_wake=false` |
+| Subscription lifetime | Enabled, no expiry, `stop_on_completion=false` |
+| Pending routine/actionable limits | 1,000 / 10,000 per role |
+| Processing session / lease lifetime | 3,600 / 60 seconds |
+| Task action allowlist / allowed models | Empty / empty |
+| Wake / model token budget | 4 wakes per hour / 0 tokens |
+| Issue recovery / automatic replacement limit | At most 2 attempts / 1 replacement |
+
+The normal profile sends issues and decisions immediately. It sends accepted
+research/investigation results, group readiness and most accepted landings
+immediately; routine stages enter the personal digest. Joined child results enter
+the digest while the group's accepted completion produces the final wake.
+Empty digest intervals produce no message. Quiet/verbose profiles, event-class
+overrides and explicit modes change delivery preferences within existing
+authority; they cannot grant task access or actions.
 
 ## Director CLI
 
@@ -191,6 +216,19 @@ implements `launch(launcher, spec, credential, guard)` and optional
 provide verified hard token-cap/authenticated-processing integration; the default
 adapter therefore reports an explicit unsupported hold and does not launch.
 Enabling the setting alone cannot supply these missing capabilities.
+
+The supported default is durable HTTP/CLI consumption with deterministic
+projection, digests and local accepted actions. A consumer must save a checkpoint
+and commit delivery versions before it considers work processed. Hub restart
+preserves pending offers; a disconnected consumer's replacement restores that
+checkpoint and unread work under a new generation.
+
+The acceptance suite verifies restart and replacement with an isolated real
+zero-model subprocess whose private pipes proxy authenticated requests into the
+real ASGI routes. This controlled adapter does not establish production model CLI
+capabilities, interactive-session push, or a Windows-to-WSL network route.
+Deployment still requires a compatible executor with the capabilities above and
+an independently verified hub endpoint reachable from the worker environment.
 
 Director accounting uses an archived internal task and dedicated run associations;
 normal task/run APIs cannot impersonate this lifecycle. Launch and stop intents

@@ -601,7 +601,7 @@ class Notifications:
                                         'AND n.acknowledged_at IS NOT NULL)', (task_id,)).fetchall()
             for intent in intents:
                 owner = effective_owner(self.conn, task_id, intent['event_class'])
-                if owner['role_id'] != role_id:
+                if owner is None or owner['role_id'] != role_id:
                     continue
                 self.conn.execute('UPDATE notification_intents SET role_id=?,ownership_revision=? WHERE event_id=?',
                                   (role_id, owner['revision'], intent['event_id']))
@@ -904,13 +904,28 @@ class Notifications:
             return dict(items=result, cursor=f'v1:{event_after}:{digest_after}', more=more, resync_required=False)
 
     def owner_attention(self):
-        """Deduplicated current unassigned facts for the existing owner Inbox."""
-        out = []
-        for row in self.conn.execute('SELECT envelope FROM notification_intents WHERE role_id IS NULL AND actionable=1 AND resolved=0 ORDER BY event_id DESC LIMIT 200'):
+        """Current unassigned issues that need a fallback in the owner Inbox.
+
+        Questions and needs-owner transitions already have actionable owner
+        cards. Their immutable routing facts must not create duplicate cards or
+        reappear after the question or task has moved on.
+        """
+        out, seen = [], set()
+        rows = self.conn.execute("""
+            SELECT n.envelope FROM notification_intents n
+            JOIN tasks t ON t.id=json_extract(n.envelope,'$.task_id') AND t.archived=0
+            JOIN task_events e ON e.id=n.event_id
+            WHERE n.role_id IS NULL AND n.actionable=1 AND n.resolved=0
+              AND e.kind<>'question-asked'
+              AND NOT (e.kind='status' AND json_extract(e.data,'$.to')='needs-owner')
+            ORDER BY n.event_id DESC LIMIT 200
+            """)
+        for row in rows:
             envelope = json.loads(row['envelope'])
-            key = (envelope.get('task_id'), envelope['event_class'])
-            if any(item['key'] == key for item in out):
+            key = issue_key(self.conn, envelope)
+            if key in seen or recipient_owner(self.conn, envelope):
                 continue
+            seen.add(key)
             out.append(dict(key=key, target_kind='task', target_id=envelope['task_id'],
                 title='Unassigned notification: ' + envelope['event_class'], body=envelope.get('reason') or 'Assign an owning director to handle this issue.'))
         return out

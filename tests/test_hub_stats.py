@@ -152,3 +152,37 @@ class StatsApi(unittest.TestCase):
         self.assertEqual(self.c.get('/api/v1/tasks/' + source, headers=self.token).status_code, 404)
         self.assertEqual(ops.related_of(self.store.conn, self.tid), [after])
         self.assertEqual(ops.related_of(self.store.conn, after), [self.tid])
+
+    def test_unassigned_attention_preserves_distinct_issues_and_current_visibility(self):
+        from drover.notifications import Notifications
+        from hub.store import UiView
+        from hub.web import inbox_count
+        self.store.approve(self.tid)
+        view = UiView(self.store)
+        for cause in ('first', 'first', 'second'):
+            self.store.add_event('recovery.exhausted', 'system',
+                                 {'cause': cause, 'reason': cause}, task_id=self.tid)
+        self.assertEqual({item['body'] for item in view.notification_attention()}, {'first', 'second'})
+        self.assertEqual(inbox_count(view), 2)
+        url = '/api/v1/tasks/' + self.tid + '/archive'
+        self.assertEqual(self.c.post(url, headers=self.owner, json={}).status_code, 200)
+        self.assertEqual(view.notification_attention(), [])
+        self.assertEqual(inbox_count(view), 0)
+        self.assertEqual(self.c.post(url, headers=self.owner, json={'archived': False}).status_code, 200)
+        self.assertEqual(inbox_count(view), 2)
+        self.store.add_event('recovery.resolved', 'system', {'cause': 'first'}, task_id=self.tid)
+        self.assertEqual([item['body'] for item in view.notification_attention()], ['second'])
+        q = self.store.ask_question('task', self.tid, 'Separate decision')
+        self.assertEqual(inbox_count(view), 2)
+        self.assertEqual(self.c.post(f"/questions/{q['id']}/answer", headers=self.owner,
+                                     data={'text': 'Proceed'}).status_code, 200)
+        self.assertEqual(inbox_count(view), 1)
+        self.store.add_event('comment', 'owner', {'urgent': True, 'reason': 'Separate notice'}, task_id=self.tid)
+        self.assertEqual(inbox_count(view), 2)
+        service = Notifications(self.store.conn)
+        service.register('assigned')
+        service.assign(self.tid, 'assigned', event_class='issue')
+        self.assertEqual([item['body'] for item in view.notification_attention()], ['Separate notice'])
+        self.assertEqual(inbox_count(view), 1)
+        service.project()
+        self.assertEqual([item['event_class'] for item in service.receive('assigned')], ['issue'])
