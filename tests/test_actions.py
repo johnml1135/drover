@@ -175,6 +175,29 @@ class ActionsTests(unittest.TestCase):
         self.assertEqual(actions.execute(self.conn, done['action_id'], now=lambda: self.time), done)
         self.assertEqual(self.service.receive('director:a')[0]['delivery_id'], current['delivery_id'])
 
+    def test_reserved_director_comment_actor_cannot_requeue_owner_work(self):
+        for role in ('owner', 'service'):
+            with self.subTest(role=role):
+                self.service.register(role, action_allowlist=['task.comment'])
+                task = ops.create_task(self.conn, 'Findings', 'repo', kind='research', initiating_role=role)
+                ops.approve(self.conn, task['id'])
+                ops.set_status(self.conn, task['id'], 'claimed')
+                run = ops.start_run(self.conn, task['id'], 'worker', 'local')
+                ops.finish_run(self.conn, run, 'read-only-done', note='Findings for owner')
+                ops.set_status(self.conn, task['id'], 'needs-owner')
+                self.service.issue_session(role, 'session')
+                token = self.service.acquire(role, 'session')['lease_token']
+                request = dict(kind='task.comment', payload=dict(task_id=task['id'], event_class='issue',
+                               expected_revision=ops.events(self.conn, task_id=task['id'])[-1]['id'],
+                               expected_status='needs-owner', text='Director observation only'))
+                receipt = self.service.commit(role, token, {}, [], [request], 'comment')['actions'][0]
+                self.assertEqual(actions.execute(self.conn, receipt['action_id'], now=lambda: self.time)['state'], 'complete')
+                self.assertEqual(ops.get_task(self.conn, task['id'])['status'], 'needs-owner')
+                comments = ops.list_comments(self.conn, 'task', task['id'])
+                self.assertEqual([c['author'] for c in comments], [f'director:{role}'])
+                self.assertEqual(len(ops.list_runs(self.conn, task['id'])), 1)
+                self.assertEqual(self.service.role_state(role)['issues'], [])
+
 
 if __name__ == '__main__':
     unittest.main()

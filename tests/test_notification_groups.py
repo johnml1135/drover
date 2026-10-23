@@ -320,3 +320,49 @@ class NotificationGroupsTests(unittest.TestCase):
         ops.set_status(self.conn, child['id'], 'ready')
         self.assertIsNone(self.service.get_group('G-retry')['failure_reason'])
         self.assertEqual(self.service.get_group('G-retry')['readiness_reason'], 'awaiting-accepted-results')
+
+    def test_read_only_acceptance_freezes_evidence_across_later_seals_and_enrollment(self):
+        child = self.task()
+        for name in ('G-proof-a', 'G-proof-b'):
+            self.service.create_group(name, 'director:a')
+            self.service.enroll(name, child['id'], 1, 'enroll')
+        self.accept(child)
+        first = self.service.seal('G-proof-a', 2, 'seal')['manifest'][0]
+        run = ops.list_runs(self.conn, child['id'])[-1]
+        ops.amend_run(self.conn, run['id'], note='Findings changed after owner acceptance')
+        second = self.service.seal('G-proof-b', 2, 'seal')['manifest'][0]
+        self.assertEqual(second, first)
+        self.service.create_group('G-proof-late', 'director:a')
+        self.service.enroll('G-proof-late', child['id'], 1, 'enroll')
+        late = self.service.seal('G-proof-late', 2, 'seal')['manifest'][0]
+        self.assertEqual(late, first)
+        accepted = [e for e in ops.events(self.conn, task_id=child['id'], kind='status') if e['data']['to'] == 'landed'][0]
+        self.assertEqual(accepted['data']['read_only_receipt']['evidence']['note'], 'Accepted findings')
+        self.assertEqual(accepted['data']['read_only_receipt']['result_hash'], first['result_hash'])
+
+    def test_amended_historical_read_only_evidence_fails_closed_with_retained_reason(self):
+        child = self.task()
+        ops.approve(self.conn, child['id'])
+        ops.set_status(self.conn, child['id'], 'claimed')
+        run = ops.start_run(self.conn, child['id'], 'worker', 'local')
+        ops.finish_run(self.conn, run, 'read-only-done', note='Historical accepted findings')
+        ops.set_status(self.conn, child['id'], 'needs-owner')
+        # A pre-receipt acceptance fixture: its historical event/state pair has
+        # no immutable evidence snapshot, so later amendments are ambiguous.
+        self.accept_historical_read_only(child, run)
+        self.service.create_group('G-historical-before', 'director:a')
+        self.service.enroll('G-historical-before', child['id'], 1, 'enroll')
+        self.assertTrue(self.service.seal('G-historical-before', 2, 'seal')['ready'])
+        ops.amend_run(self.conn, run, note='Unaccepted amendment')
+        self.service.create_group('G-historical-after', 'director:a')
+        self.service.enroll('G-historical-after', child['id'], 1, 'enroll')
+        sealed = self.service.seal('G-historical-after', 2, 'seal')
+        self.assertFalse(sealed['ready'])
+        self.assertIn('accepted-evidence-ambiguous', sealed['failure_reason'])
+        self.assertIsNone(sealed['manifest'])
+
+    def accept_historical_read_only(self, child, run):
+        # Historical fixture construction only: existing V11 databases contain
+        # this state/event pair, whose public join behavior must remain safe.
+        self.conn.execute("UPDATE tasks SET status='landed' WHERE id=?", (child['id'],))
+        ops.event(self.conn, 'status', 'owner', {'from': 'needs-owner', 'to': 'landed', 'read_only': True, 'run': run}, task_id=child['id'])

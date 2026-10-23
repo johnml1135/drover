@@ -139,19 +139,38 @@ def accepted_result(conn, child_id, lifecycle):
         return dict(task_id=child_id, revision=status['id'], kind='merged', commit=receipt['land_sha'],
                     tip=receipt['tip'], receipt=receipt['receipt'])
     if lifecycle == 'legacy-read-only':
-        accepted = conn.execute("SELECT * FROM task_events WHERE task_id=? AND kind='status' AND actor='owner' "
-                                 "AND json_extract(data,'$.from')='needs-owner' AND json_extract(data,'$.to')='landed' "
-                                 "AND json_extract(data,'$.read_only')=1 ORDER BY id DESC LIMIT 1", (child_id,)).fetchone()
-        if not accepted:
-            return None
-        run_id = json.loads(accepted['data']).get('run')
-        run = conn.execute("SELECT * FROM runs WHERE id=? AND task_id=? AND role='worker' "
-                            "AND ended IS NOT NULL AND outcome='read-only-done'", (run_id, child_id)).fetchone()
-        if run is None:
-            return None
-        result_hash = hashlib.sha256(ops._j(dict(run)).encode()).hexdigest()
-        return dict(task_id=child_id, revision=accepted['id'], kind='read-only', run_id=run_id, result_hash=result_hash)
+        return _read_only_acceptance(conn, child_id)[0]
     raise ValueError('unsupported accepted-result lifecycle')
+
+
+def _read_only_acceptance(conn, child_id):
+    """Use frozen acceptance proof; ambiguous historical amendments fail closed."""
+    accepted = conn.execute("SELECT * FROM task_events WHERE task_id=? AND kind='status' AND actor='owner' "
+                            "AND json_extract(data,'$.from')='needs-owner' AND json_extract(data,'$.to')='landed' "
+                            "AND json_extract(data,'$.read_only')=1 ORDER BY id DESC LIMIT 1", (child_id,)).fetchone()
+    if not accepted:
+        return None, None
+    data = json.loads(accepted['data'])
+    run_id, receipt = data.get('run'), data.get('read_only_receipt')
+    if receipt is not None:
+        if not isinstance(receipt, dict) or receipt.get('schema_version') != 1 or not isinstance(receipt.get('evidence'), dict):
+            return None, 'accepted-evidence-invalid'
+        evidence = receipt['evidence']
+        result_hash = hashlib.sha256(ops._j(evidence).encode()).hexdigest()
+        if receipt.get('result_hash') != result_hash:
+            return None, 'accepted-evidence-invalid'
+    else:
+        if conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND id>? AND kind='run-amended' "
+                        "AND json_extract(data,'$.run')=? LIMIT 1", (child_id, accepted['id'], run_id)).fetchone():
+            return None, 'accepted-evidence-ambiguous'
+        run = conn.execute('SELECT * FROM runs WHERE id=? AND task_id=?', (run_id, child_id)).fetchone()
+        if not run:
+            return None, 'accepted-evidence-unavailable'
+        evidence = dict(run)
+        result_hash = hashlib.sha256(ops._j(evidence).encode()).hexdigest()
+    if evidence.get('id') != run_id or evidence.get('task_id') != child_id or evidence.get('role') != 'worker' or not evidence.get('ended') or evidence.get('outcome') != 'read-only-done':
+        return None, 'accepted-evidence-invalid'
+    return dict(task_id=child_id, revision=accepted['id'], kind='read-only', run_id=run_id, result_hash=result_hash), None
 
 
 def evaluate(service, group_id):
@@ -166,6 +185,10 @@ def evaluate(service, group_id):
             manifest.append(result)
         else:
             task = conn.execute('SELECT status FROM tasks WHERE id=?', (member['child_id'],)).fetchone()
+            if task and task['status'] == 'landed' and member['lifecycle'] == 'legacy-read-only':
+                _, proof_failure = _read_only_acceptance(conn, member['child_id'])
+                if proof_failure:
+                    attention = f"child-{proof_failure}:{member['child_id']}"
             if task is None or task['status'] in ('cancelled', 'failed', 'needs-owner'):
                 failure = f"child-{task['status'] if task else 'deleted'}:{member['child_id']}"
                 if task is None or task['status'] != 'failed':

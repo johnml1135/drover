@@ -2,12 +2,27 @@
 from .core import _role
 
 
+def _global_epoch(conn):
+    return conn.execute("SELECT COALESCE(MAX(epoch),0) FROM notification_controls WHERE kind IN ('stop','resume')").fetchone()[0]
+
+
 def admission(conn, role_id=None, generation=None, epoch=None):
+    """Return global worker or role-effective fence, plus global/sequence metadata.
+
+    Epoch is max(global STOP/resume, this role's skill history). Skill application
+    never rolls it back; unrelated role controls never advance it.
+    """
     state = conn.execute('SELECT * FROM notification_control_state WHERE id=1').fetchone()
-    result = dict(allowed=True, reason=None, epoch=state['epoch'])
+    global_epoch = _global_epoch(conn)
+    effective_epoch = global_epoch
+    if role_id is not None:
+        targeted_epoch = conn.execute("SELECT COALESCE(MAX(c.epoch),0) FROM notification_controls c "
+                                      "JOIN notification_targets t USING(event_id) WHERE c.kind='skill' AND t.role_id=?", (role_id,)).fetchone()[0]
+        effective_epoch = max(global_epoch, targeted_epoch)
+    result = dict(allowed=True, reason=None, epoch=effective_epoch, global_epoch=global_epoch, sequence=state['epoch'])
     if state['stopped']:
         result.update(allowed=False, reason='stop-work')
-    elif epoch is not None and epoch != state['epoch']:
+    elif epoch is not None and epoch != effective_epoch:
         result.update(allowed=False, reason='control-epoch-changed')
     elif role_id is not None:
         role = _role(conn, role_id)
@@ -181,7 +196,7 @@ def _control(service, issuer, kind, targets, skill=None, digest=None):
     for role_id in notice['targets']:
         reconcile_storage_hold(conn, role_id)
         refresh_wake(service, role_id)
-    return dict(notice, epoch=epoch, kind=kind, skill=skill, digest=digest)
+    return dict(notice, epoch=epoch, global_epoch=_global_epoch(conn), sequence=epoch, kind=kind, skill=skill, digest=digest)
 
 
 def stop(service, issuer, request_key):
@@ -196,8 +211,7 @@ def resume(service, issuer, expected_epoch, request_key):
     if isinstance(expected_epoch, bool) or not isinstance(expected_epoch, int) or expected_epoch < 0:
         raise ValueError('nonnegative expected_epoch required')
     def apply():
-        state = service.conn.execute('SELECT * FROM notification_control_state WHERE id=1').fetchone()
-        if state['epoch'] != expected_epoch:
+        if _global_epoch(service.conn) != expected_epoch:
             raise Conflict('control epoch changed')
         return _control(service, issuer, 'resume', 'all')
     return _idempotent(service, issuer, request_key, dict(operation='resume', expected_epoch=expected_epoch), apply)
@@ -253,6 +267,11 @@ def control_state(service, role_id=None):
     """Safe owner/role view: receipt is distinct from session application."""
     conn = service.conn
     state = dict(conn.execute('SELECT * FROM notification_control_state WHERE id=1').fetchone())
+    state['sequence'] = state['epoch']
+    state['epoch'] = _global_epoch(conn)
+    state['global_epoch'] = state['epoch']
+    if role_id is not None:
+        state['role_epoch'] = admission(conn, role_id=role_id)['epoch']
     controls = []
     for row in conn.execute('SELECT c.*,t.role_id,t.superseded FROM notification_controls c JOIN notification_targets t '
                             'ON t.event_id=c.event_id WHERE (? IS NULL OR t.role_id=?) ORDER BY c.epoch,t.role_id', (role_id, role_id)):

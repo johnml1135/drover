@@ -280,3 +280,52 @@ class NotificationControlsTests(unittest.TestCase):
             notice = self.service.broadcast(principal, ['director:a'], 'Allowed summary', request_key='summary')
             self.assertEqual(notice['targets'], ['director:a'])
         self.assertTrue(self.service.admission()['allowed'])
+
+    def test_targeted_skill_epoch_preserves_unrelated_intents_and_leases(self):
+        from drover.ledger import actions
+        ops.set_setting(self.conn, 'dispatch_enabled', 'true')
+        tasks, leases, accepted = {}, {}, {}
+        def comment(role):
+            task = tasks[role]
+            return dict(kind='task.comment', payload=dict(task_id=task['id'], event_class='progress',
+                        expected_revision=ops.events(self.conn, task_id=task['id'])[-1]['id'],
+                        expected_status='ready', text='Scoped work'))
+        for role in ('director:affected', 'director:unrelated'):
+            self.service.register(role, action_allowlist=['task.comment'])
+            tasks[role] = ops.create_task(self.conn, 'Work', 'repo', initiating_role=role)
+            ops.approve(self.conn, tasks[role]['id'])
+            leases[role] = self.lease(role)
+            accepted[role] = self.service.commit(role, leases[role], {}, [], [comment(role)], 'before-skill')['actions'][0]
+        affected, unrelated = 'director:affected', 'director:unrelated'
+        old_epoch = self.service.admission(role_id=unrelated)['epoch']
+        required = self.service.require_skill('owner', 'skill', 'v2', [affected], 'targeted-skill')
+        self.assertEqual(self.service.admission(role_id=unrelated)['epoch'], old_epoch)
+        self.assertEqual(self.service.admission()['epoch'], old_epoch)
+        self.assertEqual(actions.execute(self.conn, accepted[unrelated]['action_id'], now=lambda: self.now)['state'], 'complete')
+        second = self.service.commit(unrelated, leases[unrelated], {}, [], [comment(unrelated)], 'after-skill')['actions'][0]
+        self.assertEqual(actions.execute(self.conn, second['action_id'], now=lambda: self.now)['state'], 'complete')
+        self.service.ack_control(affected, leases[affected], required['control_id'], digest='v2')
+        self.assertEqual(actions.execute(self.conn, accepted[affected]['action_id'], now=lambda: self.now)['result']['reason'], 'control-epoch-changed')
+        with self.assertRaisesRegex(Conflict, 'control-epoch-changed'):
+            self.service.commit(affected, leases[affected], {}, [], [comment(affected)], 'stale-lease')
+        self.service.commit(affected, leases[affected], {}, [], [], 'release', release=True)
+        fresh = self.service.acquire(affected, 's')
+        self.assertEqual(fresh['control_epoch'], self.service.admission(role_id=affected)['epoch'])
+        next_action = self.service.commit(affected, fresh['lease_token'], {}, [], [comment(affected)], 'fresh')['actions'][0]
+        self.assertEqual(actions.execute(self.conn, next_action['action_id'], now=lambda: self.now)['state'], 'complete')
+
+    def test_owner_resume_epoch_is_global_boundary_not_targeted_control_sequence(self):
+        stopped = self.service.stop('owner', 'stop-boundary')
+        requirement = self.service.require_skill('owner', 'skill', 'v1', ['director:a'], 'skill-while-stopped')
+        state = self.service.control_state()
+        self.assertEqual(state['epoch'], stopped['epoch'])
+        self.assertEqual(state['global_epoch'], stopped['epoch'])
+        self.assertGreater(state['sequence'], state['epoch'])
+        self.assertEqual(self.service.control_state('director:a')['role_epoch'], requirement['epoch'])
+        self.assertEqual(self.service.control_state('director:b')['role_epoch'], stopped['epoch'])
+        with self.assertRaises(Conflict):
+            self.service.resume('owner', state['sequence'], 'sequence-is-not-resume-authority')
+        resumed = self.service.resume('owner', state['global_epoch'], 'resume-global')
+        self.assertEqual(self.service.admission()['epoch'], resumed['epoch'])
+        self.assertFalse(self.service.admission(role_id='director:a')['allowed'])
+        self.assertTrue(self.service.admission(role_id='director:b')['allowed'])

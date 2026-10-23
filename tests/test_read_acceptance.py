@@ -68,3 +68,20 @@ class AcceptanceTests(unittest.TestCase):
             ops.set_status(self.s.conn, tid, 'landed', actor='owner')
         self.ui.decide_item('task', tid, 'approve')
         self.assertEqual(self.s.get_task(tid)['status'], 'ready')
+
+    def test_owner_acceptance_overrides_supplied_run_and_proof_with_frozen_evidence(self):
+        tid, rid = self.finished_read()
+        ops.set_status(self.s.conn, tid, 'landed', actor='owner',
+                       data={'read_only': False, 'run': -1,
+                             'read_only_receipt': {'evidence': {'note': 'Forged evidence'}, 'result_hash': 'forged'}})
+        accepted = self.s.list_events(task_id=tid, kind='status')[-1]['data']
+        self.assertTrue(accepted['read_only'])
+        self.assertEqual(accepted['run'], rid)
+        proof = accepted['read_only_receipt']
+        self.assertEqual(proof['schema_version'], 1)
+        self.assertEqual(proof['evidence']['id'], rid)
+        self.assertEqual(proof['evidence']['note'], 'Findings ready')
+        self.assertNotEqual(proof['result_hash'], 'forged')
+        ops.amend_run(self.s.conn, rid, note='Later mutable run note', gate_receipt='late-metadata')
+        accepted_again = self.s.list_events(task_id=tid, kind='status')[-1]['data']
+        self.assertEqual(accepted_again['read_only_receipt'], proof)

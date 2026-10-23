@@ -168,7 +168,7 @@ def execute(conn, action_id, now=None):
             conn.execute('SAVEPOINT action_effect')
             try:
                 if action['kind'] == 'task.comment':
-                    comment = ops.add_comment(conn, 'task', payload['task_id'], payload['_authority']['role_id'], payload['text'])
+                    comment = ops.add_comment(conn, 'task', payload['task_id'], 'director:' + payload['_authority']['role_id'], payload['text'])
                     result = dict(comment_id=comment['id'], task_id=payload['task_id'])
                 elif action['kind'] == 'task.retry':
                     task = ops.set_status(conn, payload['task_id'], 'ready', actor='system',

@@ -99,7 +99,7 @@ def acquire(service, role_id, session_id, ttl=60):
             raise Conflict('director already has an active execution lease')
         token = secrets.token_urlsafe(32)
         expires = min(service.now() + ttl, session['expires'])
-        control_epoch = service.admission()['epoch']
+        control_epoch = service.admission(role_id=role_id)['epoch']
         conn.execute('INSERT INTO director_leases VALUES(?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET '
                      'session_id=excluded.session_id,generation=excluded.generation,token_hash=excluded.token_hash,'
                      'expires=excluded.expires,control_epoch=excluded.control_epoch',

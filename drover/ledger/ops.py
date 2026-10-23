@@ -8,6 +8,7 @@ Backlog gate: a task reaches `ready` only if `approved_at` is set, and only an o
 proposed/draft sets it. Holds (urgent, replan, manual block) are a list of {source, reason} on the blocker; a held
 task returns to its previous state only when the list is empty.
 """
+import hashlib
 import json
 from contextvars import ContextVar
 from collections import deque
@@ -467,8 +468,13 @@ def set_status(conn, task_id, new, actor="system", reason=None, data=None):
             if waiting.pending(("task", task_id)):
                 raise ValueError('task has outstanding waits')
         states.check(old, new, actor)
-        if (old, new) == (states.NEEDS_OWNER, states.LANDED) and read_only_result(conn, t) is None:
-            raise IllegalTransition('only completed read-only findings may be accepted without landing')
+        if (old, new) == (states.NEEDS_OWNER, states.LANDED):
+            run = read_only_result(conn, t)
+            if run is None:
+                raise IllegalTransition('only completed read-only findings may be accepted without landing')
+            receipt = dict(schema_version=1, evidence=run,
+                           result_hash=hashlib.sha256(_j(run).encode()).hexdigest())
+            data = {**(data or {}), 'read_only': True, 'run': run['id'], 'read_only_receipt': receipt}
         approved = None if new in (states.DRAFT, states.PROPOSED) else t["approved_at"]  # demotion needs re-approval
         if (old, new) in ((states.PROPOSED, states.READY), (states.DRAFT, states.READY)):
             approved = approved or stamp()
