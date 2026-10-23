@@ -70,6 +70,7 @@ def _tab(request, tab, store, **ctx):
 def inbox_data(store):
     return {
         "questions": _call(store, "inbox_questions", default=[]),
+        "notification_attention": _call(store, "notification_attention", default=[]),
         "owner_items": _call(store, "needs_owner_items", default=[]),
         "imports": _call(store, "import_proposals", default=[]),
         "tuner": _call(store, "tuner_proposals", default=[]),

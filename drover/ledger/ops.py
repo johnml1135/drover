@@ -726,7 +726,23 @@ def _target(conn, kind, tid):
         return get_task(conn, tid)
     if kind == "epic":
         return get_epic(conn, tid)
+    if kind == "director":
+        from ..notifications import Notifications
+        return Notifications(conn).role_state(tid)
+    if kind == "group":
+        from ..notifications import Notifications
+        return Notifications(conn).get_group(tid)
     raise ValueError(f"comment target kind {kind!r}")
+
+
+def _target_event(conn, target_kind, target_id, kind, actor, data):
+    if target_kind == 'task':
+        return event(conn, kind, actor, data, task_id=target_id)
+    if target_kind == 'epic':
+        return event(conn, kind, actor, data, epic_id=target_id)
+    # Owner bookkeeping must not become unassigned ordinary-task notifications.
+    return event(conn, 'notification.owner-' + kind, actor,
+                 {**data, 'target_kind': target_kind, 'target_id': target_id})
 
 
 def add_comment(conn, target_kind, target_id, author, body, urgent=False, replan=False):
@@ -734,11 +750,13 @@ def add_comment(conn, target_kind, target_id, author, body, urgent=False, replan
     (of a task) or the pending tasks (of an epic); replan writes a replan-request event."""
     with tx(conn):
         tgt = _target(conn, target_kind, target_id)
+        if target_kind in ('director', 'group') and (urgent or replan):
+            raise ValueError('urgent/replan comments require a task or epic target')
         cur = conn.execute("INSERT INTO comments(target_kind,target_id,author,body,urgent,replan,at) "
                            "VALUES(?,?,?,?,?,?,?)", (target_kind, target_id, author, body, int(urgent), int(replan), stamp()))
         cid = cur.lastrowid
-        ids = {"task_id": target_id} if target_kind == "task" else {"epic_id": target_id}
-        event(conn, "comment", author, {"comment": cid, "urgent": urgent, "replan": replan}, **ids)
+        _target_event(conn, target_kind, target_id, "comment", author,
+                      {"comment": cid, "urgent": urgent, "replan": replan})
         routed = []
         if (target_kind == "task" and tgt["status"] == "needs-owner" and author == "owner"
                 and tgt["approved_at"]):
@@ -750,7 +768,7 @@ def add_comment(conn, target_kind, target_id, author, body, urgent=False, replan
         if urgent:
             routed.append("held")
         if replan:
-            event(conn, "replan-request", author, {"comment": cid}, **ids)
+            _target_event(conn, target_kind, target_id, "replan-request", author, {"comment": cid})
             routed.append("replan-request")
         return {"id": cid, "routed": routed}
 
@@ -771,8 +789,8 @@ def ask_question(conn, target_kind, target_id, title, body="", options=(), allow
                 for o in options]
         cur = conn.execute("INSERT INTO questions(target_kind,target_id,title,body,options,allow_text,asked) "
                            "VALUES(?,?,?,?,?,?,?)", (target_kind, target_id, title, body, _j(opts), int(allow_text), stamp()))
-        ids = {"task_id": target_id} if target_kind == "task" else {"epic_id": target_id}
-        event(conn, "question-asked", actor, {"question": cur.lastrowid, "title": title}, **ids)
+        _target_event(conn, target_kind, target_id, "question-asked", actor,
+                      {"question": cur.lastrowid, "title": title})
         if needs_owner and target_kind == "task":
             from .waiting import Waiting, OWNER_ANSWER, cause_key
             waiting = Waiting(conn, actor)
@@ -810,10 +828,10 @@ def answer_question(conn, qid, choice=None, text=None, actor="owner"):
             raise ValueError("this question does not take free text")
         conn.execute("UPDATE questions SET status='answered', answer_choice=?, answer_text=?, answered_at=? WHERE id=?",
                      (choice, text, stamp(), qid))
-        ids = {"task_id": q["target_id"]} if q["target_kind"] == "task" else {"epic_id": q["target_id"]}
         token = _answer_context.set((conn, qid))
         try:
-            event(conn, "question-answered", actor, {"question": qid, "choice": choice}, **ids)
+            _target_event(conn, q["target_kind"], q["target_id"], "question-answered", actor,
+                          {"question": qid, "choice": choice})
         finally:
             _answer_context.reset(token)
         if q["target_kind"] == "task":

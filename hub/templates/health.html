@@ -4,6 +4,16 @@
 <h2>Dispatch</h2>
 <section class="card"><p>Dispatch is <strong>{{ dispatch.label }}</strong>. New installs start paused; only the owner can change this.</p>
   {{ dispatch_ctl(dispatch, '/health') }}</section>
+{% if h.notifications %}
+<h2>Director notifications</h2>
+<section class="card"><p>Unassigned events: {{ h.notifications.unassigned }}. Global control epoch: {{ h.notifications.controls.global_epoch }}. Sequence: {{ h.notifications.controls.sequence }}.</p>
+<p>STOP: {{ h.notifications.controls.stopped }}</p></section>
+{% for role in h.notifications.roles %}<section class="card"><h3>{{ role.role_id }}</h3>
+<p>{{ role.pending_actionable }} unresolved issues; {{ role.pending_digests }} pending digests.</p>
+{% if role.runtime.held_reason %}<p>Held: {{ role.runtime.held_reason }}</p>{% endif %}
+{% if not role.admission.allowed %}<p>Admission held: {{ role.admission.reason }}</p>{% endif %}
+{% for group in role.groups %}<p>Group {{ group.group_id }}: {{ group.readiness_reason or 'ready' }}</p>{% endfor %}</section>{% endfor %}
+{% endif %}
 <h2>Resources</h2>
 <div class="grid">
 {% for r in h.resources or [] %}

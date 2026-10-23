@@ -303,6 +303,8 @@ def approve(tid: str, request: Request, who: str = Depends(auth.require_api)):
 
 @router.post("/runs", status_code=201)
 def start_run(body: RunStart, request: Request, who: str = Depends(auth.require_api)):
+    if body.role == "director" or body.role.startswith("director:"):
+        raise HTTPException(403, "director lifecycle requires supervised runtime")
     return guard(_store(request).start_run, body.task_id, body.role, body.backend,
                  body.model, body.effort, actor(who))
 
@@ -310,12 +312,15 @@ def start_run(body: RunStart, request: Request, who: str = Depends(auth.require_
 @router.post("/runs/{rid}/finish")
 def finish_run(rid: int, body: RunFinish, request: Request,
                who: str = Depends(auth.require_api)):
+    role = guard(_store(request).run_role, rid)
+    if role == "director" or role.startswith("director:"):
+        raise HTTPException(403, "director lifecycle requires supervised runtime")
     d = body.model_dump(exclude={"outcome"})
     d = {k: v for k, v in d.items() if v is not None}
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "task.result-accepted", "result.accepted")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)
@@ -334,6 +339,8 @@ def list_events(request: Request, task_id: str | None = None, epic_id: str | Non
 
 @router.post("/comments", status_code=201)
 def add_comment(body: CommentIn, request: Request, who: str = Depends(auth.require_api)):
+    if body.target_kind in ("director", "group"):
+        owner_only(who)
     # an owner comment requeues needs-owner tasks, so only the UI may use that name
     author = "owner" if is_owner(who) else (
         "dispatcher" if body.author == "owner" else body.author)
@@ -348,6 +355,8 @@ def list_comments(target_kind: str, target_id: str, request: Request):
 
 @router.post("/questions", status_code=201)
 def ask(body: QuestionIn, request: Request, who: str = Depends(auth.require_api)):
+    if body.target_kind in ("director", "group"):
+        owner_only(who)
     return guard(_store(request).ask_question, body.target_kind, body.target_id, body.title,
                  body.body, body.options, body.allow_text, body.needs_owner, actor(who))
 

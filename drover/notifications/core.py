@@ -803,3 +803,98 @@ class Notifications:
         return [dict(task_id=row['task_id'], event_class=row['event_class'], revision=row['revision'],
                      status=ops.get_task(self.conn, row['task_id'])['status']) for row in self.conn.execute(
                          'SELECT * FROM task_ownership WHERE role_id=? ORDER BY task_id,event_class', (role_id,))]
+
+    def authorize_task(self, role_id, task_id):
+        """Transport ownership check; group references confer no task authority."""
+        ops.get_task(self.conn, task_id)
+        owner = effective_owner(self.conn, task_id, '*')
+        if not owner or owner['role_id'] != role_id:
+            raise PermissionError('task belongs to another director')
+
+    def authorize_group(self, role_id, group_id):
+        group = self.get_group(group_id)
+        if group['role_id'] != role_id:
+            raise PermissionError('group belongs to another director')
+        return group
+
+    def subscription(self, subscription_id, role_id):
+        sub = _subscription(self.conn, subscription_id)
+        if sub['role_id'] != role_id:
+            raise PermissionError('subscription belongs to another director')
+        return self._subscription_envelope(subscription_id)
+
+    def replay(self, role_id, after=None, limit=50):
+        """Bounded durable replay plus pending offers, using retained recipients.
+
+        Cursors contain source and digest positions, never in-memory bus IDs.
+        Pending offers intentionally repeat until acknowledged, including source
+        facts older than the cursor that arrive by transfer or late projection.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError('replay limit must be between 1 and 100')
+        event_after, digest_after = 0, 0
+        if after is not None:
+            parts = after.split(':')
+            if len(parts) != 3 or parts[0] != 'v1' or any(not p.isascii() or not p.isdigit() for p in parts[1:]):
+                raise ValueError('invalid replay cursor')
+            event_after, digest_after = map(int, parts[1:])
+        from .delivery import compaction_coverage
+        with tx(self.conn):
+            _role(self.conn, role_id)
+            self.project(1000)
+            compacted = compaction_coverage(self.conn, role_id)
+            digest_compacted = self.conn.execute("SELECT 1 FROM notification_coverage WHERE role_id=? AND kind='digest-compacted'", (role_id,)).fetchone()
+            if after is not None and ((compacted and event_after < compacted['last_event']) or
+                    (digest_compacted and digest_after < self.conn.execute('SELECT COALESCE(MIN(id),0) FROM notification_digests WHERE role_id=?', (role_id,)).fetchone()[0])):
+                high = self.conn.execute('SELECT COALESCE(MAX(id),0) FROM notification_digests WHERE role_id=?', (role_id,)).fetchone()[0]
+                return dict(items=[], cursor=f'v1:{_position(self.conn)}:{high}', more=False,
+                            resync_required=True, snapshot=self.scoped_snapshot(role_id), health=self.health(role_id))
+            # Read a bounded candidate batch. SQL orders pending deliveries first;
+            # recipient_owner additionally rechecks event-class current authority.
+            rows = self.conn.execute("SELECT * FROM notification_inbox WHERE role_id=? "
+                "AND (mode='immediate' OR actionable=1) AND (resolved=0 OR actionable=0) "
+                "AND (acknowledged_at IS NULL OR COALESCE(json_extract(envelope,'$.latest_event_id'),event_id)>?) "
+                "ORDER BY acknowledged_at IS NOT NULL,COALESCE(json_extract(envelope,'$.latest_event_id'),event_id),id LIMIT ?",
+                (role_id, event_after, limit + 1)).fetchall()
+            items = []
+            for row in rows:
+                message = json.loads(row['envelope'])
+                owner = recipient_owner(self.conn, message)
+                if not owner or owner['role_id'] != role_id:
+                    continue
+                message.update(delivery_id=f"notification:{row['id']}", subscriber=role_id,
+                    ownership_revision=row['ownership_revision'], message_version=message.get('latest_event_id', row['event_id']))
+                items.append(message)
+            remaining = max(0, limit + 1 - len(items))
+            for row in self.conn.execute('SELECT * FROM notification_digests WHERE role_id=? AND '
+                    '(acknowledged_at IS NULL OR id>?) ORDER BY acknowledged_at IS NOT NULL,id LIMIT ?',
+                    (role_id, digest_after, remaining)):
+                message = json.loads(row['body'])
+                message['entries'] = [entry for entry in message['entries'] if
+                    (owner := recipient_owner(self.conn, entry)) and owner['role_id'] == role_id]
+                message.update(delivery_id=f"digest:{row['id']}", digest_id=f"digest:{row['id']}", message_version=row['id'])
+                items.append(message)
+            more = len(items) > limit
+            result = []
+            for message in items[:limit]:
+                if message['delivery_id'].startswith('digest:'):
+                    digest_after = max(digest_after, message['message_version'])
+                else:
+                    event_after = max(event_after, message['message_version'])
+                result.append(dict(cursor=f'v1:{event_after}:{digest_after}', message=bound_envelope(message)))
+            return dict(items=result, cursor=f'v1:{event_after}:{digest_after}', more=more, resync_required=False)
+
+    def owner_attention(self):
+        """Deduplicated current unassigned facts for the existing owner Inbox."""
+        out = []
+        for row in self.conn.execute('SELECT envelope FROM notification_intents WHERE role_id IS NULL AND actionable=1 AND resolved=0 ORDER BY event_id DESC LIMIT 200'):
+            envelope = json.loads(row['envelope'])
+            key = (envelope.get('task_id'), envelope['event_class'])
+            if any(item['key'] == key for item in out):
+                continue
+            out.append(dict(key=key, target_kind='task', target_id=envelope['task_id'],
+                title='Unassigned notification: ' + envelope['event_class'], body=envelope.get('reason') or 'Assign an owning director to handle this issue.'))
+        return out
+
+    def task_groups(self, task_id):
+        return [self.get_group(row[0]) for row in self.conn.execute('SELECT group_id FROM task_groups WHERE parent_id=? ORDER BY group_id', (task_id,))]

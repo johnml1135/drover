@@ -204,6 +204,12 @@ class Store:
         return r
 
     @_translate
+    def run_role(self, run_id):
+        row = self.conn.execute("SELECT role FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFound(f"run {run_id}")
+        return row[0]
+
     def list_runs(self, task_id):
         return ops.list_runs(self.conn, task_id)
 
@@ -443,6 +449,10 @@ class UiView:
     def last_updated(self):
         return time.strftime("%H:%M:%S")
 
+    def notification_attention(self):
+        from drover.notifications import Notifications
+        return Notifications(self.c).owner_attention()
+
     def inbox_questions(self):
         out = []
         tuner = {p["id"] for p in self.tuner_proposals() if p.get("question")}
@@ -452,7 +462,8 @@ class UiView:
                 continue
             opts = [{"id": o["label"], "label": o["label"], "recommended": o.get("recommended")}
                     for o in q["options"]]
-            out.append({"id": str(q["id"]), "title": q["title"], "body": q["body"], "options": opts})
+            out.append({"id": str(q["id"]), "title": q["title"], "body": q["body"], "options": opts,
+                        "target_kind": q["target_kind"], "target_id": q["target_id"]})
         return out
 
     def _task_view(self, task, configured=None):
@@ -467,7 +478,10 @@ class UiView:
         incoming = [dict(task_id=r[0], kind=r[1]) for r in self.c.execute(
             "SELECT task_id, kind FROM task_deps WHERE depends_on=? ORDER BY task_id", (tid,))]
         related = ops.related_of(self.c, tid)
-        task = {**task, "state": task["status"], "waiting_labels": labels,
+        from drover.notifications import Notifications
+        groups = Notifications(self.c).task_groups(tid)
+        labels += ["Waiting on group " + g["group_id"] + ": " + g["readiness_reason"] for g in groups if not g["ready"]]
+        task = {**task, "groups": groups, "state": task["status"], "waiting_labels": labels,
                 "reason": "" if labels else self._reason(task),
                 "can_accept_findings": ops.read_only_result(self.c, task) is not None,
                 "deps": deps, "dependents": incoming, "related": related,
@@ -624,6 +638,8 @@ class UiView:
         self.s._changed("repo.pushed", repo=name)
 
     def health(self):
+        from drover.notifications import Notifications
+        notification_health = Notifications(self.c).health()
         hb = self.s.get_heartbeat() or {}
         res = hb.get("resources") or {}
         if isinstance(res, dict):
@@ -635,7 +651,7 @@ class UiView:
             alw = [dict(v, plan=k) if isinstance(v, dict) else {"plan": k, "used_pct": v}
                    for k, v in alw.items()]
         wd = [e for e in self.s.list_events(limit=500) if e["kind"].startswith("watchdog.")]
-        out = {"resources": res, "allowance": alw,
+        out = {"notifications": notification_health, "resources": res, "allowance": alw,
                "heartbeat_age": f"{time.time() - hb['ts']:.0f}s" if hb else "unknown",
                "watchdog": [{"at": e["at"][11:19], "action": e["data"].get("message", e["kind"])}
                             for e in reversed(wd[-10:])],
@@ -671,6 +687,14 @@ class UiView:
         """Resolve a UI item (task/import/owner/epic/question/run) to a comment target."""
         if kind == "epic":
             return "epic", iid
+        if kind == "director":
+            from drover.notifications import Notifications
+            Notifications(self.c).role_state(iid)
+            return kind, iid
+        if kind == "group":
+            from drover.notifications import Notifications
+            Notifications(self.c).get_group(iid)
+            return kind, iid
         if kind in ("task", "import", "owner"):
             return "task", iid
         if kind == "question":

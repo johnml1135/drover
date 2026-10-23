@@ -206,6 +206,8 @@ def require_api(request: Request) -> str:
     state = request.app.state
     if bearer_ok(request, state.token):
         return "token"
+    if "authorization" in request.headers:
+        raise HTTPException(status_code=401, detail="unauthorized")
     user = ui_user(request, state.settings)
     if user and csrf_ok(request):
         return f"ui:{user}"
@@ -216,7 +218,25 @@ def require_api(request: Request) -> str:
 
 def require_ui(request: Request) -> str:
     """Dependency for web routes."""
+    if "authorization" in request.headers:
+        raise HTTPException(status_code=403, detail="owner UI required")
     user = ui_user(request, request.app.state.settings)
     if not user:
         raise HTTPException(status_code=403, detail="forbidden")
     return user
+
+
+def require_owner(request: Request) -> str:
+    """Owner administration accepts only UI identity plus CSRF, never a bearer."""
+    user = require_ui(request)
+    if not csrf_ok(request):
+        raise HTTPException(403, "cross-site request refused")
+    return user
+
+
+def require_director(request: Request) -> str:
+    """Extract only. The adapter revalidates identity in its ledger transaction."""
+    scheme, _, credential = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not credential.strip():
+        raise HTTPException(401, "director bearer required")
+    return credential.strip()

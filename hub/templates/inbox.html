@@ -3,12 +3,17 @@
 {% block content %}
 <h2>Needs me</h2>
 {% for alert in usage_alerts %}<section class="card" role="alert"><h3>{{ alert.seat }} allowance</h3><p>{{ alert.message }}</p><a class="btn" href="/stats">Enter reading</a></section>{% endfor %}
-{% if not (questions or owner_items or imports or tuner or garden or failed or usage_alerts) and not low %}<p class="muted empty">Nothing needs you.</p>{% endif %}
+{% if not (notification_attention or questions or owner_items or imports or tuner or garden or failed or usage_alerts) and not low %}<p class="muted empty">Nothing needs you.</p>{% endif %}
 
+{% for item in notification_attention %}
+<section class="card"><h3>{{ item.title }}</h3><p>{{ item.body }}</p>
+{% if item.target_kind == 'task' %}<a href="/tasks/{{ item.target_id }}">{{ item.target_id }}</a>{% else %}<span>{{ item.target_kind }}: {{ item.target_id }}</span>{% endif %}</section>
+{% endfor %}
 {% for q in questions %}
 <section class="card question" id="q-{{ q.id }}">
   <h3>{{ q.title }}</h3>
   <p>{{ q.body }}</p>
+  {% if q.target_kind in ('director', 'group') %}<p class="muted">{{ q.target_kind }}: {{ q.target_id }}</p>{% endif %}
   <form method="post" action="/questions/{{ q.id }}/answer" hx-post="/questions/{{ q.id }}/answer" hx-target="#content" hx-swap="innerHTML" hx-disabled-elt="find button.submit">
     {% for o in q.options or [] %}
     <label class="opt{% if o.recommended %} rec{% endif %}">

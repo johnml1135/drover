@@ -339,4 +339,22 @@ CREATE TABLE notification_control_requests (
  PRIMARY KEY(issuer,request_key));
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11)]
+V12 = """
+ALTER TABLE comments RENAME TO comments_v11;
+DROP INDEX comments_target;
+CREATE TABLE comments (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ target_kind TEXT NOT NULL CHECK(target_kind IN ('epic','task','director','group')),
+ target_id TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,
+ urgent INTEGER NOT NULL DEFAULT 0, replan INTEGER NOT NULL DEFAULT 0, at TEXT NOT NULL);
+INSERT INTO comments SELECT * FROM comments_v11;
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='comments_v11'),0))
+ WHERE name='comments';
+INSERT INTO sqlite_sequence(name,seq)
+ SELECT 'comments',seq FROM sqlite_sequence WHERE name='comments_v11'
+ AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='comments');
+DROP TABLE comments_v11;
+CREATE INDEX comments_target ON comments(target_kind,target_id);
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12)]

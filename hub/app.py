@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse
 
-from hub import api, auth, events, web
+from hub import api, auth, events, notifications, web
 from hub.dispatch import DispatcherService
 from hub.services import Services
 from hub.settings import Settings
@@ -69,7 +69,7 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
         on_api_port = auth.arrived_on(request) == settings.api_port != settings.ui_port
         if path.startswith("/api/v1"):
             return await call_next(request)  # route dependencies authorise
-        if on_api_port or not auth.ui_user(request, settings):
+        if "authorization" in request.headers or on_api_port or not auth.ui_user(request, settings):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
         if not auth.csrf_ok(request):
             return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
@@ -80,6 +80,7 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
 
     app.include_router(api.public)
     app.include_router(api.router)
+    app.include_router(notifications.router)
 
     @app.get("/events", response_class=EventSourceResponse)
     async def sse(request: Request, limit: int | None = None):
