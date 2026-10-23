@@ -349,6 +349,46 @@ class DirectorRolesTests(unittest.TestCase):
         self.service.project()
         self.assertEqual(self.service.receive('director:a'), [])
 
+    def test_question_episode_identity_and_handler_survive_evidence_truncation(self):
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        ops.event(self.conn, 'decision-needed', 'system', {'question': 1, 'text': 'Needs decision'}, task_id=task['id'])
+        self.service.project()
+        first, = self.service.receive('director:a')
+        token = self.lease()
+        self.service.claim_issue('director:a', first['delivery_id'], token)
+        later = ops.event(self.conn, 'decision-needed', 'system',
+                          {'question': 1, 'text': 'Needs decision', 'padding': 'x' * 9000}, task_id=task['id'])
+        self.service.project()
+        messages = self.service.receive('director:a')
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['delivery_id'], first['delivery_id'])
+        self.assertEqual(messages[0]['message_version'], later)
+        self.assertTrue(messages[0]['evidence']['truncated'])
+        with self.assertRaises(Conflict):
+            self.service.claim_issue('director:a', messages[0]['delivery_id'], token)
+        self.service.commit('director:a', token, {}, [], [], 'release-question', release=True)
+        self.assertTrue(self.service.role_state('director:a')['pending_wake'])
+        self.assertEqual(self.service.role_state('director:a')['wake_position'], later)
+
+    def test_question_ack_version_and_resolution_use_source_identity_across_truncation(self):
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        question = ops.ask_question(self.conn, 'task', task['id'], 'Needs decision')
+        self.service.project()
+        first, = self.service.receive('director:a')
+        token = self.lease()
+        ops.event(self.conn, 'decision-needed', 'system',
+                  {'question': question, 'text': 'Needs decision', 'padding': 'x' * 9000}, task_id=task['id'])
+        with self.assertRaises(Conflict):
+            self.service.commit('director:a', token, {}, [first['delivery_id']], [], 'unseen-large-question',
+                                delivery_versions={first['delivery_id']: first['message_version']})
+        self.service.project()
+        current, = self.service.receive('director:a')
+        self.service.commit('director:a', token, {}, [current['delivery_id']], [], 'seen-large-question', release=True,
+                            delivery_versions={current['delivery_id']: current['message_version']})
+        self.assertFalse(self.service.role_state('director:a')['pending_wake'])
+        ops.answer_question(self.conn, question, text='Recorded answer')
+        self.assertEqual(self.service.health('director:a')['pending_actionable'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

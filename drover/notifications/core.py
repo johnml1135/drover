@@ -248,10 +248,17 @@ def bound_envelope(envelope):
     return envelope
 
 
-def issue_key(envelope):
-    """One unresolved episode, shared by capture, coalescing and wake recovery."""
+def issue_key(conn, envelope):
+    """Use typed source identity, independently of bounded display evidence."""
+    source = conn.execute('SELECT data FROM task_events WHERE id=?',
+                           (envelope.get('latest_event_id', envelope['event_id']),)).fetchone()
+    if source is None:
+        raise ops.NotFound('issue source event')
+    data = json.loads(source['data'])
+    cause = _cause_identity(data.get('cause'))
+    reason = _text_excerpt(data['reason'], 512) if data.get('reason') is not None else None
     return ops._j([envelope['task_id'], envelope['event_class'],
-                   envelope['cause_id'] or envelope['reason'] or envelope['evidence'].get('question')])
+                   cause or reason or data.get('question')])
 
 
 def coalesce_issue(previous, following):
@@ -269,16 +276,19 @@ def _resolve_issue(conn, event):
     cause, question = _cause_identity(event['data'].get('cause')), event['data'].get('question')
     if cause is None and question is None:
         return
+    # Display excerpts may stringify a question ID. Resolution uses the same
+    # immutable source question that defines its coalescing/handling episode.
+    source_question = ("(SELECT json_extract(e.data,'$.question') FROM task_events e WHERE "
+                       "e.id=COALESCE(json_extract(envelope,'$.latest_event_id'),json_extract(envelope,'$.event_id')))")
+    matches = ("actionable=1 AND json_extract(envelope,'$.task_id')=? "
+               "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
+               f"(? IS NOT NULL AND {source_question}=?))")
     affected_roles = set()
     for table in ('notification_intents', 'notification_inbox'):
         affected_roles.update(row['role_id'] for row in conn.execute(
-            f"SELECT DISTINCT role_id FROM {table} WHERE actionable=1 AND resolved=0 AND json_extract(envelope,'$.task_id')=? "
-            "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
-            "(? IS NOT NULL AND json_extract(envelope,'$.evidence.question')=?))",
+            f"SELECT DISTINCT role_id FROM {table} WHERE resolved=0 AND {matches}",
             (event['task_id'], cause, cause, question, question)) if row['role_id'])
-        conn.execute(f"UPDATE {table} SET resolved=1 WHERE actionable=1 AND json_extract(envelope,'$.task_id')=? "
-                     "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
-                     "(? IS NOT NULL AND json_extract(envelope,'$.evidence.question')=?))",
+        conn.execute(f"UPDATE {table} SET resolved=1 WHERE {matches}",
                      (event['task_id'], cause, cause, question, question))
     for role in conn.execute('SELECT role_id FROM notification_escalations').fetchall():
         reconcile_storage_hold(conn, role['role_id'])
@@ -342,11 +352,12 @@ def capture_event(conn, event, *, subscription=None, replay=False):
         # Identical observations of one unresolved episode do not create wakes.
         prior = None
         if actionable:
+            episode = issue_key(conn, envelope)
             for row in conn.execute('SELECT envelope FROM notification_intents WHERE event_id<? AND role_id=? '
                                      "AND event_class=? AND json_extract(envelope,'$.task_id')=? "
                                      'AND resolved=0 ORDER BY event_id DESC', (event['id'], role_id, event_class, task['id'])):
                 candidate = json.loads(row['envelope'])
-                if issue_key(candidate) == issue_key(envelope):
+                if issue_key(conn, candidate) == episode:
                     prior = candidate
                     break
         if prior is None or prior['evidence'] != envelope['evidence']:

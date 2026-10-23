@@ -216,13 +216,13 @@ def _acknowledge(service, role_id, delivery_id, versions):
             raise PermissionError('delivery ownership changed')
         version = envelope.get('latest_event_id', row['event_id'])
         if row['actionable']:
-            episode = json.loads(row['issue_key'])[2]
-            version = conn.execute('SELECT COALESCE(MAX(event_id),?) FROM notification_intents WHERE role_id=? '
-                                   'AND event_class=? AND actionable=1 AND resolved=0 AND event_id>=? '
-                                   "AND json_extract(envelope,'$.task_id')=? AND COALESCE("
-                                   "NULLIF(json_extract(envelope,'$.cause_id'),''),NULLIF(json_extract(envelope,'$.reason'),''),"
-                                   "json_extract(envelope,'$.evidence.question')) IS ?",
-                                   (version, role_id, row['event_class'], row['event_id'], envelope['task_id'], episode)).fetchone()[0]
+            for candidate in conn.execute('SELECT event_id,envelope FROM notification_intents WHERE role_id=? '
+                                           'AND event_class=? AND actionable=1 AND resolved=0 AND event_id>? '
+                                           "AND json_extract(envelope,'$.task_id')=? ORDER BY event_id DESC",
+                                           (role_id, row['event_class'], version, envelope['task_id'])):
+                if issue_key(conn, json.loads(candidate['envelope'])) == row['issue_key']:
+                    version = candidate['event_id']
+                    break
             if delivery_id not in versions:
                 raise Conflict('actionable delivery requires message_version')
         if delivery_id in versions and versions[delivery_id] != version:
@@ -395,7 +395,7 @@ def refresh_wake(service, role_id):
         envelope = json.loads(row['envelope'])
         if not row['actionable'] and envelope['mode'] == 'muted':
             continue
-        key = ('issue', issue_key(envelope)) if row['actionable'] else ('event', row['event_id'])
+        key = ('issue', issue_key(conn, envelope)) if row['actionable'] else ('event', row['event_id'])
         previous = deliveries.get(key)
         if previous is not None:
             if not row['actionable']:

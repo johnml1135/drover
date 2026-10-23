@@ -19,7 +19,7 @@ def project(service, limit):
             if intent and not intent['projected'] and intent['role_id']:
                 envelope = json.loads(intent['envelope'])
                 if envelope['mode'] != 'muted' or intent['actionable']:
-                    episode = issue_key(envelope) if intent['actionable'] else None
+                    episode = issue_key(conn, envelope) if intent['actionable'] else None
                     existing = conn.execute('SELECT * FROM notification_inbox WHERE issue_key=? AND resolved=0',
                                             (episode,)).fetchone() if episode else None
                     if existing:
