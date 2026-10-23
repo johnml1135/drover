@@ -25,10 +25,15 @@ def project(service, limit):
                     existing = conn.execute('SELECT * FROM notification_inbox WHERE issue_key=? AND resolved=0',
                                             (issue_key,)).fetchone() if issue_key else None
                     if existing:
-                        envelope['event_id'] = existing['event_id']
-                        envelope['latest_event_id'] = event['id']
-                        conn.execute('UPDATE notification_inbox SET envelope=?,digest_id=NULL WHERE id=?',
-                                     (ops._j(envelope), existing['id']))
+                        previous = json.loads(existing['envelope'])
+                        if event['id'] > previous.get('latest_event_id', existing['event_id']):
+                            changed = previous['evidence'] != envelope['evidence']
+                            envelope['event_id'] = existing['event_id']
+                            envelope['latest_event_id'] = event['id']
+                            conn.execute('UPDATE notification_inbox SET envelope=?,digest_id=NULL,'
+                                         'acknowledged_at=CASE WHEN ? THEN NULL ELSE acknowledged_at END,'
+                                         'offered_at=CASE WHEN ? THEN NULL ELSE offered_at END WHERE id=?',
+                                         (ops._j(envelope), changed, changed, existing['id']))
                     else:
                         conn.execute('INSERT OR IGNORE INTO notification_inbox(event_id,role_id,event_class,ownership_revision,'
                                      'subscription_id,subscription_revision,mode,actionable,resolved,issue_key,envelope,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -58,7 +63,7 @@ def receive(service, role_id, limit):
             if not owner or owner['role_id'] != role_id:
                 continue
             envelope.update(delivery_id=f"notification:{row['id']}", subscriber=role_id,
-                            ownership_revision=row['ownership_revision'])
+                            ownership_revision=row['ownership_revision'], message_version=envelope.get('latest_event_id', row['event_id']))
             conn.execute('UPDATE notification_inbox SET offered_at=? WHERE id=?', (service.now(), row['id']))
             result.append(bound_envelope(envelope))
         digests = conn.execute('SELECT * FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL ORDER BY id LIMIT ?',
@@ -70,7 +75,7 @@ def receive(service, role_id, limit):
             body['entries'] = [entry for entry in body['entries'] if
                                (owner := effective_owner(conn, entry['task_id'], entry['event_class'])) and
                                owner['role_id'] == role_id]
-            body.update(delivery_id=f"digest:{row['id']}", digest_id=f"digest:{row['id']}")
+            body.update(delivery_id=f"digest:{row['id']}", digest_id=f"digest:{row['id']}", message_version=row['id'])
             result.append(body)
             conn.execute('UPDATE notification_digests SET offered_at=? WHERE id=?', (service.now(), row['id']))
         return result
@@ -129,6 +134,10 @@ def digest(service, role_id):
                 body['omitted'] += 1
             conn.execute('UPDATE notification_digests SET body=? WHERE id=?', (ops._j(body), cur.lastrowid))
         body['digest_id'] = f'digest:{cur.lastrowid}'
+        body['message_version'] = cur.lastrowid
+        if settings['digest_wake']:
+            from .roles import signal
+            signal(conn, role_id, body['last_event'])
         return body
 
 

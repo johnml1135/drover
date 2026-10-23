@@ -234,4 +234,48 @@ CREATE TABLE notification_escalations (
  created REAL NOT NULL, question_id INTEGER REFERENCES questions(id) ON DELETE SET NULL);
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9)]
+V10 = """
+CREATE TABLE director_sessions (
+ credential_hash TEXT PRIMARY KEY, role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ session_id TEXT NOT NULL, generation INTEGER NOT NULL, expires REAL NOT NULL,
+ capabilities TEXT NOT NULL);
+CREATE INDEX director_sessions_role ON director_sessions(role_id,generation);
+CREATE TABLE director_runtime (
+ role_id TEXT PRIMARY KEY REFERENCES director_roles(role_id), session_id TEXT,
+ checkpoint TEXT NOT NULL DEFAULT '{}', checkpoint_revision INTEGER NOT NULL DEFAULT 0,
+ checkpoint_event INTEGER REFERENCES task_events(id), wake_position INTEGER NOT NULL DEFAULT 0,
+ pending_wake INTEGER NOT NULL DEFAULT 0, replacements_used INTEGER NOT NULL DEFAULT 0,
+ held_reason TEXT, fallback_question INTEGER REFERENCES questions(id));
+CREATE TABLE director_leases (
+ role_id TEXT PRIMARY KEY REFERENCES director_roles(role_id), session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires REAL NOT NULL);
+CREATE TABLE director_checkpoints (
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), revision INTEGER NOT NULL,
+ event_id INTEGER NOT NULL UNIQUE REFERENCES task_events(id), checkpoint TEXT NOT NULL,
+ PRIMARY KEY(role_id,revision));
+CREATE TABLE director_processing (
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), request_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES task_events(id),
+ receipt TEXT NOT NULL, generation INTEGER NOT NULL, session_id TEXT NOT NULL, lease_hash TEXT NOT NULL,
+ PRIMARY KEY(role_id,request_key));
+CREATE TABLE director_issue_leases (
+ issue_id TEXT PRIMARY KEY, role_id TEXT NOT NULL REFERENCES director_roles(role_id),
+ generation INTEGER NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires REAL NOT NULL,
+ ownership_revision INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+ attempt_limit INTEGER NOT NULL DEFAULT 2, fallback_question INTEGER REFERENCES questions(id),
+ held_reason TEXT);
+CREATE TABLE director_budget_entries (
+ role_id TEXT NOT NULL REFERENCES director_roles(role_id), request_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL, created REAL NOT NULL, wakes INTEGER NOT NULL DEFAULT 0,
+ tokens INTEGER NOT NULL DEFAULT 0, model TEXT, receipt TEXT NOT NULL,
+ PRIMARY KEY(role_id,request_key));
+CREATE INDEX director_budget_time ON director_budget_entries(role_id,created);
+CREATE TABLE action_outbox (
+ action_id TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES task_events(id),
+ action_index INTEGER NOT NULL CHECK(action_index>=0), kind TEXT NOT NULL, payload TEXT NOT NULL,
+ content_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
+ CHECK(state IN ('pending','complete','held')), result TEXT,
+ UNIQUE(event_id,action_index));
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10)]

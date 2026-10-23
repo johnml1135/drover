@@ -254,13 +254,23 @@ def _resolve_issue(conn, event):
     cause, question = _cause_identity(event['data'].get('cause')), event['data'].get('question')
     if cause is None and question is None:
         return
+    affected_roles = set()
     for table in ('notification_intents', 'notification_inbox'):
+        affected_roles.update(row['role_id'] for row in conn.execute(
+            f"SELECT DISTINCT role_id FROM {table} WHERE actionable=1 AND resolved=0 AND json_extract(envelope,'$.task_id')=? "
+            "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
+            "(? IS NOT NULL AND json_extract(envelope,'$.evidence.question')=?))",
+            (event['task_id'], cause, cause, question, question)) if row['role_id'])
         conn.execute(f"UPDATE {table} SET resolved=1 WHERE actionable=1 AND json_extract(envelope,'$.task_id')=? "
                      "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
                      "(? IS NOT NULL AND json_extract(envelope,'$.evidence.question')=?))",
                      (event['task_id'], cause, cause, question, question))
     for role in conn.execute('SELECT role_id FROM notification_escalations').fetchall():
         reconcile_storage_hold(conn, role['role_id'])
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='director_runtime'").fetchone():
+        from .roles import refresh_wake
+        for role_id in affected_roles:
+            refresh_wake(Notifications(conn), role_id)
 
 
 def reconcile_storage_hold(conn, role_id):
@@ -312,6 +322,15 @@ def capture_event(conn, event, *, subscription=None, replay=False):
                  (event['id'], event_class, role_id, ownership['revision'] if ownership else None,
                   sub['id'] if sub else None, sub['revision'] if sub else None,
                   ops._j(preferences), ops._j(envelope), actionable))
+    if not replay and role_id and mode == 'immediate':
+        from .roles import signal
+        # Identical observations of one unresolved episode do not create wakes.
+        prior = conn.execute('SELECT envelope FROM notification_intents WHERE event_id<? AND role_id=? '
+                             "AND event_class=? AND json_extract(envelope,'$.task_id')=? "
+                             "AND json_extract(envelope,'$.cause_id') IS ? AND resolved=0 ORDER BY event_id DESC LIMIT 1",
+                             (event['id'], role_id, event_class, task['id'], envelope['cause_id'])).fetchone() if actionable else None
+        if not prior or json.loads(prior['envelope'])['evidence'] != envelope['evidence']:
+            signal(conn, role_id, event['id'])
     if not replay and sub and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
             (event_class == 'result-accepted' and task['kind'] in ('research', 'investigation')) or
             (event['kind'] == 'status' and event['data'].get('to') == 'cancelled')):
@@ -331,6 +350,8 @@ def forget_task(conn, task_id):
     conn.execute('UPDATE notification_compactions SET count=summarized_count WHERE task_id=?', (task_id,))
     for role_id in affected_roles:
         reconcile_storage_hold(conn, role_id)
+        from .roles import refresh_wake
+        refresh_wake(Notifications(conn), role_id)
 
 
 class Notifications:
@@ -343,14 +364,58 @@ class Notifications:
         if not isinstance(role_id, str) or not role_id.strip() or len(role_id) > 256:
             raise ValueError('role_id must be nonempty')
         _preferences(**policy.get('notifications', {}))
+        from .roles import validate_policy
+        validate_policy(policy)
         for key, default in (('max_pending_routine', 1000), ('max_pending_actionable', 10000)):
             if not isinstance(policy.get(key, default), int) or not 1 <= policy.get(key, default) <= 100000:
                 raise ValueError(f'{key} must be between 1 and 100000')
         with tx(self.conn):
+            from .roles import _artifact
+            saved_policy = _artifact(self.conn, policy)
             self.conn.execute('INSERT INTO director_roles(role_id,policy,created,last_digest) VALUES(?,?,?,?) '
                               'ON CONFLICT(role_id) DO NOTHING',
-                              (role_id, ops._j(policy), self.now(), self.now()))
+                              (role_id, saved_policy, self.now(), self.now()))
             return self._role_envelope(role_id)
+
+    def issue_session(self, role_id, session_id, ttl=3600, capabilities=None):
+        from .roles import issue_session
+        return issue_session(self, role_id, session_id, ttl, capabilities)
+
+    def authenticate(self, credential):
+        from .roles import authenticate
+        return authenticate(self, credential)
+
+    def acquire(self, role_id, session_id, ttl=60):
+        from .roles import acquire
+        return acquire(self, role_id, session_id, ttl)
+
+    def commit(self, role_id, lease_token, checkpoint, delivery_ids, actions, request_key, release=False, delivery_versions=None):
+        from .roles import commit
+        return commit(self, role_id, lease_token, checkpoint, delivery_ids, actions, request_key, release, delivery_versions)
+
+    def role_state(self, role_id):
+        from .roles import role_state
+        return role_state(self, role_id)
+
+    def get_checkpoint(self, role_id, revision=None):
+        from .roles import get_checkpoint
+        return get_checkpoint(self, role_id, revision)
+
+    def claim_issue(self, role_id, issue_id, lease_token, **policy):
+        from .roles import claim_issue
+        return claim_issue(self, role_id, issue_id, lease_token, **policy)
+
+    def hold_issue(self, role_id, issue_id, lease_token, reason):
+        from .roles import hold_issue
+        return hold_issue(self, role_id, issue_id, lease_token, reason)
+
+    def reserve_wake(self, role_id, request_key, tokens=0, model=None):
+        from .roles import reserve_wake
+        return reserve_wake(self, role_id, request_key, tokens, model)
+
+    def replace(self, role_id, expected_generation, *, confirmed_dead=False, reason='consumer-confirmed-gone'):
+        from .roles import replace
+        return replace(self, role_id, expected_generation, confirmed_dead=confirmed_dead, reason=reason)
 
     def _role_envelope(self, role_id):
         row = _role(self.conn, role_id)
@@ -400,6 +465,8 @@ class Notifications:
             transfer_compactions(self.conn, task_id, role_id)
             for affected_role in {role_id} | {intent['role_id'] for intent in intents if intent['role_id']}:
                 compact(self, affected_role)
+                from .roles import refresh_wake
+                refresh_wake(self, affected_role)
             ops.event(self.conn, 'notification.ownership-assigned', 'system',
                       {'from': old['role_id'] if old else None, 'to': role_id,
                        'event_class': event_class, 'revision': revision}, task_id=task_id)
@@ -486,6 +553,7 @@ class Notifications:
                 unassigned=self.conn.execute('SELECT COUNT(*) FROM notification_intents WHERE role_id IS NULL').fetchone()[0],
                 projection_position=self.conn.execute("SELECT event_id FROM notification_positions WHERE name='inbox'").fetchone()[0])
         role = self._role_envelope(role_id)
+        role['runtime'] = self.role_state(role_id)
         role['subscriptions'] = [self._subscription_envelope(row['id']) for row in self.conn.execute(
             'SELECT id FROM subscriptions WHERE role_id=? ORDER BY rowid', (role_id,))]
         role['coverage'] = {row['kind']: dict(row) for row in self.conn.execute(
