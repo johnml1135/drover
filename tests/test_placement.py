@@ -20,6 +20,12 @@ class PlacementTests(unittest.TestCase):
         readings.start()
         self.addCleanup(readings.stop)
 
+    def test_config_paths_preserve_native_linux_worktrees_with_a_windows_repository(self):
+        linux = '/home/dev/work/acme.worktrees/drover-T1'
+        self.assertEqual(placement.config_path(linux, r'H:\repos\acme'), linux)
+        self.assertEqual(placement.config_path('/mnt/h/repos/acme.worktrees/T1', r'H:\repos\acme'),
+                         r'H:\repos\acme.worktrees\T1')
+
     def test_ledger_distro_changes_reach_git_and_runner_together(self):
         settings = {'wsl_distro': 'UI-choice'}
         previous = placement.bind_settings(lambda: settings)

@@ -55,6 +55,8 @@ class FakeRunner:
         d = Path(self.runs) / rid
         st = {"run_id": rid, "state": self.state, "pid": 99, "runner_pid": 1234, "nonce": args[args.index("--nonce") + 1], "exit_code": None,
               "reason": self.reason, "started": "x", "ended": None, "detached_in_job": False}
+        if getattr(self, 'missing_executable', None) is not None:
+            st['missing_executable'] = self.missing_executable
         (d / runner.STATUS_FILE).write_text(json.dumps(st))
         out = self.info if self.info is not None else {"runner_pid": 1234, "run_id": rid}
         return SimpleNamespace(stdout=json.dumps(out) + "\n", stderr="", returncode=self.rc)
@@ -257,6 +259,30 @@ class Commands(Base):
         with self.assertRaises(launch.LaunchError) as c:
             self.rl.launch(spec())
         self.assertTrue(c.exception.missing)
+
+    def test_missing_working_directory_does_not_disable_the_backend(self):
+        missing_cwd = str(Path(self.tmp.name) / 'missing-worktree')
+        error = FileNotFoundError(2, 'No such file or directory', missing_cwd)
+        with patch.object(placement_mod, 'spawn_worker', side_effect=error):
+            status = runner.supervise('cwd-probe', self.runs, [sys.executable, '-c', 'pass'], cwd=missing_cwd)
+        self.assertEqual(status['state'], 'exited')
+        self.fake.reason = status['reason']
+        self.fake.missing_executable = status.get('missing_executable')
+        self.fake.state = 'exited'
+        with self.assertRaises(launch.LaunchError) as caught:
+            self.rl.launch(spec())
+        self.assertFalse(caught.exception.missing)
+
+    def test_runner_marks_a_missing_executable_so_the_backend_can_be_reprobed(self):
+        binary = str(Path(self.tmp.name) / 'missing-executable')
+        status = runner.supervise('binary-probe', self.runs, [binary], cwd=self.tmp.name)
+        self.assertTrue(status['missing_executable'])
+        self.fake.reason = status['reason']
+        self.fake.missing_executable = status['missing_executable']
+        self.fake.state = 'exited'
+        with self.assertRaises(launch.LaunchError) as caught:
+            self.rl.launch(spec())
+        self.assertTrue(caught.exception.missing)
 
     def test_still_starting_after_detach_wait_still_gets_a_handle(self):
         self.rl.run = FakeRunner(self.runs, state="starting", rc=1,

@@ -697,7 +697,8 @@ class RunnerLauncher(Launcher):
             err, started = err or f"{info['error']}: {self._log_tail(d)}", False
         if st and str(st.get("reason") or "").startswith("spawn-failed"):
             raise LaunchError(f"cannot start worker: {st['reason']}"[:300],
-                              missing="No such file" in st["reason"] or "cannot find" in st["reason"].lower())
+                              missing=st.get("missing_executable",
+                                             "No such file" in st["reason"] or "cannot find" in st["reason"].lower()))
         if err and not started:
             raise LaunchError(err[:300], cancel_requested=self.cancel(rid, spec["nonce"]))
         pid = (info or {}).get("runner_pid") or (st or {}).get("runner_pid")

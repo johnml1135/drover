@@ -375,7 +375,8 @@ def supervise(run_id, runs_dir, argv, wall_s=0, idle_s=0, stdin_file=None, cwd=N
                 scratch = path
                 path.chmod(0o700)
             except (OSError, ValueError) as e:
-                st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
+                st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}",
+                       missing_executable=False)
                 return st.d
         with placement.cleanup_process_record(Path(runs_dir).parent):
             return _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, poll_s, nonce, sig_reason,
@@ -406,7 +407,8 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     try:
         prepare_writable_roots(run_config.get("sandbox_writable_roots", []))
     except (OSError, ValueError) as e:
-        st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
+        st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}",
+               missing_executable=False)
         return st.d
     if scratch is not None:
         env.update({key: str(scratch) for key in ("TMPDIR", "TMP", "TEMP")})
@@ -421,7 +423,11 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
         with open(out, "ab") as out_f:
             proc, tree = placement.spawn_worker(argv, out_f, stdin_f, cwd, env)
     except OSError as e:
-        st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}")
+        # ENOENT can name the cwd or stdin file rather than the executable. Windows may omit the filename.
+        missing = isinstance(e, FileNotFoundError) and bool(argv) and (
+            e.filename == argv[0] or e.filename is None and (cwd is None or Path(cwd).is_dir()))
+        st.set(state="exited", ended=now_iso(), exit_code=None, reason=f"spawn-failed: {e}",
+               missing_executable=missing)
         return st.d
     finally:
         if stdin_file and stdin_f is not subprocess.DEVNULL:

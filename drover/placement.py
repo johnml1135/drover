@@ -93,6 +93,8 @@ def path_parts(path):
 def config_path(path, reference):
     """Spell a discovered path like the repository's configured path."""
     path = str(path)
+    if is_linux_native(path):
+        return path  # An ext4 worktree has no Windows spelling, even when its repository is on Windows.
     return to_windows_path(path).replace("/", "\\") if WIN_RE.match(str(reference)) else path
 
 
