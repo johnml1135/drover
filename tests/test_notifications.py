@@ -291,11 +291,15 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(ops.list_tasks(self.conn), [])
 
     def test_deleting_owned_task_preserves_audit_without_leaving_offers(self):
-        self.service.register('director:a')
+        self.service.register('director:a', max_pending_actionable=1)
         task = self.task(kind='research')
         ops.event(self.conn, 'task.result-accepted', 'owner', {'result': 'report'}, task_id=task['id'])
         self.service.project()
+        ops.event(self.conn, 'progress.stalled', 'system', {'cause': 'stall'}, task_id=task['id'])
+        self.service.project()
+        self.assertTrue(self.service.health('director:a')['admission_held'])
         ops.delete_task(self.conn, task['id'], confirm=True)
+        self.assertFalse(self.service.health('director:a')['admission_held'])
         self.assertEqual(self.service.receive('director:a'), [])
         self.assertEqual(self.service.scoped_snapshot('director:a'), [])
 
@@ -322,6 +326,98 @@ class NotificationsTests(unittest.TestCase):
                          [(None, 'director:a', 1), ('director:a', 'director:b', 2)])
         self.assertTrue(all(event['event_class'] is not None for event in
                             self.service.health('director:b')['subscriptions'][0]['preview']))
+
+    def test_replaying_old_recovery_cannot_resolve_a_newer_issue_episode(self):
+        self.service.register('director:a')
+        task = self.task()
+        sub, = self.service.health('director:a')['subscriptions']
+        self.service.tune(sub['id'], sub['revision'], mode='muted')
+        ops.event(self.conn, 'progress.stalled', 'system', {'cause': 'same-cause'}, task_id=task['id'])
+        recovered = ops.event(self.conn, 'progress.recovered', 'system', {'cause': 'same-cause'}, task_id=task['id'])
+        self.service.project()
+        ops.event(self.conn, 'progress.stalled', 'system', {'cause': 'same-cause'}, task_id=task['id'])
+        self.service.project()
+        current, = self.service.receive('director:a')
+        self.service.follow('director:a', {'tasks': [task['id']], 'events': ['recovered']},
+                            mode='digest', replay_after=recovered - 1)
+        self.service.project()
+        self.assertEqual(self.service.receive('director:a'), [current])
+        self.assertEqual(self.service.health('director:a')['pending_actionable'], 1)
+
+    def test_transferring_issues_releases_previous_owner_storage_hold(self):
+        self.service.register('director:a', max_pending_actionable=1)
+        self.service.register('director:b', max_pending_actionable=10)
+        task = self.task()
+        ops.event(self.conn, 'progress.stalled', 'system', {'cause': 'stall'}, task_id=task['id'])
+        self.service.project()
+        self.assertTrue(self.service.health('director:a')['admission_held'])
+        self.service.assign(task['id'], 'director:b', expected_revision=1)
+        self.assertFalse(self.service.health('director:a')['admission_held'])
+        self.assertFalse(any('Notification storage' in q['title'] for q in ops.open_questions(self.conn)))
+        self.assertEqual(self.service.health('director:a')['pending_actionable'], 0)
+        self.assertEqual(self.service.health('director:b')['pending_actionable'], 1)
+        self.assertIsNotNone(self.task('director:a'))
+
+    def test_offline_digest_backlog_shares_routine_cap_and_preserves_resync_audit(self):
+        self.service.register('director:a', max_pending_routine=2)
+        task = self.task()
+        generated = []
+        for n in range(10):
+            ops.event(self.conn, 'progress', 'worker', {'step': n}, task_id=task['id'])
+            self.service.project()
+            self.time += 900
+            generated.append(self.service.digest('director:a'))
+        messages = self.service.receive('director:a')
+        self.assertLessEqual(len(messages), 2)
+        health = self.service.health('director:a')
+        self.assertLessEqual(health['pending_routine'] + health['pending_digests'], 2)
+        self.assertEqual(health['acknowledged'], 0)
+        self.assertEqual(health['coverage']['digest-compacted']['count'], 8)
+        self.assertTrue(messages[-1]['resync_required'])
+        archived = ops.events(self.conn, kind='notification.digest-compacted')
+        self.assertEqual([e['data']['digest_id'] for e in archived], [d['digest_id'] for d in generated[:8]])
+        self.assertEqual(archived[0]['data']['body']['entries'], generated[0]['entries'])
+
+    def test_overlapping_follows_use_specific_preferences_and_union_event_filters(self):
+        self.service.register('director:a')
+        immediate = self.task()
+        muted = self.task()
+        self.service.follow('director:a', {'tasks': [immediate['id']], 'events': ['progress']}, mode='immediate')
+        self.service.follow('director:a', {'tasks': [muted['id']], 'events': ['progress']}, mode='muted')
+        self.service.follow('director:a', {'repos': ['repo']}, preset='quiet')
+        ops.event(self.conn, 'progress', 'worker', {'selected': 'explicit-immediate'}, task_id=immediate['id'])
+        self.service.follow('director:a', {'repos': ['repo'], 'events': ['progress']}, mode='immediate')
+        ops.event(self.conn, 'progress', 'worker', {'selected': 'explicit-mute'}, task_id=muted['id'])
+        # Two equally scoped, disjoint filters select a union of facts.
+        self.service.follow('director:a', {'tasks': [immediate['id']], 'events': ['decision-recorded']}, mode='immediate')
+        ops.event(self.conn, 'decision.recorded', 'worker', {'selected': 'second-filter'}, task_id=immediate['id'])
+        ops.event(self.conn, 'progress', 'worker', {'selected': 'first-filter'}, task_id=immediate['id'])
+        self.service.project()
+        self.assertEqual([m['evidence'].get('selected') for m in self.service.receive('director:a')],
+                         ['explicit-immediate', 'second-filter', 'first-filter'])
+        # Equally specific explicit modes merge deterministically: mute wins.
+        self.service.follow('director:a', {'tasks': [immediate['id']], 'events': ['progress']}, mode='muted')
+        ops.event(self.conn, 'progress', 'worker', {'selected': 'equal-scope-mute'}, task_id=immediate['id'])
+        self.service.project()
+        self.assertEqual([m['evidence'].get('selected') for m in self.service.receive('director:a')],
+                         ['explicit-immediate', 'second-filter', 'first-filter'])
+
+    def test_unicode_payloads_obey_total_serialized_envelope_and_digest_byte_limits(self):
+        import json
+        role = '😀' * 256
+        self.service.register(role)
+        task = self.task(role, kind='research')
+        data = {key: '😀' * 512 for key in
+                ('text', 'decision', 'state', 'result', 'reason', 'cause', 'question', 'commit', 'sha', 'report')}
+        event_id = ops.event(self.conn, 'task.result-accepted', '😀' * 256, data, task_id=task['id'])
+        self.service.project()
+        message, = self.service.receive(role)
+        self.assertLessEqual(len(json.dumps(message).encode('utf-8')), 16384)
+        self.assertTrue(message['evidence']['truncated'])
+        self.assertEqual(message['evidence']['source_event_id'], event_id)
+        self.assertEqual(ops.events(self.conn, after=event_id - 1, limit=1)[0]['data']['report'], '😀' * 512)
+        self.time += 900
+        self.assertLessEqual(len(json.dumps(self.service.digest(role)).encode('utf-8')), 32768)
 
 
 if __name__ == '__main__':

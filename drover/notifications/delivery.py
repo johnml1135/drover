@@ -3,7 +3,7 @@ import json
 
 from ..ledger import ops
 from ..ledger.db import tx
-from .core import _role, _preferences, effective_owner
+from .core import _role, _preferences, bound_envelope, effective_owner, reconcile_storage_hold, serialized_size
 
 
 def project(service, limit):
@@ -60,7 +60,7 @@ def receive(service, role_id, limit):
             envelope.update(delivery_id=f"notification:{row['id']}", subscriber=role_id,
                             ownership_revision=row['ownership_revision'])
             conn.execute('UPDATE notification_inbox SET offered_at=? WHERE id=?', (service.now(), row['id']))
-            result.append(envelope)
+            result.append(bound_envelope(envelope))
         digests = conn.execute('SELECT * FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL ORDER BY id LIMIT ?',
                                (role_id, limit - len(result))).fetchall()
         for row in digests:
@@ -109,7 +109,7 @@ def digest(service, role_id):
             body['compacted'] = dict(count=unsummarized, first_event=compacted['first_event'],
                                      last_event=compacted['last_event'], resync_required=True)
         body['details'] = dict(after=body['first_event'] - 1, through=body['last_event'])
-        while len(ops._j(body).encode()) > 32768 and body['entries']:
+        while serialized_size(body) > 32512 and body['entries']:
             body['entries'].pop(0)
             body['omitted'] += 1
         cur = conn.execute('INSERT INTO notification_digests(role_id,created,body,offered_at) VALUES(?,?,?,?)',
@@ -119,6 +119,15 @@ def digest(service, role_id):
         coverage(conn, role_id, 'digest', len(rows) + unsummarized, body['first_event'], body['last_event'])
         conn.execute('UPDATE notification_compactions SET summarized_count=count WHERE role_id=?', (role_id,))
         conn.execute('UPDATE director_roles SET last_digest=? WHERE role_id=?', (now, role_id))
+        compact(service, role_id)
+        compacted_digests = conn.execute(
+            "SELECT * FROM notification_coverage WHERE role_id=? AND kind='digest-compacted'", (role_id,)).fetchone()
+        if compacted_digests:
+            body.update(resync_required=True, compacted_digests=dict(compacted_digests))
+            while serialized_size(body) > 32512 and body['entries']:
+                body['entries'].pop(0)
+                body['omitted'] += 1
+            conn.execute('UPDATE notification_digests SET body=? WHERE id=?', (ops._j(body), cur.lastrowid))
         body['digest_id'] = f'digest:{cur.lastrowid}'
         return body
 
@@ -129,8 +138,21 @@ def compact(service, role_id):
     role = _role(conn, role_id)
     policy = json.loads(role['policy'])
     cap = policy.get('max_pending_routine', 1000)
+    old_digests = conn.execute('SELECT * FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL '
+                               'ORDER BY id DESC LIMIT -1 OFFSET ?', (role_id, cap)).fetchall()
+    for row in reversed(old_digests):
+        body = json.loads(row['body'])
+        # Summary history is audit, not an unbounded delivery queue. Retain the
+        # exact former body in the append-only source before compacting its offer.
+        ops.event(conn, 'notification.digest-compacted', 'system',
+                  dict(role_id=role_id, digest_id=f"digest:{row['id']}", body=body))
+        coverage(conn, role_id, 'digest-compacted', 1, body['first_event'], body['last_event'])
+        conn.execute('DELETE FROM notification_digests WHERE id=?', (row['id'],))
+    pending_digests = conn.execute('SELECT COUNT(*) FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL',
+                                   (role_id,)).fetchone()[0]
+    routine_cap = max(0, cap - pending_digests)
     rows = conn.execute('SELECT id,event_id,digest_id,event_class,envelope FROM notification_inbox WHERE role_id=? AND actionable=0 '
-                        'AND acknowledged_at IS NULL ORDER BY id DESC LIMIT -1 OFFSET ?', (role_id, cap)).fetchall()
+                        'AND acknowledged_at IS NULL ORDER BY id DESC LIMIT -1 OFFSET ?', (role_id, routine_cap)).fetchall()
     if rows:
         for row in rows:
             task_id = json.loads(row['envelope'])['task_id']
@@ -140,8 +162,7 @@ def compact(service, role_id):
                          'summarized_count=summarized_count+excluded.summarized_count',
                          (role_id, task_id, row['event_class'], row['event_id'], row['event_id'], int(row['digest_id'] is not None)))
         conn.executemany('DELETE FROM notification_inbox WHERE id=?', [(r['id'],) for r in rows])
-    actionable = conn.execute('SELECT COUNT(*) FROM notification_inbox WHERE role_id=? AND actionable=1 AND resolved=0',
-                              (role_id,)).fetchone()[0]
+    actionable = reconcile_storage_hold(conn, role_id)
     if actionable >= policy.get('max_pending_actionable', 10000) and not conn.execute(
             'SELECT 1 FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone():
         task_id = conn.execute("SELECT json_extract(envelope,'$.task_id') FROM notification_inbox "

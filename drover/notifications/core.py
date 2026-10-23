@@ -1,4 +1,5 @@
 """Durable roles, exclusive ownership and event-time subscription decisions."""
+import hashlib
 import json
 import time
 
@@ -145,17 +146,39 @@ def _subscription(conn, sub_id):
     return result
 
 
+def _specificity(task, selectors):
+    """Scope unions take the specificity of the arm matching this task."""
+    for key, value, rank in (('tasks', task['id'], 3), ('epics', task['epic_id'], 2), ('repos', task['repo'], 1)):
+        if value in selectors.get(key, []):
+            return rank
+    return 0
+
+
 def _matching_subscription(conn, role_id, task, event):
-    rows = conn.execute('SELECT id FROM subscriptions WHERE role_id=? ORDER BY rowid DESC', (role_id,))
-    for row in rows:
+    """Union matching facts; resolve preferences without creation-order priority.
+
+    Matching task scope beats epic, repo, then owned-all scope. At equal scope,
+    class overrides beat explicit modes, which beat profiles. Equal explicit
+    preferences merge with muted > immediate > digest; ties use the lowest stable
+    subscription ID. Thus an explicit scoped mute is as effective as immediate,
+    while disjoint event/reason filters continue to select their union of facts.
+    """
+    candidates = []
+    event_class = classify(event)
+    for row in conn.execute('SELECT id FROM subscriptions WHERE role_id=? ORDER BY id', (role_id,)):
         sub = _subscription(conn, row['id'])
         prefs = sub['preferences']
         if not prefs['enabled'] or (prefs['expires_at'] is not None and
                                    ops._parse(event['at']).timestamp() >= prefs['expires_at']):
             continue
-        if _matches(task, classify(event), event['data'].get('reason'), sub['selectors']):
-            return sub
-    return None
+        if _matches(task, event_class, event['data'].get('reason'), sub['selectors']):
+            candidates.append(sub)
+    def precedence(sub):
+        prefs = sub['preferences']
+        explicit = 2 if event_class in prefs['class_modes'] else int(prefs['mode'] != 'profile')
+        mode = _delivery_mode(task, event_class, prefs)
+        return (_specificity(task, sub['selectors']), explicit, {'digest': 0, 'immediate': 1, 'muted': 2}[mode])
+    return max(candidates, key=precedence) if candidates else None
 
 
 def _mode(task, event_class, preferences):
@@ -176,21 +199,59 @@ def _mode(task, event_class, preferences):
     return 'digest'
 
 
+def _delivery_mode(task, event_class, preferences):
+    mode = _mode(task, event_class, preferences)
+    severity = 'warning' if event_class in ('decision-needed', 'issue', 'role-unavailable') else 'info'
+    levels = {'info': 0, 'warning': 1, 'critical': 2}
+    return 'muted' if levels[severity] < levels[preferences['minimum_severity']] else mode
+
+
+def serialized_size(value):
+    """Count complete JSON bytes, including non-ASCII escapes and separators."""
+    return len(json.dumps(value).encode('utf-8'))
+
+
+def _text_excerpt(value, byte_limit):
+    text = value if isinstance(value, str) else str(value)
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if serialized_size(text[:middle]) <= byte_limit:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low]
+
+
+def _cause_identity(value):
+    if value is None:
+        return None
+    text = str(value)
+    return text if serialized_size(text) <= 512 else 'sha256:' + hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
 def _bounded_evidence(data, event_id):
-    if len(ops._j(data).encode()) <= 8192:
+    if serialized_size(data) <= 8192:
         return data
     evidence = {'truncated': True, 'source_event_id': event_id}
     for key in ('text', 'decision', 'state', 'result', 'reason', 'cause', 'question', 'commit', 'sha', 'report'):
         if key in data:
-            value = data[key]
-            evidence[key] = value[:512] if isinstance(value, str) else str(value)[:512]
+            evidence[key] = _text_excerpt(data[key], 512)
     return evidence
+
+
+def bound_envelope(envelope):
+    if serialized_size(envelope) > 16384:
+        envelope['evidence'] = {'truncated': True, 'source_event_id': envelope['event_id']}
+    if serialized_size(envelope) > 16384:
+        raise ValueError('notification metadata exceeds the serialized envelope byte limit')
+    return envelope
 
 
 def _resolve_issue(conn, event):
     if event['kind'] not in ('progress.recovered', 'recovery.resolved', 'question-answered'):
         return
-    cause, question = event['data'].get('cause'), event['data'].get('question')
+    cause, question = _cause_identity(event['data'].get('cause')), event['data'].get('question')
     if cause is None and question is None:
         return
     for table in ('notification_intents', 'notification_inbox'):
@@ -198,11 +259,24 @@ def _resolve_issue(conn, event):
                      "AND ((? IS NOT NULL AND json_extract(envelope,'$.cause_id')=?) OR "
                      "(? IS NOT NULL AND json_extract(envelope,'$.evidence.question')=?))",
                      (event['task_id'], cause, cause, question, question))
-    for role in conn.execute('SELECT * FROM director_roles WHERE role_id IN (SELECT role_id FROM notification_escalations)').fetchall():
-        count = conn.execute('SELECT COUNT(*) FROM notification_inbox WHERE role_id=? AND actionable=1 AND resolved=0',
-                             (role['role_id'],)).fetchone()[0]
-        if count < json.loads(role['policy']).get('max_pending_actionable', 10000):
-            conn.execute('DELETE FROM notification_escalations WHERE role_id=?', (role['role_id'],))
+    for role in conn.execute('SELECT role_id FROM notification_escalations').fetchall():
+        reconcile_storage_hold(conn, role['role_id'])
+
+
+def reconcile_storage_hold(conn, role_id):
+    """Release pressure and its owner escalation when current issues leave scope."""
+    role = _role(conn, role_id)
+    count = conn.execute('SELECT COUNT(*) FROM notification_inbox WHERE role_id=? AND actionable=1 AND resolved=0',
+                         (role_id,)).fetchone()[0]
+    if count < json.loads(role['policy']).get('max_pending_actionable', 10000):
+        escalation = conn.execute('SELECT question_id FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone()
+        if escalation:
+            conn.execute("UPDATE questions SET status='answered',answer_text=?,answered_at=? WHERE id=? AND status='open'",
+                         ('Notification storage pressure cleared.', ops.stamp(), escalation['question_id']))
+            conn.execute('DELETE FROM notification_escalations WHERE role_id=?', (role_id,))
+            ops.event(conn, 'notification.owner-escalation-cleared', 'system',
+                      {'role_id': role_id, 'question': escalation['question_id']})
+    return count
 
 
 def capture_event(conn, event, *, subscription=None, replay=False):
@@ -213,22 +287,22 @@ def capture_event(conn, event, *, subscription=None, replay=False):
     if event_class is None or event['task_id'] is None:
         return
     task = ops.get_task(conn, event['task_id'])
-    _resolve_issue(conn, event)
+    if not replay:
+        _resolve_issue(conn, event)
     ownership = effective_owner(conn, task['id'], event_class)
     role_id = ownership['role_id'] if ownership else None
     sub = subscription or _matching_subscription(conn, role_id, task, event)
     preferences = sub['preferences'] if sub else _preferences(mode='muted')
-    mode = _mode(task, event_class, preferences)
+    mode = _delivery_mode(task, event_class, preferences)
     severity = 'warning' if event_class in ('decision-needed', 'issue', 'role-unavailable') else 'info'
-    if {'info': 0, 'warning': 1, 'critical': 2}[severity] < {'info': 0, 'warning': 1, 'critical': 2}[preferences['minimum_severity']]:
-        mode = 'muted'
     envelope = dict(schema_version=1, event_id=event['id'], event_class=event_class,
                     task_id=task['id'], group_id=None,
-                    cause_id=str(event['data']['cause'])[:512] if event['data'].get('cause') is not None else None,
-                    at=event['at'], actor=event['actor'][:256], severity=severity,
-                    reason=str(event['data']['reason'])[:512] if event['data'].get('reason') is not None else None,
+                    cause_id=_cause_identity(event['data'].get('cause')),
+                    at=_text_excerpt(event['at'], 64), actor=_text_excerpt(event['actor'], 256), severity=severity,
+                    reason=_text_excerpt(event['data']['reason'], 512) if event['data'].get('reason') is not None else None,
                     expected_revision=event['id'], evidence=_bounded_evidence(event['data'], event['id']), profile_version=PROFILE_VERSION, mode=mode,
                     subscription_id=sub['id'] if sub else None, subscription_revision=sub['revision'] if sub else None)
+    bound_envelope(envelope)
     actionable = event_class in ('decision-needed', 'issue', 'role-unavailable')
     conflict = (' ON CONFLICT(event_id) DO UPDATE SET role_id=excluded.role_id,ownership_revision=excluded.ownership_revision,'
                 'subscription_id=excluded.subscription_id,subscription_revision=excluded.subscription_revision,'
@@ -238,7 +312,7 @@ def capture_event(conn, event, *, subscription=None, replay=False):
                  (event['id'], event_class, role_id, ownership['revision'] if ownership else None,
                   sub['id'] if sub else None, sub['revision'] if sub else None,
                   ops._j(preferences), ops._j(envelope), actionable))
-    if sub and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
+    if not replay and sub and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
             (event_class == 'result-accepted' and task['kind'] in ('research', 'investigation')) or
             (event['kind'] == 'status' and event['data'].get('to') == 'cancelled')):
         Notifications(conn).tune(sub['id'], sub['revision'], enabled=False)
@@ -248,11 +322,15 @@ def forget_task(conn, task_id):
     """Owner deletion revokes future offers while preserving existing audit facts."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='notification_intents'").fetchone():
         return
+    affected_roles = [row['role_id'] for row in conn.execute(
+        "SELECT DISTINCT role_id FROM notification_inbox WHERE json_extract(envelope,'$.task_id')=?", (task_id,))]
     for table in ('notification_intents', 'notification_inbox'):
         conn.execute(f"UPDATE {table} SET resolved=1,envelope=json_set(envelope,'$.mode','muted') "
                      "WHERE json_extract(envelope,'$.task_id')=?", (task_id,))
     conn.execute("UPDATE notification_inbox SET mode='muted' WHERE json_extract(envelope,'$.task_id')=?", (task_id,))
     conn.execute('UPDATE notification_compactions SET count=summarized_count WHERE task_id=?', (task_id,))
+    for role_id in affected_roles:
+        reconcile_storage_hold(conn, role_id)
 
 
 class Notifications:
@@ -320,7 +398,8 @@ class Notifications:
                                   (role_id, owner['revision'], intent['event_id']))
             from .delivery import transfer_compactions, compact
             transfer_compactions(self.conn, task_id, role_id)
-            compact(self, role_id)
+            for affected_role in {role_id} | {intent['role_id'] for intent in intents if intent['role_id']}:
+                compact(self, affected_role)
             ops.event(self.conn, 'notification.ownership-assigned', 'system',
                       {'from': old['role_id'] if old else None, 'to': role_id,
                        'event_class': event_class, 'revision': revision}, task_id=task_id)
@@ -418,9 +497,10 @@ class Notifications:
         compacted = compaction_coverage(self.conn, role_id)
         if compacted:
             role['coverage']['compacted'] = compacted
-        role['resync_required'] = compacted is not None
+        role['resync_required'] = compacted is not None or 'digest-compacted' in role['coverage']
         role['admission_held'] = self.conn.execute('SELECT 1 FROM notification_escalations WHERE role_id=?', (role_id,)).fetchone() is not None
         role['oldest_actionable_age'] = self.conn.execute('SELECT MAX(?-created) FROM notification_inbox WHERE role_id=? AND actionable=1 AND resolved=0', (self.now(), role_id)).fetchone()[0]
+        role['pending_digests'] = self.conn.execute('SELECT COUNT(*) FROM notification_digests WHERE role_id=? AND acknowledged_at IS NULL', (role_id,)).fetchone()[0]
         role['digests'] = self.conn.execute('SELECT COUNT(*) FROM notification_digests WHERE role_id=?', (role_id,)).fetchone()[0]
         role['pending'] = self.conn.execute('SELECT COUNT(*) FROM notification_inbox WHERE role_id=? AND acknowledged_at IS NULL',
                                            (role_id,)).fetchone()[0]
