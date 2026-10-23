@@ -5,7 +5,8 @@ import time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.sse import EventSourceResponse, ServerSentEvent
+from fastapi.responses import StreamingResponse
+from fastapi.sse import format_sse_event
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from drover.ledger import ops, tx
@@ -31,9 +32,43 @@ class Input(BaseModel):
         return self
 
 
+class Preferences(Input):
+    preset: Literal['quiet', 'normal', 'verbose'] = 'normal'
+    mode: Literal['profile', 'immediate', 'digest', 'muted'] = 'profile'
+    class_modes: dict[str, Literal['immediate', 'digest', 'muted']] = Field(default_factory=dict)
+    digest_interval: float = Field(default=900, ge=1, le=604800, strict=True)
+    digest_wake: StrictBool = False
+    detail_limit: int = Field(default=50, ge=1, le=100, strict=True)
+    minimum_severity: Literal['info', 'warning', 'critical'] = 'info'
+    enabled: StrictBool = True
+    expires_at: float | None = Field(default=None, strict=True)
+    stop_on_completion: StrictBool = False
+
+
+class FollowPreferences(Preferences):
+    replay_after: int | None = Field(default=None, ge=0, strict=True)
+
+
+class TunePreferences(Preferences):
+    selectors: dict[str, Any] | None = None
+
+
+class Policy(Input):
+    notifications: Preferences = Field(default_factory=Preferences)
+    max_pending_routine: int = Field(default=1000, ge=1, le=100000, strict=True)
+    max_pending_actionable: int = Field(default=10000, ge=1, le=100000, strict=True)
+    broadcast_summary: StrictBool = False
+    action_allowlist: list[Literal['task.retry', 'task.comment', 'issue.resolve']] = Field(default_factory=list)
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(default_factory=list)
+    recovery_attempt_limit: int = Field(default=2, ge=0, le=2, strict=True)
+    replacement_limit: int = Field(default=1, ge=0, le=1, strict=True)
+    wake_limit_per_hour: int = Field(default=4, ge=0, le=1000, strict=True)
+    token_budget: int = Field(default=0, ge=0, le=10**12, strict=True)
+
+
 class Role(Input):
     role_id: Identity
-    policy: dict[str, Any] = Field(default_factory=dict)
+    policy: Policy = Field(default_factory=Policy)
 
 
 class Session(Input):
@@ -44,12 +79,12 @@ class Session(Input):
 
 class Follow(Input):
     selectors: dict[str, Any]
-    preferences: dict[str, Any] = Field(default_factory=dict)
+    preferences: FollowPreferences = Field(default_factory=FollowPreferences)
 
 
 class Tune(Input):
     expected_revision: int = Field(ge=1, strict=True)
-    preferences: dict[str, Any]
+    preferences: TunePreferences
 
 
 class Lease(Input):
@@ -170,7 +205,7 @@ def scoped(request, credential, capability, operation):
 
 @router.post('/roles', status_code=201, dependencies=[Depends(auth.require_owner)])
 def register(body: Role, request: Request):
-    return call(request, lambda s, p: s.register(body.role_id, **body.policy))
+    return call(request, lambda s, p: s.register(body.role_id, **body.policy.model_dump(exclude_unset=True)))
 
 
 @router.post('/roles/{role_id}/sessions', status_code=201, dependencies=[Depends(auth.require_owner)])
@@ -195,14 +230,14 @@ def health(request: Request, credential=Depends(auth.require_director)):
 
 @router.post('/follow')
 def follow(body: Follow, request: Request, credential=Depends(auth.require_director)):
-    return scoped(request, credential, 'notifications.tune', lambda s, role, p: s.follow(role, body.selectors, **body.preferences))
+    return scoped(request, credential, 'notifications.tune', lambda s, role, p: s.follow(role, body.selectors, **body.preferences.model_dump(exclude_unset=True)))
 
 
 @router.patch('/subscriptions/{subscription_id}')
 def tune(subscription_id: str, body: Tune, request: Request, credential=Depends(auth.require_director)):
     def apply(s, role, p):
         s.subscription(subscription_id, role)
-        return s.tune(subscription_id, body.expected_revision, **body.preferences)
+        return s.tune(subscription_id, body.expected_revision, **body.preferences.model_dump(exclude_unset=True))
     return scoped(request, credential, 'notifications.tune', apply)
 
 
@@ -240,17 +275,19 @@ def replay(request: Request, after: str | None = None, limit: int = Query(50, ge
     return scoped(request, credential, 'notifications.read', lambda s, role, p: s.replay(role, after, limit))
 
 
-@router.get('/events', response_class=EventSourceResponse)
+@router.get('/events', response_class=StreamingResponse)
 async def events(request: Request, after: str | None = None, limit: int = Query(50, ge=1, le=100),
                  credential=Depends(auth.require_director)):
     batch = scoped(request, credential, 'notifications.read', lambda s, role, p:
-                   s.replay(role, after or request.headers.get('last-event-id'), limit))
-    if batch['resync_required']:
-        yield ServerSentEvent(event='resync', id=batch['cursor'], data=batch)
-    else:
-        for item in batch['items']:
-            yield ServerSentEvent(event='notification', id=item['cursor'], data=item['message'])
-        yield ServerSentEvent(event='checkpoint', id=batch['cursor'], data={'more': batch['more']})
+                   s.replay(role, after if after is not None else request.headers.get('last-event-id'), limit))
+    async def stream():
+        if batch['resync_required']:
+            yield format_sse_event(event='resync', id=batch['cursor'], data_str=json.dumps(batch))
+        else:
+            for item in batch['items']:
+                yield format_sse_event(event='notification', id=item['cursor'], data_str=json.dumps(item['message']))
+            yield format_sse_event(event='checkpoint', id=batch['cursor'], data_str=json.dumps({'more': batch['more']}))
+    return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache'})
 
 
 @router.post('/lease')

@@ -33,6 +33,14 @@ private file or environment reference; do not put it in command arguments,
 checkpoints, logs or task descriptions. Reissuing a session revokes the old
 credential and execution lease. Session capabilities may narrow the default
 `notifications.read`, `notifications.process`, `notifications.tune` set.
+Nested role policy and notification preferences reject unknown fields and invalid
+types before calling the ledger. Supported policy fields are `notifications`,
+`max_pending_routine`, `max_pending_actionable`, `broadcast_summary`,
+`action_allowlist`, `allowed_models`, `recovery_attempt_limit`, `replacement_limit`,
+`wake_limit_per_hour`, and `token_budget`. Runtime configuration must use its
+declared configuration seam; future policy fields require an explicit schema
+extension.
+
 A role policy may explicitly grant `broadcast_summary`; it grants summary
 notices only. A role named `owner` or `service` still has director authority.
 
@@ -119,6 +127,8 @@ stable delivery identity and its latest `message_version`. The final
 `checkpoint` SSE event carries `more`; reconnect or fetch another batch after
 processing. Pending offers repeat until committed even when their source is
 older than the cursor, including after ownership transfer or late projection.
+Historical notification pages follow source version order, and digest pages follow
+digest identity order. Pending reoffers do not jump over older retained history.
 Only retained deliveries addressed to the authenticated director and currently
 authorized are replayed; a successor never inherits processed predecessor
 history. Delivery is at least once: deduplicate by delivery identity/version and

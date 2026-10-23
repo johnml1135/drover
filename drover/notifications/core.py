@@ -849,13 +849,32 @@ class Notifications:
                 high = self.conn.execute('SELECT COALESCE(MAX(id),0) FROM notification_digests WHERE role_id=?', (role_id,)).fetchone()[0]
                 return dict(items=[], cursor=f'v1:{_position(self.conn)}:{high}', more=False,
                             resync_required=True, snapshot=self.scoped_snapshot(role_id), health=self.health(role_id))
-            # Read a bounded candidate batch. SQL orders pending deliveries first;
-            # recipient_owner additionally rechecks event-class current authority.
-            rows = self.conn.execute("SELECT * FROM notification_inbox WHERE role_id=? "
-                "AND (mode='immediate' OR actionable=1) AND (resolved=0 OR actionable=0) "
-                "AND (acknowledged_at IS NULL OR COALESCE(json_extract(envelope,'$.latest_event_id'),event_id)>?) "
-                "ORDER BY acknowledged_at IS NOT NULL,COALESCE(json_extract(envelope,'$.latest_event_id'),event_id),id LIMIT ?",
-                (role_id, event_after, limit + 1)).fetchall()
+            # Filter current recipients before LIMIT so stale/superseded rows do
+            # not hide later authorized history. Keep the shared Python authority
+            # recheck below. Source order prevents a pending reoffer from jumping
+            # the durable historical frontier past an older retained delivery.
+            rows = self.conn.execute("""
+                SELECT n.* FROM notification_inbox n WHERE n.role_id=?
+                AND (n.mode='immediate' OR n.actionable=1) AND (n.resolved=0 OR n.actionable=0)
+                AND (n.acknowledged_at IS NULL OR COALESCE(json_extract(n.envelope,'$.latest_event_id'),n.event_id)>?)
+                AND CASE
+                  WHEN json_extract(n.envelope,'$.notice_id') IS NOT NULL THEN EXISTS (
+                    SELECT 1 FROM notification_targets t JOIN notification_notices b USING(event_id)
+                    LEFT JOIN notification_controls c ON c.control_id=b.control_id
+                    WHERE t.event_id=json_extract(n.envelope,'$.event_id') AND t.role_id=n.role_id
+                    AND t.role_id=json_extract(n.envelope,'$.target_role')
+                    AND (b.control_id IS NULL OR (t.superseded=0 AND c.active=1)))
+                  WHEN json_extract(n.envelope,'$.group_id') IS NOT NULL
+                       AND json_extract(n.envelope,'$.task_id') IS NULL THEN EXISTS (
+                    SELECT 1 FROM task_groups g WHERE g.group_id=json_extract(n.envelope,'$.group_id')
+                    AND g.role_id=n.role_id)
+                  ELSE (SELECT o.role_id FROM task_ownership o
+                    WHERE o.task_id=json_extract(n.envelope,'$.task_id')
+                    AND o.event_class IN (json_extract(n.envelope,'$.event_class'),'*')
+                    ORDER BY (o.event_class='*') LIMIT 1)=n.role_id
+                END
+                ORDER BY COALESCE(json_extract(n.envelope,'$.latest_event_id'),n.event_id),n.id LIMIT ?
+                """, (role_id, event_after, limit + 1)).fetchall()
             items = []
             for row in rows:
                 message = json.loads(row['envelope'])
@@ -867,7 +886,7 @@ class Notifications:
                 items.append(message)
             remaining = max(0, limit + 1 - len(items))
             for row in self.conn.execute('SELECT * FROM notification_digests WHERE role_id=? AND '
-                    '(acknowledged_at IS NULL OR id>?) ORDER BY acknowledged_at IS NOT NULL,id LIMIT ?',
+                    '(acknowledged_at IS NULL OR id>?) ORDER BY id LIMIT ?',
                     (role_id, digest_after, remaining)):
                 message = json.loads(row['body'])
                 message['entries'] = [entry for entry in message['entries'] if
