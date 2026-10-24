@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $originalProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $originalTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
+$originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
 
 $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -ne $uvCommand) {
@@ -52,10 +53,80 @@ if ($IsWindows) {
 
 $projectEnvironment = Join-Path $environmentParent "hub-$lockHash-python-3.13"
 $uvExitCode = 1
+$nodePathToPrepend = $null
+
+if ($IsLinux -and $null -eq (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) {
+    $nvmRoot = [Environment]::GetEnvironmentVariable('NVM_DIR', 'Process')
+    if ([string]::IsNullOrWhiteSpace($nvmRoot)) {
+        if ([string]::IsNullOrWhiteSpace($HOME)) {
+            throw 'Node.js was not found on PATH, and the current user home directory could not be resolved for nvm.'
+        }
+        $nvmRoot = Join-Path $HOME '.nvm'
+    }
+
+    $nvmScript = Join-Path $nvmRoot 'nvm.sh'
+    if (-not (Test-Path -LiteralPath $nvmScript -PathType Leaf)) {
+        throw "Node.js was not found on PATH, and nvm was not available at '$nvmRoot'."
+    }
+
+    $bashCommand = Get-Command bash -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $bashCommand) {
+        throw 'Node.js was not found on PATH, and bash is unavailable to resolve the configured nvm default.'
+    }
+
+    $nvmExitCode = 1
+    $nodeDefaultPath = $null
+    try {
+        $LASTEXITCODE = $null
+        $nvmResult = & $bashCommand.Source --noprofile --norc -c '. "$1/nvm.sh" --no-use; nvm which default' -- $nvmRoot 2>$null
+        if ($null -ne $LASTEXITCODE) {
+            $nvmExitCode = [int]$LASTEXITCODE
+        }
+        $nodeDefaultPath = (@($nvmResult) -join [Environment]::NewLine).Trim()
+    } catch {
+        if ($null -ne $LASTEXITCODE) {
+            $nvmExitCode = [int]$LASTEXITCODE
+        }
+    }
+
+    if ($nvmExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($nodeDefaultPath)) {
+        throw "Node.js was not found on PATH, and the configured nvm default could not be resolved under '$nvmRoot'."
+    }
+    if (-not (Test-Path -LiteralPath $nodeDefaultPath -PathType Leaf)) {
+        throw "The configured nvm default did not resolve to an installed Node.js file: '$nodeDefaultPath'."
+    }
+
+    $nodePreflightExitCode = 1
+    try {
+        $LASTEXITCODE = $null
+        & $nodeDefaultPath --version *> $null
+        if ($null -ne $LASTEXITCODE) {
+            $nodePreflightExitCode = [int]$LASTEXITCODE
+        }
+    } catch {
+        if ($null -ne $LASTEXITCODE) {
+            $nodePreflightExitCode = [int]$LASTEXITCODE
+        }
+    }
+    if ($nodePreflightExitCode -ne 0) {
+        throw "The installed Node.js resolved from the configured nvm default could not run successfully: '$nodeDefaultPath'."
+    }
+
+    $nodePathToPrepend = Split-Path -Parent $nodeDefaultPath
+}
 
 try {
     [Environment]::SetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', $projectEnvironment, 'Process')
     [Environment]::SetEnvironmentVariable('DROVER_TEST_JOBS', $testJobs, 'Process')
+    if ($null -ne $nodePathToPrepend) {
+        $pathSeparator = [System.IO.Path]::PathSeparator
+        if ([string]::IsNullOrEmpty($originalPath)) {
+            $testPath = $nodePathToPrepend
+        } else {
+            $testPath = "$nodePathToPrepend$pathSeparator$originalPath"
+        }
+        [Environment]::SetEnvironmentVariable('PATH', $testPath, 'Process')
+    }
 
     $LASTEXITCODE = $null
     try {
@@ -75,6 +146,7 @@ try {
 } finally {
     [Environment]::SetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', $originalProjectEnvironment, 'Process')
     [Environment]::SetEnvironmentVariable('DROVER_TEST_JOBS', $originalTestJobs, 'Process')
+    [Environment]::SetEnvironmentVariable('PATH', $originalPath, 'Process')
 }
 
 exit $uvExitCode
