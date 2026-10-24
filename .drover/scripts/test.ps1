@@ -1,9 +1,67 @@
 $ErrorActionPreference = 'Stop'
-# The gate runs both tiers; scripts/test.py runs every integration module and fails if any module fails.
+# Task checks precheck changed integration modules, then run the complete default tier; full runs all integration modules.
 
 $originalProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $originalTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
 $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+$originalProjectEnvironmentPresent = [Environment]::GetEnvironmentVariables('Process').Contains('UV_PROJECT_ENVIRONMENT')
+$originalTestJobsPresent = [Environment]::GetEnvironmentVariables('Process').Contains('DROVER_TEST_JOBS')
+$originalPathPresent = [Environment]::GetEnvironmentVariables('Process').Contains('PATH')
+
+function Get-ChangedTestModules {
+    param([string]$Json)
+
+    if ([string]::IsNullOrWhiteSpace($Json)) {
+        return [pscustomobject]@{ IsValid = $false; Modules = @() }
+    }
+
+    try {
+        $changedFiles = ConvertFrom-Json -InputObject $Json -NoEnumerate -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{ IsValid = $false; Modules = @() }
+    }
+
+    if ($changedFiles -isnot [System.Array]) {
+        return [pscustomobject]@{ IsValid = $false; Modules = @() }
+    }
+
+    $modules = [System.Collections.Generic.List[string]]::new()
+    foreach ($filePath in $changedFiles) {
+        if ($filePath -isnot [string] -or [string]::IsNullOrEmpty($filePath) -or
+            $filePath.Contains('\') -or $filePath.Contains([char]0) -or
+            [System.IO.Path]::IsPathRooted($filePath) -or $filePath -match '^[A-Za-z]:' -or
+            $filePath -match '(^|/)\.{1,2}(/|$)' -or $filePath -match '(^/|/$|//)') {
+            return [pscustomobject]@{ IsValid = $false; Modules = @() }
+        }
+
+        if ($filePath -cmatch '^tests/test_.*\.py$') {
+            if ($filePath -cnotmatch '^tests/test_[A-Za-z0-9_]*\.py$') {
+                return [pscustomobject]@{ IsValid = $false; Modules = @() }
+            }
+
+            $modulePath = Join-Path $repositoryRoot $filePath
+            if (Test-Path -LiteralPath $modulePath -PathType Leaf) {
+                $moduleName = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($filePath)
+                if (-not $modules.Contains($moduleName)) {
+                    $modules.Add($moduleName)
+                }
+            }
+        }
+    }
+
+    $modules.Sort([System.StringComparer]::Ordinal)
+    return [pscustomobject]@{ IsValid = $true; Modules = $modules.ToArray() }
+}
+
+function Restore-ProcessEnvironmentVariable {
+    param([string]$Name, [string]$Value, [bool]$WasPresent)
+
+    if ($WasPresent) {
+        [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+    } else {
+        Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue
+    }
+}
 
 $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -ne $uvCommand) {
@@ -54,6 +112,38 @@ if ($IsWindows) {
 $projectEnvironment = Join-Path $environmentParent "hub-$lockHash-python-3.13"
 $uvExitCode = 1
 $nodePathToPrepend = $null
+$uvArguments = @('run', '--project', 'hub', '--frozen', '--python', '3.13', 'python', 'scripts/test.py')
+$ciKind = [Environment]::GetEnvironmentVariable('DROVER_CI_KIND', 'Process')
+$changedTestModules = @()
+$runIntegration = $true
+$runDefault = $false
+
+if ($ciKind -ceq 'checks') {
+    $changedMetadata = Get-ChangedTestModules -Json ([Environment]::GetEnvironmentVariable('DROVER_CHANGED_FILES', 'Process'))
+    if (-not $changedMetadata.IsValid) {
+        Write-Warning 'DROVER_CHANGED_FILES is absent or malformed; running the complete integration tier.'
+    } else {
+        $changedTestModules = @($changedMetadata.Modules)
+        if ($changedTestModules.Count -gt 0) {
+            $runDefault = $true
+        } else {
+            $runIntegration = $false
+            $runDefault = $true
+        }
+    }
+}
+
+$uvInvocations = [System.Collections.Generic.List[object]]::new()
+if ($runIntegration) {
+    $integrationArguments = @($uvArguments) + @('--tier', 'integration')
+    if ($runDefault) {
+        $integrationArguments += $changedTestModules
+    }
+    $uvInvocations.Add([string[]]$integrationArguments)
+}
+if ($runDefault) {
+    $uvInvocations.Add([string[]](@($uvArguments) + @('--tier', 'default')))
+}
 
 if ($IsLinux -and $null -eq (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) {
     $nvmRoot = [Environment]::GetEnvironmentVariable('NVM_DIR', 'Process')
@@ -128,25 +218,35 @@ try {
         [Environment]::SetEnvironmentVariable('PATH', $testPath, 'Process')
     }
 
-    $LASTEXITCODE = $null
-    try {
-        & $uvPath run --project hub --frozen --python 3.13 python scripts/test.py --tier integration
-    } catch {
-        # PowerShell can promote a native non-zero exit to a terminating error.
-        # Keep uv's actual status in that case instead of replacing it with 1.
-        if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -eq 0) {
-            throw
+    foreach ($arguments in $uvInvocations) {
+        $LASTEXITCODE = $null
+        try {
+            & $uvPath @arguments
+        } catch {
+            # PowerShell can promote a native non-zero exit to a terminating error.
+            # Keep uv's actual status in that case instead of replacing it with 1.
+            if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -eq 0) {
+                throw
+            }
+        }
+
+        if ($null -eq $LASTEXITCODE) {
+            throw 'uv did not report an exit status.'
+        }
+        $uvExitCode = [int]$LASTEXITCODE
+        if ($uvExitCode -ne 0) {
+            break
         }
     }
-
-    if ($null -eq $LASTEXITCODE) {
-        throw 'uv did not report an exit status.'
-    }
-    $uvExitCode = [int]$LASTEXITCODE
 } finally {
-    [Environment]::SetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', $originalProjectEnvironment, 'Process')
-    [Environment]::SetEnvironmentVariable('DROVER_TEST_JOBS', $originalTestJobs, 'Process')
-    [Environment]::SetEnvironmentVariable('PATH', $originalPath, 'Process')
+    Restore-ProcessEnvironmentVariable 'UV_PROJECT_ENVIRONMENT' $originalProjectEnvironment $originalProjectEnvironmentPresent
+    Restore-ProcessEnvironmentVariable 'DROVER_TEST_JOBS' $originalTestJobs $originalTestJobsPresent
+    Restore-ProcessEnvironmentVariable 'PATH' $originalPath $originalPathPresent
+}
+
+if ($MyInvocation.InvocationName -eq '.') {
+    $global:LASTEXITCODE = $uvExitCode
+    return
 }
 
 exit $uvExitCode
