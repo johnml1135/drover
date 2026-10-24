@@ -317,10 +317,11 @@ class NotificationAcceptanceTests(unittest.TestCase):
         ops.set_setting(conn, 'dispatch_enabled', 'true')
         ops.set_setting(conn, 'director_execution_enabled', 'true')
         adapter = PipeConsumerAdapter(self.client)
+        fixture_now = 1_700_000_000.0
         dispatcher = make_dispatcher(port, launcher=FakeLauncher(),
-            pipeline=FakePipeline(port, Path(self.tmp.name) / 'runs'), now=lambda:1000.,
-            usage_poller=Observations(conn, lambda:1000., lambda backend:{'remaining_pct':90}, lambda backend:False))
-        dispatcher.directors = DirectorRuntime(port, adapter, now=lambda:1000.)
+            pipeline=FakePipeline(port, Path(self.tmp.name) / 'runs'), now=lambda:fixture_now,
+            usage_poller=Observations(conn, lambda:fixture_now, lambda backend:{'remaining_pct':90}, lambda backend:False))
+        dispatcher.directors = DirectorRuntime(port, adapter, now=lambda:fixture_now)
         seat = config.director_seats()[0]
         configuration = dict(backend=seat['backend'], model='zero-model', seat='absent-fixture-seat',
                              max_tokens=20, placement=seat['placement'], cwd=self.tmp.name)

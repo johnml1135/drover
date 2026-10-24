@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 try:
-    import httpx
+    import httpx2 as httpx
     from hub.app import create_app
     from hub.settings import Settings
 except ImportError as exc:
