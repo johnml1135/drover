@@ -551,7 +551,7 @@ class DetachTests(Base):
                              f"CreateFileW failed: {ctypes.get_last_error()}")
             held = [handle]
 
-            def release_log():
+            def release_log(_duration):
                 self.assertTrue(kernel.CloseHandle(held.pop()))
 
             attempts = []
