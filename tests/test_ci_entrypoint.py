@@ -107,12 +107,12 @@ sys.exit(int(os.environ.get("DROVER_FAKE_UV_EXIT", "0")))
 
             escaped_entrypoint = "'" + str(ENTRYPOINT).replace("'", "''") + "'"
             harness = temp / 'invoke.ps1'
-            harness.write_text(f'''$initializeMixedCaseEnvironment = {str(mixed_case_environment).lower()}
+            harness.write_text(f'''$initializeMixedCaseEnvironment = ${str(mixed_case_environment).lower()}
 if ($initializeMixedCaseEnvironment -and $IsWindows) {{
     $initialPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
-    [Environment]::SetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('DROVER_TEST_JOBS', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+    Remove-Item -LiteralPath 'Env:UV_PROJECT_ENVIRONMENT' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:DROVER_TEST_JOBS' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:PATH' -ErrorAction SilentlyContinue
     [Environment]::SetEnvironmentVariable('uV_pRoJeCt_EnViRoNmEnT', 'mixed-project-environment', 'Process')
     [Environment]::SetEnvironmentVariable('dRoVeR_tEsT_jObS', '17', 'Process')
     [Environment]::SetEnvironmentVariable('pAtH', $initialPath, 'Process')
