@@ -128,6 +128,33 @@ class Base(unittest.TestCase):
         return (Path(self.runs) / rid / "out.log").read_text()
 
 
+def _cleanup_detached_fixture(run_dir, pids, timeout=20):
+    deadline = time.monotonic() + timeout
+    while True:
+        live = [pid for pid in pids if alive(pid)]
+        if not live:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"detached runner/launcher survived fixture teardown: {live}")
+        time.sleep(min(0.1, remaining))
+
+    log = Path(run_dir) / runner.RUNNER_LOG
+    while True:
+        try:
+            log.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if not runner.IS_WINDOWS or getattr(exc, "winerror", None) != 32:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.1, remaining))
+
+
 @unittest.skipIf(runner.IS_WINDOWS, "WSL scratch lifecycle runs on Linux")
 @integration
 class ScratchTests(Base):
@@ -486,13 +513,9 @@ class DetachTests(Base):
         self.assertLess(time.monotonic() - t, 5)
         info = json.loads(r.stdout)
 
-        def reap_detached():
-            # Worker terminal status precedes runner shutdown and release of runner.log.
-            pids = {info["runner_pid"], info["launcher_pid"]}
-            self.assertTrue(wait_for(lambda: all(not alive(pid) for pid in pids)),
-                            "detached runner/launcher survived fixture teardown")
-
-        self.addCleanup(reap_detached)
+        # Keep PID exit and sharing-safe log cleanup inside one teardown deadline.
+        self.addCleanup(_cleanup_detached_fixture, Path(self.runs) / "d1",
+                        {info["runner_pid"], info["launcher_pid"]})
         self.assertEqual(info["run_id"], "d1")
         self.assertTrue(wait_for(lambda: self.status("d1")["state"] == "exited"))
         self.assertIn("late", self.out("d1"))
@@ -505,6 +528,79 @@ class DetachTests(Base):
         if not runner.IS_WINDOWS:
             self.assertFalse(info["detached_in_job"])
             self.assertFalse(status["detached_in_job"])
+
+    @unittest.skipUnless(runner.IS_WINDOWS, "Windows sharing semantics")
+    def test_detached_fixture_cleanup_retries_after_dead_process_log_release(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            run_dir.mkdir()
+            log = run_dir / runner.RUNNER_LOG
+            log.write_text("detached runner output")
+            child = subprocess.Popen([PY, "-c", "pass"])
+            child.wait(timeout=10)
+            self.assertFalse(alive(child.pid), "controlled child must be dead before fixture cleanup")
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.restype = ctypes.c_void_p
+            kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                           ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                           ctypes.c_void_p]
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            handle = kernel.CreateFileW(str(log), 0x80000000, 0x1 | 0x2, None, 3, 0x80, None)
+            self.assertNotIn(handle, (None, ctypes.c_void_p(-1).value),
+                             f"CreateFileW failed: {ctypes.get_last_error()}")
+            held = [handle]
+
+            def release_log():
+                self.assertTrue(kernel.CloseHandle(held.pop()))
+
+            attempts = []
+            original_unlink = Path.unlink
+
+            def tracked_unlink(path, *args, **kwargs):
+                attempts.append(path)
+                return original_unlink(path, *args, **kwargs)
+
+            try:
+                with patch.object(Path, "unlink", tracked_unlink), \
+                        patch.object(time, "sleep", side_effect=release_log) as sleep:
+                    _cleanup_detached_fixture(run_dir, {child.pid}, timeout=2)
+                self.assertEqual(attempts, [log, log])
+                sleep.assert_called_once()
+                self.assertFalse(log.exists())
+            finally:
+                if held:
+                    kernel.CloseHandle(held.pop())
+
+    def test_detached_fixture_cleanup_keeps_persistent_and_unrelated_errors_visible(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            log = run_dir / runner.RUNNER_LOG
+            log.write_text("runner output")
+            persistent = PermissionError(13, "sharing violation")
+            persistent.winerror = 32
+            attempts = []
+
+            def always_sharing_violation(*args, **kwargs):
+                attempts.append(True)
+                raise persistent
+
+            started = time.monotonic()
+            with patch.object(runner, "IS_WINDOWS", True), \
+                    patch.object(Path, "unlink", side_effect=always_sharing_violation):
+                with self.assertRaises(PermissionError) as raised:
+                    _cleanup_detached_fixture(run_dir, set(), timeout=0.05)
+            self.assertIs(raised.exception, persistent)
+            self.assertGreater(len(attempts), 1)
+            self.assertLess(time.monotonic() - started, 1)
+
+            unrelated = OSError(5, "unrelated filesystem failure")
+            with patch.object(runner, "IS_WINDOWS", True), \
+                    patch.object(Path, "unlink", side_effect=unrelated) as unlink:
+                with self.assertRaises(OSError) as raised:
+                    _cleanup_detached_fixture(run_dir, set())
+            self.assertIs(raised.exception, unrelated)
+            unlink.assert_called_once_with()
 
     def test_windows_detach_reports_breakaway_success_and_refusal(self):
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_NEW_PROCESS_GROUP": 0x200,
