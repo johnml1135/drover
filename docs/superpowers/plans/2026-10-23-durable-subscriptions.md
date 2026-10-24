@@ -103,6 +103,8 @@
 
 - [x] Exercise every numbered spec acceptance scenario and review-resolution race; add missing cross-component tests with controlled time/adapters and zero model calls.
 - [x] Run the existing full test suite in its authorized environment, recording baseline/platform skips separately from regressions. Run formatting/reference checks and `git diff --check`.
-- [ ] Dispatch a fresh whole-change review; fix important findings with regression tests, then rerun affected checks. Document exact supported adapter capabilities and configuration defaults.
+- [x] Dispatch a fresh whole-change review; fix important findings with regression tests, then rerun affected checks. Document exact supported adapter capabilities and configuration defaults.
 - [x] Attempt Windows-hub/WSL integration only through an isolated test process/database with available existing tooling. If unavailable, record this as an unverified deployment gate; do not claim interactive-session push has been proven.
-- [ ] Mark verified steps complete, commit, and report branch/commits, test results, and remaining environmental verification limits. Leave integration/deployment to a separate authorized action.
+- [x] Mark verified steps complete, commit, and report branch/commits, test results, and remaining environmental verification limits. Leave integration/deployment to a separate authorized action.
+
+Final source `cc9b38e`: whole-branch review followed by one complete fix wave and one scoped independent re-review, seven of seven findings addressed with zero new findings. See the [operational handoff](../reviews/2026-10-23-durable-subscriptions-handoff.md) and Drover T-ff for exact evidence, baseline failures and unverified deployment capabilities.
