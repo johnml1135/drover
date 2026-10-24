@@ -473,11 +473,26 @@ class RunTests(Base):
 @integration
 class DetachTests(Base):
     def test_detach_returns_at_once_and_runs(self):
+        hooks = Path(self.runs) / "shutdown-hook"
+        hooks.mkdir()
+        (hooks / "sitecustomize.py").write_text(
+            "import atexit,sys,time\n"
+            "if '--run-id' in sys.argv and '--detach' not in sys.argv:\n"
+            "    atexit.register(lambda: time.sleep(2))\n")
+        env = {**ENV, "PYTHONPATH": os.pathsep.join([str(hooks), ENV["PYTHONPATH"]])}
         cmd = self.cmd("d1", "import time;time.sleep(1);print('late')", extra=["--detach"])
         t = time.monotonic()
-        r = subprocess.run(cmd, env=ENV, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=30)
         self.assertLess(time.monotonic() - t, 5)
         info = json.loads(r.stdout)
+
+        def reap_detached():
+            # Worker terminal status precedes runner shutdown and release of runner.log.
+            pids = {info["runner_pid"], info["launcher_pid"]}
+            self.assertTrue(wait_for(lambda: all(not alive(pid) for pid in pids)),
+                            "detached runner/launcher survived fixture teardown")
+
+        self.addCleanup(reap_detached)
         self.assertEqual(info["run_id"], "d1")
         self.assertTrue(wait_for(lambda: self.status("d1")["state"] == "exited"))
         self.assertIn("late", self.out("d1"))
