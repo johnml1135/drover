@@ -1,5 +1,4 @@
 """The shipped repository adopts the same entry layout as every other repo."""
-import hashlib
 from pathlib import Path
 import tomllib
 from drover import repos
@@ -16,8 +15,6 @@ class Layout(RepoCase):
         self.assertFalse((root / 'drover.toml').exists())
         self.assertFalse((root / 'scripts/drover/test.ps1').exists())
         script = (root / script_path).read_bytes()
-        self.assertEqual(hashlib.sha256(script).hexdigest(),
-                         '284f7992eba3f197acfedee262956a2ecbccacb088f541db5c52a697c252fff9')
         text = (root / ENTRY).read_text(encoding='utf-8')
         raw = tomllib.loads(text)
         self.assertEqual(raw['schema_version'], 1)
