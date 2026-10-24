@@ -320,7 +320,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "task.result-accepted", "task.landed", "result.accepted")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "task.result-accepted", "task.landed", "result.accepted")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)

@@ -215,6 +215,50 @@ class OwnerGateTests(HubCase):
         self.assertEqual(r.json()["status"], "ready")
         self.assertIsNotNone(r.json()["approved_at"])
 
+    def test_wait_control_events_are_owner_reserved_and_cause_scoped(self):
+        from drover.ledger.waiting import cause_key
+
+        tmp, app = make(trusted_ui_hosts=("testclient",))
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(app.state.store.close)
+        c = TestClient(app)
+
+        def owner_post(path, body):
+            return c.post("/api/v1" + path, json=body, headers=SAME)
+
+        def manual_hold(title):
+            created = owner_post("/tasks", {"title": title})
+            self.assertEqual(created.status_code, 201, created.text)
+            task_id = created.json()["id"]
+            approved = owner_post(f"/tasks/{task_id}/approve", {})
+            self.assertEqual(approved.status_code, 200, approved.text)
+            blocked = owner_post(f"/tasks/{task_id}/status",
+                                 {"status": "blocked", "reason": "manual pause"})
+            self.assertEqual(blocked.status_code, 200, blocked.text)
+            return task_id, cause_key("manual", task_id)
+
+        held_task, held_cause = manual_hold("Owner hold")
+        other_task, other_cause = manual_hold("Other owner hold")
+
+        for kind in ("waiting.release", "waiting.clear", "waiting.injected"):
+            with self.subTest(kind=kind):
+                denied = c.post("/api/v1/events",
+                                json={"kind": kind, "data": {"cause": held_cause},
+                                      "task_id": held_task}, headers=AUTH)
+                self.assertEqual(denied.status_code, 403, denied.text)
+                self.assertEqual(c.get(f"/api/v1/tasks/{held_task}", headers=AUTH).json()["status"],
+                                 "blocked")
+
+        released = owner_post("/events", {"kind": "waiting.release",
+                                          "data": {"cause": held_cause},
+                                          "task_id": held_task})
+        self.assertEqual(released.status_code, 201, released.text)
+        self.assertEqual(c.get(f"/api/v1/tasks/{held_task}", headers=AUTH).json()["status"],
+                         "ready")
+        self.assertEqual(c.get(f"/api/v1/tasks/{other_task}", headers=AUTH).json()["status"],
+                         "blocked")
+        self.assertNotEqual(held_cause, other_cause)
+
 
 class TaskTests(HubCase):
     def test_invalid_risk_is_rejected_on_create_and_patch(self):
