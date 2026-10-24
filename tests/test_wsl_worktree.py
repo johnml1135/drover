@@ -67,26 +67,32 @@ class ListingSide(unittest.TestCase):
     def test_native_worktree_remains_available_without_wsl(self):
         path = 'H:/work/a'
         found, seen = self.lookup(self.record(path), None, lambda p: p == placement.native(path))
-        self.assertEqual(found, path)
+        self.assertEqual(found, (path, True))
         self.assertEqual(seen, [None])
 
     def test_wsl_lock_prevents_a_reachable_windows_misinterpretation_from_masking_ext4(self):
         phantom = 'H:/home/dev/work/a'
         path = '/home/dev/work/a'
         found, seen = self.lookup(self.record(phantom, 'wsl'), self.record(path, 'wsl'), lambda p: True)
-        self.assertEqual(found, path)
+        self.assertEqual(found, (path, True))
         self.assertEqual(seen, [None, 'wsl'])
 
     def test_unreachable_native_interpretation_falls_back_to_ext4(self):
         path = '/home/dev/work/a'
         found, seen = self.lookup(self.record('H:/home/dev/work/a'), self.record(path), lambda p: p == path)
-        self.assertEqual(found, path)
+        self.assertEqual(found, (path, True))
         self.assertEqual(seen, [None, 'wsl'])
 
     def test_missing_registration_is_retained_when_neither_side_can_reach_it(self):
         path = 'H:/work/missing'
         found, seen = self.lookup(self.record(path), None, lambda p: False)
-        self.assertEqual(found, path)
+        self.assertEqual(found, (path, False))
+        self.assertEqual(seen, [None, 'wsl'])
+
+    def test_unavailable_wsl_retains_foreign_registration_without_permitting_reuse(self):
+        phantom = 'H:/home/dev/work/a'
+        found, seen = self.lookup(self.record(phantom, 'wsl'), None, lambda p: True)
+        self.assertEqual(found, (phantom, False))
         self.assertEqual(seen, [None, 'wsl'])
 
     def test_unlock_lists_worktrees_with_the_wsl_git(self):

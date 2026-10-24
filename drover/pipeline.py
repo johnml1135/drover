@@ -188,8 +188,8 @@ class Pipeline:
         if have and placement.reachable(repos.native(have)):
             reuse = have
         else:
-            found = self._worktree_of_branch(repo, branch) if branch else None
-            if found and placement.reachable(found):
+            found, reusable = self._worktree_of_branch(repo, branch) if branch else (None, False)
+            if reusable:
                 reuse = found
             elif found or have:
                 # Never prune or delete the stale registration: it may be another host's, or the owner's.
@@ -230,6 +230,7 @@ class Pipeline:
         self.port.update_task(tid, branch=branch, worktree=wt)
 
     def _worktree_of_branch(self, repo, branch):
+        """Return registration evidence and whether its owning inventory permits reuse."""
         # Each Git understands its own absolute administrative pointers. Windows Git can
         # mis-spell ext4 registrations as H:/home/...; their placement lock takes precedence.
         registered = None
@@ -250,8 +251,8 @@ class Pipeline:
                 # the caller needs registration evidence to branch from the committed tip.
                 registered = path
                 if placement.reachable(path):
-                    return path
-        return registered
+                    return path, True
+        return registered, False
 
     def _dirty_foreign(self, path, tid):
         """The first dirty line when `path` has uncommitted changes that are not this task's, else ''."""

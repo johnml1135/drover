@@ -343,8 +343,16 @@ class Handle(Base):
     def test_haiku_context_ceiling_requests_a_rotation_stop_then_rotates(self):
         h = self.start(model="haiku-5.5")
         self.emit(assistant("big", 90000))
-        stop = wait_for(lambda: (self.dir() / runner.STOP_FILE).exists() and
-                        json.loads((self.dir() / runner.STOP_FILE).read_text()))
+        read = Path.read_text
+        transient_reads = []
+        def sharing_once(path, *args, **kwargs):
+            if path.name == runner.STOP_FILE and not transient_reads:
+                transient_reads.append(True)
+                raise PermissionError("transient stop-file sharing error")
+            return read(path, *args, **kwargs)
+        with patch.object(Path, "read_text", sharing_once):
+            stop = wait_for(lambda: runner._read_stop_file(self.dir()))
+        self.assertEqual(transient_reads, [True])
         self.assertEqual(stop, {"reason": "rotation", "nonce": NONCE})
         self.set_status(state="killed", exit_code=-15, reason="rotation")
         r = wait_for(h.poll)

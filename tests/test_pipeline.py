@@ -438,6 +438,35 @@ class Worktrees(Base):
         (Path(wt) / "wip.txt").write_text("worker in progress\n")
         self.assertEqual(self.pipe.worktree(self.get(mine)), self.get(mine)["worktree"])   # owned: fine
 
+    def test_unavailable_wsl_does_not_adopt_a_reachable_foreign_inventory_path(self):
+        self.fix.branch('feat', {'f.txt': 'f\n'})
+        phantom = Path(self.tmp.name) / 'other'
+        self.fix.git('worktree', 'add', '-q', '-b', 'unrelated', phantom, 'main')
+        before = (phantom / '.git').read_bytes()
+        tid = self.task(branch='feat')
+        real = pipeline.git
+        def inventory(repo, *args, **kw):
+            if args[:3] == ('worktree', 'list', '--porcelain'):
+                if kw.get('side') == 'wsl':
+                    return subprocess.CompletedProcess(args, 127, '', 'WSL unavailable')
+                record = f'worktree {phantom}\nbranch refs/heads/feat\nlocked wsl\n\n'
+                return subprocess.CompletedProcess(args, 0, record, '')
+            return real(repo, *args, **kw)
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, 'routes_through_wsl', return_value=False), \
+                patch.object(pipeline, 'git', inventory):
+            wt = repos.native(self.pipe.worktree(self.get(tid)))
+        self.assertNotEqual(Path(wt).resolve(), phantom.resolve())
+        self.assertEqual(self.get(tid)['branch'], f'drover/{tid}')
+        self.assertEqual(self.fix.git('rev-parse', 'HEAD', cwd=wt), self.fix.git('rev-parse', 'feat'))
+        self.assertEqual(self.fix.git('branch', '--show-current', cwd=phantom), 'unrelated')
+        self.assertEqual((phantom / '.git').read_bytes(), before)
+        self.assertIsNone(pipeline.ownership.read(str(phantom)))
+        event = ops.events(self.conn, task_id=tid, kind='worktree-fallback')[-1]
+        self.assertEqual(event['data']['source_branch'], 'feat')
+        self.assertIn('unreachable', event['data']['reason'])
+
+
     def test_a_missing_registered_worktree_gets_a_fresh_task_branch_and_nothing_is_pruned(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
