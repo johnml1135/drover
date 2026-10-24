@@ -230,15 +230,28 @@ class Pipeline:
         self.port.update_task(tid, branch=branch, worktree=wt)
 
     def _worktree_of_branch(self, repo, branch):
-        # The WSL git lists ext4 worktrees as Linux paths; Windows git would spell them H:/home/...
-        r = git(repo, "worktree", "list", "--porcelain", side="wsl")
-        path = None
-        for line in r.stdout.splitlines():
-            if line.startswith("worktree "):
-                path = line[9:]
-            elif line == f"branch refs/heads/{branch}" and path:
-                return repos.native(path)
-        return None
+        # Each Git understands its own absolute administrative pointers. Windows Git can
+        # mis-spell ext4 registrations as H:/home/...; their placement lock takes precedence.
+        registered = None
+        for side in ((None, "wsl") if placement.IS_WINDOWS else (None,)):
+            result = git(repo, "worktree", "list", "--porcelain", **({"side": side} if side else {}))
+            if result.returncode:
+                continue
+            for block in result.stdout.split("\n\n"):
+                fields = dict(line.partition(" ")[::2] for line in block.splitlines())
+                if fields.get("branch") != f"refs/heads/{branch}" or not fields.get("worktree"):
+                    continue
+                path = repos.native(fields["worktree"])
+                registered = registered or path
+                owner = fields.get("locked")
+                if placement.IS_WINDOWS and owner in ("windows", "wsl") and owner != (side or "windows"):
+                    continue
+                # Prefer the owning inventory's spelling even when the directory is gone:
+                # the caller needs registration evidence to branch from the committed tip.
+                registered = path
+                if placement.reachable(path):
+                    return path
+        return registered
 
     def _dirty_foreign(self, path, tid):
         """The first dirty line when `path` has uncommitted changes that are not this task's, else ''."""

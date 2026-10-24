@@ -78,7 +78,7 @@ class FakeRepoPipeline(Base):
         self.prog.update(repo(self.prog["repo"], self.prog["worktrees"], platforms, gate_platform))
 
     def tick_with_wsl(self):
-        self.d = self.make(wsl_up=lambda: True, worktree=lambda t: "R:\\repos\\wt")
+        self.d = self.make(wsl_up=lambda: True, worktree=lambda t, where=None: "R:\\repos\\wt")
         return self.d.tick()
 
     def reason(self, tid):
@@ -98,7 +98,7 @@ class FakeRepoPipeline(Base):
         ops.set_status(self.conn, tid, "ready")
         # A current Codex route is overridden by the retry's Claude backend.
         self.d = self.make(route=lambda t, p, **kw: {"backend": "codex", "model": "gpt-6.1-sol"},
-                           worktree=lambda t: "R:\\repos\\wt")
+                           worktree=lambda t, where=None: "R:\\repos\\wt")
         self.assertEqual(self.d.tick()["launched"], [tid])
         self.assertEqual(self.fl.of("worker")[0]["seat"], "claude-win")
 

@@ -7,7 +7,9 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from unittest import mock
 
 from tests.gitfix import clean_parent, sh
 
@@ -55,10 +57,15 @@ class CrossSideAdd(unittest.TestCase):
             return None if v is None else f'git version {v}.windows.1\n'
         return tool
 
+    def posix_paths(self):
+        return mock.patch.object(deploy_hub, "Path",
+                                 side_effect=lambda value: SimpleNamespace(absolute=lambda: PurePosixPath(value)))
+
     def add(self, local, windows):
         calls, exe = [], []
         from unittest import mock
-        with mock.patch.object(deploy_hub, 'git', lambda repo, *a, **k: calls.append((str(repo), a))), \
+        with self.posix_paths(), \
+                mock.patch.object(deploy_hub, 'git', lambda repo, *a, **k: calls.append((str(repo), a))), \
                 mock.patch.object(deploy_hub.subprocess, 'run',
                                   lambda argv, **k: exe.append(argv) or subprocess.CompletedProcess(argv, 0, '', '')):
             deploy_hub.add_deploy_worktree('/mnt/h/repos/x', '/mnt/h/repos/x.deploy', 'abc', self.versions(local, windows))
@@ -79,9 +86,21 @@ class CrossSideAdd(unittest.TestCase):
 
     def test_no_windows_git_and_old_local_git_is_refused(self):
         from unittest import mock
-        with mock.patch.object(deploy_hub, 'git'):
+        with self.posix_paths(), mock.patch.object(deploy_hub, 'git'):
             with self.assertRaises(deploy_hub.DeployError):
                 deploy_hub.add_deploy_worktree('/mnt/h/x', '/mnt/h/x.d', 'abc', self.versions('2.53.0', None))
+
+    def test_native_windows_source_uses_only_local_git(self):
+        from pathlib import PureWindowsPath
+        with mock.patch.object(deploy_hub, 'Path',
+                               side_effect=lambda value: SimpleNamespace(absolute=lambda: PureWindowsPath(value))), \
+                mock.patch.object(deploy_hub, 'git') as git, \
+                mock.patch.object(deploy_hub.subprocess, 'run') as run:
+            versions = mock.Mock(side_effect=AssertionError('native add needs no cross-side version query'))
+            deploy_hub.add_deploy_worktree('H:\\repos\\x', 'H:\\repos\\x.deploy', 'abc', versions)
+        git.assert_called_once_with('H:\\repos\\x', 'worktree', 'add', '--detach', 'H:\\repos\\x.deploy', 'abc')
+        run.assert_not_called()
+        versions.assert_not_called()
 
     def test_relative_paths_really_write_relative_pointers(self):
         with tempfile.TemporaryDirectory(dir=clean_parent()) as d:

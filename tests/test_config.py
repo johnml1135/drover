@@ -187,7 +187,9 @@ class Validation(unittest.TestCase):
         paths = {"wsl_worktrees": "~/work", "wsl_user": "dev"}
         self.assertEqual(placement.wsl_worktrees_root(paths, nt=True), "/home/dev/work")
         self.assertEqual(placement.wsl_worktrees_root({**paths, "wsl_worktrees": "/srv/wt/"}, nt=True), "/srv/wt")
-        self.assertEqual(placement.wsl_worktrees_root(paths, nt=False), str(Path("~/work").expanduser()))
+        with patch.object(placement.os.path, "expanduser", return_value="/home/linuxdev/work") as expand:
+            self.assertEqual(placement.wsl_worktrees_root(paths, nt=False), "/home/linuxdev/work")
+        expand.assert_called_once_with("~/work")
 
     def test_seats(self):
         seat = "[[seats]]\nname='{n}'\nbackend='{b}'\n{extra}"

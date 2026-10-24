@@ -1079,10 +1079,12 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name
             for d in data['processes'] if d.get('ProcessId') != os.getpid()]
 
 
-def _windows_birth(pid):
-    """Native FILETIME, shared by process records and cache identity checks."""
+def _read_windows_birth(pid):
+    """Native FILETIME; only ERROR_INVALID_PARAMETER proves a positive PID absent."""
     import ctypes as c
     from ctypes import wintypes as w
+    if type(pid) is not int or not 0 < pid <= 0xffffffff:
+        raise OSError('invalid process id')
     kernel = c.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
     kernel.OpenProcess.restype = w.HANDLE
@@ -1090,13 +1092,25 @@ def _windows_birth(pid):
     kernel.GetProcessTimes.argtypes = [w.HANDLE, *([c.POINTER(w.FILETIME)] * 4)]
     handle = kernel.OpenProcess(0x1000, False, pid)
     if not handle:
-        return None
+        error = c.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: the process ID does not exist.
+            raise ProcessLookupError(error, 'process does not exist')
+        raise OSError(error, 'cannot open process identity')
     try:
         times = [w.FILETIME() for _ in range(4)]
-        if kernel.GetProcessTimes(handle, *(c.byref(t) for t in times)):
-            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        if not kernel.GetProcessTimes(handle, *(c.byref(t) for t in times)):
+            raise OSError(c.get_last_error(), 'cannot read process creation time')
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
     finally:
         kernel.CloseHandle(handle)
+
+
+def _windows_birth(pid):
+    """Native FILETIME for process records; an unavailable identity remains None."""
+    try:
+        return _read_windows_birth(pid)
+    except OSError:
+        return None
 
 
 def _windows_processes():
@@ -1883,16 +1897,18 @@ _SELF_IDENTITY = None
 def cleanup_identity(pid=None):
     """PID plus kernel creation identity; unknown never proves a claim dead.
 
-    This process's own identity cannot change, so it is read once (a Windows process query can take seconds)."""
+    This process's own identity cannot change, so its kernel creation time is read once."""
     global _SELF_IDENTITY
     pid = os.getpid() if pid is None else pid
     if pid == os.getpid() and _SELF_IDENTITY and _SELF_IDENTITY['pid'] == pid:
         return dict(_SELF_IDENTITY)
     if IS_WINDOWS:
-        done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-                               f'$ErrorActionPreference="Stop"; $p=Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}"; if ($null -eq $p) {{ "absent" }} else {{ $p.CreationDate.ToFileTimeUtc() }}'],
-                              capture_output=True, text=True, timeout=15, **NO_WINDOW)
-        birth = done.stdout.strip() if not done.returncode else None
+        try:
+            birth = str(_read_windows_birth(pid))
+        except ProcessLookupError:
+            birth = 'absent'
+        except OSError:
+            birth = None
     else:
         try:
             started = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]

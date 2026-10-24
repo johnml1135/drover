@@ -149,14 +149,60 @@ class PlacementTests(unittest.TestCase):
 
 class CleanupIdentityCache(unittest.TestCase):
     def test_own_identity_is_read_once_per_process(self):
-        calls = []
-        def run(*args, **kwargs):
-            calls.append(args)
-            return subprocess.CompletedProcess(args, 0, '1234\n', '')
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(placement.subprocess, 'run', run), \
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, '_read_windows_birth', return_value=1234) as birth, \
                 patch.object(placement, '_SELF_IDENTITY', None):
             first = placement.cleanup_identity()
             second = placement.cleanup_identity()
             placement.cleanup_identity(os.getpid() + 1)
         self.assertEqual(first, second)
-        self.assertEqual(len(calls), 2)  # one for self, one for the other pid
+        self.assertEqual(first['birth'], '1234')
+        self.assertEqual(birth.call_args_list, [unittest.mock.call(os.getpid()), unittest.mock.call(os.getpid() + 1)])
+
+    def test_a_cached_identity_from_another_pid_is_not_reused(self):
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, '_read_windows_birth', return_value=5678) as birth, \
+                patch.object(placement, '_SELF_IDENTITY', dict(pid=os.getpid() + 1, birth='1234', side='windows')):
+            current = placement.cleanup_identity()
+        self.assertEqual(current['birth'], '5678')
+        birth.assert_called_once_with(os.getpid())
+
+
+class NativeCleanupIdentity(unittest.TestCase):
+    def identity(self, *, handle=123, error=0, times=True):
+        import ctypes
+        pid = os.getpid() + 1  # always exercise another process, even inside a PID namespace
+        kernel = unittest.mock.Mock()
+        kernel.OpenProcess.return_value = handle
+        def read(handle, created, exited, system, user):
+            created._obj.dwHighDateTime, created._obj.dwLowDateTime = 42, 17
+            return times
+        kernel.GetProcessTimes.side_effect = read
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(ctypes, 'WinDLL', return_value=kernel, create=True), \
+                patch.object(ctypes, 'get_last_error', return_value=error, create=True), \
+                patch.object(placement.subprocess, 'run', side_effect=AssertionError('identity spawned a process')):
+            value = placement.cleanup_identity(pid)
+            alive = placement.cleanup_claim_alive(dict(pid=pid, side='windows', birth=str((42 << 32) | 17)))
+        if handle:
+            self.assertEqual(kernel.CloseHandle.call_count, 2)
+        else:
+            kernel.CloseHandle.assert_not_called()
+        return value, alive
+
+    def test_native_filetime_matches_existing_windows_records_without_a_process(self):
+        identity, alive = self.identity()
+        self.assertEqual(identity, dict(pid=os.getpid() + 1, side='windows', birth=str((42 << 32) | 17)))
+        self.assertTrue(alive)
+
+    def test_only_proven_absence_marks_a_claim_dead(self):
+        identity, alive = self.identity(handle=0, error=87)
+        self.assertEqual(identity['birth'], 'absent')
+        self.assertFalse(alive)
+
+    def test_access_denied_and_failed_creation_reads_leave_a_claim_unknown(self):
+        for kwargs in (dict(handle=0, error=5), dict(handle=0, error=0), dict(times=False, error=5)):
+            with self.subTest(kwargs=kwargs):
+                identity, alive = self.identity(**kwargs)
+                self.assertIsNone(identity['birth'])
+                self.assertIsNone(alive)

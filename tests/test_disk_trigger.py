@@ -200,12 +200,12 @@ class Trigger(DiskCase):
 
     def test_windows_absent_pid_is_proven_dead(self):
         from drover import placement
-        def cim(argv, **kwargs):
-            # Inspect only: never execute CIM. Absence must be checked before dereferencing CreationDate.
-            self.assertIn('if ($null -eq $p)', argv[-1])
-            return subprocess.CompletedProcess(argv, 0, 'absent\n', '')
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=cim):
+        # PID12 can be this interpreter inside a sandbox; discard its actual-side cache.
+        with patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, '_SELF_IDENTITY', None), \
+                patch.object(placement, '_read_windows_birth', side_effect=ProcessLookupError(87, 'absent')) as birth:
             self.assertFalse(placement.cleanup_claim_alive(dict(pid=12, birth='old', side='windows')))
+        birth.assert_called_once_with(12)
 
 
 class LockBackoff(DiskCase):

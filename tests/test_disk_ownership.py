@@ -88,7 +88,13 @@ class Ownership(unittest.TestCase):
         calls = []
         def local_transport(adapter, argv, **kwargs):
             calls.append(list(argv))
-            return [sys.executable, *argv[1:]] if argv[0] == 'python3' else argv
+            local = list(argv)
+            if argv[0] == 'git':
+                local[local.index('-C') + 1] = placement.native(local[local.index('-C') + 1])
+            elif argv[0:2] == ['python3', '-c']:
+                local[0] = sys.executable
+                local[3] = placement.native(local[3])  # worker directory; payload stays literal
+            return local
         with patch.object(placement, 'routes_through_wsl', return_value=True), \
                 patch.object(placement.WSL, 'command', new=local_transport):
             record = ownership.tag(str(tree), 'alpha', 'session: "quote"\n雪', NOW + 1, now=NOW)

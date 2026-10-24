@@ -49,21 +49,55 @@ if __name__ == "__main__":
 
 
 class ListingSide(unittest.TestCase):
-    def test_branch_lookup_and_unlock_list_worktrees_with_the_wsl_git(self):
+    def lookup(self, native, wsl, reachable):
         from drover import pipeline
         seen = []
-
         def fake(repo, *args, **kw):
-            seen.append((args[:2], kw.get("side")))
-            out = "worktree /home/dev/work/a.worktrees/drover-T\nbranch refs/heads/drover/T\n"
-            if "-z" in args:
-                out = "worktree /home/dev/work/a.worktrees/drover-T\0locked wsl\0\0"
-            return subprocess.CompletedProcess(args, 0, out, "")
-        with patch.object(placement, "git", fake), patch.object(pipeline.placement, "git", fake):
-            found = pipeline.Pipeline.__new__(pipeline.Pipeline)._worktree_of_branch("H:\\repos\\a", "drover/T")
-            placement.unlock_worktree("H:\\repos\\a", "/home/dev/work/a.worktrees/drover-T")
-        self.assertEqual(found, "/home/dev/work/a.worktrees/drover-T")
-        self.assertEqual([side for _, side in seen if _[0] == "worktree"], ["wsl", "wsl", "wsl"])   # list, list, unlock
+            seen.append(kw.get('side'))
+            out = wsl if kw.get('side') == 'wsl' else native
+            return subprocess.CompletedProcess(args, 127 if out is None else 0, out or '', '')
+        with patch.object(placement, 'IS_WINDOWS', True), patch.object(pipeline, 'git', fake), \
+                patch.object(placement, 'reachable', side_effect=reachable):
+            found = pipeline.Pipeline.__new__(pipeline.Pipeline)._worktree_of_branch('H:\\repos\\a', 'drover/T')
+        return found, seen
+
+    def record(self, path, lock=''):
+        return f'worktree {path}\nbranch refs/heads/drover/T\n' + (f'locked {lock}\n' if lock else '') + '\n'
+
+    def test_native_worktree_remains_available_without_wsl(self):
+        path = 'H:/work/a'
+        found, seen = self.lookup(self.record(path), None, lambda p: p == placement.native(path))
+        self.assertEqual(found, path)
+        self.assertEqual(seen, [None])
+
+    def test_wsl_lock_prevents_a_reachable_windows_misinterpretation_from_masking_ext4(self):
+        phantom = 'H:/home/dev/work/a'
+        path = '/home/dev/work/a'
+        found, seen = self.lookup(self.record(phantom, 'wsl'), self.record(path, 'wsl'), lambda p: True)
+        self.assertEqual(found, path)
+        self.assertEqual(seen, [None, 'wsl'])
+
+    def test_unreachable_native_interpretation_falls_back_to_ext4(self):
+        path = '/home/dev/work/a'
+        found, seen = self.lookup(self.record('H:/home/dev/work/a'), self.record(path), lambda p: p == path)
+        self.assertEqual(found, path)
+        self.assertEqual(seen, [None, 'wsl'])
+
+    def test_missing_registration_is_retained_when_neither_side_can_reach_it(self):
+        path = 'H:/work/missing'
+        found, seen = self.lookup(self.record(path), None, lambda p: False)
+        self.assertEqual(found, path)
+        self.assertEqual(seen, [None, 'wsl'])
+
+    def test_unlock_lists_worktrees_with_the_wsl_git(self):
+        seen = []
+        def fake(repo, *args, **kw):
+            seen.append(kw.get('side'))
+            out = 'worktree /home/dev/work/a\0locked wsl\0\0'
+            return subprocess.CompletedProcess(args, 0, out, '')
+        with patch.object(placement, 'git', fake):
+            placement.unlock_worktree('H:\\repos\\a', '/home/dev/work/a')
+        self.assertEqual(seen, ['wsl', 'wsl'])
 
 
 class CleanupCoversBothRoots(unittest.TestCase):
@@ -85,11 +119,13 @@ from tests.test_disk_worktrees import WorktreeCase
 
 
 class CleanupScansWslRoot(WorktreeCase):
-    def test_an_unregistered_folder_under_the_wsl_root_is_reported(self):
+    def test_an_unregistered_folder_under_the_owning_root_is_reported(self):
         wsl_root = self.r.root / 'ext4'
-        stray = wsl_root / 'alpha.worktrees' / 'stray'
+        owning_root = self.trees if self.side == 'windows' else wsl_root / 'alpha.worktrees'
+        stray = owning_root / 'stray'
         stray.mkdir(parents=True)
         (stray / 'file.txt').write_text('x')
         with patch.object(placement, 'wsl_worktrees_root', return_value=str(wsl_root)):
             result = self.cleanup()
         self.assertTrue(any(i['path'] == str(stray) for i in result['items']), result['items'])
+        self.assertTrue(any(side == 'wsl' and request['stage'] == 3 for side, request in self.calls), self.calls)
