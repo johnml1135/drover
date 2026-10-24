@@ -48,7 +48,10 @@ def alive(pid):
 def wait_for(cond, timeout=20):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        v = cond()
+        try:
+            v = cond()
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            v = None  # Status replacement/sharing can race the bounded observation.
         if v:
             return v
         time.sleep(0.1)
@@ -427,8 +430,17 @@ class RunTests(Base):
 
     def test_stop_request(self):
         p = self.start("s1", "import time;print('up',flush=True);time.sleep(60)")
-        self.assertTrue(wait_for(lambda: (Path(self.runs) / "s1" / "status.json").exists()
-                                 and self.status("s1")["state"] == "running"))
+        read = self.status
+        transient_reads = []
+        def sharing_once(rid):
+            if not transient_reads:
+                transient_reads.append(True)
+                raise PermissionError("transient status-file sharing error")
+            return read(rid)
+        with patch.object(self, "status", side_effect=sharing_once):
+            self.assertTrue(wait_for(lambda: (Path(self.runs) / "s1" / "status.json").exists()
+                                     and self.status("s1")["state"] == "running"))
+        self.assertEqual(transient_reads, [True])
         subprocess.run([PY, "-m", "drover.runner", "stop", "--run-id", "s1", "--runs-dir", self.runs,
                         "--reason", "rotation"], env=ENV, check=True, capture_output=True)
         t = time.monotonic()
