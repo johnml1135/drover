@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $originalProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $originalTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
 
-$uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+$uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -ne $uvCommand) {
     $uvPath = $uvCommand.Source
 } elseif ($IsWindows) {
