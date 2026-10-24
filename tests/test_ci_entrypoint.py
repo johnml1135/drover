@@ -76,7 +76,8 @@ sys.exit(int(os.environ.get("DROVER_FAKE_UV_EXIT", "0")))
                                       'import os\nprint(os.environ["DROVER_FAKE_NODE_PATH"])\n')
         return bin_dir, capture
 
-    def _run_entrypoint(self, kind='checks', changed_files='[]', uv_exit=0):
+    def _run_entrypoint(self, kind='checks', changed_files='[]', uv_exit=0,
+                        mixed_case_environment=False):
         with tempfile.TemporaryDirectory(prefix='drover-ci-entrypoint-') as temporary:
             temp = Path(temporary)
             bin_dir, capture = self._fake_tools(temp)
@@ -106,25 +107,54 @@ sys.exit(int(os.environ.get("DROVER_FAKE_UV_EXIT", "0")))
 
             escaped_entrypoint = "'" + str(ENTRYPOINT).replace("'", "''") + "'"
             harness = temp / 'invoke.ps1'
-            harness.write_text(f'''$beforeProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
+            harness.write_text(f'''$initializeMixedCaseEnvironment = {str(mixed_case_environment).lower()}
+if ($initializeMixedCaseEnvironment -and $IsWindows) {{
+    $initialPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    [Environment]::SetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('DROVER_TEST_JOBS', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('uV_pRoJeCt_EnViRoNmEnT', 'mixed-project-environment', 'Process')
+    [Environment]::SetEnvironmentVariable('dRoVeR_tEsT_jObS', '17', 'Process')
+    [Environment]::SetEnvironmentVariable('pAtH', $initialPath, 'Process')
+}}
+function Get-ProcessEnvironmentVariableName([string]$name) {{
+    foreach ($key in [Environment]::GetEnvironmentVariables('Process').Keys) {{
+        if ([string]::Equals([string]$key, $name, [StringComparison]::OrdinalIgnoreCase)) {{
+            return [string]$key
+        }}
+    }}
+    return $null
+}}
+$beforeProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $beforeTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
 $beforePath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
-$beforeTestJobsPresent = [Environment]::GetEnvironmentVariables('Process').Contains('DROVER_TEST_JOBS')
+$beforeProjectEnvironmentName = Get-ProcessEnvironmentVariableName 'UV_PROJECT_ENVIRONMENT'
+$beforeTestJobsName = Get-ProcessEnvironmentVariableName 'DROVER_TEST_JOBS'
+$beforePathName = Get-ProcessEnvironmentVariableName 'PATH'
 . {escaped_entrypoint}
 $scriptExitCode = [int]$LASTEXITCODE
 $afterProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $afterTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
 $afterPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
-$afterTestJobsPresent = [Environment]::GetEnvironmentVariables('Process').Contains('DROVER_TEST_JOBS')
+$afterProjectEnvironmentName = Get-ProcessEnvironmentVariableName 'UV_PROJECT_ENVIRONMENT'
+$afterTestJobsName = Get-ProcessEnvironmentVariableName 'DROVER_TEST_JOBS'
+$afterPathName = Get-ProcessEnvironmentVariableName 'PATH'
 $state = [ordered]@{{
     exitCode = $scriptExitCode
-    testJobsWasPresent = $beforeTestJobsPresent
+    testJobsWasPresent = ($null -ne $beforeTestJobsName)
     pathAtStart = $beforePath
-    restored = (($beforeProjectEnvironment -ceq $afterProjectEnvironment) -and
-                ($beforeTestJobsPresent -eq $afterTestJobsPresent) -and
-                (-not $beforeTestJobsPresent -or $beforeTestJobs -ceq $afterTestJobs) -and
-                ($beforePath -ceq $afterPath))
-    testJobsPresent = $afterTestJobsPresent
+    variableNamesAtStart = [ordered]@{{
+        UV_PROJECT_ENVIRONMENT = $beforeProjectEnvironmentName
+        DROVER_TEST_JOBS = $beforeTestJobsName
+        PATH = $beforePathName
+    }}
+    restored = (($null -ne $beforeProjectEnvironmentName) -eq ($null -ne $afterProjectEnvironmentName) -and
+                ($null -eq $beforeProjectEnvironmentName -or $beforeProjectEnvironment -ceq $afterProjectEnvironment) -and
+                ($null -ne $beforeTestJobsName) -eq ($null -ne $afterTestJobsName) -and
+                ($null -eq $beforeTestJobsName -or $beforeTestJobs -ceq $afterTestJobs) -and
+                ($null -ne $beforePathName) -eq ($null -ne $afterPathName) -and
+                ($null -eq $beforePathName -or $beforePath -ceq $afterPath))
+    testJobsPresent = ($null -ne $afterTestJobsName)
     environment = [ordered]@{{
         UV_PROJECT_ENVIRONMENT = $afterProjectEnvironment
         DROVER_TEST_JOBS = $afterTestJobs
@@ -206,6 +236,30 @@ exit $scriptExitCode
             self._runner_args('integration', ['tests.test_ci']),
         ])
         self.assertTrue(state['restored'])
+
+    def test_mixed_case_environment_variables_are_restored_on_success_and_failure(self):
+        for uv_exit in (0, 23):
+            with self.subTest(uv_exit=uv_exit):
+                result, calls, state = self._run_entrypoint(
+                    changed_files='["tests/test_ci.py"]',
+                    uv_exit=uv_exit,
+                    mixed_case_environment=True,
+                )
+
+                self.assertEqual(result.returncode, uv_exit, result.stderr)
+                expected_calls = [self._runner_args('integration', ['tests.test_ci'])]
+                if uv_exit == 0:
+                    expected_calls.append(self._runner_args('default'))
+                self.assertEqual([call['argv'] for call in calls], expected_calls)
+                self.assertIsNotNone(state)
+                self.assertTrue(state['restored'])
+                if os.name == 'nt':
+                    for variable, expected_name in (
+                        ('UV_PROJECT_ENVIRONMENT', 'uV_pRoJeCt_EnViRoNmEnT'),
+                        ('DROVER_TEST_JOBS', 'dRoVeR_tEsT_jObS'),
+                        ('PATH', 'pAtH'),
+                    ):
+                        self.assertEqual(state['variableNamesAtStart'][variable], expected_name)
 
 
 if __name__ == '__main__':

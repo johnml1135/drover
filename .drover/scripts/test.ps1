@@ -1,12 +1,28 @@
 $ErrorActionPreference = 'Stop'
 # Task checks precheck changed integration modules, then run the complete default tier; full runs all integration modules.
 
+function Test-ProcessEnvironmentVariablePresent {
+    param([string]$Name)
+
+    $variables = [Environment]::GetEnvironmentVariables('Process')
+    if ($IsWindows) {
+        foreach ($variableName in $variables.Keys) {
+            if ([string]::Equals([string]$variableName, $Name, [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    return $variables.Contains($Name)
+}
+
 $originalProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $originalTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
 $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
-$originalProjectEnvironmentPresent = [Environment]::GetEnvironmentVariables('Process').Contains('UV_PROJECT_ENVIRONMENT')
-$originalTestJobsPresent = [Environment]::GetEnvironmentVariables('Process').Contains('DROVER_TEST_JOBS')
-$originalPathPresent = [Environment]::GetEnvironmentVariables('Process').Contains('PATH')
+$originalProjectEnvironmentPresent = Test-ProcessEnvironmentVariablePresent 'UV_PROJECT_ENVIRONMENT'
+$originalTestJobsPresent = Test-ProcessEnvironmentVariablePresent 'DROVER_TEST_JOBS'
+$originalPathPresent = Test-ProcessEnvironmentVariablePresent 'PATH'
 
 function Get-ChangedTestModules {
     param([string]$Json)
