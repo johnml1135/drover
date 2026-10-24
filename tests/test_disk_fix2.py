@@ -200,52 +200,98 @@ class WorkerSafety(DiskCase):
         # The finalizer is only a hermetic test safety net, never the asserted cleanup.
         execute = subprocess.run
         for mode in ('success', 'failure', 'worker-failure', 'timeout'):
-            with self.subTest(mode=mode):
-                pidfile = self.root / (mode + '.pid')
-                script = self.root / (mode + '.py')
-                script.write_text('import subprocess,sys,time\nfrom pathlib import Path\n'
-                    'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"], '
-                    'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n'
-                    'Path(sys.argv[1]).write_text(str(p.pid))\n' +
-                    ('time.sleep(60)\n' if mode == 'timeout' else 'sys.exit(' + ('7' if mode == 'failure' else '0') + ')\n'))
-                request = self.request(3)
-                request['paths'] = dict(temp_roots=[], report_roots=[], caches=[dict(
-                    argv=[sys.executable, str(script), str(pidfile)], cwd=str(self.root), placement=self.side)])
-                def bounded(argv, **kwargs):
-                    # Shorten only the cache's timeout in the otherwise real worker.
-                    argv = list(argv)
-                    if mode == 'worker-failure' and 'cleanup_worker' in ' '.join(map(str, argv)):
-                        i = argv.index('-c') + 1
-                        crash = ('from drover import disk_side\n_serve = disk_side.serve\n'
-                                 'def crash(request):\n _serve(request)\n raise RuntimeError("worker crash")\n'
-                                 'disk_side.serve = crash\n')
-                        argv[i] = argv[i].replace('from drover.placement import cleanup_worker;',
-                                                  'exec(' + repr(crash) + ');from drover.placement import cleanup_worker;')
-                    if mode == 'timeout' and 'cleanup_worker' in ' '.join(map(str, argv)):
-                        i = argv.index('-c') + 1
-                        argv[i] = ('import subprocess; _run=subprocess.run; '
-                            'subprocess.run=lambda *a,**k: _run(*a,**{**k,"timeout":.4 if k.get("timeout")==120 else k.get("timeout")}); ' + argv[i])
-                    return execute(argv, **kwargs)
-                pid = None
-                try:
-                    with patch.object(subprocess, 'run', side_effect=bounded), \
-                            patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-                        result = placement.cleanup_call(self.side, request)
-                    self.assertTrue(pidfile.exists(), result)
-                    pid = int(pidfile.read_text())
-                    if self.side == 'windows':
-                        alive = any(p == pid for p, *_ in placement.process_cmdlines())
-                    else:
-                        stat = Path('/proc') / str(pid) / 'stat'
-                        alive = stat.exists() and stat.read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-                    self.assertFalse(alive, (mode, pid, result))
-                finally:
-                    if pidfile.exists():
+            observations = ('without-readiness', 'after-readiness') if mode == 'timeout' else ('default',)
+            for observation in observations:
+                with self.subTest(mode=mode, observation=observation):
+                    tag = mode if observation == 'default' else mode + '-' + observation
+                    pidfile = self.root / (tag + '.pid')
+                    readyfile = self.root / (tag + '.ready')
+                    script = self.root / (mode + '.py')
+                    script.write_text('import subprocess,sys,time\nfrom pathlib import Path\n' +
+                        ('time.sleep(.8)\n' if mode == 'timeout' else '') +
+                        'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"], '
+                        'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n'
+                        'Path(sys.argv[1]).write_text(str(p.pid))\n'
+                        'Path(sys.argv[2]).write_text("ready")\n' +
+                        ('time.sleep(60)\n' if mode == 'timeout' else 'sys.exit(' + ('7' if mode == 'failure' else '0') + ')\n'))
+                    request = self.request(3)
+                    request['paths'] = dict(temp_roots=[], report_roots=[], caches=[dict(
+                        argv=[sys.executable, str(script), str(pidfile), str(readyfile)],
+                        cwd=str(self.root), placement=self.side)])
+
+                    def bounded(argv, **kwargs):
+                        # Shorten only the cache's timeout in the otherwise real worker.
+                        argv = list(argv)
+                        if mode == 'worker-failure' and 'cleanup_worker' in ' '.join(map(str, argv)):
+                            i = argv.index('-c') + 1
+                            crash = ('from drover import disk_side\n_serve = disk_side.serve\n'
+                                     'def crash(request):\n _serve(request)\n raise RuntimeError("worker crash")\n'
+                                     'disk_side.serve = crash\n')
+                            argv[i] = argv[i].replace('from drover.placement import cleanup_worker;',
+                                                      'exec(' + repr(crash) + ');from drover.placement import cleanup_worker;')
+                        if mode == 'timeout' and 'cleanup_worker' in ' '.join(map(str, argv)):
+                            i = argv.index('-c') + 1
+                            if observation == 'without-readiness':
+                                # The controlled 0.8s startup delay exceeds the old 0.4s window.
+                                argv[i] = ('import subprocess; _run=subprocess.run; '
+                                    'subprocess.run=lambda *a,**k: _run(*a,**{**k,"timeout":.4 if k.get("timeout")==120 else k.get("timeout")}); ' + argv[i])
+                            else:
+                                ready_code = f'''import subprocess,time
+from pathlib import Path
+_run = subprocess.run
+_ready = Path({str(readyfile)!r})
+def _bounded_cache_run(*args, **kwargs):
+    if kwargs.get("timeout") != 120:
+        return _run(*args, **kwargs)
+    kwargs.pop("timeout")
+    kwargs.pop("capture_output", None)
+    kwargs["stdout"] = kwargs["stderr"] = subprocess.DEVNULL
+    child = subprocess.Popen(*args, **kwargs)
+    try:
+        deadline = time.monotonic() + 5
+        while not _ready.exists():
+            if child.poll() is not None:
+                return subprocess.CompletedProcess(args[0], child.returncode, "", "")
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(args[0], 5)
+            time.sleep(.01)
+        returncode = child.wait(timeout=.4)
+        return subprocess.CompletedProcess(args[0], returncode, "", "")
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+subprocess.run = _bounded_cache_run
+'''
+                                argv[i] = 'exec(' + repr(ready_code) + ');' + argv[i]
+                        return execute(argv, **kwargs)
+
+                    pid = None
+                    try:
+                        with patch.object(subprocess, 'run', side_effect=bounded), \
+                                patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
+                            result = placement.cleanup_call(self.side, request)
+                        if observation == 'without-readiness':
+                            self.assertFalse(pidfile.exists(), result)
+                            self.assertTrue(result['errors'], result)
+                            continue
+                        self.assertTrue(pidfile.exists(), result)
                         pid = int(pidfile.read_text())
+                        if mode == 'timeout':
+                            self.assertTrue(result['errors'], result)
                         if self.side == 'windows':
-                            execute(['taskkill.exe', '/PID', str(pid), '/T', '/F'], capture_output=True)
+                            alive = any(p == pid for p, *_ in placement.process_cmdlines())
                         else:
-                            try:
-                                os.kill(pid, 9)
-                            except ProcessLookupError:
-                                pass
+                            stat = Path('/proc') / str(pid) / 'stat'
+                            alive = stat.exists() and stat.read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+                        self.assertFalse(alive, (mode, pid, result))
+                    finally:
+                        if pidfile.exists():
+                            pid = int(pidfile.read_text())
+                            if self.side == 'windows':
+                                execute(['taskkill.exe', '/PID', str(pid), '/T', '/F'], capture_output=True)
+                            else:
+                                try:
+                                    os.kill(pid, 9)
+                                except ProcessLookupError:
+                                    pass
