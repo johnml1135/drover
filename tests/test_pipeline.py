@@ -21,6 +21,7 @@ from tests.tiers import integration
 from tests.fakeci import execute_gate
 from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
+from tests.pipeline_fixture import MemoryRepo, MemoryRepository, CheckoutGit, finish_gate, read_checkouts
 
 GO = {"verdict": "go", "slots": 10, "reasons": []}
 
@@ -102,8 +103,11 @@ class FakeLauncher:
 
 
 class Base(unittest.TestCase):
+    def new_fixture(self):
+        return Repo()
+
     def setUp(self):
-        self.fix = Repo()
+        self.fix = self.new_fixture()
         self.addCleanup(self.fix.cleanup)
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
@@ -137,10 +141,13 @@ class Base(unittest.TestCase):
         self.port = DirectPort(self.conn)
         self.fl = FakeLauncher(self.runs)
         self.prog = prog_dict(self.fix.repo, root / "wts")
-        self.pipe = pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs)
+        self.pipe = self.new_pipeline()
         self.decisions = []
         ops.set_setting(self.conn, "dispatch_enabled", "true")
         self.d = self.make()
+
+    def new_pipeline(self):
+        return pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs)
 
     def make(self, **kw):
         now = kw.pop("now", time.time)
@@ -203,7 +210,79 @@ class Base(unittest.TestCase):
         return tid, sha
 
 
-class Switch(Base):
+class PolicyLauncher(FakeLauncher):
+    """Script gate outcomes directly; receipt parsing and retry policy stay real."""
+    def __init__(self, runs_dir):
+        super().__init__(runs_dir)
+        self.gate_code, self.gate_output = 0, ''
+
+    def launch(self, spec):
+        if spec.get('role') != 'gate' or self.gate_script:
+            return super().launch(spec)
+        self.specs.append(spec)
+        handle = FakeHandle(finish_gate(spec, self.runs_dir, code=self.gate_code, output=self.gate_output))
+        self.handles[spec['run_id']] = handle
+        return handle
+
+
+class PolicyBase(Base):
+    def new_fixture(self):
+        self.memory_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.memory_tmp.cleanup)
+        fixture = MemoryRepo(self.memory_tmp.name)
+        self.repository = MemoryRepository(fixture)
+        return fixture
+
+    def new_pipeline(self):
+        return pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs,
+                                 repository=self.repository)
+
+    def make(self, **kw):
+        dispatcher = super().make(**kw)
+        # Replanning's source inspection is an independent Git consumer.
+        dispatcher.replanning._inputs = self.planner_inputs
+        return dispatcher
+
+    def planner_inputs(self, task):
+        checkout = task['worktree']
+        reads = read_checkouts(self.repository, task['read_access'], self.pipe.all_repos(),
+                               Path(self.tmp.name) / 'read-checkouts')
+        return dict(repo=task['repo'], branch='refs/heads/' + task['branch'],
+                    head=self.repository.head(checkout), dirty_digest='fixture',
+                    checkout=checkout, read_checkouts=reads)
+
+    def setUp(self):
+        # Fail immediately if a policy case accidentally crosses a process/sleep boundary.
+        for name in ('subprocess.Popen', 'time.sleep'):
+            guard = patch(name, side_effect=AssertionError('policy test crossed ' + name))
+            guard.start()
+            self.addCleanup(guard.stop)
+        # prog_dict remains the shared real-repository helper for importing modules.
+        helper = patch(__name__ + '.prog_dict', side_effect=policy_prog)
+        helper.start()
+        self.addCleanup(helper.stop)
+        super().setUp()
+        for context in (
+            patch('drover.task_access.prepare', side_effect=lambda entries, configured=None, root=None:
+                  read_checkouts(self.repository, entries, configured or self.pipe.all_repos(),
+                                 root or Path(self.tmp.name) / 'read-checkouts')),
+            patch('drover.task_access.verify'),
+        ):
+            context.start()
+            self.addCleanup(context.stop)
+        self.fl = PolicyLauncher(self.runs)
+        self.d = self.make()
+
+
+def policy_prog(repo, worktrees, gate_cmd=None, unknown=False, push=False, **kw):
+    return repos.normalize({'name': 'p', 'repo': str(repo), 'worktrees': str(worktrees),
+                            'scripts': {} if unknown else {'test': '.drover/scripts/drover/test.ps1'},
+                            'run': {'env': {}},
+                            'gate': {'platform': 'windows', 'timeout_s': 60, 'idle_s': 60},
+                            'land': {'push': push}, **kw})
+
+
+class Switch(PolicyBase):
     def test_the_switch_reads_true_1_yes_on_only(self):
         for v, want in (("true", True), ("TRUE", True), ("1", True), ("Yes", True), ("on", True), (" on ", True),
                         ("false", False), ("0", False), ("", False), ("enabled", False), ("no", False)):
@@ -269,18 +348,18 @@ class Repos(unittest.TestCase):
         self.assertTrue(all(not p["land"]["push"] for p in progs.values()))
 
 
-class UnknownGate(Base):
+class UnknownGate(PolicyBase):
     def test_missing_task_checkout_keeps_versioned_gate_config_before_recovery(self):
         self.fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/drover/test.ps1"\n')
-        self.fix.git('push', 'origin', 'HEAD:main')
+        self.fix.push()
         machine = {'name': 'p', 'repo': str(self.fix.repo), 'worktrees': str(Path(self.tmp.name) / 'wts')}
-        pipe = pipeline.Pipeline(self.port, repos_map={'p': repos.load(machine)})
+        pipe = pipeline.Pipeline(self.port, repos_map={'p': self.repository.load(machine)}, repository=self.repository)
         tid = self.task()
         ops.update_task(self.conn, tid, worktree=str(Path(self.tmp.name) / 'missing'))
         self.assertTrue(pipe.prepare_dispatch(self.get(tid)))
         self.assertEqual(ops.open_questions(self.conn), [])
         recovered = pipe.worktree(self.get(tid))
-        self.assertTrue(placement.reachable(recovered))
+        self.assertTrue(self.repository.reachable(recovered))
         self.assertEqual(pipe.repo(self.get(tid))['scripts']['test'], '.drover/scripts/drover/test.ps1')
 
     def test_missing_repo_path_goes_to_owner_without_crashing(self):
@@ -344,30 +423,22 @@ class UnknownGate(Base):
         self.assertEqual(self.fl.specs, [])
 
 
-class Worktrees(Base):
+class Worktrees(PolicyBase):
     def test_worktree_add_disables_autocrlf_including_the_legacy_fallback(self):
-        real = pipeline.git
-        self.fix.git("config", "core.autocrlf", "true")
-        committed = subprocess.run(["git", "-C", str(self.fix.repo), "show", "main:base.txt"],
-                                   capture_output=True, check=True).stdout
         for legacy in (False, True):
             with self.subTest(legacy=legacy):
-                calls = []
-
-                def fake(repo, *args, **kw):
-                    if "worktree" in args and "add" in args:
-                        calls.append(args)
-                        if legacy and "--relative-paths" in args:
-                            return subprocess.CompletedProcess(args, 129, "", "error: unknown option `relative-paths'")
-                    return real(repo, *args, **kw)
-
+                committed = {'base.txt': b'base\nsecond line\n', 'binary.dat': b'\x00\xff\n'}
+                fake = CheckoutGit(committed, legacy=legacy)
                 tid = self.task()
-                with patch.object(pipeline, "git", fake), patch.object(placement, "is_linux_native", return_value=True), patch.object(placement, 'routes_through_wsl', return_value=False):
-                    wt = self.pipe.worktree(self.get(tid))
-                self.assertEqual(len(calls), 2 if legacy else 1)
-                for args in calls:
-                    self.assertEqual(args[:4], ("-c", "core.autocrlf=false", "worktree", "add"))
-                self.assertEqual((Path(wt) / "base.txt").read_bytes(), committed)
+                wt = Path(self.tmp.name) / 'wts' / f'drover-{tid}'
+                with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True), \
+                        patch.object(placement, 'routes_through_wsl', return_value=False):
+                    pipeline.Repository().add(self.fix.repo, wt, f'drover/{tid}', 'main')
+                self.assertEqual(len(fake.adds), 2 if legacy else 1)
+                for name, blob in committed.items():
+                    self.assertEqual((wt / name).read_bytes(), blob)
+                for args in fake.adds:
+                    self.assertEqual(args[:4], ('-c', 'core.autocrlf=false', 'worktree', 'add'))
 
     def test_a_wsl_placement_creates_its_worktree_under_the_wsl_root_and_windows_keeps_the_h_root(self):
         ext4 = Path(self.tmp.name) / "ext4"
@@ -387,9 +458,10 @@ class Worktrees(Base):
         root = Path(self.tmp.name)
         repo = root / 'repos' / 'acme-lib'
         repo.parent.mkdir()
-        self.fix.git('clone', '-q', self.fix.repo, repo)
-        with patch('os.path.expanduser', side_effect=lambda p: str(root) + p[1:] if p.startswith('~') else p):
-            self.pipe._repos = repos.load_all(repos.REPOS_DIR)
+        self.fix.checkout(repo, "example", "main")
+        with patch('os.path.expanduser', side_effect=lambda p: str(root / p[2:]) if p.startswith('~/') else p):
+            with patch.object(repos, 'load', self.repository.load):
+                self.pipe._repos = repos.load_all(repos.REPOS_DIR)
             tid = self.task(repo='acme-lib')
             wt = self.pipe.worktree(self.get(tid))
             expected = str(root / 'repos' / 'acme-lib.worktrees' / f'drover-{tid}')
@@ -407,15 +479,15 @@ class Worktrees(Base):
         self.assertEqual(Path(wt).name, f"drover-{tid}")
         t = self.get(tid)
         self.assertEqual((t["branch"], t["worktree"]), (f"drover/{tid}", wt))
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "origin/main"))
-        tag = pipeline.ownership.read(wt)
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), self.fix.head("origin/main"))
+        tag = self.fix.tags.get(str(wt))
         self.assertEqual((tag["owner"], tag["repo"]), (pipeline.OWNER_PREFIX + tid, "p"))
         self.assertEqual(self.pipe.worktree(self.get(tid)), wt)             # idempotent
 
     def test_uses_an_existing_branch_and_a_clean_worktree_that_has_it(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
-        self.fix.git("worktree", "add", "-q", other, "feat")
+        self.fix.checkout(other, "feat")
         tid = self.task(branch="feat")
         self.assertEqual(Path(self.pipe.worktree(self.get(tid))), other)
         self.assertEqual(self.get(tid)["worktree"], str(other))
@@ -423,14 +495,14 @@ class Worktrees(Base):
     def test_a_dirty_foreign_worktree_is_untouched_and_the_task_branches_from_the_committed_tip(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
-        self.fix.git("worktree", "add", "-q", other, "feat")
+        self.fix.checkout(other, "feat")
         (other / "scratch.txt").write_text("owner's work\n")
         tid = self.task(branch="feat")
         wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertNotEqual(Path(wt).resolve(), other.resolve())
         self.assertEqual((other / "scratch.txt").read_text(), "owner's work\n")
         self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "feat"))
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), self.fix.head("feat"))
         ev = [e for e in ops.events(self.conn, task_id=tid, kind="worktree-fallback")]
         self.assertEqual(ev[-1]["data"]["source_branch"], "feat")
         self.assertIn("uncommitted", ev[-1]["data"]["reason"])
@@ -442,27 +514,23 @@ class Worktrees(Base):
     def test_unavailable_wsl_does_not_adopt_a_reachable_foreign_inventory_path(self):
         self.fix.branch('feat', {'f.txt': 'f\n'})
         phantom = Path(self.tmp.name) / 'other'
-        self.fix.git('worktree', 'add', '-q', '-b', 'unrelated', phantom, 'main')
+        self.fix.checkout(phantom, 'unrelated', 'main')
         before = (phantom / '.git').read_bytes()
         tid = self.task(branch='feat')
-        real = pipeline.git
-        def inventory(repo, *args, **kw):
-            if args[:3] == ('worktree', 'list', '--porcelain'):
-                if kw.get('side') == 'wsl':
-                    return subprocess.CompletedProcess(args, 127, '', 'WSL unavailable')
-                record = f'worktree {phantom}\nbranch refs/heads/feat\nlocked wsl\n\n'
-                return subprocess.CompletedProcess(args, 0, record, '')
-            return real(repo, *args, **kw)
+        def inventory(repo, side=None):
+            if side == 'wsl':
+                return []  # owning inventory unavailable
+            return [dict(worktree=str(phantom), branch='refs/heads/feat', locked='wsl')]
         with patch.object(placement, 'IS_WINDOWS', True), \
                 patch.object(placement, 'routes_through_wsl', return_value=False), \
-                patch.object(pipeline, 'git', inventory):
+                patch.object(self.repository, 'inventory', side_effect=inventory):
             wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertNotEqual(Path(wt).resolve(), phantom.resolve())
         self.assertEqual(self.get(tid)['branch'], f'drover/{tid}')
-        self.assertEqual(self.fix.git('rev-parse', 'HEAD', cwd=wt), self.fix.git('rev-parse', 'feat'))
-        self.assertEqual(self.fix.git('branch', '--show-current', cwd=phantom), 'unrelated')
+        self.assertEqual(self.fix.head('HEAD', cwd=wt), self.fix.head('feat'))
+        self.assertEqual(self.repository.branch(phantom), 'unrelated')
         self.assertEqual((phantom / '.git').read_bytes(), before)
-        self.assertIsNone(pipeline.ownership.read(str(phantom)))
+        self.assertIsNone(self.fix.tags.get(str(phantom)))
         event = ops.events(self.conn, task_id=tid, kind='worktree-fallback')[-1]
         self.assertEqual(event['data']['source_branch'], 'feat')
         self.assertIn('unreachable', event['data']['reason'])
@@ -471,31 +539,32 @@ class Worktrees(Base):
     def test_a_missing_registered_worktree_gets_a_fresh_task_branch_and_nothing_is_pruned(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
-        self.fix.git("worktree", "add", "-q", other, "feat")
+        self.fix.checkout(other, "feat")
         shutil.rmtree(other)                                   # registered in git, gone from disk
         tid = self.task(branch="feat")
         wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "feat"))
-        self.assertIn(str(other.name), self.fix.git("worktree", "list", "--porcelain"))   # registration kept
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), self.fix.head("feat"))
+        self.assertIn(str(other.name), '\n'.join(self.fix.checkouts))   # registration kept
         self.assertIn("unreachable", ops.events(self.conn, task_id=tid, kind="worktree-fallback")[-1]["data"]["reason"])
 
     def test_a_wsl_only_worktree_of_a_windows_hub_is_probed_through_wsl_and_a_stale_one_falls_back(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         calls = []
-        real = subprocess.run
-
         def fake_wsl(argv, *a, **kw):
-            if argv[0] == "wsl.exe":
-                calls.append(argv)
-                return subprocess.CompletedProcess(argv, 128, "", "fatal: cannot change to '/home/johnm/work/x'")
-            return real(argv, *a, **kw)
-        tid = self.task(branch="feat")
-        ops.update_task(self.conn, tid, worktree="/home/acme/work/acme-lib.worktrees/x")
-        with patch("subprocess.run", fake_wsl), \
-                patch.object(placement, "routes_through_wsl", lambda p, nt=None: str(p).startswith("/home/")):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 128, '', "fatal: cannot change to '/home/johnm/work/x'")
+        tid = self.task(branch='feat')
+        stale = '/home/acme/work/acme-lib.worktrees/x'
+        ops.update_task(self.conn, tid, worktree=stale)
+        reachable = self.repository.reachable
+        def probe(path):
+            return placement.reachable(path) if str(path) == stale else reachable(path)
+        with patch('subprocess.run', fake_wsl), \
+                patch.object(placement, 'routes_through_wsl', lambda p, nt=None: str(p) == stale), \
+                patch.object(self.repository, 'reachable', side_effect=probe):
             wt = repos.native(self.pipe.worktree(self.get(tid)))
-        self.assertTrue(calls and calls[0][:5] == ["wsl.exe", "-d", "Ubuntu", "--exec", "git"], calls)
+        self.assertTrue(calls and calls[0][:5] == ['wsl.exe', '-d', 'Ubuntu', '--exec', 'git'], calls)
         self.assertEqual(self.get(tid)["branch"], f"drover/{tid}")
         self.assertTrue(Path(wt).exists())
 
@@ -507,7 +576,7 @@ class Worktrees(Base):
         self.assertEqual(placement.git_argv("/home/j/w", ["worktree", "add", "H:\\x"], nt=True, distro="U")[-1], "/mnt/h/x")
 
     def _absolute_pointer(self, wt):
-        admin = Path(self.fix.git("-C", wt, "rev-parse", "--absolute-git-dir"))
+        admin = Path(self.fix.admin(wt))
         (Path(wt) / ".git").unlink()
         (Path(wt) / ".git").write_text(f"gitdir: {admin}\n")
 
@@ -515,17 +584,18 @@ class Worktrees(Base):
         tid = self.task()
         wt = repos.native(self.pipe.worktree(self.get(tid)))
         self._absolute_pointer(wt)
-        config_before = self.fix.git("config", "--local", "-l")        # worktree add itself may have set the extension
+        config_file = self.fix.repo / '.git' / 'config'
+        config_before = config_file.read_bytes()
         self.pipe.worktree(self.get(tid))
         pointer = (Path(wt) / ".git").read_text().strip().removeprefix("gitdir: ")
         self.assertFalse(Path(pointer).is_absolute(), pointer)
-        self.assertEqual(self.fix.git("rev-parse", "--is-inside-work-tree", cwd=wt), "true")
-        self.assertEqual(self.fix.git("config", "--local", "-l"), config_before)
+        self.assertTrue((Path(wt) / pointer).is_dir())
+        self.assertEqual(config_file.read_bytes(), config_before)
 
     def test_a_foreign_clean_worktree_pointer_is_not_edited(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
-        self.fix.git("worktree", "add", "-q", other, "feat")
+        self.fix.checkout(other, "feat")
         self._absolute_pointer(other)
         before = (other / ".git").read_text()
         self.pipe.worktree(self.get(self.task(branch="feat")))
@@ -535,7 +605,7 @@ class Worktrees(Base):
         tid = self.task()
         wt = repos.native(self.pipe.worktree(self.get(tid)))
         self._absolute_pointer(wt)
-        with patch.object(placement, "relativize_gitdir", return_value=False):
+        with patch.object(self.repository, "repair", return_value=False):
             self.pipe.worktree(self.get(tid))
         self.assertTrue(ops.events(self.conn, task_id=tid, kind="worktree-repair-failed"))
         self.assertTrue(ops.events(self.conn, task_id=tid, kind="worktree-fallback"))
@@ -586,7 +656,7 @@ class Worktrees(Base):
     def test_the_dispatcher_launches_on_a_fresh_branch_when_the_registered_worktree_is_dirty(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"
-        self.fix.git("worktree", "add", "-q", other, "feat")
+        self.fix.checkout(other, "feat")
         (other / "scratch.txt").write_text("x\n")
         tid = self.task(branch="feat")
         self.assertEqual(self.d.tick()["launched"], [tid])
@@ -600,7 +670,7 @@ class Worktrees(Base):
         self.assertEqual(pipeline.join_cfg("R:\\repos\\acme-lib.worktrees", "drover-T1"), "R:\\repos\\acme-lib.worktrees\\drover-T1")
 
 
-class Safety(Base):
+class Safety(PolicyBase):
     def test_the_main_checkout_and_the_default_branch_are_refused(self):
         tid = self.task(branch="main")
         with self.assertRaises(pipeline.WorktreeRefused) as cm:
@@ -614,18 +684,18 @@ class Safety(Base):
 
     def test_branch_syncs_remote_main_and_keeps_owner_checkout_consistent(self):
         sha = self.fix.branch("upstream", {"upstream.txt": "upstream"})
-        self.fix.git("push", "-q", "origin", f"{sha}:main")
+        self.fix.push(sha)
         tid = self.task()
         wt = repos.native(self.pipe.worktree(self.get(tid)))
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), sha)
-        self.assertEqual(self.fix.git("rev-parse", "main"), sha)
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), sha)
+        self.assertEqual(self.fix.head("main"), sha)
         self.assertEqual((self.fix.repo / "upstream.txt").read_text(), "upstream")
-        self.assertEqual(self.fix.git("status", "--porcelain"), "")
+        self.assertEqual(self.fix.status(), [])
 
     def test_divergence_prevents_dispatch_with_needs_owner_reason(self):
         self.fix.commit("local.txt")
         sha = self.fix.branch("upstream", {"upstream.txt": "upstream"})
-        self.fix.git("push", "-q", "origin", f"{sha}:main")
+        self.fix.push(sha)
         tid = self.task()
         self.assertEqual(self.d.tick()["launched"], [])
         self.assertEqual(self.status(tid), "needs-owner")
@@ -633,7 +703,7 @@ class Safety(Base):
         self.assertIsNone(self.get(tid)["worktree"])
 
     def test_offline_pauses_only_affected_repo_and_alerts_once(self):
-        self.fix.git("remote", "set-url", "origin", str(self.fix.root / "offline.git"))
+        self.fix.online = False
         tid = self.task()
         self.d.tick()
         self.assertEqual(self.status(tid), "needs-owner")
@@ -644,7 +714,7 @@ class Safety(Base):
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
         self.assertIsNone(self.get(other)["worktree"])
         self.assertEqual(self.fl.specs, [])
-        self.fix.git("remote", "set-url", "origin", str(self.fix.remote))
+        self.fix.online = True
         question = ops.open_questions(self.conn)[0]
         ops.answer_question(self.conn, question['id'], choice='Retry origin sync')
         self.d.tick()
@@ -653,11 +723,12 @@ class Safety(Base):
         self.assertFalse(ops.open_questions(self.conn))
 
     def test_offline_repo_does_not_pause_another_repo(self):
-        other_repo = Repo()
-        self.addCleanup(other_repo.cleanup)
+        other_repo = MemoryRepo(Path(self.tmp.name) / "healthy")
+        self.repository.fixtures.append(other_repo)
+
         self.pipe.all_repos()['acme-app'] = prog_dict(
             other_repo.repo, Path(self.tmp.name) / 'other-wts', name='acme-app')
-        self.fix.git('remote', 'set-url', 'origin', str(self.fix.root / 'offline.git'))
+        self.fix.online = False
         offline = self.task()
         healthy = self.task(repo='acme-app')
         out = self.d.tick()
@@ -670,8 +741,8 @@ class Safety(Base):
         self.fix.commit("landed.txt", "landed locally\n")                        # local main runs ahead of origin/main
         tid = self.task()
         wt = repos.native(self.pipe.worktree(self.get(tid)))
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), self.fix.git("rev-parse", "main"))
-        self.assertNotEqual(self.fix.git("rev-parse", "main"), self.fix.git("rev-parse", "origin/main"))
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), self.fix.head("main"))
+        self.assertNotEqual(self.fix.head("main"), self.fix.head("origin/main"))
         sha = self.fix.commit("mine.txt", "mine\n", cwd=wt)
         plan = self.pipe.ci.prepare(self.prog, wt, sha, "inspect")
         self.assertEqual((self.pipe.base_ref(self.prog), plan["files"]), ("main", ["mine.txt"]))     # landed.txt is not in the diff
@@ -682,22 +753,22 @@ class Safety(Base):
         self.assertEqual(pipe.base_ref(prog), "main")
 
     def test_a_git_without_relative_paths_is_refused_for_cross_os_worktrees_not_made_absolute(self):
-        real = pipeline.git
-
-        def fake(repo, *a, **kw):
-            if "--relative-paths" in a:
-                return subprocess.CompletedProcess(a, 129, "", "error: unknown option `relative-paths'")
-            return real(repo, *a, **kw)
+        fake = CheckoutGit({'base.txt': b'base\n'}, legacy=True)
         tid = self.task()
-        from unittest import mock
-        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: False), patch.object(placement, 'routes_through_wsl', return_value=False):
+        dest = Path(self.tmp.name) / 'wts' / f'drover-{tid}'
+        adapter = pipeline.Repository()
+        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=False), \
+                patch.object(placement, 'routes_through_wsl', return_value=False):
             with self.assertRaises(pipeline.WorktreeRefused) as cm:
-                self.pipe.worktree(self.get(tid))
-        self.assertIn("relative-paths", str(cm.exception))
-        self.assertFalse((Path(self.tmp.name) / "wts" / f"drover-{tid}").exists())
-        with mock.patch.object(pipeline, "git", fake), mock.patch.object(placement, "is_linux_native", lambda d: True), patch.object(placement, 'routes_through_wsl', return_value=False):
-            # a path only one OS can open may fall back to absolute gitdir pointers
-            self.assertTrue(self.pipe.worktree(self.get(tid)))
+                adapter.add(self.fix.repo, dest, f'drover/{tid}', 'main')
+        self.assertIn('relative-paths', str(cm.exception))
+        self.assertFalse(dest.exists())
+        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True), \
+                patch.object(placement, 'routes_through_wsl', return_value=False):
+            # A native filesystem may use absolute pointers with old Git.
+            adapter.add(self.fix.repo, dest, f'drover/{tid}', 'main')
+            self.assertTrue((dest / '.git').is_file())
+            self.assertEqual((dest / 'base.txt').read_bytes(), b'base\n')
 
     def test_fetch_and_landing_git_calls_are_bounded(self):
         from unittest import mock
@@ -706,6 +777,7 @@ class Safety(Base):
         fetch_args = ("fetch", "origin", "main",
                       "--refmap=+refs/heads/main:refs/remotes/origin/main")
         timeout_error = subprocess.TimeoutExpired(["git", *fetch_args], timeout=pipeline.FETCH_TIMEOUT_S)
+        self.repository.sync = pipeline.Repository().sync
         real_pipeline_git = pipeline.git
         results = []
 
@@ -736,7 +808,7 @@ class Safety(Base):
         self.assertFalse(landing.review_landed(self.conn, tid, sha))
 
 
-class ReadyToCommit(Base):
+class ReadyToCommit(PolicyBase):
     def ready(self, tid, message="Finish scoped work\n\nExplain the change."):
         spec = self.fl.of("worker")[-1]
         text = json.dumps({"status": "ready_to_commit", "commit_message": message, "note": "verified"})
@@ -767,8 +839,8 @@ class ReadyToCommit(Base):
         self.d.tick()
         wt = repos.native(self.get(tid)["worktree"])
         (Path(wt) / "work.txt").write_text("finished\n")
-        self.fix.git("add", "work.txt", cwd=wt)
-        self.fix.git("commit", "-m", "work", cwd=wt)
+        self.fix.stage("work.txt", cwd=wt)
+        self.fix.save(wt, "work")
         self.blocked(tid, "missing_windows_worker")
         self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
         self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
@@ -778,8 +850,8 @@ class ReadyToCommit(Base):
         self.d.tick()
         wt = repos.native(self.get(tid)["worktree"])
         (Path(wt) / "other.txt").write_text("x\n")
-        self.fix.git("add", "other.txt", cwd=wt)
-        self.fix.git("commit", "-m", "work", cwd=wt)
+        self.fix.stage("other.txt", cwd=wt)
+        self.fix.save(wt, "work")
         with self.assertRaisesRegex(pipeline.CommitRefused, "other.txt"):
             self.pipe.commit_ready(self.get(tid), 1, "m")
 
@@ -804,11 +876,11 @@ class ReadyToCommit(Base):
         wt = repos.native(self.get(tid)["worktree"])
         (Path(wt) / "work.txt").write_text("finished\n")
         rid = self.ready(tid)
-        sha = self.fix.git("rev-parse", "HEAD", cwd=wt)
-        self.assertEqual(self.fix.git("show", "HEAD:work.txt", cwd=wt), "finished")
-        message = self.fix.git("log", "-1", "--format=%B", cwd=wt)
+        sha = self.fix.head("HEAD", cwd=wt)
+        self.assertEqual(self.fix.tree(cwd=wt)["work.txt"].strip(), "finished")
+        message = self.fix.message(wt)
         self.assertEqual(message, f"Finish scoped work\n\nExplain the change.\n\nDrover-Task: {tid}\nDrover-Run: {rid}")
-        self.assertEqual(self.fix.git("status", "--porcelain", cwd=wt), "")
+        self.assertEqual(self.fix.status(wt), [])
         event = ops.events(self.conn, task_id=tid, kind="worker-done")[-1]
         self.assertEqual(event["data"]["sha"], sha)
         self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
@@ -819,16 +891,16 @@ class ReadyToCommit(Base):
         tid = self.task(scope_files=["work.txt"])
         self.d.tick()
         wt = Path(repos.native(self.get(tid)["worktree"]))
-        original = self.fix.git("rev-parse", "HEAD", cwd=wt)
+        original = self.fix.head("HEAD", cwd=wt)
         (wt / "work.txt").write_text("allowed")
         (wt / "private.txt").write_text("outside")
         (wt / "base.txt").write_text("staged outside")
-        self.fix.git("add", "base.txt", cwd=wt)
-        before = self.fix.git("status", "--porcelain", cwd=wt)
+        self.fix.stage("base.txt", cwd=wt)
+        before = self.fix.status(wt)
         self.ready(tid)
         self.assertEqual(self.status(tid), "needs-owner")
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), original)
-        self.assertEqual(self.fix.git("status", "--porcelain", cwd=wt), before)
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), original)
+        self.assertEqual(self.fix.status(wt), before)
         refused = ops.events(self.conn, task_id=tid, kind="commit-refused")[-1]["data"]
         self.assertEqual(refused["paths"], ["base.txt", "private.txt"])
         self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "blocked")
@@ -844,10 +916,17 @@ class ReadyToCommit(Base):
         self.assertEqual(self.fl.of("gate"), [])
 
     def test_rename_cannot_hide_an_out_of_scope_deletion(self):
+        replies = [subprocess.CompletedProcess([], 0, 'base.txt\0work.txt\0', ''),
+                   subprocess.CompletedProcess([], 0, '', '')]
+        with patch.object(pipeline, 'git', side_effect=replies) as run:
+            self.assertEqual(pipeline.Repository().changes('checkout'), ['base.txt', 'work.txt'])
+        self.assertEqual([call.args for call in run.call_args_list], [
+            ('checkout', 'diff', '--name-only', '--no-renames', '-z', 'HEAD'),
+            ('checkout', 'ls-files', '--others', '--exclude-standard', '-z')])
         tid = self.task(scope_files=["work.txt"])
         self.d.tick()
         wt = Path(repos.native(self.get(tid)["worktree"]))
-        self.fix.git("mv", "base.txt", "work.txt", cwd=wt)
+        (Path(wt) / "base.txt").rename(Path(wt) / "work.txt")
         self.ready(tid)
         self.assertEqual(self.status(tid), "needs-owner")
         refused = ops.events(self.conn, task_id=tid, kind="commit-refused")[-1]["data"]
@@ -869,10 +948,10 @@ class ReadyToCommit(Base):
         (wt / "src").mkdir()
         (wt / "src" / "new file.txt").write_text("new")
         (wt / "notes.md").write_text("notes")
-        self.fix.git("add", "notes.md", cwd=wt)
+        self.fix.stage("notes.md", cwd=wt)
         self.ready(tid)
-        self.assertEqual(self.fix.git("ls-tree", "-r", "--name-only", "HEAD", cwd=wt), ".drover/scripts/drover/test.ps1\nnotes.md\nsrc/new file.txt")
-        self.assertEqual(self.fix.git("status", "--porcelain", cwd=wt), "")
+        self.assertEqual('\n'.join(sorted(self.fix.tree(cwd=wt))), ".drover/scripts/drover/test.ps1\nnotes.md\nsrc/new file.txt")
+        self.assertEqual(self.fix.status(wt), [])
 
     def test_retry_after_a_ledger_error_recovers_the_commit_instead_of_blocking_or_committing_twice(self):
         tid = self.task(scope_files=["work.txt"])
@@ -890,12 +969,54 @@ class ReadyToCommit(Base):
 
         self.port.append_event = flaky_event
         self.ready(tid)
-        sha = self.fix.git("rev-parse", "HEAD", cwd=wt)
+        sha = self.fix.head("HEAD", cwd=wt)
         self.d.tick()
-        self.assertEqual(self.fix.git("rev-parse", "HEAD", cwd=wt), sha)
+        self.assertEqual(self.fix.head("HEAD", cwd=wt), sha)
         self.assertEqual(self.status(tid), "running")
         self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "done")
         self.assertEqual(ops.events(self.conn, task_id=tid, kind="worker-done")[-1]["data"]["sha"], sha)
+
+    def test_commit_recovery_reads_keep_pipeline_git_semantics(self):
+        task = dict(id='T', worktree=str(self.fix.repo), scope_files=['work.txt'])
+        adapter = pipeline.Repository()
+        pipe = pipeline.Pipeline(self.port, runs_dir=self.runs, repository=adapter)
+        for recovered in (True, False):
+            with self.subTest(recovered=recovered):
+                def placed(repo, *args, **kw):
+                    if args == ('rev-parse', 'HEAD'):
+                        return subprocess.CompletedProcess(args, 0, 'commit-sha\n', '')
+                    self.assertEqual(args, ('diff', '--name-only', '--no-renames', '-z', 'main...HEAD'))
+                    return subprocess.CompletedProcess(args, 0, 'work.txt\0', '')
+
+                with patch.object(adapter, 'changes', return_value=[]), \
+                        patch.object(adapter, 'trailers', return_value=['T', '1'] if recovered else ['', '']), \
+                        patch.object(adapter, 'ahead', return_value=True), \
+                        patch.object(pipe, 'repo', return_value=self.prog), \
+                        patch.object(ci, 'git', side_effect=AssertionError('commit recovery used CI Git')), \
+                        patch.object(placement, 'git', side_effect=placed) as calls:
+                    self.assertEqual(pipe.commit_ready(task, 1, 'Recover'), 'commit-sha')
+                self.assertEqual(calls.call_count, 1 if recovered else 2)
+                for call in calls.call_args_list:
+                    self.assertEqual(call.kwargs, {'timeout': None})
+
+    def test_repository_read_errors_during_commit_are_owner_refusals(self):
+        for operation in ('head', 'changed_paths'):
+            with self.subTest(operation=operation):
+                tid = self.task(scope_files=['work.txt'])
+                self.d.tick()
+                wt = self.get(tid)['worktree']
+                rid = self.fl.of('worker')[-1]['run_id']
+                if operation == 'head':
+                    (Path(wt) / 'work.txt').write_text('finished')
+                    self.pipe.commit_ready(self.get(tid), rid, 'Finish work')
+                else:
+                    self.fix.commit('work.txt', 'finished', cwd=wt)
+                with patch.object(self.repository, operation, side_effect=ci.CIError('git read failed')):
+                    self.ready(tid)
+                self.assertEqual(self.status(tid), 'needs-owner')
+                self.assertEqual(ops.list_runs(self.conn, tid)[0]['outcome'], 'blocked')
+                self.assertIn('git read failed', ops.list_runs(self.conn, tid)[0]['note'])
+                self.assertEqual(self.fl.of('gate'), [])
 
     def test_fresh_pipeline_recovers_only_the_same_task_and_run_commit(self):
         tid = self.task(scope_files=["work.txt"])
@@ -904,7 +1025,8 @@ class ReadyToCommit(Base):
         (wt / "work.txt").write_text("finished")
         rid = self.fl.of("worker")[-1]["run_id"]
         sha = self.pipe.commit_ready(self.get(tid), rid, "Finish work")
-        restarted = pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs)
+        restarted = pipeline.Pipeline(self.port, repos_map={"p": self.prog}, runs_dir=self.runs,
+                                      repository=self.repository)
         self.assertEqual(restarted.commit_ready(self.get(tid), rid, "Finish work"), sha)
         with self.assertRaisesRegex(pipeline.CommitRefused, "no changes"):
             restarted.commit_ready(self.get(tid), rid + 100, "Finish work")
@@ -912,7 +1034,7 @@ class ReadyToCommit(Base):
         with self.assertRaisesRegex(pipeline.CommitRefused, "worktree changed"):
             restarted.commit_ready(self.get(tid), rid, "Finish work")
 
-class CodexReview(Base):
+class CodexReview(PolicyBase):
     def setUp(self):
         super().setUp()
         self.prog["review"] = repos.normalize({"name": "p", "repo": str(self.fix.repo),
@@ -939,19 +1061,14 @@ class CodexReview(Base):
         self.prog["gate"]["platform"] = "wsl"
         runs = self.runs
 
-        class HostRunsWslGate(FakeLauncher):
-            """Checks the WSL gate argv and plan, then runs the same plan with host paths: wsl.exe and python3 are
-            not on every host (this suite also runs on Windows)."""
+        class HostRunsWslGate(PolicyLauncher):
+            """Check WSL routing and its plan, then return a finished receipt."""
             def launch(self, spec):
                 if spec.get("role") == "gate":
                     assert spec["placement"] == "wsl" and spec["argv"][0] == "python3", spec["argv"]
                     d = runner.run_dir(runs, spec["run_id"])
                     body = json.loads((d / "plan.json").read_text())
                     assert body["repo"].startswith("/"), body["repo"]
-                    body.update(repo=spec["cwd"], out=str(d / "receipt.json"), log=str(d / runner.OUT_FILE))
-                    (d / "host-plan.json").write_text(json.dumps(body))
-                    spec = {**spec, "argv": [sys.executable, str(Path(ci.__file__)),
-                                             "--plan", str(d / "host-plan.json")]}
                     return super().launch(spec)
                 return super().launch(spec)
         self.fl = HostRunsWslGate(self.runs)
@@ -1029,7 +1146,7 @@ class CodexReview(Base):
         self.to_gated()
         self.assertEqual(self.fl.of("review")[0]["effort"], "low")
 
-class GateAndReview(Base):
+class GateAndReview(PolicyBase):
     def test_ci_planning_failure_finishes_the_run_and_releases_capacity(self):
         tid = self.task()
         self.d.tick()
@@ -1069,7 +1186,7 @@ class GateAndReview(Base):
         self.assertEqual(len(ops.events(self.conn, kind="gate-done")), 1)
 
     def test_red_gate_retries_the_worker_with_the_excerpt_and_does_not_double_count(self):
-        self.prog["run"]["env"]["DROVER_FIXTURE_CODE"] = [sys.executable, "-c", "import sys; print('boom: it broke'); sys.exit(1)"][-1]
+        self.fl.gate_code, self.fl.gate_output = 1, 'boom: it broke'
         tid = self.task()
         self.d.tick()
         self.run_worker(tid, self.worker_commits(tid))
@@ -1139,7 +1256,7 @@ class GateAndReview(Base):
         self.assertEqual(len(self.fl.of("gate")), 1)
 
     def test_an_infra_failure_then_a_real_failure_takes_the_normal_failure_path(self):
-        self.prog["run"]["env"]["DROVER_FIXTURE_CODE"] = [sys.executable, "-c", "import sys; print('boom: it broke'); sys.exit(1)"][-1]
+        self.fl.gate_code, self.fl.gate_output = 1, 'boom: it broke'
         tid, _ = self.infra_task([("timeout", 1, "")])
         self.tick(4)
         runs = ops.list_runs(self.conn, tid)
@@ -1247,7 +1364,7 @@ class GateAndReview(Base):
         self.assertEqual(list(d2.live.values())[0][2]["role"], "review")
 
 
-class DispatcherContract(Base):
+class DispatcherContract(PolicyBase):
     """The mandatory pipeline writes the contract consumed by the tuner."""
     def setUp(self):
         super().setUp()
@@ -1294,7 +1411,7 @@ class DispatcherContract(Base):
 
     def test_failed_gate_keeps_excerpt_for_retry_and_diff_lines_for_audit(self):
         from drover import tuner
-        self.prog["run"]["env"]["DROVER_FIXTURE_CODE"] = [sys.executable, '-c', "print('FAIL a\\nFAIL b'); raise SystemExit(1)"][-1]
+        self.fl.gate_code, self.fl.gate_output = 1, 'FAIL a\nFAIL b'
         tid = self.task()
         self.d.tick()
         self.finish_worker(tid)
@@ -1323,9 +1440,9 @@ class DispatcherContract(Base):
         self.assertLessEqual(outcomes | set(dispatcher.FAIL_OUTCOMES), set(contract.OUTCOMES))
 
 
-class Decisions(Base):
+class Decisions(PolicyBase):
     def test_every_decision_is_in_the_ledger_and_gets_its_outcome_after_the_next_run(self):
-        self.prog["run"]["env"]["DROVER_FIXTURE_CODE"] = [sys.executable, "-c", "import sys; sys.exit(1)"][-1]
+        self.fl.gate_code = 1
         tid = self.task()
         self.d.tick()
         self.run_worker(tid, self.worker_commits(tid))
@@ -1334,7 +1451,7 @@ class Decisions(Base):
         names = [r["question_name"] for r in self.conn.execute("SELECT question_name FROM decisions ORDER BY id")]
         self.assertEqual(names, ["retry_or_escalate", "plan_wrong", "gate_failure_class"])
         self.assertTrue(all(r["outcome"] is None for r in self.conn.execute("SELECT outcome FROM decisions")))
-        self.prog["run"]["env"]["DROVER_FIXTURE_CODE"] = [sys.executable, "-c", "pass"][-1]       # the retry's gate passes
+        self.fl.gate_code = 0       # the retry's gate passes
         self.d.tick()
         self.run_worker(tid, self.worker_commits(tid, "fix.txt"))
         self.d.tick()
@@ -1359,8 +1476,8 @@ class Decisions(Base):
                               else None)
 
 
+@integration
 class Landing(Base):
-    @integration
     def test_restart_finishes_pending_ci_before_changed_queue_and_base_rebuild(self):
         import threading
         tid = self.task()
@@ -1414,9 +1531,23 @@ class Landing(Base):
 
     def test_the_loop_lands_a_reviewed_batch_on_local_main_and_does_not_push(self):
         self.fix.git("config", "user.name", "t")
-        tid = self.task()
+        self.fix.git('config', 'core.autocrlf', 'true')
+        committed = subprocess.run(['git', '-C', str(self.fix.repo), 'show', 'main:base.txt'],
+                                   capture_output=True, check=True).stdout
+        tid = self.task(scope_files=["feature.txt"])
         wt = repos.native(self.pipe.worktree(self.get(tid)))
-        sha = self.fix.commit("feature.txt", "feature\n", cwd=wt)
+        self.assertEqual((Path(wt) / 'base.txt').read_bytes(), committed)
+        admin = self.fix.git('rev-parse', '--absolute-git-dir', cwd=wt)
+        # Git for Windows may mark the pointer read-only; replace it as fixture setup.
+        dotgit = Path(wt) / '.git'
+        dotgit.chmod(0o600)
+        dotgit.unlink()
+        dotgit.write_text(f'gitdir: {admin}\n')
+        self.pipe.worktree(self.get(tid))
+        self.assertEqual(self.fix.git('rev-parse', '--is-inside-work-tree', cwd=wt), 'true')
+        (Path(wt) / "feature.txt").write_text("feature\n")
+        sha = self.pipe.commit_ready(self.get(tid), 1, "Finish feature")
+        self.assertIn("Drover-Task: " + tid, self.fix.git("log", "-1", "--format=%B", cwd=wt))
         self.reviewed(tid, sha)
         pdir = Path(self.tmp.name) / "repos"
         pdir.mkdir()
@@ -1474,7 +1605,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AnsweredScriptGate(Base):
+class AnsweredScriptGate(PolicyBase):
     def test_answer_releases_worker_and_the_script_survives_commit_reload(self):
         self.pipe.all_repos()['p'] = prog_dict(self.fix.repo, Path(self.tmp.name) / 'wts', unknown=True)
         tid = self.task()

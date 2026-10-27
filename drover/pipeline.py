@@ -53,32 +53,128 @@ def join_cfg(base, name):
     return base.rstrip("\\/") + ("\\" if "\\" in base else "/") + name
 
 
+class Repository:
+    """Repository effects used by pipeline policy and CI planning.
+
+    Calls observe fresh Git state; the default adapter does not cache evidence.
+    Tests can supply commit/worktree facts without emulating the Git CLI.
+    """
+    def load(self, prog, revision="HEAD", checkout=None):
+        return repos.load(prog, revision, checkout)
+
+    def reachable(self, path):
+        return placement.reachable(path)
+
+    def canonical(self, path):
+        return placement.canonical(path)
+
+    def prepare_worktree(self, path):
+        return placement.prepare_worktree(path)
+
+    def changed_paths(self, repo, base, tip="HEAD"):
+        return [p for p in git(repo, "diff", "--name-only", "--no-renames", "-z",
+                               f"{base}...{tip}", check=True).stdout.split("\0") if p]
+
+    def changed_docs_only(self, repo, base, tip, globs):
+        return ci.changed_docs_only(repo, base, tip, globs)
+
+    def is_checkout(self, path):
+        return (Path(path) / ".git").exists()
+
+    def head(self, path):
+        return git(path, "rev-parse", "HEAD", check=True).stdout.strip()
+
+    def branch(self, path):
+        return git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+    def inventory(self, repo, side=None):
+        result = git(repo, "worktree", "list", "--porcelain", **({"side": side} if side else {}))
+        if result.returncode:
+            return []
+        return [dict(line.partition(" ")[::2] for line in block.splitlines())
+                for block in result.stdout.split("\n\n")]
+
+    def owned(self, path, tid):
+        return ownership.owned_by(path, OWNER_PREFIX + tid)
+
+    def dirty(self, path):
+        return ci.dirty(path)
+
+    def repair(self, path):
+        return placement.relativize_gitdir(path)
+
+    def tag(self, path, name, tid):
+        ownership.tag(path, name, OWNER_PREFIX + tid, time.time() + 86400)
+
+    def sync(self, repo, remote, default):
+        return origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
+
+    def add(self, repo, dest, branch, base, remote="origin"):
+        def have(ref):
+            return git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0
+        if have(f"refs/heads/{branch}"):
+            tail = [str(dest), branch]
+        elif have(f"refs/remotes/{remote}/{branch}"):
+            tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
+        else:
+            tail = ["-b", branch, str(dest), base]
+        placement.add_worktree(repo, dest, *tail, run=git, error=WorktreeRefused)
+
+    def changes(self, repo):
+        changed = git(repo, "diff", "--name-only", "--no-renames", "-z", "HEAD", check=True).stdout
+        untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z", check=True).stdout
+        return sorted(set(p for p in (changed + untracked).split("\0") if p))
+
+    def trailers(self, repo):
+        text = git(repo, "log", "-1", "--format=%(trailers:key=Drover-Task,valueonly)%x00"
+                   "%(trailers:key=Drover-Run,valueonly)", check=True).stdout
+        return [s.strip() for s in text.split("\0")]
+
+    def ahead(self, repo, base):
+        return git(repo, "rev-list", "--count", f"{base}..HEAD").stdout.strip() not in ("", "0")
+
+    def commit(self, repo, message):
+        git(repo, "add", "-A", check=True)
+        git(repo, "commit", "-m", message, check=True)
+        return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()
+
+    def diff_lines(self, repo, base, sha):
+        rows = git(repo, "diff", "--numstat", "--no-renames", f"{base}...{sha}").stdout.splitlines()
+        return sum(int(n) for row in rows for n in row.split("\t")[:2] if n.isdigit())
+
+    def diff_text(self, repo, base, sha):
+        return git(repo, "diff", "--no-renames", f"{base}...{sha}").stdout
 
 
 class Pipeline:
-    def __init__(self, port, repos_map=None, repos_dir=None, runs_dir=None):
+    def __init__(self, port, repos_map=None, repos_dir=None, runs_dir=None, *, repository=None):
         self.port = port
         self._repos = repos_map if repos_map is not None else None
         self.repos_dir = repos_dir
         self.runs_dir = str(runs_dir or config.state_path("runs"))
-        self.ci = ci.CI(self.runs_dir)
+        self.repository = repository or Repository()
+        self.ci = ci.CI(self.runs_dir, source=repository)
 
     def commit_ready(self, task, run_id, message):
-        """Commit scoped work left by a sandboxed worker; refuse before touching the index on a scope violation."""
+        """Commit scoped work; repository read failures follow the normal refusal path."""
+        try:
+            return self._commit_ready(task, run_id, message)
+        except ci.CIError as error:
+            raise WorktreeRefused(str(error)) from error
+
+    def _commit_ready(self, task, run_id, message):
+        """Refuse before touching the index on a scope violation."""
         if task.get("write") is False:
             raise CommitRefused("read-only task cannot commit")
         if not task.get("worktree"):
             raise CommitRefused("ready_to_commit has no task worktree")
         repo = repos.native(task["worktree"])
-        changed = git(repo, "diff", "--name-only", "--no-renames", "-z", "HEAD", check=True).stdout
-        untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z", check=True).stdout
-        paths = sorted(set(p for p in (changed + untracked).split("\0") if p))
-        trailers = git(repo, "log", "-1", "--format=%(trailers:key=Drover-Task,valueonly)%x00"
-                       "%(trailers:key=Drover-Run,valueonly)", check=True).stdout
-        if [s.strip() for s in trailers.split("\0")] == [str(task["id"]), str(run_id)]:
+        paths = self.repository.changes(repo)
+        trailers = self.repository.trailers(repo)
+        if trailers == [str(task["id"]), str(run_id)]:
             if paths:
                 raise CommitRefused("worktree changed after Drover committed this run", paths)
-            return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()
+            return self.repository.head(repo)
         scope = [re.sub(r":\d+(?:-\d+)?$", "", s.replace("\\", "/")).removeprefix("./").rstrip("/")
                  for s in task.get("scope_files") or []]
 
@@ -87,20 +183,18 @@ class Pipeline:
         if not paths:
             prog = self.repo(task)
             base = self.base_ref(prog) if prog else None
-            if base and not trailers.strip("\0 \n") and git(repo, "rev-list", "--count", f"{base}..HEAD").stdout.strip() not in ("", "0"):
-                ahead = git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD", check=True).stdout
-                outside = out_of_scope(sorted(p for p in ahead.split("\0") if p))
+            if base and not any(trailers) and self.repository.ahead(repo, base):
+                ahead = self.repository.changed_paths(repo, base, "HEAD")
+                outside = out_of_scope(sorted(ahead))
                 if outside:
                     raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
-                return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()   # committed by the worker: gate HEAD
+                return self.repository.head(repo)   # committed by the worker: gate HEAD
             raise CommitRefused("no changes")
         outside = out_of_scope(paths)
         if outside:
             raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
-        git(repo, "add", "-A", check=True)
         text = f"{message.strip()}\n\nDrover-Task: {task['id']}\nDrover-Run: {run_id}\n"
-        git(repo, "commit", "-m", text, check=True)
-        return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()
+        return self.repository.commit(repo, text)
 
     # ---- switch and config ---------------------------------------------------------------------------
     def enabled(self):
@@ -117,10 +211,10 @@ class Pipeline:
         if prog is None:
             return None
         checkout = task.get("worktree")
-        if checkout and not placement.reachable(checkout):
+        if checkout and not self.repository.reachable(checkout):
             checkout = None      # recover stale worktrees using the reachable machine checkout's config
         try:
-            prog = repos.load(prog, checkout=checkout)
+            prog = self.repository.load(prog, checkout=checkout)
         except repos.RepoError:
             return None
         if repos.ci_policy(prog)["unknown"]:
@@ -178,14 +272,14 @@ class Pipeline:
         if prog is None:
             raise WorktreeRefused(f"no repo config for {t.get('repo')!r}")
         repo = repos.native(repos.repo_path(prog))
-        if not (Path(repo) / ".git").exists():
+        if not self.repository.is_checkout(repo):
             raise WorktreeRefused(f"{repos.repo_path(prog)} is not a git checkout")
         have = t.get("worktree")
         branch = t.get("branch")
         if branch and branch == repos.default_branch(prog):
             raise WorktreeRefused(f"task branch {branch!r} is the default branch; work happens on its own branch")
         reuse, why = None, None
-        if have and placement.reachable(repos.native(have)):
+        if have and self.repository.reachable(repos.native(have)):
             reuse = have
         else:
             found, reusable = self._worktree_of_branch(repo, branch) if branch else (None, False)
@@ -195,16 +289,16 @@ class Pipeline:
                 # Never prune or delete the stale registration: it may be another host's, or the owner's.
                 why = f"registered worktree {found or have} is unreachable from this host"
         if reuse:
-            path = placement.canonical(repos.native(reuse))
+            path = self.repository.canonical(repos.native(reuse))
             self._not_main(path, repo, prog)
             dirty = self._dirty_foreign(path, tid)
-            if not dirty and self._owned(path, tid) and not placement.relativize_gitdir(path):
+            if not dirty and self._owned(path, tid) and not self.repository.repair(path):
                 self.port.append_event("worktree-repair-failed", {"path": str(path), "branch": branch}, tid)
                 why = f"worktree {reuse} has a gitdir pointer that could not be made relative; left untouched"
             elif not dirty:
                 reuse_cfg = placement.config_path(path, repos.repo_path(prog))
                 try:
-                    ownership.tag(path, repos.repo_name(prog), OWNER_PREFIX + tid, time.time() + 86400)
+                    self.repository.tag(path, repos.repo_name(prog), tid)
                 except (ValueError, OSError, subprocess.SubprocessError) as e:
                     raise WorktreeRefused(f"could not record ownership of {path}: {e}") from e
                 if reuse_cfg != t.get("worktree") or branch != t.get("branch"):
@@ -217,12 +311,11 @@ class Pipeline:
             self.port.append_event("worktree-fallback", {"source_branch": branch, "reason": why}, tid)
         return self._create(t, prog, repo, branch, source=branch if why else None, where=where)
 
-    @staticmethod
-    def _not_main(path, repo, prog):
+    def _not_main(self, path, repo, prog):
         """Never hand out the repo's own checkout (or anything sitting on the default branch) to a worker."""
         if Path(path).resolve() == Path(repo).resolve():
             raise WorktreeRefused(f"{path} is the main checkout of {repos.repo_name(prog)}, not a task worktree")
-        head = git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        head = self.repository.branch(path)
         if head == repos.default_branch(prog):
             raise WorktreeRefused(f"{path} is on the default branch {head!r}; a task needs its own branch")
 
@@ -235,11 +328,7 @@ class Pipeline:
         # mis-spell ext4 registrations as H:/home/...; their placement lock takes precedence.
         registered = None
         for side in ((None, "wsl") if placement.IS_WINDOWS else (None,)):
-            result = git(repo, "worktree", "list", "--porcelain", **({"side": side} if side else {}))
-            if result.returncode:
-                continue
-            for block in result.stdout.split("\n\n"):
-                fields = dict(line.partition(" ")[::2] for line in block.splitlines())
+            for fields in self.repository.inventory(repo, side):
                 if fields.get("branch") != f"refs/heads/{branch}" or not fields.get("worktree"):
                     continue
                 path = repos.native(fields["worktree"])
@@ -250,7 +339,7 @@ class Pipeline:
                 # Prefer the owning inventory's spelling even when the directory is gone:
                 # the caller needs registration evidence to branch from the committed tip.
                 registered = path
-                if placement.reachable(path):
+                if self.repository.reachable(path):
                     return path, True
         return registered, False
 
@@ -258,11 +347,10 @@ class Pipeline:
         """The first dirty line when `path` has uncommitted changes that are not this task's, else ''."""
         if self._owned(path, tid):
             return ""
-        return ci.dirty(path)
+        return self.repository.dirty(path)
 
-    @staticmethod
-    def _owned(path, tid):
-        return ownership.owned_by(path, OWNER_PREFIX + tid)
+    def _owned(self, path, tid):
+        return self.repository.owned(path, tid)
 
     def _create(self, t, prog, repo, branch, source=None, where=None):
         tid, remote, default = t["id"], repos.remote_name(prog), repos.default_branch(prog)
@@ -275,7 +363,7 @@ class Pipeline:
                          data={"mode": "blocked"})
             return False
         try:
-            origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
+            self.repository.sync(repo, remote, default)
         except origin.FetchFailed as e:
             waiting.wait(("task", tid), OWNER_ANSWER, cause_key(cause), cause=cause,
                          data={"mode": "needs-owner", "note": str(e)})
@@ -296,7 +384,7 @@ class Pipeline:
         if source:                       # the branch's own worktree is unusable: branch from its committed tip
             branch, base = f"drover/{tid}", source
         branch = branch or f"drover/{tid}"
-        if placement.reachable(dest) if remote_fs else Path(dest).exists():
+        if self.repository.reachable(dest) if remote_fs else Path(dest).exists():
             if self._dirty_foreign(dest, tid) or not self._owned(dest, tid):
                 raise WorktreeRefused(f"{dest_cfg} exists and is not this task's worktree")
         else:
@@ -304,23 +392,14 @@ class Pipeline:
                 Path(dest).parent.mkdir(parents=True, exist_ok=True)
             self._add(repo, dest, branch, base, remote)
         try:
-            ownership.tag(dest, repos.repo_name(prog), OWNER_PREFIX + tid, time.time() + 86400)
+            self.repository.tag(dest, repos.repo_name(prog), tid)
         except (ValueError, OSError, subprocess.SubprocessError) as e:
             raise WorktreeRefused(f"created {dest} but could not record ownership: {e}") from e
         self._persist(tid, branch, dest_cfg)
         return dest_cfg
 
     def _add(self, repo, dest, branch, base, remote="origin"):
-        """Choose the branch; Placement creates a worktree both operating systems can read."""
-        def have(ref):
-            return git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0
-        if have(f"refs/heads/{branch}"):
-            tail = [str(dest), branch]
-        elif have(f"refs/remotes/{remote}/{branch}"):
-            tail = ["-b", branch, str(dest), f"{remote}/{branch}"]
-        else:
-            tail = ["-b", branch, str(dest), base]
-        placement.add_worktree(repo, dest, *tail, run=git, error=WorktreeRefused)
+        self.repository.add(repo, dest, branch, base, remote)
 
     # ---- gate plan -----------------------------------------------------------------------------------
     def base_ref(self, prog):
@@ -328,16 +407,12 @@ class Pipeline:
         return repos.default_branch(prog)
 
     def head(self, task):
-        return ci.head(repos.native(task["worktree"]))
+        # Gate reads retain CI timeouts and environment; commit recovery uses pipeline Git.
+        source = self.ci.source
+        return (source.head if source else ci.head)(repos.native(task["worktree"]))
 
     def diff_lines(self, repo, base, sha):
-        r = git(repo, "diff", "--numstat", "--no-renames", f"{base}...{sha}")
-        total = 0
-        for line in r.stdout.splitlines():
-            a, _, rest = line.partition("\t")
-            d = rest.partition("\t")[0]
-            total += (int(a) if a.isdigit() else 0) + (int(d) if d.isdigit() else 0)
-        return total
+        return self.repository.diff_lines(repo, base, sha)
 
     def diff_text(self, repo, base, sha):
-        return git(repo, "diff", "--no-renames", f"{base}...{sha}").stdout
+        return self.repository.diff_text(repo, base, sha)

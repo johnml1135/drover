@@ -194,8 +194,9 @@ def _tail(path, lines=40):
 
 
 class CI:
-    def __init__(self, runs_dir, launcher=None, poll_s=0.25):
+    def __init__(self, runs_dir, launcher=None, poll_s=0.25, *, source=None):
         from .launch import RunnerLauncher
+        self.source = source
         self.runs_dir = str(runs_dir)
         self.launcher = launcher or RunnerLauncher(runs_dir=self.runs_dir)
         self.poll_s = poll_s       # how often run() polls a runner and a slot queue; tests inject a short one
@@ -203,13 +204,15 @@ class CI:
 
     def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2'):
         """Plan a repo script at commit and return its runner spec and CI context."""
-        placement.prepare_worktree(checkout)
-        prog = repos.load(prog, commit, checkout)
+        source = self.source
+        (source.prepare_worktree if source else placement.prepare_worktree)(checkout)
+        prog = (source.load if source else repos.load)(prog, commit, checkout)
         policy = repos.ci_policy(prog)
         platform = platform or repos.gate_platforms(prog)[0]
         base = base or policy['base']
-        paths = changed_paths(checkout, base, commit)
-        docs = policy['docs_only'] and changed_docs_only(checkout, base, commit, policy['docs_only_globs'])
+        paths = (source.changed_paths if source else changed_paths)(checkout, base, commit)
+        docs = policy['docs_only'] and (source.changed_docs_only if source else changed_docs_only)(
+            checkout, base, commit, policy['docs_only_globs'])
         effective = 'docs' if docs else kind
         commands = []
         if docs:
@@ -232,7 +235,7 @@ class CI:
                 'cwd': str(checkout), 'placement': platform, 'nonce': uuid.uuid4().hex,
                 'wall_s': policy['timeout_s'], 'idle_s': policy['idle_s'], 'user_prompt': '', 'run_config': cfg}
         return {'spec': spec, 'receipt': str(result_path), 'kind': effective, 'sha': commit,
-                'files': paths, 'scope': None, 'diff_lines': self._diff_lines(checkout, base, commit)}
+                'files': paths, 'scope': None, 'diff_lines': (source.diff_lines if source else self._diff_lines)(checkout, base, commit)}
 
     @staticmethod
     def _diff_lines(checkout, base, commit):

@@ -58,7 +58,9 @@ class ListingSide(unittest.TestCase):
             return subprocess.CompletedProcess(args, 127 if out is None else 0, out or '', '')
         with patch.object(placement, 'IS_WINDOWS', True), patch.object(pipeline, 'git', fake), \
                 patch.object(placement, 'reachable', side_effect=reachable):
-            found = pipeline.Pipeline.__new__(pipeline.Pipeline)._worktree_of_branch('H:\\repos\\a', 'drover/T')
+            pipe = pipeline.Pipeline.__new__(pipeline.Pipeline)
+            pipe.repository = pipeline.Repository()
+            found = pipe._worktree_of_branch('H:\\repos\\a', 'drover/T')
         return found, seen
 
     def record(self, path, lock=''):
