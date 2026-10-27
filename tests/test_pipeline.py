@@ -18,7 +18,7 @@ from hub.dispatch import DispatcherService, LandingService
 from hub.settings import Settings
 from hub.store import Store
 from tests.tiers import integration
-from tests.fakeci import execute_gate
+from tests.fakeci import execute_gate, resources_go
 from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
 from tests.pipeline_fixture import MemoryRepo, MemoryRepository, CheckoutGit, finish_gate, read_checkouts
@@ -142,6 +142,7 @@ class Base(unittest.TestCase):
         self.fl = FakeLauncher(self.runs)
         self.prog = prog_dict(self.fix.repo, root / "wts")
         self.pipe = self.new_pipeline()
+        self.pipe.ci.resource_check = resources_go
         self.decisions = []
         ops.set_setting(self.conn, "dispatch_enabled", "true")
         self.d = self.make()
@@ -725,7 +726,6 @@ class Safety(PolicyBase):
     def test_offline_repo_does_not_pause_another_repo(self):
         other_repo = MemoryRepo(Path(self.tmp.name) / "healthy")
         self.repository.fixtures.append(other_repo)
-
         self.pipe.all_repos()['acme-app'] = prog_dict(
             other_repo.repo, Path(self.tmp.name) / 'other-wts', name='acme-app')
         self.fix.online = False
@@ -785,12 +785,10 @@ class Safety(PolicyBase):
             result = real_pipeline_git(*args, **kwargs)
             results.append(result)
             return result
-
         # Exercise the production fetch caller and wrapper, while making its timeout deterministic.
         with mock.patch.object(placement, "git", side_effect=timeout_error) as placed_git:
             with mock.patch.object(pipeline, "git", side_effect=run_pipeline_git) as run_git:
                 self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))
-
         run_git.assert_called_once_with(self.fix.repo, *fetch_args, check=False,
                                         timeout=pipeline.FETCH_TIMEOUT_S)
         placed_git.assert_called_once_with(self.fix.repo, *fetch_args,
@@ -966,7 +964,6 @@ class ReadyToCommit(PolicyBase):
                 failed.append(True)
                 raise RuntimeError("ledger unavailable")
             return append(kind, *args, **kw)
-
         self.port.append_event = flaky_event
         self.ready(tid)
         sha = self.fix.head("HEAD", cwd=wt)
@@ -987,7 +984,6 @@ class ReadyToCommit(PolicyBase):
                         return subprocess.CompletedProcess(args, 0, 'commit-sha\n', '')
                     self.assertEqual(args, ('diff', '--name-only', '--no-renames', '-z', 'main...HEAD'))
                     return subprocess.CompletedProcess(args, 0, 'work.txt\0', '')
-
                 with patch.object(adapter, 'changes', return_value=[]), \
                         patch.object(adapter, 'trailers', return_value=['T', '1'] if recovered else ['', '']), \
                         patch.object(adapter, 'ahead', return_value=True), \
@@ -1060,7 +1056,6 @@ class CodexReview(PolicyBase):
         self.prog["run"] = {"platforms": ["wsl"], "default": "wsl"}
         self.prog["gate"]["platform"] = "wsl"
         runs = self.runs
-
         class HostRunsWslGate(PolicyLauncher):
             """Check WSL routing and its plan, then return a finished receipt."""
             def launch(self, spec):
@@ -1499,9 +1494,10 @@ class Landing(Base):
             '[land]\npolicy="single"\n[run.env]\nDROVER_FIXTURE_CODE=' + json.dumps(code) + '\n')
         db_path = Path(self.tmp.name) / 'l.db'
         child_code = ('from hub.dispatch import LandingService; from hub.store import Store; '
+                      'from tests.fakeci import resources_go; '
                       'from hub.settings import Settings; '
-                      f'LandingService(Store({str(db_path)!r}), Settings(runs_dir={str(self.runs)!r}), '
-                      f'repos_dir={str(pdir)!r}).tick()')
+                      f'service=LandingService(Store({str(db_path)!r}), Settings(runs_dir={str(self.runs)!r}), '
+                      f'repos_dir={str(pdir)!r}); service.ci.resource_check=resources_go; service.tick()')
         with open(Path(self.tmp.name) / 'landing-caller.log', 'w') as output:
             caller = subprocess.Popen([sys.executable, '-c', child_code], stdout=output, stderr=output)
             self.addCleanup(lambda: caller.poll() is None and caller.kill())
@@ -1521,7 +1517,9 @@ class Landing(Base):
         self.addCleanup(timer.join)
         store = Store(db_path)
         self.addCleanup(store.close)
-        out = LandingService(store, Settings(runs_dir=self.runs), repos_dir=pdir).tick()
+        service = LandingService(store, Settings(runs_dir=self.runs), repos_dir=pdir)
+        service.ci.resource_check = resources_go
+        out = service.tick()
         self.assertEqual(out['p']['outcome'], 'landed')
         self.assertEqual(self.status(urgent), 'landed')
         self.assertEqual(self.status(tid), 'reviewed')
@@ -1557,6 +1555,7 @@ class Landing(Base):
         store = Store(Path(self.tmp.name) / "l.db")
         self.addCleanup(store.close)
         svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir)
+        svc.ci.resource_check = resources_go
         remote_before = self.fix.remote_head()
         ops.set_setting(self.conn, "dispatch_enabled", "false")
         self.assertEqual(svc.tick(), {})                                  # paused: nothing lands
@@ -1588,6 +1587,7 @@ class Landing(Base):
             f'name = "p"\nrepo = {json.dumps(str(self.fix.repo))}\nworktrees = {json.dumps(str(Path(self.tmp.name) / "wts"))}\n'
             f'[gate]\nplatform = "windows"\n[scripts]\ntest = ".drover/scripts/drover/test.ps1"\n[run.env]\nDROVER_FIXTURE_CODE = "pass"\n')
         svc = LandingService(store, Settings(token="t", runs_dir=self.runs), repos_dir=pdir)
+        svc.ci.resource_check = resources_go
         out = svc.tick()
         self.assertEqual(out["p"]["outcome"], "refused")
         self.assertIn("main checkout dirty", out["p"]["error"])

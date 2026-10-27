@@ -663,6 +663,7 @@ class RepositoryLandingTests(LandingCase):
         self.addCleanup(store.close)
         settings = Settings(runs_dir=self.r.root / 'receipts')
         service = LandingService(store, settings, repos_dir=configs)
+        service.ci.resource_check = resources_go
         ops.set_setting(self.conn, 'dispatch_enabled', 'true')
         work = trees / 'drover-landing-p'
         count, release = self.r.root / 'count', self.r.root / 'release'
@@ -689,6 +690,7 @@ class RepositoryLandingTests(LandingCase):
         release.touch()
         # A fresh hub service must adopt saved execution before rebuilding the checkout.
         service = LandingService(store, settings, repos_dir=configs)
+        service.ci.resource_check = resources_go
         result = service.tick()['p']
         self.assertEqual(result['outcome'], 'landed')
         self.assertEqual(count.read_text().splitlines(), ['started'])
@@ -724,7 +726,6 @@ class RealRunnerLandingTests(LandingCase):
         self.r.git('fetch', '-q', 'origin')
         before = self.r.remote_head()
         a, b = (self.task(n, {f'{n}.txt': n}) for n in 'ab')
-
         res = self.land(size=2)
         self.assertEqual((res['outcome'], res['dropped'], res['landed']), ('base-red', {}, []))
         self.assertEqual(res['base_sha'], before)
@@ -734,7 +735,6 @@ class RealRunnerLandingTests(LandingCase):
         self.assertEqual(len(questions), 1)
         self.assertIn('red', questions[0]['title'])
         self.assertEqual(self.r.remote_head(), before)
-
         # A held queue starts no runner; explicit retry rechecks the red base.
         with patch.object(self.ci, 'run', wraps=self.ci.run) as run:
             held = self.land(size=2)
