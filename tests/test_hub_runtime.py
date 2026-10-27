@@ -16,7 +16,7 @@ from unittest.mock import patch
 import zipfile
 
 from hub.runtime import ReleaseError, prepare_release, check_eligibility, check_recovery, child_command
-from tests.gitfix import sh
+from tests.gitfix import sh, _remove_tree
 
 
 INSTANCE = '10000000-0000-4000-8000-000000000001'
@@ -30,29 +30,43 @@ def git(source, *args):
     return sh('git', '-C', str(source), *args, text=False).stdout
 
 
+def setUpModule():
+    global _source_template, _source_sha
+    root = Path(tempfile.mkdtemp(prefix='Runtime template '))
+    unittest.addModuleCleanup(_remove_tree, root)
+    _source_template = root / 'source checkout'
+    _source_template.mkdir()
+    git(_source_template, 'init', '--object-format=sha1', '-b', 'main')
+    git(_source_template, 'config', 'user.email', 'test@example.invalid')
+    git(_source_template, 'config', 'user.name', 'Runtime Test')
+    git(_source_template, 'config', 'commit.gpgsign', 'false')
+    for name, content in {
+        'hub/__init__.py': '', 'hub/__main__.py': 'raise RuntimeError("no import")\n',
+        'hub/pyproject.toml': '[project]\nname="fixture"\n', 'hub/uv.lock': 'version=1\n',
+        'drover/ledger/schema.py': 'raise RuntimeError("no schema import")\n',
+        'hub/runtime.py': '# frozen runtime\n',
+        'hub/reload_protocol.py': '# frozen protocol\n',
+        'hub/scripts/Install-Drover.ps1': '# install\n',
+        'hub/scripts/Install-DroverHub.ps1': '# install hub\n',
+        '.gitattributes': '* text=auto eol=lf\n',
+    }.items():
+        path = _source_template / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8', newline='\n')
+    git(_source_template, 'add', '.')
+    git(_source_template, 'commit', '-m', 'fixture')
+    _source_sha = git(_source_template, 'rev-parse', 'HEAD').decode().strip()
+
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='Runtime spaces ')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.source = self.root / 'source checkout'
-        self.source.mkdir()
-        git(self.source, 'init', '--object-format=sha1', '-b', 'main')
-        git(self.source, 'config', 'user.email', 'test@example.invalid')
-        git(self.source, 'config', 'user.name', 'Runtime Test')
-        git(self.source, 'config', 'commit.gpgsign', 'false')
-        for name, content in {
-            'hub/__init__.py': '', 'hub/__main__.py': 'raise RuntimeError("no import")\n',
-            'hub/pyproject.toml': '[project]\nname="fixture"\n', 'hub/uv.lock': 'version=1\n',
-            'drover/ledger/schema.py': 'raise RuntimeError("no schema import")\n',
-            'hub/runtime.py': '# frozen runtime\n',
-            'hub/reload_protocol.py': '# frozen protocol\n',
-            'hub/scripts/Install-Drover.ps1': '# install\n',
-            'hub/scripts/Install-DroverHub.ps1': '# install hub\n',
-            '.gitattributes': '* text=auto eol=lf\n',
-        }.items():
-            self.write(name, content)
-        self.a = self.commit()
+        # Each test mutates a private copy; the committed template stays unchanged.
+        shutil.copytree(_source_template, self.source)
+        self.a = _source_sha
         self.python = self.root / 'existing venv' / 'Scripts' / 'python.exe'
         self.python.parent.mkdir(parents=True)
         self.python.write_bytes(b'existing interpreter')

@@ -352,6 +352,64 @@ def load_all(directory=None):
     return out
 
 
+def parse_committed_config(text, commit):
+    """Parse strict repository policy without I/O; commit labels error provenance.
+
+    Remaining validation stays in normalize, in its original order, along with
+    machine- and user-dependent defaults.
+    """
+    entry = ".drover/config.toml"
+    try:
+        versioned = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise RepoError(f"{entry}@{commit}: <syntax>: {e}") from e
+    allowed = {
+        "run": {"platforms", "default", "env", "sandbox_writable_roots"},
+        "gate": {"platform", "timeout_s", "idle_s", "docs_only", "docs_only_globs"},
+        "review": {"backend", "seat", "model", "effort", "high_risk_model"},
+        "landing": {"mode", "push"}, "land": {"policy", "push"}, "scripts": None,
+        "cleanup": {"disposable"},
+    }
+    def invalid(key, detail):
+        raise RepoError(f"{entry}@{commit}: {key}: {detail}")
+    if type(versioned.get("schema_version")) is not int or versioned["schema_version"] != 1:
+        invalid("schema_version", "must be integer 1")
+    for key, value in versioned.items():
+        if key in ("schema_version", "brief"):
+            continue
+        if key not in allowed:
+            invalid(key, "not a repository key")
+        if not isinstance(value, dict):
+            invalid(key, "must be a table")
+        for subkey in value:
+            if allowed[key] is not None and subkey not in allowed[key]:
+                invalid(f"{key}.{subkey}", "not a repository key")
+    # Committed policy is strict; legacy machine fallback intentionally is not.
+    strings = {"brief", "run.default", "gate.platform", "review.backend", "review.seat",
+               "review.model", "review.effort", "review.high_risk_model", "landing.mode", "land.policy"}
+    enums = {"run.default": PLATFORMS, "gate.platform": GATE_PLATFORMS,
+             "review.backend": config.BACKENDS, "landing.mode": ("local",),
+             "land.policy": ("batch", "single")}
+    for table, fields in versioned.items():
+        fields = fields.items() if isinstance(fields, dict) else [(None, fields)]
+        for field, value in fields:
+            key = f"{table}.{field}" if field is not None else table
+            if key in strings and (not isinstance(value, str) or (key != "brief" and not value.strip())):
+                invalid(key, "must be a non-empty string" if key != "brief" else "must be a string")
+            if key in enums and value not in enums[key]:
+                invalid(key, f"must be one of {enums[key]}")
+            if key in ("gate.timeout_s", "gate.idle_s") and type(value) not in (int, float):
+                invalid(key, "must be a number (not a boolean)")
+            if key in ("gate.docs_only", "landing.push", "land.push") and type(value) is not bool:
+                invalid(key, "must be a boolean")
+    for action, path in versioned.get("scripts", {}).items():
+        if not isinstance(path, str) or not path.startswith(".drover/scripts/") or \
+                "\\" in path or ":" in path or not path.endswith(".ps1") or \
+                any(part in ("", ".", "..") for part in path.split("/")):
+            invalid(f"scripts.{action}", "must be a canonical .drover/scripts/*.ps1 path")
+    return versioned
+
+
 def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=None):
     """Read versioned config at revision, including on reused task worktrees; never read a dirty file.
 
@@ -385,54 +443,7 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
             result = placement.git(repo, "show", f"{commit}:{entry}", timeout=30)
             if result.returncode:
                 raise RepoError(f"cannot read {entry} at {commit}: {result.stderr.strip()}")
-            try:
-                versioned = tomllib.loads(result.stdout)
-            except tomllib.TOMLDecodeError as e:
-                raise RepoError(f"{entry}@{commit}: <syntax>: {e}") from e
-            allowed = {
-                "run": {"platforms", "default", "env", "sandbox_writable_roots"},
-                "gate": {"platform", "timeout_s", "idle_s", "docs_only", "docs_only_globs"},
-                "review": {"backend", "seat", "model", "effort", "high_risk_model"},
-                "landing": {"mode", "push"}, "land": {"policy", "push"}, "scripts": None,
-                "cleanup": {"disposable"},
-            }
-            def invalid(key, detail):
-                raise RepoError(f"{entry}@{commit}: {key}: {detail}")
-            if type(versioned.get("schema_version")) is not int or versioned["schema_version"] != 1:
-                invalid("schema_version", "must be integer 1")
-            for key, value in versioned.items():
-                if key in ("schema_version", "brief"):
-                    continue
-                if key not in allowed:
-                    invalid(key, "not a repository key")
-                if not isinstance(value, dict):
-                    invalid(key, "must be a table")
-                for subkey in value:
-                    if allowed[key] is not None and subkey not in allowed[key]:
-                        invalid(f"{key}.{subkey}", "not a repository key")
-            # Committed policy is strict; legacy machine fallback intentionally is not.
-            strings = {"brief", "run.default", "gate.platform", "review.backend", "review.seat",
-                       "review.model", "review.effort", "review.high_risk_model", "landing.mode", "land.policy"}
-            enums = {"run.default": PLATFORMS, "gate.platform": GATE_PLATFORMS,
-                     "review.backend": config.BACKENDS, "landing.mode": ("local",),
-                     "land.policy": ("batch", "single")}
-            for table, fields in versioned.items():
-                fields = fields.items() if isinstance(fields, dict) else [(None, fields)]
-                for field, value in fields:
-                    key = f"{table}.{field}" if field is not None else table
-                    if key in strings and (not isinstance(value, str) or (key != "brief" and not value.strip())):
-                        invalid(key, "must be a non-empty string" if key != "brief" else "must be a string")
-                    if key in enums and value not in enums[key]:
-                        invalid(key, f"must be one of {enums[key]}")
-                    if key in ("gate.timeout_s", "gate.idle_s") and type(value) not in (int, float):
-                        invalid(key, "must be a number (not a boolean)")
-                    if key in ("gate.docs_only", "landing.push", "land.push") and type(value) is not bool:
-                        invalid(key, "must be a boolean")
-            for action, path in versioned.get("scripts", {}).items():
-                if not isinstance(path, str) or not path.startswith(".drover/scripts/") or \
-                        "\\" in path or ":" in path or not path.endswith(".ps1") or \
-                        any(part in ("", ".", "..") for part in path.split("/")):
-                    invalid(f"scripts.{action}", "must be a canonical .drover/scripts/*.ps1 path")
+            versioned = parse_committed_config(result.stdout, commit)
             try:
                 normalize(config._merge(versioned, {"name": machine.get("name"), "repo": machine["repo"]}))
             except (RepoError, TypeError, ValueError, AttributeError) as e:
