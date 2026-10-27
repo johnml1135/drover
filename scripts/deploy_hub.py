@@ -235,4 +235,4 @@ def main(argv=None, run=default_run, sleep=time.sleep):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1])); import drover; sys.exit(main())

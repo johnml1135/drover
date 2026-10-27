@@ -773,8 +773,8 @@ class WslTests(unittest.TestCase):
         a = RunnerLauncher("unused", distro="Ubuntu-24.04").runner_argv( ["--run-id", "x", "--runs-dir", "C:\\drover\\runs", "--stdin-file",
                                              "C:/drover/runs/x/in.txt", "--cwd=R:\\repos\\w", "--", "codex",
                                              "C:\\keep\\this", "--x=D:/keep"], cd="R:\\repos\\w")
-        self.assertEqual(a[:8], ["wsl.exe", "-d", "Ubuntu-24.04", "--cd", "/mnt/r/repos/w", "--exec", "python3", "-m"])
-        self.assertEqual(a[8], "drover.runner")
+        self.assertEqual(a[:7], ["wsl.exe", "-d", "Ubuntu-24.04", "--cd", "/mnt/r/repos/w", "--exec", "/usr/bin/env"])
+        self.assertEqual(a[a.index("python3"):][:3], ["python3", "-m", "drover.runner"])
         self.assertNotIn("--", a[:6])
         self.assertIn("/mnt/c/drover/runs", a)
         self.assertIn("/mnt/c/drover/runs/x/in.txt", a)

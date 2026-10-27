@@ -20,6 +20,12 @@ param(
     [switch]$Defaults,
     [string]$Answers
 )
+if (-not $env:POWERSHELL_TELEMETRY_OPTOUT) { $env:POWERSHELL_TELEMETRY_OPTOUT = '1' }
+if (-not $env:DOTNET_CLI_TELEMETRY_OPTOUT) { $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1' }
+if (-not $env:MSBUILDTELEMETRYOPTOUT) { $env:MSBUILDTELEMETRYOPTOUT = '1' }
+if (-not $env:TESTINGPLATFORM_TELEMETRY_OPTOUT) { $env:TESTINGPLATFORM_TELEMETRY_OPTOUT = '1' }
+if (-not $env:AVALONIA_TELEMETRY_OPTOUT) { $env:AVALONIA_TELEMETRY_OPTOUT = '1' }
+if (-not $env:DOTNET_NOLOGO) { $env:DOTNET_NOLOGO = '1' }
 $ErrorActionPreference = 'Stop'
 $user = $env:USERNAME
 $repoRoot = Split-Path -Parent $HubDir          # `drover` imports from here

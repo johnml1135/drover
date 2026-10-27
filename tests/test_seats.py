@@ -154,11 +154,11 @@ class SeatInTheLaunch(unittest.TestCase):
         cmd = launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--run-id", "1", "--runs-dir", "C:\\x", "--", "claude"], cd="C:\\d",
                               env={"CLAUDE_CONFIG_DIR": "C:\\acct"})
         i = cmd.index("--exec")
-        self.assertEqual(cmd[i + 1:i + 4], ["/usr/bin/env", "CLAUDE_CONFIG_DIR=/mnt/c/acct", "python3"])
+        self.assertEqual(cmd[i + 1], "/usr/bin/env"); self.assertIn("CLAUDE_CONFIG_DIR=/mnt/c/acct", cmd)
         self.assertEqual(cmd[-1], "claude")
         with self.assertRaises(ValueError):
             launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--"], env={"bad name": "x"})
-        self.assertEqual(launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--"])[3:5], ["--exec", "python3"])
+        self.assertEqual(launch.RunnerLauncher(distro="Ubuntu").runner_argv(["--"])[3:5], ["--exec", "/usr/bin/env"])
 
     def test_windows_command_gets_the_env(self):
         lr = launch.RunnerLauncher(runs_dir="C:\\r", distro="Ubuntu", windows=False, which=lambda n: n)

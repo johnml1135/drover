@@ -151,11 +151,11 @@ class Commands(Base):
     def test_wsl_placement_goes_through_wsl_exec_with_cd_and_mapped_paths(self):
         self.start(placement="wsl")
         cmd, kw = self.fake.calls[0]
-        self.assertEqual(cmd[:8], ["wsl.exe", "-d", "Dist", "--cd", "/mnt/r/repos/drover", "--exec",
-                                   "python3", "-m"])
-        self.assertEqual(cmd[8], "drover.runner")
+        self.assertEqual(cmd[:7], ["wsl.exe", "-d", "Dist", "--cd", "/mnt/r/repos/drover", "--exec", "/usr/bin/env"])
+        self.assertEqual(cmd[cmd.index("python3"):][:3], ["python3", "-m", "drover.runner"])
+
         i = cmd.index("--")
-        head, worker = cmd[9:i], cmd[i + 1:]
+        head, worker = cmd[cmd.index("drover.runner") + 1:i], cmd[i + 1:]
         self.assertEqual(head[head.index("--cwd") + 1], "/mnt/r/repos/wt")
         self.assertEqual(head[head.index("--runs-dir") + 1], placement_mod.to_wsl_path(str(self.runs)))
         self.assertEqual(worker[0], "claude")

@@ -15,8 +15,12 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+TELEMETRY_OPTOUT = dict.fromkeys(('POWERSHELL_TELEMETRY_OPTOUT', 'DOTNET_CLI_TELEMETRY_OPTOUT',
+    'MSBUILDTELEMETRYOPTOUT', 'TESTINGPLATFORM_TELEMETRY_OPTOUT', 'AVALONIA_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO'), '1')
+for _name, _value in TELEMETRY_OPTOUT.items(): os.environ.setdefault(_name, _value)
+_wslenv = [v for v in os.environ.get('WSLENV', '').split(':') if v and v.split('/')[0] not in TELEMETRY_OPTOUT]
+os.environ['WSLENV'] = ':'.join([*_wslenv, *TELEMETRY_OPTOUT])
 KILL_AFTER_S = 15
-
 
 class ScanError(RuntimeError):
     """Process discovery failed; absence is unknown."""
@@ -32,19 +36,16 @@ WIN_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$", re.S)
 MNT_RE = re.compile(r"^/mnt/([a-zA-Z])(?:/(.*))?$")
 _settings = lambda: {}
 
-
 def bind_settings(provider):
     global _settings
     previous, _settings = _settings, provider
     return previous
-
 
 def distro(default=None, settings=None):
     from . import config
     values = _settings() if settings is None else settings
     default = default() if callable(default) else default
     return values.get("wsl_distro") or (default if default is not None else config.get()["paths"]["wsl_distro"])
-
 
 def executable(name, platform=None):
     """Resolve nested commands before crossing platforms; WSL's worker PATH lacks login tools."""
@@ -55,7 +56,6 @@ def executable(name, platform=None):
             return path
     return name
 
-
 def to_wsl_path(arg):
     arg = str(arg)
     m = WIN_RE.match(arg.removeprefix("\\\\?\\"))
@@ -65,7 +65,6 @@ def to_wsl_path(arg):
         k, _, v = arg.partition("=")
         return f"{k}={to_wsl_path(v)}"
     return arg
-
 
 def to_windows_path(path):
     path = str(path)
@@ -725,6 +724,7 @@ def ci_runner_command(args, drover_dir, distro_name=None, env=None, windows=IS_W
     split = args.index('--') if '--' in args else len(args)
     mapped = [to_wsl_path(str(arg)) for arg in args[:split]] + args[split:]
     if windows:
+        env = {**{k: os.environ.get(k, v) for k, v in TELEMETRY_OPTOUT.items()}, **(env or {})}
         return WSL(distro_name).command(['python3', '-m', 'drover.runner', *mapped], cd=drover_dir, env=env), None
     child_env = {**os.environ, **(env or {})}
     child_env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(drover_dir), os.environ.get('PYTHONPATH')]))
