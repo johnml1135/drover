@@ -161,7 +161,7 @@ class CITests(unittest.TestCase):
         commit = self.repo.commit('source.txt', 'changed')
         machine = {**self.machine, 'run': {**self.machine['run'], 'env': {
             'COUNT_FILE': str(count), 'RELEASE_FILE': str(release)}}}
-        command = f'from drover.ci import CI; CI({str(self.runs)!r}, resource_check=resources_go).run({machine!r}, {str(self.repo.repo)!r}, {commit!r})'
+        command = f'from drover.ci import CI; CI({str(self.runs)!r}, resource_check=lambda **_: dict(verdict="go", reasons=[])).run({machine!r}, {str(self.repo.repo)!r}, {commit!r})'
         with open(self.repo.root / 'caller.log', 'w') as output:
             caller = subprocess.Popen([sys.executable, '-c', command], stdout=output, stderr=output, stdin=subprocess.DEVNULL)
             self.addCleanup(lambda: caller.poll() is None and caller.kill())
@@ -202,8 +202,9 @@ class CITests(unittest.TestCase):
         commit = self.repo.commit('source.txt', 'changed')
         conn = db.connect(self.repo.root / 'ledger.db')
         self.addCleanup(conn.close)
-        with self.assertRaisesRegex(ci.CIError, 'wall-clock limit'):
-            self.service.run(self.machine, self.repo.repo, commit, conn=conn)
+        result = self.service.run(self.machine, self.repo.repo, commit, conn=conn)
+        self.assertEqual((result['infra'], result['passed'], result['reason']), (True, False, 'timeout'))
+        self.assertIn('wall-clock limit', '\n'.join(result['log_tail']))
         status_file = next(self.runs.glob('ci-*/status.json'))
         status = json.loads(status_file.read_text())
         self.assertEqual(status['state'], 'timeout')
@@ -321,8 +322,8 @@ class PolicyCITests(unittest.TestCase):
         for returncode in (-15, 0):
             with self.subTest(returncode=returncode):
                 self.launcher.execution = dict(status='error', returncode=returncode)
-                with self.assertRaises(ci.CIError):
-                    self.service.run(prog, self.repo.repo, commit)
+                result = self.service.run(prog, self.repo.repo, commit)
+                self.assertEqual((result['infra'], result['passed']), (True, False))
 
     def test_docs_classification_is_shared_by_checks_and_full_ci(self):
         prog = self.configure(docs=True)
