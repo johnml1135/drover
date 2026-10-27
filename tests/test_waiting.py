@@ -525,6 +525,62 @@ class FailureWindows(LedgerCase):
 
 
 class ReleaseRegressions(LedgerCase):
+    def test_repeated_base_observations_do_not_supersede_closed_causes(self):
+        w = self.waiting()
+        tid = self.task()
+        causes, questions = [], []
+        for sha in ('a' * 40, 'b' * 40):
+            cause = self.key('base', 'p', sha)
+            causes.append(cause)
+            w.wait(('merge_queue', 'p'), 'base', self.key('p', sha), cause=cause,
+                   data={'repo': 'p', 'sha': sha, 'mode': 'preserve'})
+            questions.append(w.ask(cause, 'task', tid, 'Base is red',
+                                   options=[{'label': 'Retry landing'}], allow_text=False))
+        # Observe the current base twice, then an older base twice.
+        for sha, closed in (('b' * 40, 1), ('a' * 40, 2)):
+            with self.subTest(sha=sha):
+                ops.event(self.conn, 'base-observed', 'landing', {'repo': 'p', 'sha': sha})
+                before = {kind: ops.events(self.conn, kind=kind)
+                          for kind in ('question-superseded', 'waiting.clear')}
+                self.assertEqual([len(events) for events in before.values()], [closed, closed])
+                ops.event(self.conn, 'base-observed', 'landing', {'repo': 'p', 'sha': sha})
+                for kind, events in before.items():
+                    self.assertEqual(ops.events(self.conn, kind=kind), events)
+        self.assertEqual([w.state(cause) for cause in causes], ['closed', 'closed'])
+        self.assertEqual([ops.get_question(self.conn, q)['status'] for q in questions],
+                         ['answered', 'answered'])
+        self.assertEqual(w.pending(), [])
+
+    def test_clear_only_records_outstanding_waits(self):
+        w = self.waiting()
+        tid = self.task()
+        cause = self.key('manual', tid)
+        before = logical(self.conn)
+        self.assertEqual(w.clear(cause), [])
+        self.assertEqual(logical(self.conn), before)
+        ops.block(self.conn, tid, 'manual pause', actor='owner')
+        self.assertEqual(w.clear(cause), [('task', tid)])
+        self.assertEqual(self.status(tid), 'ready')
+        self.assertEqual(len(ops.events(self.conn, kind='waiting.clear')), 1)
+        before = logical(self.conn)
+        self.assertEqual(w.clear(cause), [])
+        self.assertEqual(logical(self.conn), before)
+
+    def test_clear_released_retry_closes_cause_without_clear_event(self):
+        w = self.waiting()
+        cause, qid, choice = self.retry(w, ('task', self.task()))
+        ops.answer_question(self.conn, qid, choice=choice)
+        self.assertEqual(w.pending(), [])
+        self.assertEqual(w.clear(cause), [])
+        self.assertEqual(w.state(cause), 'closed')
+        self.assertIsNone(w.answer(cause))
+        self.assertFalse(w.consume_retry(cause))
+        self.assertEqual(ops.events(self.conn, kind='waiting.clear'), [])
+        self.assertEqual(len(ops.events(self.conn, kind='question-superseded')), 1)
+        before = logical(self.conn)
+        self.assertEqual(w.clear(cause), [])
+        self.assertEqual(logical(self.conn), before)
+
     def test_base_success_resets_worker_window_and_budget(self):
         w = self.waiting()
         tid = self.task()

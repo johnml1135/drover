@@ -308,7 +308,7 @@ class Waiting:
         with tx(self.conn):
             subjects = list(dict.fromkeys((r['subject_kind'], r['subject_key'])
                                          for r in self.pending() if r['cause'] == cause))
-            eid = ops.event(self.conn, 'waiting.clear', self.actor, {'cause': cause})
+            eid = ops.event(self.conn, 'waiting.clear', self.actor, {'cause': cause}) if subjects else None
             self._clear_cause(cause, eid)
             return subjects
 
@@ -583,7 +583,7 @@ class Waiting:
                 from . import ops
                 self.conn.execute('INSERT INTO base_gate(repo,sha,status,at) VALUES(?,?,?,?) ON CONFLICT(repo,sha) DO UPDATE SET status=excluded.status,at=excluded.at',
                                   (repo, data['sha'], data['status'], ops.stamp()))
-            for row in self.conn.execute('SELECT cause FROM wait_causes WHERE handler=?', ('retry',)).fetchall():
+            for row in self.conn.execute('SELECT cause FROM wait_causes WHERE handler=? AND state<>?', ('retry', CLOSED)).fetchall():
                 parts = _identity(row['cause'])
                 if parts[0] != 'base' or parts[1] != repo:
                     continue
