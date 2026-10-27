@@ -118,3 +118,111 @@ class Fixture(DiskCase):
             self.assertTrue(path.is_relative_to(self.root))
         self.assertEqual(self.cfg['disk_cleanup']['caches'], [])
         self.assertEqual(self.calls, [])
+
+
+class MemoryCleanupState:
+    """Transactional state/journal fake; no disk, clocks or child processes."""
+    def __init__(self):
+        self.state, self.journal = {}, []
+        self.fail_journal = False
+
+    def update(self, transform):
+        state = copy.deepcopy(self.state)
+        answer = transform(state)
+        self.state = state
+        return answer
+
+    def append(self, record):
+        if self.fail_journal:
+            raise OSError('journal unavailable')
+        self.journal.append(copy.deepcopy(record))
+
+
+class MemoryCleanupEvidence:
+    """Semantic observations, never a fake Git CLI. All policy lives in decide."""
+    def __init__(self, store):
+        self.store = store
+        self.paths = {}
+        self.before_apply = None
+        self.operations = []
+
+    def add(self, path, **facts):
+        row = dict(path=path, repo='repo', name='alpha', head='head', branch='refs/heads/' + path,
+                   side_lock='native', gitdir=path + '/gitdir', action='keep', reason_code='unsettled',
+                   dirty=[], ignored=[], tag=dict(v=2, repo='alpha', owner='session:' + path,
+                       lease_until=9_000_000_000), owner='session:' + path, files=1, bytes=10, age_s=40 * DAY)
+        observation = dict(row=row, checks={}, settlement=dict(live=False, terminal=False, merged=True),
+                           identity='original', excluded=[], nested=False, removed=False)
+        observation.update(facts)
+        self.paths[path] = observation
+        return observation
+
+    def observe(self, request):
+        from drover.disk_worktrees import task_facts
+        observations = []
+        for path, facts in self.paths.items():
+            if facts['removed']:
+                continue
+            observed = copy.deepcopy(facts)
+            row = observed['row']
+            live, terminal = task_facts(request, path, row.get('tag'))
+            observed['settlement'].update(live=live, terminal=terminal)
+            if row.get('unlisted'):
+                tag = row.get('tag')
+                lease = bool(tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
+                observed['settlement']['live'] |= lease
+            observed['quarantine'] = dict(key=path, identity=repr((facts['identity'], row.get('tag'), row['head'],
+                                                               row['branch'], row['side_lock'])),
+                                          excluded=facts['excluded'],
+                                          live=bool(row.get('unlisted') and observed['settlement']['live']))
+            # Classification and grace run together in the production decision function.
+            observations.append(observed)
+        return observations
+
+    def apply(self, request, decision, expected_identity):
+        from drover.disk_cleanup import decide
+        from drover.disk_worktrees import registration_identity
+        if self.before_apply:
+            self.before_apply(decision['path'])
+        observed = next(o for o in self.observe(request) if o['row']['path'] == decision['path'])
+        facts = self.paths[decision['path']]
+        current = decide(request, [observed], self.store.state, request['now'])['decisions'][0]
+        identity = registration_identity(current)
+        keys = ('head', 'branch', 'side_lock', 'gitdir', 'tag')
+        if current['action'] != 'candidate' or any(identity.get(k) != expected_identity.get(k) for k in keys):
+            self.store.update(lambda state: state.setdefault('quarantine', {}).pop(decision['path'], None))
+            return dict(current, action='keep', reason_code='revalidation_changed')
+        validation = dict(nested=facts['nested'], excluded=facts['excluded'])
+        current = decide(dict(request, approved_path=None), [dict(row=current, validation=validation)], {}, request['now'])['decisions'][0]
+        if current['action'] != 'candidate':
+            return current
+        try:
+            self.store.append(dict(path=decision['path'], phase='planned'))
+        except OSError as error:
+            return dict(current, action='keep', error=str(error))
+        self.operations.append(('remove', decision['path']))
+        facts['removed'] = True
+        self.store.append(dict(path=decision['path'], phase='completed'))
+        return dict(decision, action='removed')
+
+
+class MemoryCleanupCase(unittest.TestCase):
+    def setUp(self):
+        from drover.disk_cleanup import CleanupRuntime
+        self.now = 2_000_000_000.
+        self.tasks = dict(at=self.now, active_worktrees=[], tasks=[])
+        self.store = MemoryCleanupState()
+        self.evidence = MemoryCleanupEvidence(self.store)
+        self.runtime = CleanupRuntime(lambda: self.now, None, None, None,
+                                      evidence=self.evidence, state=self.store)
+        # Any accidental process use in these policy tests fails immediately.
+        guard = patch('subprocess.Popen', side_effect=AssertionError('memory cleanup started a process'))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def cleanup(self, *, apply=False, approved_path=None):
+        from drover.disk_cleanup import evaluate
+        return evaluate(dict(apply=apply, now=self.now, tasks=self.tasks, approved_path=approved_path), self.runtime)
+
+    def kept(self, path):
+        return not self.evidence.paths[path]['removed']

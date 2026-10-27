@@ -1,40 +1,38 @@
 """Third safety review: regression tests at cleanup and placement boundaries."""
 from unittest.mock import patch
+from contextlib import contextmanager
+from pathlib import Path
 
-from tests.disk_fixture import DiskCase
+from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState
 from tests import test_disk_fix2 as fix2
 
 
-class RepositorySafety(DiskCase):
-    request = fix2.PathSafety.request
-    execute = fix2.PathSafety.execute
-
-    def test_git_syntax_and_uncertain_repository_trees_survive(self):
-        configs = ('[core] bare=true\n', '\ufeff[core]\n bare = true\n',
-                   '[CoRe] BaRe = "true" ; comment\n', '[core\n bare=true\n',
-                   '[core]\n bare = "unterminated\n')
-        for stage in (2, 3):
-            for index, config in enumerate(configs):
-                with self.subTest(stage=stage, config=config):
-                    root = self.temp_root / f'git-{stage}-{index}'
-                    self.file(root / 'config', config)
-                    valuable = self.file(root / 'unpublished')
-                    self.age(root, 40 * 86400)
-                    self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
-                    result = self.execute(self.request(stage))
-                    self.assertTrue(valuable.exists(), result)
-            for marker in ('HEAD', 'objects', 'refs'):
-                with self.subTest(stage=stage, marker=marker):
-                    root = self.temp_root / f'partial-{stage}-{marker}'
-                    self.file(root / marker, 'incomplete repository')
-                    valuable = self.file(root / 'unpublished')
-                    self.age(root, 40 * 86400)
-                    self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
-                    result = self.execute(self.request(stage))
-                    self.assertTrue(valuable.exists(), result)
+@contextmanager
+def output_facts(path, side, registrations=None):
+    """A source-free checkout: fake Git observations, real path protection probes."""
+    from drover import disk_paths, disk_worktrees
+    entries = [dict(worktree=str(p), HEAD='head', branch='refs/heads/test', locked=side)
+               for p in (registrations if registrations is not None else [path])]
+    def status(root, **kwargs):
+        generated = Path(root) / 'generated'
+        return [], [str(p) for p in generated.rglob('*') if p.is_file() or p.is_symlink()]
+    with patch.object(disk_worktrees, 'entries', return_value=entries), \
+         patch.object(disk_worktrees, 'status', side_effect=status) as observed_status, \
+         patch.object(disk_worktrees, 'git', return_value=''), \
+         patch.object(disk_paths, 'output_evidence', side_effect=lambda request, machine, entry, **kw:
+                      (Path(entry['worktree']), 'head', None, ['generated'])):
+        yield observed_status
 
 
-class CancellationSafety(DiskCase):
+class ProcessFreeDiskCase(DiskCase):
+    def setUp(self):
+        super().setUp()
+        guard = patch('subprocess.Popen', side_effect=AssertionError('fast cleanup started a process'))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+
+class CancellationSafety(ProcessFreeDiskCase):
     def test_every_exception_confirms_termination_before_releasing_lock(self):
         import json
         import subprocess
@@ -45,7 +43,8 @@ class CancellationSafety(DiskCase):
             for confirmed in (True, False):
                 error = failure()
                 with self.subTest(error=type(error).__name__, confirmed=confirmed):
-                    self.approve_report()
+                    disk_state.update(self.state, lambda state: state.update(
+                        report_scope=disk_cleanup.scope_key(self.cfg)))
                     checks = []
                     previous = set((self.state / 'disk').glob('worker-error-*.json'))
                     def execute(argv, **kwargs):
@@ -104,17 +103,14 @@ class CancellationSafety(DiskCase):
         self.assertEqual(drained, [True])
 
 
-from tests.test_disk_worktrees import WorktreeCase
-
-
-class TargetDriveSafety(WorktreeCase):
+class TargetDriveSafety(ProcessFreeDiskCase):
     def test_each_target_needs_known_authorized_identity_at_selection_and_deletion(self):
         from pathlib import Path
         from types import SimpleNamespace
         from drover import placement
         from drover.disk_side import serve
-        wt = self.worktree('output mounts')
-        self.r.commit('pending', cwd=wt)
+        wt = self.root / 'checkout'
+        wt.mkdir()
         for stage in (2, 3, 5):
             for changed in (False, True):
                 for foreign in ('/simulated/other', None):
@@ -123,8 +119,8 @@ class TargetDriveSafety(WorktreeCase):
                         target = self.file(base / f'target-{stage}-{changed}-{foreign is None}')
                         control = self.file(base / 'disposable-control')
                         request = fix2.PathSafety.request(self, stage)
-                        request['repos'] = [dict(name='alpha', repo=str(self.r.repo),
-                            worktrees=str(self.trees), remote='origin', default_branch='main')]
+                        request['repos'] = [dict(name='alpha', repo=str(wt),
+                            worktrees=str(self.root / 'alpha.worktrees'), remote='origin', default_branch='main')]
                         request['paths'] = dict(temp_roots=[str(base)], report_roots=[],
                             caches=[dict(path=str(base), placement=self.side)])
                         checks = []
@@ -134,7 +130,8 @@ class TargetDriveSafety(WorktreeCase):
                                 if not changed or len(checks) >= 2:
                                     return foreign
                             return '/simulated/primary'
-                        with patch.object(placement, 'physical_disk_path', side_effect=physical), \
+                        with output_facts(wt, self.side), \
+                            patch.object(placement, 'physical_disk_path', side_effect=physical), \
                                 patch.object(placement, 'cleanup_free', return_value=80), \
                                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
                             result = serve(request)
@@ -146,90 +143,85 @@ class TargetDriveSafety(WorktreeCase):
                         target.unlink()
 
 
-class LiveOwnerSafety(WorktreeCase):
+class LiveOwnerSafety(MemoryCleanupCase):
     def test_unregistered_live_owners_reset_grace_then_release(self):
-        import json
-        import shutil
-        from drover import placement
-        original = placement.worktree_metadata
         for kind in ('active', 'nonterminal', 'live', 'lease'):
             with self.subTest(kind=kind):
-                path = self.trees / kind
-                self.trees.mkdir(exist_ok=True)
-                shutil.copytree(self.r.repo, path, ignore=shutil.ignore_patterns('.git'))
-                live = False
-                def metadata(worktree, name, *args):
-                    if str(worktree) == str(path):
-                        return json.dumps(dict(v=2, repo='alpha', owner='session:test',
-                            created=self.now - 1, lease_until=self.now + 86400)) if live and kind == 'lease' else None
-                    return original(worktree, name, *args)
+                observed = self.evidence.add(kind)
+                observed['row'].update(unlisted=True, tag=None)
                 def owner(enabled):
-                    nonlocal live
-                    live = enabled
-                    self.tasks = dict(at=self.now, active_worktrees=[str(path)] if enabled and kind == 'active' else [],
-                        tasks=[dict(id='owner', worktree=str(path), terminal=kind == 'live', live=kind == 'live')]
+                    observed['row']['tag'] = (dict(v=2, repo='alpha', owner='session:test',
+                        lease_until=self.now + 86400) if enabled and kind == 'lease' else None)
+                    self.tasks = dict(at=self.now,
+                        active_worktrees=[kind] if enabled and kind == 'active' else [],
+                        tasks=[dict(id='owner', worktree=kind, terminal=kind == 'live', live=kind == 'live')]
                         if enabled and kind in ('nonterminal', 'live') else [])
-                with patch.object(placement, 'worktree_metadata', side_effect=metadata):
-                    owner(True)
-                    self.cleanup()
-                    self.cleanup(apply=True)
-                    self.now += 3 * 86400
-                    owner(True)
-                    self.cleanup(apply=True)
-                    self.assertTrue(path.exists(), kind)
-                    owner(False)
-                    self.cleanup(apply=True)
-                    self.now += 2 * 86400
-                    owner(False)
-                    self.cleanup(apply=True)
-                    self.assertTrue(path.exists(), 'live observations must reset quarantine')
-                    self.now += 86400
-                    owner(False)
-                    self.cleanup(apply=True)
-                    self.assertFalse(path.exists(), 'owner release starts a new full grace period')
+                owner(True)
+                self.cleanup()
+                self.cleanup(apply=True)
+                self.now += 3 * 86400
+                owner(True)
+                self.cleanup(apply=True)
+                self.assertTrue(self.kept(kind))
+                owner(False)
+                self.cleanup(apply=True)
+                self.now += 2 * 86400
+                owner(False)
+                self.cleanup(apply=True)
+                self.assertTrue(self.kept(kind), 'live observations reset quarantine')
+                self.now += 86400
+                owner(False)
+                self.cleanup(apply=True)
+                self.assertFalse(self.kept(kind), 'release starts a new full grace period')
 
     def test_owner_appearing_during_removal_keeps_unregistered_directory(self):
-        import shutil
-        from types import SimpleNamespace
-        from drover import placement
-        path = self.trees / 'late owner'
-        self.trees.mkdir(exist_ok=True)
-        shutil.copytree(self.r.repo, path, ignore=shutil.ignore_patterns('.git'))
+        observed = self.evidence.add('late owner')
+        observed['row'].update(unlisted=True, tag=None)
         self.cleanup()
         self.cleanup(apply=True)
         self.now += 3 * 86400
-        self.tasks = dict(at=self.now, active_worktrees=[], tasks=[])
-        checks = []
-        live = []
-        metadata = placement.worktree_metadata
-        def read_owner(worktree, name, *args):
-            if str(worktree) == str(path) and live:
-                import json
-                return json.dumps(dict(v=2, repo='alpha', owner='session:late',
-                    created=self.now, lease_until=self.now + 86400))
-            return metadata(worktree, name, *args)
-        def busy(candidate):
-            if candidate == str(path):
-                checks.append(candidate)
-                if len(checks) == 2:
-                    live.append(True)
-            return False
-        # run_cleanup installs the process adapter; busy is its declared test hook.
-        self.busy = busy
-        with patch.object(placement, 'worktree_metadata', side_effect=read_owner):
-            self.cleanup(apply=True)
-            self.assertGreaterEqual(len(checks), 2)
-            self.assertTrue(path.exists(), 'live ownership must be checked again before removal')
-            live.clear()
-            self.busy = lambda candidate: False
-            self.cleanup(apply=True)
-            self.assertTrue(path.exists(), 'a newly observed owner cancels elapsed quarantine')
-            self.now += 3 * 86400
-            self.cleanup(apply=True)
-            self.assertFalse(path.exists(), 'released owner gets a fresh full grace period')
+        self.tasks['at'] = self.now
+        def late_owner(path):
+            observed['row']['tag'] = dict(v=2, repo='alpha', owner='session:late', lease_until=self.now + 86400)
+        self.evidence.before_apply = late_owner
+        self.cleanup(apply=True)
+        self.assertTrue(self.kept('late owner'))
+        observed['row']['tag'] = None
+        self.evidence.before_apply = None
+        self.cleanup(apply=True)
+        self.assertTrue(self.kept('late owner'), 'new owner cancels elapsed quarantine')
+        self.now += 3 * 86400
+        self.cleanup(apply=True)
+        self.assertFalse(self.kept('late owner'))
+
+    def test_unknown_process_and_identity_change_never_use_cached_authority(self):
+        for change in ('unknown', 'head', 'lock', 'dirty', 'activity'):
+            with self.subTest(change=change):
+                observed = self.evidence.add(change)
+                if change == 'activity':
+                    observed['row']['tag'] = None
+                    self.cleanup(apply=True)
+                    self.now += 3 * 86400
+                def race(path):
+                    if change == 'unknown':
+                        observed['checks'].update(busy=True, process_reason='process_visibility_unavailable')
+                    elif change == 'dirty':
+                        observed['row']['dirty'] = ['owner data']
+                    elif change == 'head':
+                        observed['row']['head'] = 'new-head'
+                    elif change == 'lock':
+                        observed['row']['side_lock'] = 'foreign'
+                        observed['checks']['other_side'] = True
+                    else:
+                        observed['identity'] = 'new activity'
+                self.evidence.before_apply = race
+                self.cleanup(apply=True)
+                self.assertTrue(self.kept(change))
+                self.evidence.before_apply = None
 
 
-class LinuxIdentitySafety(DiskCase):
+
+class LinuxIdentitySafety(ProcessFreeDiskCase):
     def test_linux_mount_identity_is_case_sensitive_with_windows_path_flavour(self):
         import os
         from pathlib import PureWindowsPath
@@ -251,46 +243,45 @@ class LinuxIdentitySafety(DiskCase):
             self.assertFalse(placement.cleanup_contains(request, '/Data/candidate'))
 
 
-class ProtectedTreeProperty(WorktreeCase):
+class ProtectedTreeProperty(ProcessFreeDiskCase):
     def test_randomized_protected_kinds_survive_every_stage(self):
         import random
+        import subprocess
         from pathlib import Path
         from types import SimpleNamespace
-        from drover import placement
+        from drover import placement, disk_paths
         from drover.disk_side import serve
+        from drover.disk_cleanup import CleanupRuntime, evaluate
         kinds = ('repo', 'bare', 'incomplete', 'venv', 'link', 'mount', 'live')
         all_protected, all_mounts, all_live = [], [], []
+        registrations, protected_worktrees = [], []
+        store = MemoryCleanupState()
+        evidence = MemoryCleanupEvidence(store)
         for seed in range(3):
             rng = random.Random(seed)
             for stage in range(1, 7):
                 with self.subTest(seed=seed, stage=stage):
                     base = self.temp_root / f'independent-{seed}-{stage}'
+                    wt = self.root / f'checkout-{seed}'
                     if stage == 5:
-                        wt = self.worktree(f'outputs-{seed}')
-                        self.r.commit('unmerged', cwd=wt)
                         base = wt / 'generated'
+                        registrations.append(wt)
+                        protected_worktrees.append(str(wt))
+                        evidence.add(str(wt))['settlement']['merged'] = False
                     protected, mounts, live, controls, cache_roots = [], [], [], [], []
                     shuffled = rng.sample(kinds, len(kinds))
                     for kind in shuffled:
                         candidate = base / kind / 'protected'
                         control = base / kind / 'control'
-                        if stage == 4:
-                            # Both are otherwise eligible registered, merged, leased worktrees.
-                            candidate = self.worktree(f'protected-{seed}-{kind}')
-                            control = self.worktree(f'control-{seed}-{kind}')
-                            folder = candidate / 'generated'
-                            # Mount and live-owner protection applies to the worktree itself.
-                            if kind == 'mount':
-                                mounts.append(candidate)
-                            elif kind == 'live':
-                                live.append(str(candidate))
-                        else:
-                            folder = candidate
+                        folder = candidate / 'generated' if stage == 4 else candidate
+                        if kind == 'mount':
+                            mounts.append(candidate if stage == 4 else folder)
+                        if kind == 'live':
+                            live.append(str(candidate if stage == 4 else folder))
                         for depth in range(rng.randrange(3)):
                             folder /= f'depth-{depth}'
                         if kind == 'repo':
-                            from tests.gitfix import sh
-                            sh('git', 'init', '-q', folder)
+                            self.file(folder / '.git' / 'HEAD', 'ref: refs/heads/main')
                         elif kind == 'bare':
                             self.file(folder / 'config', rng.choice(('[core] bare=true\n', '\ufeff[core]\n bare=true\n')))
                         elif kind == 'incomplete':
@@ -303,46 +294,88 @@ class ProtectedTreeProperty(WorktreeCase):
                             folder.parent.mkdir(parents=True, exist_ok=True)
                             folder.symlink_to(outside, target_is_directory=True)
                             protected.extend((folder, sentinel))
-                        elif kind == 'mount' and stage != 4:
-                            mounts.append(folder)
-                        elif kind == 'live' and stage != 4:
-                            live.append(str(folder))
                         if kind != 'link':
                             protected.append(self.file(folder / 'valuable'))
-                        if stage == 4:
-                            controls.append(self.file(control / 'generated' / 'disposable'))
-                        else:
-                            controls.append(self.file(control / 'disposable'))
-                        # A protected cache root must not suppress its independent control.
+                        controls.append(self.file(control / 'generated' / 'disposable' if stage == 4 else control / 'disposable'))
                         cache_roots.extend((dict(path=str(candidate), placement=self.side),
                                             dict(path=str(control), placement=self.side)))
                         self.age(candidate, 40 * 86400)
                         self.age(control, 40 * 86400)
+                        if stage == 4:
+                            registrations.extend((candidate, control))
+                            protected_worktrees.append(str(candidate))
+                            observation = evidence.add(str(candidate))
+                            # Real path detectors produce facts at the adapter boundary.
+                            # Unknown config parsing fails closed in-process; native grammar
+                            # is checked by the real deletion contract.
+                            with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')):
+                                excluded = disk_paths.repository_tree(candidate / 'generated', boundary=candidate)
+                            observation['excluded'] = [str(folder)] if excluded else []
+                            observation['checks'].update(other_drive=kind == 'mount', busy=kind == 'live')
+                            evidence.add(str(control))
                     all_protected.extend(protected)
                     all_mounts.extend(mounts)
                     all_live.extend(live)
                     request = fix2.PathSafety.request(self, stage)
-                    request['repos'] = [dict(name='alpha', repo=str(self.r.repo),
-                        worktrees=str(self.trees), remote='origin', default_branch='main')]
+                    request['repos'] = [dict(name='alpha', repo=str(wt),
+                        worktrees=str(self.root / 'alpha.worktrees'), remote='origin', default_branch='main')]
                     request['paths'] = dict(temp_roots=[str(base / kind) for kind in shuffled],
                         report_roots=[str(base)], caches=cache_roots)
                     request['tasks'] = dict(at=self.now, active_worktrees=all_live, tasks=[])
                     def physical(path):
                         p = Path(path)
                         return '/simulated/other' if any(p == m or m in p.parents for m in all_mounts) else '/simulated/primary'
-                    with patch.object(placement, 'physical_disk_path', side_effect=physical), \
-                            patch.object(placement, 'cleanup_free', return_value=80), \
-                            patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
-                            patch.object(placement, 'trim_argv', return_value=None):
-                        first = serve(request)
+                    if stage == 4:
+                        rt = CleanupRuntime(lambda: self.now, None, None, None, evidence=evidence, state=store)
+                        first = evaluate(request, rt)
                         request['now'] += 4 * 86400
                         request['tasks']['at'] = request['now']
-                        result = serve(request)
-                    for kind, control in zip(shuffled, controls):
-                        with self.subTest(kind=kind):
-                            if stage in (2, 3, 4, 5):
-                                self.assertFalse(control.exists(), 'each protection has an eligible control')
-                            else:
-                                self.assertTrue(control.exists(), 'trim and report stages do not remove paths')
+                        result = evaluate(request, rt)
+                        self.assertTrue(set(protected_worktrees) <= {row['path'] for row in result['items']})
+                        for path in protected_worktrees:
+                            self.assertFalse(evidence.paths[path]['removed'], path)
+                        registrations[:] = [p for p in registrations
+                                            if str(p) not in evidence.paths or not evidence.paths[str(p)]['removed']]
+                        for kind in shuffled:
+                            self.assertTrue(evidence.paths[str(base / kind / 'control')]['removed'], kind)
+                            self.assertFalse(evidence.paths[str(base / kind / 'protected')]['removed'], kind)
+                    else:
+                        with output_facts(wt, self.side, registrations) as observed_status, \
+                                patch.object(placement, 'physical_disk_path', side_effect=physical), \
+                                patch.object(placement, 'cleanup_free', return_value=80), \
+                                patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
+                                patch.object(placement, 'trim_argv', return_value=None), \
+                                patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')):
+                            first = serve(request)
+                            request['now'] += 4 * 86400
+                            request['tasks']['at'] = request['now']
+                            result = serve(request)
+                        if stage == 5:
+                            self.assertEqual({Path(call.args[0]) for call in observed_status.call_args_list},
+                                             set(registrations))
+                        for kind, control in zip(shuffled, controls):
+                            with self.subTest(kind=kind):
+                                self.assertEqual(control.exists(), stage not in (2, 3, 5),
+                                                 'each protection has an independent eligible control')
                     for path in all_protected:
                         self.assertTrue(path.exists(), (seed, stage, str(path), first, result))
+
+
+class RepositorySafety(ProcessFreeDiskCase):
+    request = fix2.PathSafety.request
+    execute = fix2.PathSafety.execute
+
+    def test_partial_or_unreadable_repository_evidence_survives(self):
+        import subprocess
+        from drover import placement
+        for stage in (2, 3):
+            for marker in ('HEAD', 'objects', 'refs', 'config', '.git'):
+                with self.subTest(stage=stage, marker=marker):
+                    root = self.temp_root / f'partial-{stage}-{marker}'
+                    self.file(root / marker, 'incomplete repository')
+                    valuable = self.file(root / 'unpublished')
+                    self.age(root, 40 * 86400)
+                    self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
+                    with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')):
+                        result = self.execute(self.request(stage))
+                    self.assertTrue(valuable.exists(), result)

@@ -9,9 +9,160 @@ from unittest import mock
 from drover import placement
 from tests.gitfix import sh
 from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_fixture import MemoryCleanupCase
+from tests.tiers import integration
 
 
-class Removal(WorktreeCase):
+class Removal(MemoryCleanupCase):
+    def test_missing_folder_entry_by_path_other_side_survives(self):
+        self.evidence.add('native', checks=dict(missing=True))
+        self.evidence.add('foreign', checks=dict(other_side=True, missing=True))['row']['side_lock'] = 'foreign'
+        self.cleanup()
+        self.assertEqual(self.evidence.operations, [])
+        self.cleanup(apply=True)
+        self.assertFalse(self.kept('native'))
+        self.assertTrue(self.kept('foreign'))
+        self.assertEqual(self.evidence.operations, [('remove', 'native')])
+        self.assertEqual(self.evidence.paths['foreign']['row']['side_lock'], 'foreign')
+
+    def test_ignored_content_outside_declared_outputs_keeps_worktree(self):
+        for name, files, removable in (
+            ('environment', ['.venv/keep'], False), ('undeclared', ['data/keep'], False),
+            ('mixed', ['generated/disposable', 'data/keep'], False),
+            ('safe', ['generated/disposable'], True), ('nested-env', ['generated/.venv/keep'], False)):
+            with self.subTest(case=name):
+                observation = self.evidence.add(name)
+                path = Path(name).absolute()
+                observation['row']['ignored'] = [str(path / p) for p in files]
+                from drover.disk_worktrees import ignored_outside
+                observation['excluded'] = ignored_outside(
+                    path, observation['row']['ignored'], ['generated'])
+                result = self.cleanup(apply=True)
+                self.assertEqual(self.kept(name), not removable, result)
+                if not removable:
+                    self.assertEqual(next(r for r in result['items'] if r['path'] == name)['reason_code'], 'ignored_content')
+                    self.assertEqual(observation['row']['ignored'], [str(path / p) for p in files])
+        approved = self.evidence.add('approved')
+        approved_path = Path('approved').absolute()
+        approved['row']['ignored'] = [str(approved_path / '.venv/keep')]
+        approved['excluded'] = ignored_outside(
+            approved_path, approved['row']['ignored'], ['generated'])
+        approved['settlement']['merged'] = False
+        result = self.cleanup(apply=True, approved_path='approved')
+        self.assertTrue(self.kept('approved'), result)
+        self.assertIn('approved', [r['path'] for r in result['items']])
+
+    def test_dry_run_then_apply_selected_path_never_prunes(self):
+        self.evidence.add('selected')
+        self.evidence.add('dirty')['row']['dirty'] = ['dirty/scratch.txt']
+        self.evidence.add('unmerged')['settlement']['merged'] = False
+        self.evidence.add('ghost', checks=dict(missing=True, other_side=True))
+        before = self.evidence.observe(dict(now=self.now, tasks=self.tasks, apply=False))
+        self.cleanup()
+        self.assertEqual(self.evidence.observe(dict(now=self.now, tasks=self.tasks, apply=False)), before)
+        self.assertEqual(self.store.state, {})
+        self.cleanup(apply=True)
+        self.assertFalse(self.kept('selected'))
+        for path in ('dirty', 'unmerged', 'ghost'):
+            self.assertTrue(self.kept(path))
+        self.assertEqual(self.evidence.operations, [('remove', 'selected')])
+        self.assertEqual(self.evidence.paths['dirty']['row']['dirty'], ['dirty/scratch.txt'])
+
+    def test_missing_registration_of_live_process_is_kept(self):
+        self.evidence.add('busy', checks=dict(missing=True, busy=True))
+        self.cleanup()
+        result = self.cleanup(apply=True)
+        self.assertTrue(self.kept('busy'))
+        self.assertEqual(result['items'][0]['reason_code'], 'busy')
+        self.assertEqual(self.evidence.operations, [])
+
+    def test_nested_registered_worktree_survives_outer_settlement(self):
+        from drover import disk_worktrees
+        outer_path, inner_path = 'outer', 'outer/generated/foreign-inner'
+        outer = self.evidence.add(outer_path)
+        inner = self.evidence.add(inner_path, checks=dict(other_side=True))
+        inner['row']['side_lock'] = 'foreign'
+        inner['payload'] = {'keep': 'foreign owner data'}
+        request = dict(repos=[dict(repo='repo')])
+        def registrations(repo):
+            return [dict(worktree=o['row']['path'], locked=o['row']['side_lock'])
+                    for o in self.evidence.observe(dict(now=self.now, tasks=self.tasks))]
+        before = registrations('repo')
+        with mock.patch.object(disk_worktrees, 'entries', side_effect=registrations):
+            # The real detector sees the nested registration even without a gitfile.
+            outer['nested'] = disk_worktrees.overlaps_worktrees(request, outer_path, outer_path)
+            self.assertTrue(outer['nested'])
+            self.assertFalse(disk_worktrees.overlaps_worktrees(request, 'unrelated', 'unrelated'))
+            self.cleanup()
+            self.cleanup(apply=True)
+        self.assertTrue(self.kept(outer_path))
+        self.assertTrue(self.kept(inner_path))
+        self.assertEqual(inner['payload']['keep'], 'foreign owner data')
+        self.assertEqual(registrations('repo'), before)
+        self.assertIn(dict(worktree=inner_path, locked='foreign'), registrations('repo'))
+        self.assertEqual(self.evidence.operations, [])
+
+    def test_owner_approval_selects_only_named_path_and_keeps_safety_checks(self):
+        for path in ('approved', 'unselected', 'dirty'):
+            self.evidence.add(path)['settlement']['merged'] = False
+        self.evidence.paths['dirty']['row']['dirty'] = ['precious']
+        self.cleanup(apply=True, approved_path='dirty')
+        self.assertTrue(self.kept('dirty'))
+        self.cleanup(apply=True, approved_path='approved')
+        self.assertFalse(self.kept('approved'))
+        self.assertTrue(self.kept('unselected'))
+
+    def test_decide_is_pure_and_journal_failure_retains_candidate(self):
+        import copy
+        from drover.disk_cleanup import decide
+        self.evidence.add('orphan')['row']['tag'] = None
+        request = dict(apply=True, now=self.now, tasks=self.tasks)
+        observations = self.evidence.observe(request)
+        state = {'quarantine': {}}
+        before = copy.deepcopy((request, observations, state))
+        with mock.patch.object(placement, 'cleanup_parts', side_effect=AssertionError('decision probed paths')):
+            answer = decide(request, observations, state, self.now)
+        self.assertEqual((request, observations, state), before)
+        self.assertEqual(answer['events'][0]['kind'], 'quarantine_started')
+        self.evidence.add('settled')
+        self.store.fail_journal = True
+        self.cleanup(apply=True)
+        self.assertTrue(self.kept('settled'))
+        self.assertEqual(self.evidence.operations, [])
+
+    def test_reports_preserve_grace_and_activity_starts_a_full_new_grace(self):
+        observation = self.evidence.add('orphan')
+        observation['row']['tag'] = None
+        self.cleanup(apply=True)
+        since = self.store.state['quarantine']['orphan']['since']
+        self.now += 2 * 86400
+        self.cleanup()
+        self.assertEqual(self.store.state['quarantine']['orphan']['since'], since)
+        observation['identity'] = 'new activity'
+        self.cleanup(apply=True)
+        self.now += 86400
+        self.cleanup(apply=True)
+        self.assertTrue(self.kept('orphan'))
+        self.now += 2 * 86400
+        self.cleanup(apply=True)
+        self.assertFalse(self.kept('orphan'))
+
+
+@integration
+class RemovalContracts(WorktreeCase):
+    def cleanup(self, *, apply=False, mode='on-demand'):
+        # Exercise the owning-side adapter, not twelve unrelated coordinator stages.
+        from types import SimpleNamespace
+        from drover.disk_side import serve
+        request = dict(stage=4, mode=mode, apply=apply, now=self.now,
+                       drive=dict(name='test-drive', path=str(self.root), level='queue', warn_gb=150),
+                       repos=[dict(name='alpha', repo=str(self.r.repo), worktrees=str(self.trees),
+                                   remote='origin', default_branch='main')],
+                       paths=self.cfg['disk_cleanup'], state_dir=str(self.state), tasks=self.tasks)
+        with mock.patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=self.busy, reason=getattr(self, 'process_reason', None))), \
+             mock.patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
+            return serve(request)
+
     def test_missing_folder_entry_by_path_other_side_survives(self):
         native = self.worktree('missing native')
         foreign = self.worktree('missing other', lock=self.other_side)
@@ -34,6 +185,7 @@ class Removal(WorktreeCase):
         self.assertFalse(any('prune' in call for call in calls), calls)
         self.assertTrue(any('remove' in call and str(native) in tuple(map(str, call))
                             for call in calls), calls)
+        self.check_git_syntax_and_uncertain_repository_trees_survive()
 
     def test_revalidate_dirty_head_lock_and_manifest(self):
         # Mutate after scanning on the final status query, before removal.
@@ -73,6 +225,22 @@ class Removal(WorktreeCase):
                     self.assertFalse(any(r['phase'] == 'completed' and r['path'] == str(wt)
                                          for r in self.journal()))
 
+        wt = self.worktree('fresh unknown process')
+        checks = []
+        def unknown_after_selection(path):
+            if path == str(wt):
+                checks.append(path)
+                return len(checks) >= 2
+            return False
+        self.busy = unknown_after_selection
+        self.process_reason = 'process_visibility_unavailable'
+        result = self.cleanup(apply=True)
+        self.assertGreaterEqual(len(checks), 2, 'fresh process visibility must be required')
+        self.assertTrue(wt.exists(), result)
+        self.busy = lambda path: False
+        self.process_reason = None
+        self.check_owner_appearing_during_removal_keeps_unregistered_directory()
+
     def test_manifest_restores_branch_and_detached_head(self):
         from drover import ownership
         for detached in (False, True):
@@ -108,119 +276,87 @@ class Removal(WorktreeCase):
                 self.assertEqual((wt / 'payload.txt').read_text(), 'precious\n')
                 self.assertIn('locked ' + self.side, self.registrations())
 
-    def test_ignored_content_outside_declared_outputs_keeps_worktree(self):
-        for name, files, removable in (
-            ('environment', ['.venv/keep'], False),
-            ('undeclared', ['data/keep'], False),
-            ('mixed', ['generated/disposable', 'data/keep'], False),
-            ('safe', ['generated/disposable'], True),
-            ('nested-env', ['generated/.venv/keep'], False),
-        ):
-            with self.subTest(case=name):
-                wt = self.worktree(name)
-                self.r.commit('done-' + name, cwd=wt)
-                self.merge(wt)
-                for rel in files:
-                    p = wt / rel
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_text('sentinel')
-                self.cleanup()
-                result = self.cleanup(apply=True)
-                self.assertEqual(wt.exists(), not removable)
-                if not removable:
-                    for rel in files:
-                        if not rel.startswith('generated/') or '.venv' in rel:
-                            self.assertEqual((wt / rel).read_text(), 'sentinel')
-                    self.reported(result, wt / files[-1])
-        late = self.worktree('late ignored file')
-        self.r.commit('late.txt', cwd=late)
-        self.merge(late)
-        self.cleanup()
-        real_git = placement.git
-        checked = []
-        def add_after_selection(repo, *args, **kwargs):
-            if str(repo) == str(late) and 'status' in args:
-                checked.append(args)
-                if len(checked) == 2:
-                    (late / 'data').mkdir()
-                    (late / 'data' / 'arrived').write_text('keep late ignored content')
-            return real_git(repo, *args, **kwargs)
-        with mock.patch.object(placement, 'git', side_effect=add_after_selection):
-            result = self.cleanup(apply=True)
-        self.assertGreaterEqual(len(checked), 2)
-        self.assertEqual((late / 'data' / 'arrived').read_text(), 'keep late ignored content')
-        self.reported(result, late / 'data' / 'arrived')
-        # Explicit owner approval still obeys the ignored-content rule.
+    def test_journal_failure_prevents_unlock_and_delete(self):
+        from drover import disk_state
+        wt = self.worktree('journal-failure')
         from drover import disk_cleanup
-        approved = self.worktree('approved')
-        (approved / '.venv').mkdir()
-        (approved / '.venv' / 'keep').write_text('owner data')
+        denied = disk_cleanup.remove_approved(self.cfg, str(self.r.repo), str(wt), runtime=self.runtime(real=True))
+        self.assertFalse(denied['ok'])
+        self.assertTrue(wt.exists(), 'owner deletion requires a matching report scope')
         self.cleanup()
-        with mock.patch.object(placement, 'cleanup_processes',
-                               return_value=type('Idle', (), {'busy': lambda _, p: False})()), \
-             mock.patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
-             mock.patch('tempfile.gettempdir', return_value=str(self.temp_root)):
-            result = disk_cleanup.remove_approved(self.cfg, str(self.r.repo), str(approved),
-                                                  runtime=self.runtime(real=True))
-        self.assertTrue(approved.exists())
-        self.assertIn(str(approved), [item['path'] for item in result['items']])
-
-    def test_dry_run_then_apply_selected_path_never_prunes(self):
-        selected = self.worktree('selected')
-        self.r.commit('selected.txt', cwd=selected)
-        self.merge(selected)
-        dirty = self.worktree('dirty unrelated')
-        (dirty / 'scratch.txt').write_text('owner work')
-        unmerged = self.worktree('unmerged')
-        self.r.commit('unmerged.txt', cwd=unmerged)
-        ghost = self.worktree('other-side ghost', lock=self.other_side)
-        shutil.rmtree(ghost)
-        before = self.registrations()
-        branches = self.branches()
         calls = []
         real_git = placement.git
-        def git(repo, *args, **kw):
+        def git(repo, *args, **kwargs):
             calls.append(args)
-            return real_git(repo, *args, **kw)
-        with mock.patch.object(placement, 'git', side_effect=git):
-            self.cleanup()
-            self.assertEqual(self.registrations(), before)
-            self.assertTrue(selected.exists())
+            return real_git(repo, *args, **kwargs)
+        with mock.patch.object(disk_state, 'append_manifest', side_effect=OSError('cannot sync journal')), \
+             mock.patch.object(placement, 'git', side_effect=git):
+            result = self.cleanup(apply=True)
+        self.assertTrue(wt.exists(), result)
+        self.assertIn('locked ' + self.side, self.registrations())
+        self.assertFalse(any('unlock' in c or 'remove' in c for c in calls), calls)
+
+    def check_git_syntax_and_uncertain_repository_trees_survive(self):
+        from tests import test_disk_fix2 as fix2
+        configs = ('[core] bare=true\n', '\ufeff[core]\n bare = true\n',
+                   '[CoRe] BaRe = "true" ; comment\n', '[core\n bare=true\n',
+                   '[core]\n bare = "unterminated\n')
+        for stage in (2, 3):
+            for index, config in enumerate(configs):
+                with self.subTest(stage=stage, config=config):
+                    root = self.temp_root / f'git-{stage}-{index}'
+                    self.file(root / 'config', config)
+                    valuable = self.file(root / 'unpublished')
+                    self.age(root, 40 * 86400)
+                    self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
+                    result = fix2.PathSafety.execute(self, fix2.PathSafety.request(self, stage))
+                    self.assertTrue(valuable.exists(), result)
+            for marker in ('HEAD', 'objects', 'refs'):
+                with self.subTest(stage=stage, marker=marker):
+                    root = self.temp_root / f'partial-{stage}-{marker}'
+                    self.file(root / marker, 'incomplete repository')
+                    valuable = self.file(root / 'unpublished')
+                    self.age(root, 40 * 86400)
+                    self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
+                    result = fix2.PathSafety.execute(self, fix2.PathSafety.request(self, stage))
+                    self.assertTrue(valuable.exists(), result)
+
+    def check_owner_appearing_during_removal_keeps_unregistered_directory(self):
+        import shutil
+        from types import SimpleNamespace
+        from drover import placement
+        path = self.trees / 'late owner'
+        self.trees.mkdir(exist_ok=True)
+        shutil.copytree(self.r.repo, path, ignore=shutil.ignore_patterns('.git'))
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.now += 3 * 86400
+        self.tasks = dict(at=self.now, active_worktrees=[], tasks=[])
+        checks = []
+        live = []
+        metadata = placement.worktree_metadata
+        def read_owner(worktree, name, *args):
+            if str(worktree) == str(path) and live:
+                import json
+                return json.dumps(dict(v=2, repo='alpha', owner='session:late',
+                    created=self.now, lease_until=self.now + 86400))
+            return metadata(worktree, name, *args)
+        def busy(candidate):
+            if candidate == str(path):
+                checks.append(candidate)
+                if len(checks) == 2:
+                    live.append(True)
+            return False
+        # run_cleanup installs the process adapter; busy is its declared test hook.
+        self.busy = busy
+        with mock.patch.object(placement, 'worktree_metadata', side_effect=read_owner):
             self.cleanup(apply=True)
-        self.assertFalse(selected.exists())
-        self.assertTrue(dirty.exists())
-        self.assertEqual((dirty / 'scratch.txt').read_text(), 'owner work')
-        self.assertTrue(unmerged.exists())
-        listed = self.registrations()
-        for path in (dirty, unmerged, ghost):
-            self.assertIn(str(path), listed)
-        self.assertIn('locked ' + self.other_side, listed)
-        self.assertEqual(self.branches(), branches)
-        self.assertFalse(any('prune' in call for call in calls), calls)
-
-    def test_missing_registration_of_live_process_is_kept(self):
-        wt = self.worktree('missing busy')
-        shutil.rmtree(wt)
-        self.busy_paths.add(str(wt))
-        self.cleanup()
-        before = self.registrations()
-        self.cleanup(apply=True)
-        self.assertEqual(self.registrations(), before)
-        self.assertIn(str(wt), self.registrations())
-
-    def test_nested_registered_worktree_survives_outer_settlement(self):
-        wt = self.worktree('outer settled')
-        self.r.commit('merged.txt', cwd=wt)
-        self.merge(wt)
-        inner = wt / 'generated' / 'foreign-inner'
-        self.r.git('worktree', 'add', '-q', '-b', 'foreign-inner', inner, 'origin/main')
-        self.r.git('worktree', 'lock', '--reason', self.other_side, inner)
-        (inner / '.git').chmod(0o666)
-        (inner / '.git').unlink()
-        keep = inner / 'keep'
-        keep.write_text('foreign owner data')
-        self.cleanup()
-        self.cleanup(apply=True)
-        self.assertEqual(keep.read_text(), 'foreign owner data')
-        self.assertIn(str(inner), self.registrations())
-        self.assertIn('locked ' + self.other_side, self.registrations())
+            self.assertGreaterEqual(len(checks), 2)
+            self.assertTrue(path.exists(), 'live ownership must be checked again before removal')
+            live.clear()
+            self.busy = lambda candidate: False
+            self.cleanup(apply=True)
+            self.assertTrue(path.exists(), 'a newly observed owner cancels elapsed quarantine')
+            self.now += 3 * 86400
+            self.cleanup(apply=True)
+            self.assertFalse(path.exists(), 'released owner gets a fresh full grace period')

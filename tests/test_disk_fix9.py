@@ -53,7 +53,7 @@ class Approval(DiskCase):
                     row = dict(path=path, reason_code='orphan', action='keep')
                     with patch.object(disk_worktrees, 'entries', return_value=[dict(worktree=path)]), \
                             patch.object(disk_worktrees, 'inspect', return_value=row), \
-                            patch.object(disk_worktrees, 'quarantine', side_effect=lambda r, m, value: value):
+                            patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value: dict(row=value)):
                         answer = disk_worktrees.settled(request)
                     self.assertEqual(bool(answer['items']), windows and equal_on_windows)
 

@@ -270,7 +270,7 @@ class SafetyDecisions(DiskCase):
         row = dict(path='/mnt/h/tree', reason_code='orphan', action='keep')
         with patch.object(disk_worktrees, 'entries', return_value=[dict(worktree='/mnt/h/tree')]), \
                 patch.object(disk_worktrees, 'inspect', return_value=row), \
-                patch.object(disk_worktrees, 'quarantine', side_effect=lambda req, machine, value: value):
+                patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda req, machine, value: dict(row=value)):
             result = disk_worktrees.settled(request)
         self.assertEqual(result['items'][0]['action'], 'candidate')
 

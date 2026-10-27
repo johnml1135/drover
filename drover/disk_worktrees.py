@@ -111,52 +111,73 @@ def merged(machine, head):
 
 
 def inspect(request, machine, entry):
+    from .disk_cleanup import decide
     path = Path(placement.native(entry['worktree']))
     row = item(path, request, 'unsettled', repo=machine['repo'], name=machine['name'],
                head=entry.get('HEAD'), branch=entry.get('branch'), side_lock=entry.get('locked'))
-    lock = entry.get('locked')
-    if placement.worktree_side(entry['worktree'], lock) != placement.cleanup_side():
-        row['reason_code'] = 'other_side_or_lock_note'
-        return row
-    if not placement.cleanup_contains(request, entry['worktree']):
-        row['reason_code'] = 'other_drive'
-        return row
-    if placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo']):
-        row['reason_code'] = 'main_checkout'
-        return row
+    checks = {}
+    observed = dict(row=row, checks=checks)
+    def decision():
+        return decide(dict(request, approved_path=None), [observed], {}, request['now'])['decisions'][0]
+    checks['other_side'] = placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side()
+    if checks['other_side']:
+        return decision()
+    checks['other_drive'] = not placement.cleanup_contains(request, entry['worktree'])
+    if checks['other_drive']:
+        return decision()
+    checks['main'] = placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo'])
+    if checks['main']:
+        return decision()
     proof = request.get('_processes') or placement.cleanup_processes(request=request)
-    if task_facts(request, path, None)[0] or proof.busy(str(path)):
-        row['reason_code'] = getattr(proof, 'reason', None) or 'busy'
-        return row
-    if not safe_path(path):
-        row['reason_code'] = 'protected'
-        return row
-    if not path.exists():
-        row.update(action='candidate', reason_code='missing')
-        return row
+    checks.update(busy=task_facts(request, path, None)[0] or proof.busy(str(path)),
+                  process_reason=getattr(proof, 'reason', None))
+    if checks['busy']:
+        return decision()
+    checks['protected'] = not safe_path(path)
+    if checks['protected']:
+        return decision()
+    checks['missing'] = not path.exists()
+    if checks['missing']:
+        return decision()
     tag = ownership.read(str(path))
     row.update(tag=tag, owner=tag['owner'] if tag else None)
     live, terminal = task_facts(request, path, tag)
+    checks['live'] = live
     if live:
-        row['reason_code'] = 'busy'
-        return row
+        return decision()
     dirty, ignored = status(path, expand=request['apply'])
     row.update(dirty=dirty, ignored=ignored)
     if dirty:
-        row['reason_code'] = 'dirty'
-        return row
+        return decision()
     head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
     row.update(head=head, gitdir=git(path, 'rev-parse', '--absolute-git-dir').strip())
     row.update(facts(path, request['now'], request=request))
-    lease = tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now']
-    if not lease:
-        row['reason_code'] = 'orphan'
-    elif terminal or merged(machine, head):
-        row.update(action='candidate', reason_code='settled')
-    return row
+    lease = bool(tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now'])
+    observed['settlement'] = dict(live=live, terminal=terminal,
+                                 merged=merged(machine, head) if lease and not terminal else False)
+    return decision()
 
 
-def settled(request: dict) -> dict:
+class WorktreeEvidence:
+    """Real evidence. apply always enters remove's independent fresh validation."""
+    def __init__(self, machine, entry, store=None):
+        self.machine, self.entry, self.store = machine, entry, store
+
+    def observe(self, request):
+        row = inspect(request, self.machine, self.entry)
+        observed = quarantine_observation(request, self.machine, row)
+        approved = request.get('approved_path')
+        observed['approved_match'] = not approved or placement.cleanup_parts(row['path']) == placement.cleanup_parts(approved)
+        return [observed]
+
+    def apply(self, request, decision, expected_identity):
+        if registration_identity(decision) != expected_identity:
+            raise ValueError('selected identity changed')
+        return remove(request, decision, store=self.store)
+
+
+def settled(request: dict, *, runtime=None) -> dict:
+    from .disk_cleanup import CleanupRuntime, CleanupState, evaluate
     out = result()
     for machine in request['repos']:
         try:
@@ -166,24 +187,21 @@ def settled(request: dict) -> dict:
             continue
         for entry in listed:
             try:
-                row = inspect(request, machine, entry)
-                row = quarantine(request, machine, row)
+                store = runtime.state if runtime and runtime.state is not None else None
+                evidence = runtime.evidence if runtime and runtime.evidence is not None else WorktreeEvidence(machine, entry, store)
+                rt = CleanupRuntime(lambda: request.get('now', 0), None, None, None,
+                                    evidence=evidence, state=store if store is not None else CleanupState(request.get('state_dir')))
+                answer = evaluate(dict(request, now=request.get('now', 0)), rt)
+                out['items'].extend(answer['items'])
+                out['errors'].extend(answer['errors'])
+                out['reclaimed_bytes'] += answer['reclaimed_bytes']
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 row = item(entry['worktree'], request, 'unavailable', error=str(error))
                 if request['apply']:
                     quarantine(request, machine, row)
-            if request.get('approved_path'):
-                if placement.cleanup_parts(row['path']) != placement.cleanup_parts(request['approved_path']):
-                    continue
-                if row['reason_code'] in ('unsettled', 'orphan'):
-                    row['action'] = 'candidate'
-            if request['apply'] and row['action'] == 'candidate':
-                row = remove(request, row)
-                if row.get('error'):
-                    out['errors'].append(dict(row))
-                if row['action'] == 'removed':
-                    out['reclaimed_bytes'] += row['bytes']
-            out['items'].append(row)
+                if not request.get('approved_path') or placement.cleanup_parts(row['path']) == placement.cleanup_parts(request['approved_path']):
+                    out['items'].append(row)
+
         if not request.get('approved_path'):
             loose = unlisted(request, machine, listed)
             out['items'].extend(loose)
@@ -197,10 +215,11 @@ def ignored_outside(path, ignored, declarations):
             not disposable_match(Path(name).relative_to(path), declarations)]
 
 
-def remove(request: dict, selected: dict) -> dict:
+def remove(request: dict, selected: dict, *, store=None) -> dict:
     """Revalidate all evidence, then journal before unlocking or deleting by path."""
     import uuid
-    from . import disk_state
+    from .disk_cleanup import CleanupState
+    store = store if store is not None else CleanupState(request.get('state_dir'))
     row = dict(selected)
     machine = next(m for m in request['repos'] if placement.cleanup_parts(m['repo']) == placement.cleanup_parts(row['repo']))
     path = Path(row['path'])
@@ -234,14 +253,18 @@ def remove(request: dict, selected: dict) -> dict:
             return quarantine(request, machine, current) if row.get('unlisted') else current
         keys = ('head', 'branch', 'side_lock', 'gitdir', 'tag')
         fresh_identity, selected_identity = registration_identity(current), registration_identity(row)
-        if current['action'] != 'candidate' or any(fresh_identity.get(k) != selected_identity.get(k) for k in keys):
-            return dict(current, action='keep', reason_code='revalidation_changed')
+        from .disk_cleanup import decide
+        def validate(**validation):
+            return decide(dict(request, approved_path=None), [dict(row=current, validation=validation)], {}, request['now'])['decisions'][0]
+        matches = current['action'] == 'candidate' and all(fresh_identity.get(k) == selected_identity.get(k) for k in keys)
+        if not matches:
+            return validate(identity_matches=False)
         if overlaps_worktrees(request, path, path):
-            return dict(current, action='keep', reason_code='nested_worktree')
+            return validate(nested=True)
         if current['reason_code'] != 'missing':
             excluded = ignored_outside(path, current['ignored'], outputs_at(machine, machine['repo'] if row.get('unlisted') else path))
             if excluded:
-                return dict(current, action='keep', reason_code='ignored_content', excluded=excluded)
+                return validate(excluded=excluded)
         rescue = 'refs/drover/disk-rescue/' + uuid.uuid4().hex if not row.get('branch') else None
         target = row['branch'].removeprefix('refs/heads/') if row.get('branch') else row['head']
         args = ['worktree', 'add'] + ([] if row.get('branch') else ['--detach']) + ['--', str(path), target]
@@ -251,7 +274,7 @@ def remove(request: dict, selected: dict) -> dict:
                       rescue_ref=rescue, restore_argv=placement.git_argv(machine['repo'], args),
                       lock_argv=placement.git_argv(machine['repo'], ['worktree', 'lock', '--reason',
                                                   row['side_lock'], '--', str(path)]) if row.get('side_lock') else None)
-        disk_state.append_manifest(request['state_dir'], record)
+        store.append(record)
         if rescue:
             git(machine['repo'], 'update-ref', rescue, row['head'], '')
             if git(machine['repo'], 'rev-parse', rescue).strip() != row['head']:
@@ -261,7 +284,7 @@ def remove(request: dict, selected: dict) -> dict:
         if row.get('unlisted') and unlisted_live(request, path):
             row.update(action='keep', reason_code='live_owner')
             quarantine(request, machine, row)
-            disk_state.append_manifest(request['state_dir'], dict(record, phase='failed'))
+            store.append(dict(record, phase='failed'))
             return row
         if row.get('side_lock'):
             git(machine['repo'], 'worktree', 'unlock', '--', path)
@@ -272,7 +295,7 @@ def remove(request: dict, selected: dict) -> dict:
         else:
             git(machine['repo'], 'worktree', 'remove', '--force', '--', path)
         row.update(action='removed', manifest=record['id'])
-        disk_state.append_manifest(request['state_dir'], dict(record, phase='completed'))
+        store.append(dict(record, phase='completed'))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         if unlocked:
             # On removal failure, restore only the marker we just proved and unlocked.
@@ -280,7 +303,7 @@ def remove(request: dict, selected: dict) -> dict:
         row.update(action='keep' if row['action'] != 'removed' else 'removed', error=str(error))
         if record:
             try:
-                disk_state.append_manifest(request['state_dir'], dict(record, phase='failed'))
+                store.append(dict(record, phase='failed'))
             except OSError:
                 pass
     return row
@@ -303,34 +326,23 @@ def identity(path):
     return hashlib.sha256(repr(values).encode()).hexdigest()
 
 
-def quarantine(request, machine, row):
-    from . import disk_state
+def quarantine_observation(request, machine, row):
     key = repr((placement.cleanup_parts(machine['repo']), placement.cleanup_parts(row['path'])))
-    if row.get('unlisted') and unlisted_live(request, Path(row['path'])):
-        row.update(action='keep', reason_code='live_owner')
-    eligible = row['reason_code'] == 'orphan'
-    if eligible:
-        excluded = ignored_outside(Path(row['path']), row['ignored'],
-                                   outputs_at(machine, machine['repo'] if row.get('unlisted') else row['path']))
-        if excluded:
-            row.update(reason_code='ignored_content', excluded=excluded)
-            eligible = False
+    live = bool(row.get('unlisted') and unlisted_live(request, Path(row['path'])))
+    eligible = row['reason_code'] == 'orphan' and not live
+    excluded = ignored_outside(Path(row['path']), row['ignored'],
+                              outputs_at(machine, machine['repo'] if row.get('unlisted') else row['path'])) if eligible else []
     fingerprint = (identity(Path(row['path'])) + repr((row.get('head'), row.get('tag'),
-                    row.get('branch'), placement.cleanup_parts(row['gitdir']) if row.get('gitdir') else None, row.get('side_lock')))) if eligible else None
-    def observe(state):
-        records = state.setdefault('quarantine', {})
-        previous = records.get(key)
-        if not eligible:
-            records.pop(key, None)
-            return False
-        if not previous or previous['identity'] != fingerprint:
-            records[key] = dict(identity=fingerprint, since=request['now'])
-            return False
-        return request['now'] - previous['since'] >= 3 * 86400
-    if request['apply']:
-        if disk_state.update(request['state_dir'], observe):
-            row.update(action='candidate', reason_code='quarantine_elapsed', quarantine_identity=fingerprint)
-    return row
+                    row.get('branch'), placement.cleanup_parts(row['gitdir']) if row.get('gitdir') else None, row.get('side_lock')))) if eligible and not excluded else None
+    return dict(row=row, quarantine=dict(key=key, identity=fingerprint, excluded=excluded, live=live))
+
+
+def quarantine(request, machine, row, *, store=None):
+    from .disk_cleanup import CleanupState, decide_and_store
+    observation = quarantine_observation(request, machine, row)
+    answer = decide_and_store(dict(request, approved_path=None), [observation],
+                              store if store is not None else CleanupState(request['state_dir']))
+    return answer['decisions'][0]
 
 
 def snapshot(machine, path, request=None):
