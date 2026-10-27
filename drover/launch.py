@@ -642,10 +642,7 @@ class RunnerLauncher(Launcher):
 
     def runner_argv(self, runner_args, cd=None, env=None):
         """Invoke the runner on the selected WSL distribution; worker argv stays verbatim."""
-        args = [str(a) for a in runner_args]
-        split = args.index("--") if "--" in args else len(args)
-        args = [placement_mod.to_wsl_path(a) for a in args[:split]] + args[split:]
-        return placement_mod.WSL(self.distro).command(["python3", "-m", "drover.runner", *args], cd, env)
+        return placement_mod.ci_runner_command([str(a) for a in runner_args], cd, self.distro, env, True)[0]
 
     def command(self, spec, d, argv):
         """(command, env) that starts the detached runner for this spec's placement_mod."""
