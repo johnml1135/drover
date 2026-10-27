@@ -165,6 +165,7 @@ class RecoveryTests(unittest.TestCase):
             git.return_value = SimpleNamespace(stdout=SHA, returncode=0)
             result = self.run_batch(Mock(side_effect=ci.CIDeferred('host busy')))
         self.assertEqual(result['outcome'], 'queued')
+        self.assertEqual((result['gates'], result['gate_s'], result['red']), (0, [], 0))
         self.assertFalse(any(call.args[1:3] == ('worktree', 'remove') for call in git.call_args_list))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'landing_recovery:%'").fetchone()[0], 0)
 
@@ -245,3 +246,84 @@ class RecoveryTests(unittest.TestCase):
                 patch('drover.disk.read', return_value=[]), patch.object(ci.runner, 'write_json_atomic'):
             service.run({}, '.', SHA, platforms=['wsl'], force_full=True)
         self.assertTrue(prepare.call_args.kwargs['force_full'])
+
+    def test_base_diagnosis_matches_failed_platform_and_signature(self):
+        calls = []
+        def gate(work, tip, tasks, *, platform=None, signature=None):
+            calls.append((platform, signature))
+            return (dict(status='passed', passed=True, platform=platform) if not tasks else
+                    dict(status='failed', passed=False, platform='wsl', failure_signature='runtime-abort'))
+        with patch.object(landing, 'requeue'):
+            self.assertEqual(self.run_batch(gate)['outcome'], 'red')
+        self.assertEqual(calls, [(None, None), ('wsl', 'runtime-abort')])
+
+    def test_base_cache_is_separate_for_platform_and_signature(self):
+        calls = []
+        def gate(work, tip, tasks, *, platform=None, signature=None):
+            calls.append((platform, signature))
+            return dict(status='failed' if platform == 'windows' else 'passed')
+        result = dict(gates=0, red=0, bisect_gates=0, gate_s=[])
+        def status(platform, signature):
+            return landing.base_status(self.conn, '.', '.', gate, SHA, result, 'p',
+                                       dict(platform=platform, failure_signature=signature))
+        self.assertEqual(status('windows', 'suite-a'), 'red')
+        self.assertEqual(status('wsl', 'suite-a'), 'green')
+        self.assertEqual(status('wsl', 'suite-b'), 'green')
+        self.assertEqual(status('windows', 'suite-a'), 'red')
+        self.assertEqual(calls, [('windows', 'suite-a'), ('wsl', 'suite-a'), ('wsl', 'suite-b')])
+
+    def test_targeted_green_does_not_clear_other_platform_base_hold(self):
+        waiting, cause = self.hold_base()
+        def gate(work, tip, tasks, *, platform=None, signature=None):
+            return dict(status='passed', platform=platform)
+        result = dict(gates=0, red=0, bisect_gates=0, gate_s=[])
+        landing.base_status(self.conn, '.', '.', gate, SHA, result, 'p',
+                            dict(platform='wsl', failure_signature='suite-a'))
+        self.assertEqual(waiting.state(cause), 'open')
+        self.assertTrue(waiting.pending(('merge_queue', 'p')))
+
+    def test_infrastructure_in_base_diagnosis_is_not_cached_as_base_red(self):
+        def gate(work, tip, tasks, *, platform=None, signature=None):
+            return INFRA if not tasks else dict(status='failed', platform='wsl', failure_signature='suite-a')
+        result = self.run_batch(gate)
+        self.assertEqual(result['outcome'], 'infra-retry')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM base_diagnoses').fetchone()[0], 0)
+        self.assertFalse(Waiting(self.conn).pending(('merge_queue', 'p')))
+
+    def test_owner_retry_invalidates_contextual_base_cache(self):
+        from drover.ledger import landing as storage
+        storage.record_base(self.conn, 'p', SHA, 'red', 'wsl', 'suite-a')
+        self.base_retry()
+        calls = []
+        def gate(work, tip, tasks, *, platform=None, signature=None):
+            calls.append(platform)
+            return dict(status='passed' if not tasks else 'failed', platform='wsl', failure_signature='suite-a')
+        with patch.object(landing, 'requeue'):
+            self.assertEqual(self.run_batch(gate)['outcome'], 'red')
+        self.assertEqual(calls, [None, 'wsl'])
+        self.assertEqual(storage.base_status(self.conn, 'p', SHA, 'wsl', 'suite-a'), 'green')
+
+    def test_consumed_retry_reopens_question_on_unexpected_gate_exception(self):
+        waiting, cause = self.base_retry()
+        with self.assertRaisesRegex(RuntimeError, 'broken callback'):
+            self.run_batch(Mock(side_effect=RuntimeError('broken callback')))
+        self.assertEqual(waiting.state(cause), 'open')
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_admission_queue_preserves_unspent_owner_retry(self):
+        waiting, cause = self.base_retry()
+        self.assertEqual(self.run_batch(Mock(side_effect=ci.CIDeferred('host busy')))['outcome'], 'queued')
+        self.assertEqual(waiting.state(cause), 'authorized')
+        self.assertEqual(ops.open_questions(self.conn), [])
+        self.assertEqual(self.run_batch(Mock(return_value=INFRA))['outcome'], 'infra-retry')
+        self.assertNotEqual(waiting.state(cause), 'attempting')
+
+    def test_resumed_infrastructure_is_retained_for_landing_recovery(self):
+        service = ci.CI('unused-ci-recovery', SimpleNamespace())
+        saved = dict(checkout='work', commit=SHA, kind='full', platforms=['wsl'], base='main')
+        with patch.object(Path, 'glob', return_value=[Path('ci-request-key.json')]), \
+                patch.object(ci, 'read_result', return_value=saved), patch.object(service, 'run', return_value=INFRA):
+            service.resume({}, 'work', terminal_outcomes=True)
+            self.assertEqual(service._resumed['work'], ('request-key', INFRA))
+            with self.assertRaises(ci.CIInfrastructure):
+                service.resume({}, 'work')

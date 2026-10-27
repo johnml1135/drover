@@ -130,17 +130,18 @@ class LandingService:
         out_dir.mkdir(parents=True, exist_ok=True)
         work = Path(repos.native(repos.worktree_root(prog))) / f"drover-landing-{name.lower()}"
         try:
-            self.ci.resume(prog, work, conn=conn)
+            self.ci.resume(prog, work, conn=conn, terminal_outcomes=True)
         except ci.CIDeferred as error:
             return {"outcome": "queued", "reason": str(error)}
         if disk.admission(disk.read())['verdict'] == 'hold':
             return {'outcome': contract.HOLD}
         size = 1 if land["policy"] == "single" else None
-        def gate(checkout, commit, tasks):
+        def gate(checkout, commit, tasks, *, platform=None, signature=None):
             ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": [
                 {"id": t["id"], "title": t["title"]} for t in tasks]}))
             return self.ci.run(prog, checkout, commit, base=base_ref, conn=conn, control_epoch=epoch,
-                               force_full=any(t.get('base_repair') for t in tasks))
+                               platforms=[platform] if platform else None,
+                               force_full=bool(platform) or any(t.get('base_repair') for t in tasks))
         try:
             r = landing.run_batch(conn, repo, gate, remote=repos.remote_name(prog),
                                   branch=base_ref, size=size, repo_name=name, workdir=work, push=push, control_epoch=epoch,

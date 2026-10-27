@@ -70,18 +70,32 @@ def last_detail(conn):
 
 
 def forget_base(conn, repo, sha):
-    conn.execute("DELETE FROM base_gate WHERE repo=? AND sha=?", (repo, sha))
+    with tx(conn):
+        conn.execute("DELETE FROM base_gate WHERE repo=? AND sha=?", (repo, sha))
+        conn.execute("DELETE FROM base_diagnoses WHERE repo=? AND sha=?", (repo, sha))
 
 
-def base_status(conn, repo, sha):
+def base_status(conn, repo, sha, platform=None, signature=None):
+    if platform is not None:
+        row = conn.execute('SELECT status FROM base_diagnoses WHERE repo=? AND sha=? AND platform=? AND signature=?',
+                           (repo, sha, platform, signature or '')).fetchone()
+        return row['status'] if row else None
     row = conn.execute("SELECT status FROM base_gate WHERE repo=? AND sha=?", (repo, sha)).fetchone()
     return row['status'] if row else None
 
 
-def record_base(conn, repo, sha, status):
+def record_base(conn, repo, sha, status, platform=None, signature=None):
     if status not in ('red', 'green'):
         raise ValueError('invalid base cache status')
     with tx(conn):
+        if platform is not None:
+            conn.execute('INSERT INTO base_diagnoses(repo,sha,platform,signature,status,at) VALUES(?,?,?,?,?,?) '
+                         'ON CONFLICT(repo,sha,platform,signature) DO UPDATE SET status=excluded.status,at=excluded.at',
+                         (repo, sha, platform, signature or '', status, ops.stamp()))
+            # One platform's green result does not certify the whole base.
+            ops.event(conn, 'base-diagnosis', 'landing',
+                      dict(repo=repo, sha=sha, platform=platform, signature=signature, status=status))
+            return
         ops.event(conn, 'base-ci', 'landing', {'repo': repo, 'sha': sha, 'status': status})
 
 

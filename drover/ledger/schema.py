@@ -381,4 +381,11 @@ V16 = """
 ALTER TABLE landing_batches ADD COLUMN detail TEXT NOT NULL DEFAULT '{}';
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15), (16, V16)]
+V17 = """
+CREATE TABLE base_diagnoses (
+ repo TEXT NOT NULL, sha TEXT NOT NULL, platform TEXT NOT NULL, signature TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('red','green')), at TEXT NOT NULL,
+ PRIMARY KEY(repo,sha,platform,signature));
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15), (16, V16), (17, V17)]

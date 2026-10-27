@@ -5,6 +5,7 @@ a scratch worktree on a fresh base and the full gate runs once on the tip. On re
 the rest regated; ambiguous failures go to one `batch_culprit` decision; below tau (or on fallback) we bisect.
 """
 import hashlib
+import inspect
 import json
 import re
 import statistics
@@ -335,15 +336,37 @@ def _epic(conn, title):
     return ops.create_epic(conn, 'drover', title, plan_md='Landing alerts.')['id']
 
 
-def base_status(conn, repo, work, gate_fn, base_sha, result, repo_key):
-    """'green' or 'red' for the base commit itself, gated at most once per base SHA."""
-    known = storage.base_status(conn, repo_key, base_sha)
+def _failure_signature(receipt):
+    if receipt.get('failure_signature'):
+        return receipt['failure_signature']
+    failures = receipt.get('failures') or receipt.get('log_tail') or receipt.get('exit_code')
+    return hashlib.sha256(json.dumps(failures, sort_keys=True).encode()).hexdigest()
+
+
+def base_status(conn, repo, work, gate_fn, base_sha, result, repo_key, failure=None):
+    """Diagnose the failed platform on the base; cache only the same failure context.
+
+    Platform-aware callbacks accept platform/signature keywords. Legacy callers
+    still run their full callback, whose receipt certifies all their platforms.
+    """
+    failure = failure or {}
+    platform = failure.get('platform')
+    signature = _failure_signature(failure)
+    known = storage.base_status(conn, repo_key, base_sha, platform, signature)
     if known:
         return known
     tip, _, _ = build_tip(repo, work, base_sha, [])
-    _, red = _gate(gate_fn, work, tip, [], result)
+    params = inspect.signature(gate_fn).parameters
+    contextual = 'platform' in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+    def diagnose(work, tip, tasks):
+        if contextual and platform:
+            return gate_fn(work, tip, tasks, platform=platform, signature=signature)
+        return gate_fn(work, tip, tasks)
+    _, red = _gate(diagnose, work, tip, [], result)
     status = 'red' if red else 'green'
-    storage.record_base(conn, repo_key, base_sha, status)
+    storage.record_base(conn, repo_key, base_sha, status, platform, signature)
+    if not contextual and platform:
+        storage.record_base(conn, repo_key, base_sha, status)
     return status
 
 
@@ -563,6 +586,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     if waiting.state(base_cause) in ('authorized', 'attempting'):
         if not waiting.consume_retry(base_cause):
             return {**result, 'outcome': 'held'}
+        storage.forget_base(conn, name, sha)
     interrupted = False
     work = Path(workdir)
     try:
@@ -581,7 +605,8 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
         storage.record_batch(conn, result)
         raise
     finally:
-        waiting.finish_retry(base_cause, completed=result['outcome'] in ('landed', 'infra-retry', 'infra-held'))
+        waiting.finish_retry(base_cause, completed=result['outcome'] in ('landed', 'infra-retry', 'infra-held'),
+                             deferred=result['outcome'] == 'queued')
         if not interrupted:
             from . import ownership
             if ownership.owned_by(str(work), 'session:merge-group:' + work.name):
@@ -603,7 +628,7 @@ def _failure_detail(receipt):
 
 def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
     t0 = time.monotonic()
-    red = True
+    red, attempted = True, True
     try:
         receipt = gate_fn(work, tip, tasks)
         if receipt.get('infra') or receipt['status'] == 'infra':
@@ -614,14 +639,15 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
         return receipt, red
     except BaseException as error:
         if isinstance(error, ci.CIDeferred):
-            red = False
+            red, attempted = False, False
         result['detail'] = _failure_detail(getattr(error, 'detail', {'reason': str(error)}))
         raise
     finally:
-        result['gate_s'].append(round(time.monotonic() - t0, 3))
-        result['gates'] += 1
-        result['bisect_gates'] += bisecting
-        result['red'] += red
+        if attempted:
+            result['gate_s'].append(round(time.monotonic() - t0, 3))
+            result['gates'] += 1
+            result['bisect_gates'] += bisecting
+            result['red'] += red
 
 
 def _failures(receipt, tasks):
@@ -657,7 +683,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 continue
             return
         from .ledger.waiting import repo_key
-        if base_status(conn, repo, work, gate_fn, base_sha, result, repo_key(repo_name, repo)) == 'red':
+        if base_status(conn, repo, work, gate_fn, base_sha, result, repo_key(repo_name, repo), receipt) == 'red':
             return base_red(conn, result, base_sha, tasks, repo_key(repo_name, repo))
         failures = _failures(receipt, tasks)
         culprit, how, asked = attribute(conn, tasks, failures, decider)

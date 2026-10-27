@@ -299,7 +299,7 @@ class CI:
                 stop_intent(DirectPort(conn), spec, epoch,
                             lambda value: runner.request_stop(self.runs_dir, value['run_id'], nonce=value['nonce']))
 
-    def resume(self, prog, checkout, *, conn=None):
+    def resume(self, prog, checkout, *, conn=None, terminal_outcomes=False):
         """Finish any saved full CI before its checkout is rebuilt for a changed merge queue.
 
         The completed result remains available to the next run call for that exact
@@ -313,6 +313,8 @@ class CI:
                                   platforms=saved['platforms'], base=saved['base'], conn=conn,
                                   priority=saved.get('priority', 'P1'), force_full=saved.get('force_full', False))
                 self._resumed[str(checkout)] = (key, result)
+                if result.get('infra') and not terminal_outcomes:
+                    raise CIInfrastructure(result)
 
     def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None, force_full=False):
         """Run placements WSL first in the shared checkout, or adopt a saved runner after a hub restart.
@@ -487,6 +489,8 @@ class CI:
                 receipt = evaluated['receipt']
                 if receipt is not None:
                     receipt = {**receipt, 'run_id': spec['run_id']}
+                if receipt and receipt.get('status') == contract.CI_REFUSED:
+                    raise CIError(receipt.get('reason') or evaluated['excerpt'])
                 if receipt is None or evaluated['infra']:
                     request.unlink(missing_ok=True)
                     return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
@@ -529,10 +533,15 @@ def _execute(plan):
     """The runner's child: all script argv is executed verbatim, stdout inherited."""
     checkout, commit, base = plan['repo'], plan['sha'], plan['base']
     placement.prepare_worktree(checkout)
+    def refuse(reason):
+        runner.write_json_atomic(Path(plan['out']), dict(version=VERSION, sha=commit, passed=False,
+                                 status=contract.CI_REFUSED, reason=reason, kind=plan['kind'],
+                                 platform=plan['platform'], exit_code=None, log_tail=[reason]))
+        raise CIError(reason)
     if head(checkout) != commit:
-        raise CIError(f"HEAD is not the planned commit {commit[:12]}")
+        refuse(f'HEAD is not the planned commit {commit[:12]}')
     if dirty(checkout):
-        raise CIError('refused: working tree has uncommitted changes; commit before CI')
+        refuse('refused: working tree has uncommitted changes; commit before CI')
     base_sha, has_base = contains(checkout, base, commit)
     started, steps = now(), []
     for argv in plan['commands']:

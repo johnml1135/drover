@@ -572,12 +572,15 @@ class Waiting:
                 self.conn.execute('DELETE FROM base_gate WHERE repo=? AND sha=?', tuple(parts[1:]))
             return True
 
-    def finish_retry(self, cause, *, completed=False):
+    def finish_retry(self, cause, *, completed=False, deferred=False):
         """Finish a consumed probe even when CI cannot produce a code verdict."""
         with tx(self.conn):
             if self.state(cause) != ATTEMPTING:
                 return
-            if completed:
+            if deferred:
+                self.conn.execute('UPDATE wait_causes SET state=?,consumed_event=NULL,probe_session=NULL,probe_started=NULL WHERE cause=?',
+                                  (AUTHORIZED, cause))
+            elif completed:
                 self.conn.execute('UPDATE wait_causes SET state=?,probe_session=NULL,probe_started=NULL WHERE cause=?',
                                   (RESOLVED, cause))
                 self.clear(cause)
