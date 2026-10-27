@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from drover import ci, placement, repos, task_access, tool_discovery
 from drover.launch import RunnerLauncher
+from tests.fakeci import resources_go
 from tests.gitfix import Repo
 
 
@@ -73,7 +74,7 @@ class PlacementTests(unittest.TestCase):
             platform = 'wsl'
             prog = repos.normalize({'name': 'p', 'repo': str(wt), 'scripts': {'test': 'scripts/check.ps1'},
                                     'gate': {'platform': platform, 'docs_only': False}})
-            receipt = ci.CI(repo.root / 'runs').run(prog, wt, ci.head(wt))
+            receipt = ci.CI(repo.root / 'runs', resource_check=resources_go).run(prog, wt, ci.head(wt))
             self.assertEqual(receipt['status'], 'passed')
         pointer = dotgit.read_text().strip().removeprefix("gitdir: ")
         self.assertFalse(Path(pointer).is_absolute())
@@ -110,7 +111,7 @@ class PlacementTests(unittest.TestCase):
         prog = repos.normalize({'name': 'p', 'repo': str(repo.repo), 'scripts': {'test': 'scripts/check.ps1'},
                                 'gate': {'platform': platform, 'docs_only': False}})
         with self.assertRaisesRegex(ci.CIError, 'uncommitted'):
-            ci.CI(repo.root / 'runs').run(prog, repo.repo, ci.head(repo.repo))
+            ci.CI(repo.root / 'runs', resource_check=resources_go).run(prog, repo.repo, ci.head(repo.repo))
 
     def test_read_snapshots_preserve_history_and_independent_exact_commits(self):
         repo = Repo()

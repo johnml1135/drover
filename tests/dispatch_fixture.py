@@ -4,6 +4,7 @@ import time
 from drover import runner, ci, config
 
 from drover import dispatcher, repos, usage
+from tests.fakeci import resources_go
 
 WORKTREE = r'R:\repos\wt'
 GO = {'verdict': 'go', 'slots': 10, 'reasons': []}
@@ -25,7 +26,7 @@ class FakePipeline:
         self.prog = repos.normalize({'name': 'p', 'repo': WORKTREE,
                                      'scripts': {'test': '.drover/scripts/test.ps1'}})
         self.prog['review'].update(backend='codex', model='gpt-6.1-sol', high_risk_model='gpt-6.1-sol', seat=None)
-        self.ci = FixtureCI(self.runs_dir)
+        self.ci = FixtureCI(self.runs_dir, resource_check=resources_go)
         self.current_head = lambda: 'abc1234'
 
     def all_repos(self):

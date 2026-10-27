@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.fakeci import resources_go
 from tests.disk_fixture import DiskCase
 from tests.gitfix import Repo
 
@@ -44,7 +45,7 @@ class Admission(DiskCase):
             calls[-1] = ('adopt', spec)
             return handle
         launcher = SimpleNamespace(launch=execute, adopt=adopt)
-        service = ci.CI(self.root / 'runs', launcher=launcher)
+        service = ci.CI(self.root / 'runs', launcher=launcher, resource_check=resources_go)
         return repo, commit, prog, conn, calls, service
 
     def test_hold_blocks_checks_and_full_ci_running_work_winds_down(self):

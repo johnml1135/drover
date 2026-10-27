@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from drover import ci, landing, resources
 from drover.ledger import db, ops
 from drover.ledger.waiting import Waiting, BASE, cause_key
+from tests.fakeci import resources_go
 
 SHA = 'a' * 40
 INFRA = dict(status='infra', passed=False, infra=True, sha='b' * 40,
@@ -30,10 +31,10 @@ class RecoveryTests(unittest.TestCase):
             (landing, 'git', SimpleNamespace(stdout=SHA, returncode=0)),
             (landing, 'form_batch', [self.task]),
             (landing, 'build_tip', ('b' * 40, [self.task], [])),
-            (resources, 'check', dict(verdict='go', reasons=[])),
         ):
             self.stack.enter_context(patch.object(obj, name, return_value=value))
         self.stack.enter_context(patch('drover.ownership.owned_by', return_value=False))
+        self.stack.enter_context(patch.object(resources, 'check', side_effect=resources_go))  # landing's own retry probe
         self.clock = self.stack.enter_context(patch.object(landing.time, 'time', return_value=1000))
 
     def run_batch(self, gate):
@@ -60,6 +61,30 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(gate.call_count, 2)
         self.assertEqual(len(ops.events(self.conn, kind='question-asked')), 1)
 
+    def recovery_keys(self):
+        return [r[0] for r in self.conn.execute("SELECT key FROM settings WHERE key LIKE 'landing_recovery:%'")]
+
+    def test_owner_acknowledgement_gives_held_task_one_fresh_attempt(self):
+        gate = Mock(return_value=INFRA)
+        self.run_batch(gate)
+        self.clock.return_value = 1100
+        self.assertEqual(self.run_batch(gate)['outcome'], 'infra-held')
+        self.assertEqual(self.run_batch(gate)['outcome'], 'infra-held')
+        self.assertEqual(gate.call_count, 2)
+        question = ops.events(self.conn, kind='question-asked')[-1]['data']['question']
+        ops.answer_question(self.conn, question, choice='Acknowledged')
+        self.assertEqual(self.recovery_keys() and len(self.recovery_keys()), 1)
+        self.assertEqual(self.run_batch(gate)['outcome'], 'infra-retry')
+        self.assertEqual(gate.call_count, 3)
+
+    def test_landing_clears_recovery_state(self):
+        self.run_batch(Mock(return_value=INFRA))
+        self.assertEqual(len(self.recovery_keys()), 1)
+        self.clock.return_value = 1100
+        with patch.object(landing, '_drive', side_effect=lambda *a: a[5].update(outcome='landed', landed=[self.task['id']])):
+            self.assertEqual(self.run_batch(Mock())['outcome'], 'landed')
+        self.assertEqual(self.recovery_keys(), [])
+
     def test_retry_requires_healthy_resources(self):
         gate = Mock(return_value=INFRA)
         self.run_batch(gate)
@@ -82,7 +107,7 @@ class RecoveryTests(unittest.TestCase):
     def test_ci_run_returns_typed_timeout_instead_of_throwing(self):
         launcher = SimpleNamespace(launch=Mock(return_value=SimpleNamespace(
             poll=lambda: dict(status='timeout', returncode=None, timeout='wall'))))
-        service = ci.CI('unused-ci-recovery', launcher)
+        service = ci.CI('unused-ci-recovery', launcher, resource_check=resources_go)
         spec = dict(run_id='ci-timeout', nonce='nonce', placement='wsl')
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)), \
@@ -145,13 +170,13 @@ class RecoveryTests(unittest.TestCase):
     def test_load_queues_before_launch_and_releases_runner_ticket(self):
         from drover.ledger import ci as slots
         launcher = SimpleNamespace(launch=Mock())
-        service = ci.CI('unused-ci-recovery', launcher)
+        service = ci.CI('unused-ci-recovery', launcher,
+                        resource_check=Mock(return_value=dict(verdict='queue', reasons=['load too high'])))
         spec = dict(run_id='ci-queued', nonce='nonce', placement='wsl')
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)), \
                 patch('drover.disk.read', return_value=[]), \
-                patch.object(ci.runner, 'write_json_atomic') as save, \
-                patch.object(resources, 'check', return_value=dict(verdict='queue', reasons=['load too high'])):
+                patch.object(ci.runner, 'write_json_atomic') as save:
             with self.assertRaisesRegex(ci.CIDeferred, 'load too high'):
                 service.run({}, '.', SHA, platforms=['wsl'], conn=self.conn)
         launcher.launch.assert_not_called()
@@ -319,7 +344,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotEqual(waiting.state(cause), 'attempting')
 
     def test_resumed_infrastructure_is_retained_for_landing_recovery(self):
-        service = ci.CI('unused-ci-recovery', SimpleNamespace())
+        service = ci.CI('unused-ci-recovery', SimpleNamespace(), resource_check=resources_go)
         saved = dict(checkout='work', commit=SHA, kind='full', platforms=['wsl'], base='main')
         with patch.object(Path, 'glob', return_value=[Path('ci-request-key.json')]), \
                 patch.object(ci, 'read_result', return_value=saved), patch.object(service, 'run', return_value=INFRA):

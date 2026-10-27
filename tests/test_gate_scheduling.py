@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 from drover import ci, dispatcher, launch, runner
 from drover.ledger import ci as slots, db, ops
 from drover.port import DirectPort
+from tests.fakeci import resources_go
 
 
 def memory_ledger(migrate=True):
@@ -233,7 +234,7 @@ class FullGateOrder(unittest.TestCase):
         self.calls, self.outcomes = [], {}
         self.interrupt = None
         self.launcher = SimpleNamespace(launch=self.launch, adopt=self.adopt)
-        self.service = ci.CI(self.tmp.name, self.launcher, poll_s=0)
+        self.service = ci.CI(self.tmp.name, self.launcher, poll_s=0, resource_check=resources_go)
         self.load = patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog)
         self.load.start()
         self.addCleanup(self.load.stop)
@@ -304,7 +305,7 @@ class FullGateOrder(unittest.TestCase):
         self.assertEqual(saved['index'], 1)
         row, = slots.lease_queue(self.conn)
         self.assertEqual((row['platform'], row['pinned']), ('windows', 1))
-        self.service = ci.CI(self.tmp.name, self.launcher, poll_s=0)
+        self.service = ci.CI(self.tmp.name, self.launcher, poll_s=0, resource_check=resources_go)
         self.service.resume({}, 'checkout', conn=self.conn)
         result = self.run_gate()
         self.assertTrue(result['passed'])
@@ -319,7 +320,7 @@ class FullGateOrder(unittest.TestCase):
             self.run_gate()
         saved_path, = Path(self.tmp.name).glob('ci-*.json')
         spec = json.loads(saved_path.read_text())['context']['spec']
-        restarted = ci.CI(self.tmp.name, self.launcher)
+        restarted = ci.CI(self.tmp.name, self.launcher, resource_check=resources_go)
         with patch.object(runner, 'request_stop', return_value=True) as stop:
             restarted.stop_active(self.conn, DirectPort(self.conn).admission()['epoch'])
         stop.assert_called_once_with(self.tmp.name, spec['run_id'], nonce=spec['nonce'])
@@ -347,7 +348,7 @@ class PlanContract(unittest.TestCase):
         from drover import placement, repos
         with tempfile.TemporaryDirectory() as root:
             prog = repos.normalize({'name': 'p', 'repo': root, 'scripts': {'test': '.drover/test.ps1'}})
-            service = ci.CI(root, launcher=SimpleNamespace())
+            service = ci.CI(root, launcher=SimpleNamespace(), resource_check=resources_go)
             with patch.object(placement, 'prepare_worktree'), patch.object(repos, 'load', return_value=prog), \
                     patch.object(ci, 'changed_paths', return_value=[]), \
                     patch.object(ci, 'changed_docs_only', return_value=False), \

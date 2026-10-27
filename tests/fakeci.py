@@ -103,3 +103,8 @@ class InProcessLauncher:
 
     def recover_ci(self, spec, status):
         return True
+
+
+def resources_go(**_):
+    """Admission probe that always admits, so tests not about admission never read host RAM or load."""
+    return dict(verdict='go', reasons=[])

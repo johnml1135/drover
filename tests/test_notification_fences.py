@@ -8,6 +8,7 @@ from drover.launch import AdmissionHeld
 from drover.launch import RunnerLauncher
 from drover.notifications import Notifications
 from drover.ledger import ops
+from tests.fakeci import resources_go
 from tests.test_dispatcher import Base, res, DONE
 from tests.test_landing import LandingCase
 from tests.test_replans import PlannerDispatchCase
@@ -202,7 +203,7 @@ class LandingFences(LandingCase):
         spec, = launched
         stop = runner.run_dir(self.ci.runs_dir, spec['run_id']) / runner.STOP_FILE
         self.assertEqual(json.loads(stop.read_text())['nonce'], spec['nonce'])
-        restarted = ci.CI(self.ci.runs_dir)
+        restarted = ci.CI(self.ci.runs_dir, resource_check=resources_go)
         restarted.stop_active(self.conn, service.admission()['epoch'])
         row = self.conn.execute("SELECT state,result FROM action_outbox WHERE kind='run.stop'").fetchone()
         self.assertEqual(row['state'], 'complete')
@@ -215,7 +216,7 @@ class LandingFences(LandingCase):
         ticket, = slots.lease_queue(self.conn)
         self.assertEqual(ticket['pinned'], 1)
         service.resume('owner', service.admission()['epoch'], 'ci-resume')
-        restarted = ci.CI(self.ci.runs_dir, self.ci.launcher)
+        restarted = ci.CI(self.ci.runs_dir, self.ci.launcher, resource_check=resources_go)
         with patch.object(self.ci.launcher, 'launch') as launch_again, \
                 patch.object(self.ci.launcher, 'adopt') as adopt:
             for status in (None, {'nonce': 'wrong', 'state': 'exited'}):

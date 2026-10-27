@@ -501,13 +501,27 @@ def _recovery_key(name, base, task):
     return 'landing_recovery:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
+def _clear_recovery(conn, keys=(), task_ids=()):
+    """Forget recovery state by exact key, or for every key that recorded one of task_ids."""
+    task_ids = set(task_ids)
+    with tx(conn):
+        doomed = set(keys)
+        if task_ids:
+            for key, value in conn.execute("SELECT key, value FROM settings WHERE key LIKE 'landing_recovery:%'").fetchall():
+                if task_ids & set(json.loads(value).get('tasks', [])):
+                    doomed.add(key)
+        for key in doomed:
+            conn.execute('DELETE FROM settings WHERE key=?', (key,))
+
+
 def _infra_failure(conn, keys, tasks, result, detail):
     from .ledger.waiting import Waiting, OWNER_ANSWER, cause_key
     with tx(conn):
         prior = [json.loads(ops.get_setting(conn, key, '{}')) for key in keys]
         saved = max(prior, key=lambda r: r.get('failures', 0))
         count = saved.get('failures', 0) + 1
-        saved.update(failures=count, next_after=time.time() + INFRA_BACKOFF_S, detail=detail)
+        saved.update(failures=count, next_after=time.time() + INFRA_BACKOFF_S, detail=detail,
+                     tasks=sorted({*saved.get('tasks', []), *(t['id'] for t in tasks)}))
         result.update(outcome='infra-held' if count >= 2 else 'infra-retry', detail=detail)
         if count >= 2 and not saved.get('question'):
             reason = 'Landing infrastructure recovery exhausted: ' + detail.get('reason', 'infrastructure failure')
@@ -578,7 +592,12 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     recovery = max((json.loads(ops.get_setting(conn, key, '{}')) for key in recovery_keys),
                    key=lambda r: r.get('failures', 0))
     if recovery.get('failures', 0) >= 2:
-        return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
+        question = recovery.get('question')
+        if question is not None and ops.get_question(conn, question)['status'] != 'open':
+            _clear_recovery(conn, recovery_keys)  # owner acknowledged: one fresh attempt
+            recovery = {}
+        else:
+            return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
     if recovery:
         from . import resources
         if time.time() < recovery['next_after'] or resources.check(new_workers=1)['verdict'] != 'go':
@@ -615,6 +634,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
             (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
     if repair and result['outcome'] in ('base-red', 'red', 'refused', 'conflict'):
         _block_repair(conn, name, repair, result, 'Designated repair did not pass fresh full CI: ' + result['outcome'])
+    _clear_recovery(conn, recovery_keys if result['outcome'] == 'landed' else (), [*result['landed'], *result['dropped']])
     storage.record_batch(conn, result)
     return result
 

@@ -205,12 +205,13 @@ def _tail(path, lines=40):
 
 
 class CI:
-    def __init__(self, runs_dir, launcher=None, poll_s=0.25, *, source=None):
+    def __init__(self, runs_dir, launcher=None, poll_s=0.25, resource_check=None, *, source=None):
         from .launch import RunnerLauncher
         self.source = source
         self.runs_dir = str(runs_dir)
         self.launcher = launcher or RunnerLauncher(runs_dir=self.runs_dir)
         self.poll_s = poll_s       # how often run() polls a runner and a slot queue; tests inject a short one
+        self.resource_check = resource_check  # admission probe; None means resources.check, tests inject one
         self._resumed = {}
 
     def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2', force_full=False):
@@ -420,7 +421,7 @@ class CI:
                     raise CIInterrupted('CI deferred until a healthy disk reading')
                 if not following and kind == 'full':
                     from . import resources
-                    resource = resources.check(new_workers=1)
+                    resource = (self.resource_check or resources.check)(new_workers=1)
                     verdicts = [resource]
                     if spec['placement'] == 'wsl':
                         verdicts.append(resource.get('wsl', {}))

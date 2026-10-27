@@ -13,7 +13,7 @@ from drover.ledger import ci as slots
 from drover.ledger import landing as landing_storage
 from drover.ledger import db as ledger_db
 from drover.ledger import ops
-from tests.fakeci import InProcessLauncher
+from tests.fakeci import InProcessLauncher, resources_go
 from tests.gitfix import Repo
 from tests.tiers import integration
 from tests.landing_fixture import MemoryLandingCase, ProcessFreeCase
@@ -82,7 +82,7 @@ class LandingCase(unittest.TestCase):
 
     def make_ci(self, runs):
         """Real-repository contracts use a live script; runner contracts override this."""
-        return ci.CI(runs, InProcessLauncher(runs))
+        return ci.CI(runs, InProcessLauncher(runs), resource_check=resources_go)
 
     def task(self, name, files, priority='P2', review='LAND', base='origin/main'):
         self.r.branch(name, files, base=base)
@@ -702,7 +702,7 @@ class RealRunnerLandingTests(LandingCase):
     """Real runner receipts wire green and red execution into the landing driver."""
 
     def make_ci(self, runs):
-        return ci.CI(runs, poll_s=0.05)
+        return ci.CI(runs, poll_s=0.05, resource_check=resources_go)
 
     def test_green_and_red_receipts_drive_landing(self):
         ids = [self.task(n, {f'{n}.txt': n}) for n in 'abc']

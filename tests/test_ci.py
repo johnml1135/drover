@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from drover import ci, config, repos, runner
 from drover.ledger import db, ci as slots
+from tests.fakeci import resources_go
 from tests.gitfix import Repo
 from tests.tiers import integration
 
@@ -49,7 +50,7 @@ class CITests(unittest.TestCase):
             context.start()
             self.addCleanup(context.stop)
         self.runs = self.repo.root / 'runs'
-        self.service = ci.CI(self.runs)
+        self.service = ci.CI(self.runs, resource_check=resources_go)
         self.machine = {'name': 'fixture', 'repo': str(self.repo.repo), 'run': {'env': {}}}
 
     def repo_config(self, *, scripts=None, gate=None):
@@ -115,7 +116,7 @@ class CITests(unittest.TestCase):
             raise sqlite3.OperationalError('database is locked')
         with patch.object(slots, 'lease_heartbeat', side_effect=interrupted):
             with self.assertRaises(ci.CIInterrupted):
-                ci.CI(self.runs, launcher).run(prog, self.repo.repo, commit, conn=conn)
+                ci.CI(self.runs, launcher, resource_check=resources_go).run(prog, self.repo.repo, commit, conn=conn)
         status_file = next(self.runs.glob('ci-*/status.json'))
         status = json.loads(status_file.read_text())
         # Kill only the runner: POSIX children survive; Windows closes its job.
@@ -127,10 +128,10 @@ class CITests(unittest.TestCase):
             os.kill(status['runner_pid'], signal.SIGKILL)
         with patch.object(launcher, 'recover_ci', return_value=False):
             with self.assertRaises(ci.CIInterrupted):
-                ci.CI(self.runs, launcher).resume(prog, self.repo.repo, conn=conn)
+                ci.CI(self.runs, launcher, resource_check=resources_go).resume(prog, self.repo.repo, conn=conn)
         self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
         self.assertEqual(len(slots.lease_queue(conn)), 1)
-        resumed = ci.CI(self.runs, launcher)
+        resumed = ci.CI(self.runs, launcher, resource_check=resources_go)
         with self.assertRaises(ci.CIError) as raised:
             resumed.resume(prog, self.repo.repo, conn=conn)
         self.assertNotIsInstance(raised.exception, ci.CIInterrupted)
@@ -160,7 +161,7 @@ class CITests(unittest.TestCase):
         commit = self.repo.commit('source.txt', 'changed')
         machine = {**self.machine, 'run': {**self.machine['run'], 'env': {
             'COUNT_FILE': str(count), 'RELEASE_FILE': str(release)}}}
-        command = f'from drover.ci import CI; CI({str(self.runs)!r}).run({machine!r}, {str(self.repo.repo)!r}, {commit!r})'
+        command = f'from drover.ci import CI; CI({str(self.runs)!r}, resource_check=resources_go).run({machine!r}, {str(self.repo.repo)!r}, {commit!r})'
         with open(self.repo.root / 'caller.log', 'w') as output:
             caller = subprocess.Popen([sys.executable, '-c', command], stdout=output, stderr=output, stdin=subprocess.DEVNULL)
             self.addCleanup(lambda: caller.poll() is None and caller.kill())
@@ -182,7 +183,7 @@ class CITests(unittest.TestCase):
             caller.wait(timeout=10)
             self.assertEqual(count.read_text(), 'start\n')
             release.touch()
-            resumed = ci.CI(self.runs)
+            resumed = ci.CI(self.runs, resource_check=resources_go)
             resumed.resume(machine, self.repo.repo)
             result = resumed.run(machine, self.repo.repo, commit)
         self.assertTrue(result['passed'])
@@ -256,7 +257,7 @@ class PolicyCITests(unittest.TestCase):
         self.source = MemoryRepository(self.repo)
         self.runs = self.repo.root / 'runs'
         self.launcher = Launcher(self.runs)
-        self.service = ci.CI(self.runs, self.launcher, poll_s=0)
+        self.service = ci.CI(self.runs, self.launcher, poll_s=0, resource_check=resources_go)
         self.machine = {'name': 'fixture', 'repo': str(self.repo.repo), 'run': {'env': {}}}
         self.raw_modes = ''
         original = config.get()
@@ -398,11 +399,11 @@ class PolicyCITests(unittest.TestCase):
         self.assertEqual(len(slots.lease_queue(conn)), 1)
         with patch.object(slots, 'lease_acquire', side_effect=sqlite3.OperationalError('database is locked')):
             with self.assertRaises(ci.CIInterrupted):
-                ci.CI(self.runs, self.launcher).resume(prog, self.repo.repo, conn=conn)
+                ci.CI(self.runs, self.launcher, resource_check=resources_go).resume(prog, self.repo.repo, conn=conn)
         self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
         self.assertEqual(len(slots.lease_queue(conn)), 1)
         self.launcher.released = True
-        resumed = ci.CI(self.runs, self.launcher)
+        resumed = ci.CI(self.runs, self.launcher, resource_check=resources_go)
         resumed.resume(prog, self.repo.repo, conn=conn)
         self.assertTrue(resumed.run(prog, self.repo.repo, commit, conn=conn)['passed'])
         self.assertEqual(count.read_text(), 'start\n')
