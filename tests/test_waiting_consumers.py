@@ -17,6 +17,7 @@ from drover.port import DirectPort
 from hub.dispatch import LandingService
 from hub.settings import Settings
 from hub.store import Store, UiView
+from tests.fakeci import resources_go
 from tests.tiers import integration
 from tests.test_waiting import LedgerCase, logical, require
 from tests.test_pipeline import prog_dict
@@ -252,7 +253,9 @@ class DirtyQueue(LandingCase):
         (configs / 'p.toml').write_text(f'name="p"\nrepo={json.dumps(str(self.r.repo))}\nworktrees={json.dumps(str(self.r.root / "worktrees"))}\n')
         store = Store(self.r.root / 'ledger.db')
         self.addCleanup(store.close)
-        return LandingService(store, Settings(runs_dir=self.r.root / 'receipts'), repos_dir=configs)
+        service = LandingService(store, Settings(runs_dir=self.r.root / 'receipts'), repos_dir=configs)
+        service.ci.resource_check = resources_go  # admission must not depend on host load
+        return service
 
     @integration
     def test_dirty_retry_owner_only(self):

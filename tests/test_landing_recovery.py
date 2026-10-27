@@ -263,7 +263,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_force_full_repair_flag_reaches_ci_preparation(self):
         service = ci.CI('unused-ci-recovery', SimpleNamespace(launch=Mock(return_value=SimpleNamespace(
-            poll=lambda: dict(status='timeout', returncode=None, timeout='wall')))))
+            poll=lambda: dict(status='timeout', returncode=None, timeout='wall')))), resource_check=resources_go)
         spec = dict(run_id='ci-full-repair', nonce='nonce', placement='wsl')
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)) as prepare, \
