@@ -4,6 +4,7 @@ A batch is 1..policy `landing_batch_size` reviewed tasks whose diffs share no fi
 a scratch worktree on a fresh base and the full gate runs once on the tip. On red: one owning task is dropped and
 the rest regated; ambiguous failures go to one `batch_culprit` decision; below tau (or on fallback) we bisect.
 """
+import hashlib
 import json
 import re
 import statistics
@@ -436,6 +437,38 @@ def sync_main(conn, repo, remote, branch, repo_name=None, control_epoch=None):
     return None
 
 
+INFRA_BACKOFF_S = 60
+
+
+def _recovery_key(name, base, task):
+    # Replay SHAs change on each rebuild; reviewed content is the stable identity.
+    identity = [name, base, task['id'], task['head']]
+    return 'landing_recovery:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+def _infra_failure(conn, keys, tasks, result, detail):
+    from .ledger.waiting import Waiting, OWNER_ANSWER, cause_key
+    with tx(conn):
+        prior = [json.loads(ops.get_setting(conn, key, '{}')) for key in keys]
+        saved = max(prior, key=lambda r: r.get('failures', 0))
+        count = saved.get('failures', 0) + 1
+        saved.update(failures=count, next_after=time.time() + INFRA_BACKOFF_S, detail=detail)
+        result.update(outcome='infra-held' if count >= 2 else 'infra-retry', detail=detail)
+        if count >= 2 and not saved.get('question'):
+            reason = 'Landing infrastructure recovery exhausted: ' + detail.get('reason', 'infrastructure failure')
+            qid = ops.ask_question(conn, 'task', tasks[0]['id'], 'Landing needs a healthy host',
+                                   reason + '\n' + '\n'.join(detail.get('log_tail', [])),
+                                   options=[{'label': 'Acknowledged'}], actor='landing')
+            saved['question'] = qid
+            waiting = Waiting(conn, 'landing')
+            cause = cause_key('question', qid)
+            for task in tasks:
+                waiting.wait(('task', task['id']), OWNER_ANSWER, cause_key(cause), cause=cause,
+                             data={'mode': 'needs-owner', 'note': reason})
+        for key in keys:
+            ops.set_setting(conn, key, json.dumps(saved))
+
+
 def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False, control_epoch=None):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
@@ -475,6 +508,15 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     result['batch'] = [t['id'] for t in tasks]
     if not tasks:
         return result
+    recovery_keys = [_recovery_key(name, sha, task) for task in tasks]
+    recovery = max((json.loads(ops.get_setting(conn, key, '{}')) for key in recovery_keys),
+                   key=lambda r: r.get('failures', 0))
+    if recovery.get('failures', 0) >= 2:
+        return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
+    if recovery:
+        from . import resources
+        if time.time() < recovery['next_after'] or resources.check(new_workers=1)['verdict'] != 'go':
+            return {**result, 'outcome': 'queued', 'detail': recovery['detail']}
     if waiting.state(base_cause) in ('authorized', 'attempting'):
         if not waiting.consume_retry(base_cause):
             return {**result, 'outcome': 'held'}
@@ -482,6 +524,8 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     work = Path(workdir)
     try:
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
+    except ci.CIInfrastructure as error:
+        _infra_failure(conn, recovery_keys, tasks, result, error.detail)
     except AdmissionHeld as error:
         result.update(outcome='held', reason=str(error))
     except BaseException as e:
@@ -490,6 +534,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
         storage.record_batch(conn, result)
         raise
     finally:
+        waiting.finish_retry(base_cause, completed=result['outcome'] in ('landed', 'infra-retry', 'infra-held'))
         if not interrupted:
             from . import ownership
             if ownership.owned_by(str(work), 'session:merge-group:' + work.name):
@@ -506,6 +551,8 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
     result['gate_s'].append(round(time.monotonic() - t0, 3))
     result['gates'] += 1
     result['bisect_gates'] += bisecting
+    if receipt.get('infra') or receipt['status'] == 'infra':
+        raise ci.CIInfrastructure(receipt)
     red = receipt['status'] == 'failed'
     result['red'] += red
     return receipt, red

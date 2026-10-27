@@ -32,6 +32,13 @@ class CIError(RuntimeError):
     pass
 
 
+class CIInfrastructure(CIError):
+    """A terminal infrastructure failure, carrying its structured CI outcome."""
+    def __init__(self, detail):
+        self.detail = detail
+        super().__init__(detail.get('reason') or '\n'.join(detail.get('log_tail', [])))
+
+
 class CIInterrupted(CIError):
     """Supervision failed before termination was confirmed; resume before changing the checkout."""
 
@@ -452,12 +459,18 @@ class CI:
                                                              {**current, 'state': 'killed', 'exit_code': None,
                                                               'ended': now(), 'reason': 'runner disappeared'})
                                     handle.cancel()
-                                    raise CIError('CI runner disappeared before writing its result; retry CI')
+                                    raise CIInfrastructure(dict(status='infra', infra=True, passed=False,
+                                        sha=commit, platform=spec['placement'], run_id=spec['run_id'],
+                                        reason='runner disappeared', log_tail=['CI runner disappeared before writing its result']))
                     time.sleep(self.poll_s)
                 evaluated = self.result(spec['run_id'], execution)
                 receipt = evaluated['receipt']
                 if receipt is None or evaluated['infra']:
-                    raise CIError(evaluated['excerpt'])
+                    request.unlink(missing_ok=True)
+                    return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
+                            'platform': spec['placement'], 'run_id': spec['run_id'],
+                            'reason': 'timeout' if execution.get('status') == 'timeout' else 'infrastructure',
+                            'log_tail': evaluated['excerpt'].splitlines(), 'receipt': receipt}
                 saved['results'].append(receipt)
                 saved['index'] = i + 1
                 saved.pop('context', None)
