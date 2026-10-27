@@ -33,6 +33,8 @@ def classify(conn, event):
                 result['commit'], result['tip'], result['receipt']):
             return 'landed'
         return 'stage'
+    if kind == 'landing.repair-blocked':
+        return 'issue'
     if kind == 'landing.outcome' and data.get('outcome') in ('infra-held', 'base-red', 'error', 'repair-blocked'):
         return 'issue'
     if kind == 'group.issue':

@@ -37,7 +37,8 @@ class RecoveryTests(unittest.TestCase):
         self.clock = self.stack.enter_context(patch.object(landing.time, 'time', return_value=1000))
 
     def run_batch(self, gate):
-        return landing.run_batch(self.conn, '.', gate, workdir=Path('unused-recovery-work'), repo_name='p')
+        return landing.run_batch(self.conn, '.', gate, workdir=Path('unused-recovery-work'), repo_name='p',
+                                 required_platforms=['windows', 'wsl'])
 
     def base_retry(self):
         waiting = Waiting(self.conn)
@@ -166,3 +167,81 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result['outcome'], 'queued')
         self.assertFalse(any(call.args[1:3] == ('worktree', 'remove') for call in git.call_args_list))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'landing_recovery:%'").fetchone()[0], 0)
+
+    def designate_repair(self):
+        landing.designate_base_repair(self.conn, 'p', SHA, self.task['id'], self.task['head'])
+
+    def hold_base(self):
+        waiting = Waiting(self.conn)
+        cause = cause_key('base', 'p', SHA)
+        waiting.wait(('merge_queue', 'p'), BASE, cause_key('p', SHA), cause=cause,
+                     data=dict(repo='p', sha=SHA, mode='blocked'))
+        return waiting, cause
+
+    def test_designated_repair_alone_passes_base_hold_and_runs_fresh_gate(self):
+        self.hold_base()
+        self.designate_repair()
+        receipt = dict(status='passed', passed=True, sha='b' * 40, results=[
+            dict(version=1, passed=True, sha='b' * 40, platform=p, kind='full') for p in ('windows', 'wsl')])
+        gate = Mock(return_value=receipt)
+        with patch.object(landing, 'build_tip', side_effect=lambda repo, work, base, tasks: ('b' * 40, tasks, [])), \
+                patch.object(landing, '_land', side_effect=lambda *args: args[6].update(outcome='landed')):
+            result = self.run_batch(gate)
+        self.assertEqual(result['outcome'], 'landed')
+        self.assertEqual([t['id'] for t in gate.call_args.args[2]], [self.task['id']])
+        self.assertTrue(gate.call_args.args[2][0]['base_repair'])
+
+    def test_undesignated_task_stays_held(self):
+        self.hold_base()
+        gate = Mock()
+        self.assertEqual(self.run_batch(gate)['outcome'], 'held')
+        gate.assert_not_called()
+
+    def test_blocked_repair_cycle_notifies_once_and_does_not_regate(self):
+        self.hold_base()
+        self.designate_repair()
+        gate = Mock(return_value=dict(status='failed', passed=False, platform='wsl'))
+        with patch.object(landing, 'base_status', return_value='red'):
+            self.assertEqual(self.run_batch(gate)['outcome'], 'repair-blocked')
+            self.assertEqual(self.run_batch(gate)['outcome'], 'repair-blocked')
+        self.assertEqual(gate.call_count, 1)
+        notices = ops.events(self.conn, kind='landing.repair-blocked')
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['task_id'], self.task['id'])
+
+    def test_stale_repair_head_cannot_bypass_hold(self):
+        self.hold_base()
+        self.designate_repair()
+        with patch.object(landing, 'form_batch', return_value=[dict(self.task, head='d' * 40)]):
+            gate = Mock()
+            self.assertEqual(self.run_batch(gate)['outcome'], 'repair-blocked')
+            gate.assert_not_called()
+
+    def test_repair_infrastructure_uses_same_bounded_budget(self):
+        self.hold_base()
+        self.designate_repair()
+        gate = Mock(return_value=INFRA)
+        self.assertEqual(self.run_batch(gate)['outcome'], 'infra-retry')
+        self.clock.return_value = 1100
+        self.assertEqual(self.run_batch(gate)['outcome'], 'infra-held')
+        self.assertEqual(gate.call_count, 2)
+
+    def test_repair_windows_only_receipt_cannot_land(self):
+        self.hold_base()
+        self.designate_repair()
+        receipt = dict(version=1, status='passed', passed=True, sha='b' * 40, platform='windows', kind='full')
+        with patch.object(landing, '_land') as land:
+            result = self.run_batch(Mock(return_value=receipt))
+        self.assertEqual(result['outcome'], 'repair-blocked')
+        land.assert_not_called()
+
+    def test_force_full_repair_flag_reaches_ci_preparation(self):
+        service = ci.CI('unused-ci-recovery', SimpleNamespace(launch=Mock(return_value=SimpleNamespace(
+            poll=lambda: dict(status='timeout', returncode=None, timeout='wall')))))
+        spec = dict(run_id='ci-full-repair', nonce='nonce', placement='wsl')
+        with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
+                patch.object(service, 'prepare', return_value=dict(spec=spec)) as prepare, \
+                patch.object(service, 'result', return_value=dict(receipt=None, infra=True, excerpt='wall timeout')), \
+                patch('drover.disk.read', return_value=[]), patch.object(ci.runner, 'write_json_atomic'):
+            service.run({}, '.', SHA, platforms=['wsl'], force_full=True)
+        self.assertTrue(prepare.call_args.kwargs['force_full'])

@@ -129,11 +129,13 @@ def candidates(conn, repo, repo_name=None):
     return sorted(found, key=lambda th: (PRIORITY_ORDER.index(th[0]['priority']), th[0]['rank'], th[0]['id']))
 
 
-def form_batch(conn, repo, base_ref, size=None, repo_name=None):
+def form_batch(conn, repo, base_ref, size=None, repo_name=None, *, task_id=None):
     """Up to `size` candidates whose changed files are disjoint: [{id, branch, files, title, head}]."""
     size = size or effective_batch_size(conn)
     chosen, used = [], set()
     for t, head in candidates(conn, repo, repo_name):
+        if task_id is not None and t['id'] != task_id:
+            continue
         files = task_files(repo, base_ref, t['branch'])
         if not files or used & set(files):
             continue
@@ -150,7 +152,8 @@ def build_tip(repo, worktree, base_sha, tasks):
     """Replay each task's commits onto base_sha in `worktree`. -> (tip sha, applied tasks with last_sha, conflicted ids)."""
     worktree = Path(worktree)
     checkpoint = worktree.parent / ('.' + worktree.name + '.merge-group.json')
-    identity = {'base': base_sha, 'tasks': [[t['id'], t.get('head') or branch_head(repo, t['branch'])] for t in tasks]}
+    identity = {'base': base_sha, 'tasks': [[t['id'], t.get('head') or branch_head(repo, t['branch'])] for t in tasks],
+                'base_repair': any(t.get('base_repair') for t in tasks)}
     saved = ci.read_result(checkpoint)
     def renew_owner():
         from . import ownership
@@ -437,6 +440,35 @@ def sync_main(conn, repo, remote, branch, repo_name=None, control_epoch=None):
     return None
 
 
+def designate_base_repair(conn, repo_name, base_sha, task_id, head):
+    """Explicit owner designation, pinned to one base and exact reviewed content."""
+    from .ledger.waiting import repo_key
+    name = repo_key(repo_name)
+    task = ops.get_task(conn, task_id)
+    if task['repo'].casefold() != name or not all(re.fullmatch('[0-9a-f]{40}', v) for v in (base_sha, head)):
+        raise ValueError('repair must name its repository and exact base/head SHAs')
+    with tx(conn):
+        ops.set_setting(conn, 'landing_base_repair:' + name,
+                        json.dumps(dict(base=base_sha, task=task_id, head=head)))
+        ops.event(conn, 'landing.repair-designated', 'owner', dict(base=base_sha, head=head), task_id=task_id)
+
+
+def _base_repair(conn, name, sha):
+    repair = json.loads(ops.get_setting(conn, 'landing_base_repair:' + name, '{}'))
+    return repair if repair.get('base') == sha else None
+
+
+def _block_repair(conn, name, repair, result, reason):
+    with tx(conn):
+        if not repair.get('blocked'):
+            repair['blocked'] = reason
+            ops.set_setting(conn, 'landing_base_repair:' + name, json.dumps(repair))
+            ops.event(conn, 'landing.repair-blocked', 'landing',
+                      dict(reason=reason, base=repair['base'], head=repair['head']), task_id=repair['task'])
+    result.update(outcome='repair-blocked', reason=repair['blocked'])
+    return result
+
+
 INFRA_BACKOFF_S = 60
 
 
@@ -470,7 +502,7 @@ def _infra_failure(conn, keys, tasks, result, detail):
 
 
 def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', size=None, repo_name=None,
-              decider=None, actor='landing', push=False, control_epoch=None):
+              decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
 
     The hub supplies a stable per-repo workdir and calls CI.resume before rebuilding it.
@@ -495,16 +527,27 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     name = repo_key(repo_name, repo)
     sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
     base_cause = cause_key('base', name, sha)
-    if waiting.state(base_cause) in ('open', 'attempting'):
+    repair = _base_repair(conn, name, sha)
+    if repair and repair.get('blocked'):
+        return _block_repair(conn, name, repair, result, repair['blocked'])
+    if not repair and waiting.state(base_cause) in ('open', 'attempting'):
         if waiting.state(base_cause) == 'attempting':
             waiting.consume_retry(base_cause)  # abandoned attempt reopens, without granting I/O
         waiting.wait(('merge_queue', name), BASE, cause_key(name, sha), cause=base_cause,
                      data={'repo': name, 'sha': sha, 'mode': 'blocked'})
         return {**result, 'outcome': 'held'}
-    if waiting.pending(('merge_queue', name)):
-        return {'outcome': 'held', 'landed': [], 'dropped': {}, 'tip': None, 'gates': 0, 'red': 0, 'bisect_gates': 0,
-                'decisions': 0, 'gate_s': [], 'batch': []}
-    tasks = form_batch(conn, repo, base_ref, size, repo_name)
+    pending = waiting.pending(('merge_queue', name))
+    if any(not repair or row['cause'] != base_cause for row in pending):
+        if repair:
+            return _block_repair(conn, name, repair, result, 'Repair is waiting on another queue prerequisite')
+        return {**result, 'outcome': 'held'}
+    tasks = (form_batch(conn, repo, base_ref, 1, repo_name, task_id=repair['task']) if repair
+             else form_batch(conn, repo, base_ref, size, repo_name))
+    if repair:
+        if len(tasks) != 1 or tasks[0]['head'] != repair['head']:
+            return _block_repair(conn, name, repair, result, 'Repair needs a fresh exact-head review')
+        tasks = [dict(tasks[0], base_repair=True)]
+        result['required_platforms'] = required_platforms or []
     result['batch'] = [t['id'] for t in tasks]
     if not tasks:
         return result
@@ -545,6 +588,8 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
                 placement.unlock_worktree(repo, str(work))
             git(repo, 'worktree', 'remove', '--force', str(work), check=False)
             (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
+    if repair and result['outcome'] in ('base-red', 'red', 'refused', 'conflict'):
+        _block_repair(conn, name, repair, result, 'Designated repair did not pass fresh full CI: ' + result['outcome'])
     storage.record_batch(conn, result)
     return result
 
@@ -599,6 +644,12 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         _control_guard(conn, result.get('control_epoch'))
         receipt, red = _gate(gate_fn, work, tip, tasks, result)
         if not red:
+            if result.get('required_platforms') is not None:
+                certified = {r.get('platform') for r in receipt.get('results', [receipt])
+                             if not ci.status_problems(r) and r.get('sha') == tip and r.get('kind') == 'full'}
+                if not result['required_platforms'] or not set(result['required_platforms']) <= certified:
+                    result.update(outcome='refused', error='Repair requires fresh exact-SHA full CI on every platform')
+                    return
             _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name)
             if result['outcome'] == 'stale-base' and stale_retries < 2:
                 stale_retries += 1

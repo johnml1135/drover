@@ -224,3 +224,13 @@ task XML quoting and current-user identity, physical-drive readings with WSL dow
 toast failure with durable Inbox replay, cross-kernel lock contention, root trim
 argv/distro pinning, junction protection and long paths, and capacity-hold release
 while saved CI runners still recover.
+
+An owner can designate one reviewed change as a base repair through
+`landing.designate_base_repair(conn, repo_name, base_sha, task_id, reviewed_head)`.
+The designation is stored in `landing_base_repair:<repo>` and applies only to that
+base and reviewed head. It admits that task alone through a base-red hold; other
+queue prerequisites still apply. Repairs require fresh full CI at the merge
+commit on every configured platform, including documentation-only changes.
+A failed repair cycle emits `landing.repair-blocked` once and pauses the
+designation. Designate again after addressing the failure; infrastructure
+recovery keeps its independent two-attempt limit for unchanged base/content.

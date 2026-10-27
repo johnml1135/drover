@@ -213,7 +213,7 @@ class CI:
         self.poll_s = poll_s       # how often run() polls a runner and a slot queue; tests inject a short one
         self._resumed = {}
 
-    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2'):
+    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2', force_full=False):
         """Plan a repo script at commit and return its runner spec and CI context."""
         source = self.source
         (source.prepare_worktree if source else placement.prepare_worktree)(checkout)
@@ -222,7 +222,7 @@ class CI:
         platform = platform or repos.gate_platforms(prog)[0]
         base = base or policy['base']
         paths = (source.changed_paths if source else changed_paths)(checkout, base, commit)
-        docs = policy['docs_only'] and (source.changed_docs_only if source else changed_docs_only)(
+        docs = not force_full and policy['docs_only'] and (source.changed_docs_only if source else changed_docs_only)(
             checkout, base, commit, policy['docs_only_globs'])
         effective = 'docs' if docs else kind
         commands = []
@@ -311,10 +311,10 @@ class CI:
                 key = request.stem.removeprefix('ci-')
                 result = self.run(prog, checkout, saved['commit'], kind=saved['kind'],
                                   platforms=saved['platforms'], base=saved['base'], conn=conn,
-                                  priority=saved.get('priority', 'P1'))
+                                  priority=saved.get('priority', 'P1'), force_full=saved.get('force_full', False))
                 self._resumed[str(checkout)] = (key, result)
 
-    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None):
+    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None, force_full=False):
         """Run placements WSL first in the shared checkout, or adopt a saved runner after a hub restart.
 
         Queued tickets can expire; a possibly-issued execution pins its acquired
@@ -325,6 +325,8 @@ class CI:
         prog = repos.load(prog, commit, checkout)
         platforms = platforms or repos.gate_platforms(prog)
         key = hashlib.sha256(json.dumps([str(checkout), commit, kind, platforms, base]).encode()).hexdigest()[:24]
+        if force_full:
+            key += '-full'
         if priority != 'P1':
             key += '-' + priority
         request = Path(self.runs_dir) / f'ci-{key}.json'
@@ -333,7 +335,7 @@ class CI:
             return cached[1]
         saved = read_result(request) or {'index': 0, 'results': [], 'checkout': str(checkout),
                                         'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority,
-                                        'order': repos.gate_order(platforms)}
+                                        'order': repos.gate_order(platforms), 'force_full': force_full}
         from .launch import AdmissionHeld
         from .port import DirectPort
         port = DirectPort(conn) if conn is not None else None
@@ -352,7 +354,7 @@ class CI:
                 guard()
                 rid = 'ci-' + uuid.uuid4().hex
                 context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=order[i], base=base,
-                                       priority=priority)
+                                       priority=priority, **({'force_full': True} if force_full else {}))
                 saved['context'] = context
                 saved['execution'] = 'prepared'
                 runner.write_json_atomic(request, saved)

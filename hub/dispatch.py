@@ -136,22 +136,15 @@ class LandingService:
         if disk.admission(disk.read())['verdict'] == 'hold':
             return {'outcome': contract.HOLD}
         size = 1 if land["policy"] == "single" else None
-        hold = landing.sync_main(conn, repo, repos.remote_name(prog), base_ref, name)
-        if hold:
-            return hold
-        from drover.ledger.waiting import Waiting, repo_key
-        waiting = Waiting(conn, "landing")
-        if waiting.pending(("merge_queue", repo_key(name, repo))):
-            return {"outcome": "held"}
-        batch = landing.form_batch(conn, repo, base_ref, size, name)
-        if not batch:
-            return {"outcome": "empty"}
-        tasks = [{"id": t["id"], "title": t["title"]} for t in batch]
-        ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": tasks}))
+        def gate(checkout, commit, tasks):
+            ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": [
+                {"id": t["id"], "title": t["title"]} for t in tasks]}))
+            return self.ci.run(prog, checkout, commit, base=base_ref, conn=conn, control_epoch=epoch,
+                               force_full=any(t.get('base_repair') for t in tasks))
         try:
-            r = landing.run_batch(conn, repo, lambda checkout, commit, tasks: self.ci.run(
-                                      prog, checkout, commit, base=base_ref, conn=conn, control_epoch=epoch), remote=repos.remote_name(prog),
-                                  branch=base_ref, size=size, repo_name=name, workdir=work, push=push, control_epoch=epoch)
+            r = landing.run_batch(conn, repo, gate, remote=repos.remote_name(prog),
+                                  branch=base_ref, size=size, repo_name=name, workdir=work, push=push, control_epoch=epoch,
+                                  required_platforms=repos.gate_platforms(prog))
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)
