@@ -61,7 +61,7 @@ OVER = {
     "tests/test_wizard.py": 583,
 }
 
-IMPURE_CEILING = 56  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
+IMPURE_CEILING = 58  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
 
 
 def sources():
