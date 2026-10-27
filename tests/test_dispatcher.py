@@ -133,6 +133,22 @@ class Admission(Base):
         self.d.tick()
         self.assertEqual(self.status(t), "ready")
 
+    def test_undispatched_ready_tasks_are_counted_by_reason_in_the_heartbeat(self):
+        beat = lambda: json.loads(ops.get_setting(self.conn, "dispatcher_heartbeat")).get("not_dispatched")
+        for _ in range(3):
+            self.task()
+        self.verdict = {"verdict": "queue", "slots": 0, "reasons": ["r"]}
+        self.d.tick()
+        self.assertEqual(beat(), {"resources-queue": 3})
+        self.verdict = GO
+        self.d.tick()
+        self.assertEqual(len(self.fl.specs), 3)
+        self.assertIsNone(beat())                        # everything dispatched: nothing to explain
+        self.task()
+        self.allow = {"claude": False, "codex": False}
+        self.d.tick()
+        self.assertEqual(beat(), {"backend-not-admitted": 1})
+
     def test_never_starts_backlog(self):
         a, b = self.task(ready=False), self.task(ready=False)
         ops.set_status(self.conn, b, "draft")

@@ -611,10 +611,8 @@ class Dispatcher:
         evaluated = self.pipeline.ci.result(run_id, result)
         receipt = evaluated["receipt"]
         passed = evaluated["passed"] and receipt.get("sha") == sha
-        excerpt = None
-        if not passed:
-            excerpt = evaluated["excerpt"]
-            infra = evaluated["infra"]
+        excerpt = None if passed else evaluated["excerpt"]
+        infra = not passed and evaluated["infra"]
         row = p.finish_run(run_id, contract.CI_PASSED if passed else contract.CI_FAILED,
                            note=(None if passed else excerpt.splitlines()[0][:280]),
                            tokens_in=0, tokens_out=0, tokens_cached=0)
@@ -1398,6 +1396,50 @@ class Dispatcher:
             self.port.set_status(task["id"], "needs-owner", reason=f"worktree failed: {e!r}"[:300])
         return False
 
+    def _admit(self, task, policy, admitted):
+        """(route, placement, worktree) to launch the claimed task, else a reason-code string; placement precedes the worktree (ADR 0007)."""
+        p, tid = self.port, task["id"]
+        if task.get("write", True) and not self.pipeline.prepare_dispatch(task):
+            return "no-gate"                         # no known gate for the repo: the owner was asked
+        route = self._route(task, policy, admitted)
+        if p.waiting.pending(("task", tid)):
+            return "waiting"
+        if route.get("needs_owner"):
+            p.set_status(tid, "needs-owner", reason=route["reason"])
+            return "needs-owner"
+        backend = route.get("backend")
+        if backend not in admitted:
+            self._defer(task, route.get("reason") or f"{backend} not admitted")
+            return "backend-not-admitted"
+        where, had, repo = None, task.get("worktree"), self.pipeline.repo(task)
+        if task.get("write", True) and repo is not None:
+            where, why = place(task, route, had, repo)
+            if where is None:
+                p.set_status(tid, "needs-owner", reason=why)
+                return "needs-owner"
+            if where == "wsl" and not self.launcher.wsl_up():
+                p.note_wsl_needed(tid)
+                self._defer(task, "WSL is not running", reason_code="wsl-down")
+                return "wsl-down"
+        wt = self._worktree(task, where)
+        if wt is False:
+            return "worktree-refused"                # the task went to the owner
+        placement, why = (where, None) if where is not None and had and wt == had else place(task, route, wt, repo)   # old worktree keeps its side
+        if placement is None:
+            p.set_status(tid, "needs-owner", reason=why)
+            return "needs-owner"
+        if self._is_unavailable(backend, placement):
+            self._defer(task, f"{backend} is not installed on {placement}")
+            return "backend-unavailable"
+        if placement == "wsl" and not self.launcher.wsl_up():
+            p.note_wsl_needed(tid)
+            self._defer(task, "WSL is not running", reason_code="wsl-down")
+            return "wsl-down"
+        blocked = self._ram_blocked(placement) or (placement == "wsl" and self._wsl_blocked())
+        if blocked:
+            self._defer(task, blocked)
+            return "resources"
+        return route, placement, wt
 
     def tick(self):
         self._control_epoch = self.port.admission()['epoch']
@@ -1405,10 +1447,18 @@ class Dispatcher:
         p = self.port
         policy = p.get_policy()
         enabled = truthy(p.get_setting("dispatch_enabled", "false"))
-        p.heartbeat({"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self.ci_runners.snapshot()})
+        beat = {"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self.ci_runners.snapshot()}
+        p.heartbeat(beat)
         planner_tasks = {tid for _, _, sp in self.live.values() if sp.get("role") == "planner" for tid in sp["task_ids"]}
         out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
+        in_use = lambda: p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
+        def report(skipped, stop=""):      # heartbeat `not_dispatched` {reason: count}; no event per task
+            if stop:
+                skipped[stop] = p.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='ready' AND archived=0").fetchone()[0]
+            if any(skipped.values()):
+                p.heartbeat({**beat, "not_dispatched": {k: n for k, n in skipped.items() if n}})
+            return out
         if not self.recovered:
             out["recovered"] = self.recover_orphans()      # its scan counts as this tick's scan
         else:
@@ -1429,8 +1479,7 @@ class Dispatcher:
                 (config_mod.state_dir(config_mod.get()) / 'disk' / token).unlink(missing_ok=True)
         if self.directors is not None:
             def director_slots():
-                used = p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
-                return max(0, min(policy['parallel_cap'] - used, res.get('slots', 0)))
+                return max(0, min(policy['parallel_cap'] - in_use(), res.get('slots', 0)))
             out['directors'] = self.directors.tick(p.admission(epoch=self._control_epoch),
                 dict(slots=director_slots, admit=self._director_admission))
         else:
@@ -1440,10 +1489,10 @@ class Dispatcher:
         if not control['allowed']:
             self._stop_for_control(control['epoch'])
             out['control'] = control
-            return out
+            return report({}, "control-stopped")
         self._stop_for_control(control['epoch'], changed_only=True)
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
-            return out
+            return report({}, "paused")
         out["verdict"] = res["verdict"]
         if res["verdict"] != self.last_verdict:
             p.append_event("resources", {"verdict": res["verdict"], "reasons": res.get("reasons", [])})
@@ -1451,15 +1500,13 @@ class Dispatcher:
         if res["verdict"] != "hold":
             out["gated"] = self._start_gates(policy)     # a gate is CPU work the lease paces, not new worker load
         if res["verdict"] != "go":                   # queue: no new claims; hold: nothing starts either
-            return out
+            return report({}, f"resources-{res['verdict']}")
         admitted = list(dict.fromkeys(s["backend"] for s in config_mod.get()["seats"]
                                      if not self._backend_down(s["backend"])))
         out["admitted"] = admitted
         if not admitted:
-            return out
-        in_use = p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
-        director_capacity = out.get('directors', {}).get('capacity_used', 0)
-        slots = min(policy["parallel_cap"] - in_use, res.get("slots", 0) - director_capacity)
+            return report({}, "no-backend-admitted")
+        slots = min(policy["parallel_cap"] - in_use(), res.get("slots", 0) - out.get('directors', {}).get('capacity_used', 0))
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
         slots -= len(out["reviewed"])
         out["planned"] = self._start_replans(policy, admitted, max(slots, 0))
@@ -1467,60 +1514,23 @@ class Dispatcher:
         skip = {row["subject_key"] for row in p.waiting.pending() if row["subject_kind"] == "task"}
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
+        skipped = {}
         while slots > 0:
             task = p.claim_next({}, exclude=skip)
             if task is None:
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            if task.get("write", True) and not self.pipeline.prepare_dispatch(task):
-                continue                             # no known gate for the repo: the owner was asked
-            route = self._route(task, policy, admitted)
-            if p.waiting.pending(("task", task["id"])):
+            got = self._admit(task, policy, admitted)
+            if isinstance(got, str):
+                skipped[got] = skipped.get(got, 0) + 1
                 continue
-            if route.get("needs_owner"):
-                p.set_status(task["id"], "needs-owner", reason=route["reason"])
-                continue
-            if route.get("backend") not in admitted:
-                self._defer(task, route.get("reason") or f"{route.get('backend')} not admitted")
-                continue
-            where = None
-            if task.get("write", True) and self.pipeline.repo(task) is not None:
-                # Placement first (seat, route, task and repo platforms), so a new worktree lands on that side's
-                # filesystem: ext4 for WSL (ADR 0007), the Windows root otherwise. An existing worktree keeps its place.
-                where, why = place(task, route, task.get("worktree"), self.pipeline.repo(task))
-                if where is None:
-                    p.set_status(task["id"], "needs-owner", reason=why)
-                    continue
-                if where == "wsl" and not self.launcher.wsl_up():
-                    p.note_wsl_needed(task["id"])
-                    self._defer(task, "WSL is not running", reason_code="wsl-down")
-                    continue
-            wt = self._worktree(task, where)
-            if wt is False:
-                continue                             # refused: the task went to the owner
-            placement, why = place(task, route, wt, self.pipeline.repo(task))
-            if placement is None:
-                p.set_status(task["id"], "needs-owner", reason=why)
-                continue
-            if self._is_unavailable(route["backend"], placement):
-                self._defer(task, f"{route['backend']} is not installed on {placement}")
-                continue
-            if placement == "wsl" and not self.launcher.wsl_up():
-                p.note_wsl_needed(task["id"])
-                self._defer(task, "WSL is not running", reason_code="wsl-down")
-                continue
-            if self._ram_blocked(placement):
-                self._defer(task, self._ram_blocked(placement))
-                continue
-            if placement == "wsl" and self._wsl_blocked():
-                self._defer(task, self._wsl_blocked())
-                continue
+            route, placement, wt = got
             if self._launch(task, route, policy, placement, cwd=wt) is not None \
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1
-        return out
+        return report(skipped, "no-slots" if slots <= 0 else "")
 
 
 def loop(dispatcher, interval=30, stop=lambda: False, sleep=time.sleep):
