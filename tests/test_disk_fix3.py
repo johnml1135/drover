@@ -254,7 +254,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
         from drover.disk_cleanup import CleanupRuntime, evaluate
         kinds = ('repo', 'bare', 'incomplete', 'venv', 'link', 'mount', 'live')
         all_protected, all_mounts, all_live = [], [], []
-        registrations, protected_worktrees = [], []
+        registrations, protected_worktrees, stage4_candidates = [], [], []
         store = MemoryCleanupState()
         evidence = MemoryCleanupEvidence(store)
         for seed in range(3):
@@ -304,7 +304,9 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                         if stage == 4:
                             registrations.extend((candidate, control))
                             protected_worktrees.append(str(candidate))
+                            stage4_candidates.append(str(candidate))
                             observation = evidence.add(str(candidate))
+                            observation['row']['tag']['lease_until'] = self.now + 86400
                             # Real path detectors produce facts at the adapter boundary.
                             # Unknown config parsing fails closed in-process; native grammar
                             # is checked by the real deletion contract.
@@ -331,6 +333,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                         request['now'] += 4 * 86400
                         request['tasks']['at'] = request['now']
                         result = evaluate(request, rt)
+                        stage4_request = request
                         self.assertTrue(set(protected_worktrees) <= {row['path'] for row in result['items']})
                         for path in protected_worktrees:
                             self.assertFalse(evidence.paths[path]['removed'], path)
@@ -359,6 +362,20 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                                                  'each protection has an independent eligible control')
                     for path in all_protected:
                         self.assertTrue(path.exists(), (seed, stage, str(path), first, result))
+
+        # Revisit all seeds after lease expiry and a full quarantine grace period.
+        # Protected content must survive even when its lease no longer protects it.
+        stage4_request['now'] += 4 * 86400
+        stage4_request['tasks']['at'] = stage4_request['now']
+        result = evaluate(stage4_request, rt)
+        self.assertTrue(set(protected_worktrees) <= {row['path'] for row in result['items']})
+        for path in stage4_candidates:
+            with self.subTest(path=path, lease='expired'):
+                observed = evidence.paths[path]
+                self.assertLessEqual(observed['row']['tag']['lease_until'], stage4_request['now'])
+                self.assertFalse(observed['removed'], result)
+        for path in all_protected:
+            self.assertTrue(path.exists(), ('expired stage-4 lease', str(path), result))
 
 
 class RepositorySafety(ProcessFreeDiskCase):

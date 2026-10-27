@@ -700,11 +700,31 @@ class Safety(Base):
             self.assertTrue(self.pipe.worktree(self.get(tid)))
 
     def test_fetch_and_landing_git_calls_are_bounded(self):
-        import inspect
-        self.assertIn("timeout=FETCH_TIMEOUT_S", inspect.getsource(pipeline.Pipeline._create))
+        from unittest import mock
         self.assertEqual((pipeline.FETCH_TIMEOUT_S, landing.FETCH_TIMEOUT_S), (120, 120))
-        r = pipeline.git(self.fix.repo, "fetch", "origin", timeout=0.000001)
-        self.assertEqual(r.returncode, 124)
+        tid = self.task()
+        fetch_args = ("fetch", "origin", "main",
+                      "--refmap=+refs/heads/main:refs/remotes/origin/main")
+        timeout_error = subprocess.TimeoutExpired(["git", *fetch_args], timeout=pipeline.FETCH_TIMEOUT_S)
+        real_pipeline_git = pipeline.git
+        results = []
+
+        def run_pipeline_git(*args, **kwargs):
+            result = real_pipeline_git(*args, **kwargs)
+            results.append(result)
+            return result
+
+        # Exercise the production fetch caller and wrapper, while making its timeout deterministic.
+        with mock.patch.object(placement, "git", side_effect=timeout_error) as placed_git:
+            with mock.patch.object(pipeline, "git", side_effect=run_pipeline_git) as run_git:
+                self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))
+
+        run_git.assert_called_once_with(self.fix.repo, *fetch_args, check=False,
+                                        timeout=pipeline.FETCH_TIMEOUT_S)
+        placed_git.assert_called_once_with(self.fix.repo, *fetch_args,
+                                           timeout=pipeline.FETCH_TIMEOUT_S)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].returncode, 124)
 
     def test_a_land_verdict_needs_the_whole_sha(self):
         tid, sha = self.to_gated()

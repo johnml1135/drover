@@ -412,21 +412,29 @@ class Handle(Base):
     def test_cancel_publishes_nothing_even_with_a_pass_in_flight(self):
         for i in range(30):
             rid = 100 + i
-            h = self.rl.launch(spec(run_id=rid))
+            with patch.dict(self.rl.handle_kw, autostart=False):
+                h = self.rl.launch(spec(run_id=rid))
+            self.addCleanup(h.cancel)
             gate = threading.Event()
+            release = threading.Event()
             orig = h.terminal
 
-            def held(orig=orig, gate=gate):
+            def held(orig=orig, gate=gate, release=release):
                 st = orig()
                 if st:                      # the thread has seen the terminal status; hold it before it publishes
                     gate.set()
-                    time.sleep(0.05)
+                    self.assertTrue(release.wait(5), "terminal observation was not released")
                 return st
             h.terminal = held
             self.set_status(rid, state="exited", exit_code=0)
-            self.assertTrue(gate.wait(5))
-            h.cancel()                      # cancel lands while the thread is between reading and publishing
-            time.sleep(0.1)
+            h._thread.start()                # install the observer before the first terminal read
+            try:
+                self.assertTrue(gate.wait(5))
+                h.cancel()                  # cancel lands while the thread is between reading and publishing
+            finally:
+                release.set()
+                h._thread.join(5)
+            self.assertFalse(h._thread.is_alive(), i)
             self.assertIsNone(h.poll(), i)
 
     def test_cancel_before_anything_happens_publishes_nothing(self):
