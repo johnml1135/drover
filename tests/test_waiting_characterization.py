@@ -2,13 +2,15 @@
 import json
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from drover import config, landing, repos, route
 from drover.ledger import ops
 from tests.test_dispatcher import Base as DispatchBase, BLOCKED, res
-from tests.test_pipeline import Base as PipelineBase, prog_dict, result
-from tests.test_landing import LandingCase, fake_decider
-from tests.gitfix import Repo
+from tests.test_pipeline import prog_dict, result
+from tests.rcw_fixture import PipelineBase
+from tests.test_landing import fake_decider
+from tests.waiting_fixture import LandingCase
 
 
 def fixture(owner, cls):
@@ -19,6 +21,19 @@ def fixture(owner, cls):
 
 
 class Holds(DispatchBase):
+    def setUp(self):
+        super().setUp()
+        from drover.pipeline import WorktreeRefused
+        # DispatchBase has a configured but unavailable source checkout. Model
+        # that observation directly when blocking a worker requests a replan.
+        for context in (
+            patch.object(self.d.replanning, '_inputs', side_effect=WorktreeRefused('fixture source unavailable')),
+            patch('subprocess.Popen', side_effect=AssertionError('policy tests must not start a process')),
+            patch('time.sleep', side_effect=AssertionError('policy tests must not sleep')),
+        ):
+            context.start()
+            self.addCleanup(context.stop)
+
     def test_fanout_approval(self):
         epic = ops.create_epic(self.conn, 'p', 'shared work')['id']
         other_epic = ops.create_epic(self.conn, 'p', 'other work')['id']
@@ -86,10 +101,10 @@ class Holds(DispatchBase):
 
 class Consumers(PipelineBase):
     def test_origin_retry_repeated_failure(self):
-        healthy = Repo()
+        healthy = self.new_repo()
         self.addCleanup(healthy.cleanup)
         self.pipe.all_repos()['healthy'] = prog_dict(healthy.repo, Path(self.tmp.name) / 'healthy-wts', name='healthy')
-        self.fix.git('remote', 'set-url', 'origin', str(self.fix.root / 'offline.git'))
+        self.fix.online = False
         offline, good = self.task(), self.task(repo='healthy')
         self.assertEqual(self.d.tick()['launched'], [good])
         self.assertEqual(self.status(offline), 'needs-owner')
@@ -102,7 +117,7 @@ class Consumers(PipelineBase):
         self.d.tick()
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
         self.assertEqual(self.status(good), 'running')
-        self.fix.git('remote', 'set-url', 'origin', str(self.fix.remote))
+        self.fix.online = True
         ops.answer_question(self.conn, ops.open_questions(self.conn)[0]['id'], choice='Retry origin sync')
         self.assertIn(offline, self.d.tick()['launched'])
 
@@ -154,15 +169,13 @@ class Consumers(PipelineBase):
         (root / 'base.txt').write_bytes(b'tracked owner bytes\n')
         (root / 'untracked.txt').write_bytes(b'untracked owner bytes\n')
         (root / 'staged.txt').write_bytes(b'staged owner bytes\n')
-        f.r.git('add', 'staged.txt')
+        f.r.dirty = True
         before = {n: (root / n).read_bytes() for n in ('base.txt', 'untracked.txt', 'staged.txt')}
-        head = f.r.git('rev-parse', 'HEAD')
-        index = f.r.git('ls-files', '--stage')
+        head = f.r.heads['main']
         out = landing.run_batch(f.conn, root, f.gate, workdir=f.work, decider=fake_decider())
         self.assertEqual(out['outcome'], 'refused')
         self.assertEqual(f.status(tid), 'reviewed')
-        self.assertEqual(f.r.git('rev-parse', 'HEAD'), head)
-        self.assertEqual(f.r.git('ls-files', '--stage'), index)
+        self.assertEqual(f.r.heads['main'], head)
         self.assertEqual({n: (root / n).read_bytes() for n in before}, before)
 
     def test_backoff_cooldown_recovery(self):
@@ -216,9 +229,9 @@ class Consumers(PipelineBase):
         for action in ('Keep holding', 'Retry landing', 'move'):
             with self.subTest(action=action):
                 f = fixture(self, LandingCase)
-                f.r.commit('poison.txt', 'BAD')
-                f.r.git('push', 'origin', 'HEAD:main')
-                f.r.git('fetch', 'origin')
+                f.r.owner_commit({'poison.txt': 'BAD'})
+                f.r.remote = f.r.heads['main']
+                f.r.tracking = f.r.remote
                 tid = f.task('feature', {'feature.txt': 'safe'})
                 run = lambda: landing.run_batch(f.conn, f.r.repo, f.gate, workdir=f.work, decider=fake_decider())
                 first = run()
@@ -227,8 +240,8 @@ class Consumers(PipelineBase):
                 self.assertEqual(run()['gates'], 0)
                 q, = ops.open_questions(f.conn)
                 if action == 'move':
-                    f.r.commit('poison.txt', 'fixed')
-                    f.r.git('push', 'origin', 'HEAD:main')
+                    f.r.owner_commit({'poison.txt': 'fixed'})
+                    f.r.remote = f.r.heads['main']
                 else:
                     ops.answer_question(f.conn, q['id'], choice=action)
                 again = run()

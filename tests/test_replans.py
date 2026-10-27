@@ -10,7 +10,9 @@ from drover import brief, config, contract, launch, pipeline, repos
 from drover.ledger import connect, db, ops, states
 from drover.port import DirectPort
 from tests.test_waiting import LedgerCase, logical, require
-from tests.test_pipeline import Base as PipelineBase, result
+from tests.test_pipeline import result
+from tests.rcw_fixture import PipelineBase
+from tests.tiers import integration
 
 ROUTE = {'backend': 'codex', 'model': 'gpt-6.1-sol', 'seat': 'codex', 'effort': 'high'}
 REVISE = {'action': 'revise', 'goal': 'Use the actual API', 'acceptance': ['works'], 'scope_files': ['src/*']}
@@ -81,6 +83,7 @@ class Records(PipelineBase):
         with self.assertRaises(brief.BriefTooLarge):
             assemble({**task, 'goal': 'required spec ' * 100000}, [], [], inputs)
 
+    @integration
     def test_inputs_detect_dirty_and_branch_changes(self):
         method = require(self, 'drover.replan', 'Replanning')
         self.assertTrue(callable(method), 'Replanning interface is absent')
@@ -137,6 +140,16 @@ class Records(PipelineBase):
         self.assertEqual(self.fix.git('rev-parse', 'HEAD'), owner_head)
         self.assertEqual(self.fix.git('ls-files', '--stage'), owner_index)
         self.assertEqual(self.fix.git('status', '--porcelain'), owner_status)
+
+        # Same commit, different branch must still invalidate the planner input.
+        branch_tid = self.task()
+        checkout = self.pipe.worktree(self.get(branch_tid))
+        branch_task = self.get(branch_tid)
+        before = inspected(self, branch_task)
+        self.fix.git('switch', '-c', 'different-branch', cwd=checkout)
+        after = inspected(self, branch_task)
+        self.assertEqual(before['head'], after['head'])
+        self.assertNotEqual(before['branch'], after['branch'])
 
 
 class Replans(LedgerCase):
@@ -555,30 +568,19 @@ def time_now(d):
     return d.now()
 
 class PlannerCommandExecution(unittest.TestCase):
-    @unittest.skipIf(os.name == 'nt', 'executable stand-in runs on WSL')
     def test_composed_planner_argv_runs_with_readonly_permissions(self):
-        import subprocess
-        import sys
-        import tempfile
-        with tempfile.TemporaryDirectory() as root:
-            executable = Path(root) / 'model-backend'
-            executable.write_text(f'#!{sys.executable}\n' +
-                                  'import json,sys\nprint(json.dumps({"argv":sys.argv[1:],"stdin":sys.stdin.read()}))\n')
-            executable.chmod(0o755)
-            for backend in ('claude', 'codex'):
-                spec = dict(role='planner', write=True, backend=backend, binary=str(executable),
-                            model='gpt-6.1-sol' if backend == 'codex' else 'opus-5.5', effort='high',
-                            cwd=root, placement='windows', system_append='planner policy', user_prompt='plan only')
-                argv, stdin = launch.build_argv(spec)
-                ran = subprocess.run(argv, input=stdin, capture_output=True, text=True, check=True, cwd=root)
-                observed = json.loads(ran.stdout)
-                self.assertEqual(observed['stdin'], 'plan only')
-                if backend == 'codex':
-                    self.assertEqual(observed['argv'][observed['argv'].index('-s') + 1], 'read-only')
-                else:
-                    permissions = json.loads(observed['argv'][observed['argv'].index('--settings') + 1])['permissions']
-                    self.assertTrue({'Edit', 'Write', 'Bash'} <= set(permissions['deny']))
-                    self.assertFalse({'Edit', 'Write', 'Bash'} & set(permissions['allow']))
+        for backend in ('claude', 'codex'):
+            spec = dict(role='planner', write=True, backend=backend,
+                        model='gpt-6.1-sol' if backend == 'codex' else 'opus-5.5', effort='high',
+                        cwd='/planner', placement='windows', system_append='planner policy', user_prompt='plan only')
+            argv, stdin = launch.build_argv(spec)
+            self.assertEqual(stdin, 'plan only')
+            if backend == 'codex':
+                self.assertEqual(argv[argv.index('-s') + 1], 'read-only')
+            else:
+                permissions = json.loads(argv[argv.index('--settings') + 1])['permissions']
+                self.assertTrue({'Edit', 'Write', 'Bash'} <= set(permissions['deny']))
+                self.assertFalse({'Edit', 'Write', 'Bash'} & set(permissions['allow']))
 
 class PlannerRegressions(PlannerDispatchCase):
     def test_cancelled_launch_stays_guarded_across_restart(self):
@@ -607,14 +609,6 @@ class PlannerRegressions(PlannerDispatchCase):
         again.tick()
         self.assertEqual(len(self.planners()), 3)
 
-    def test_same_commit_branch_switch_invalidates_inputs(self):
-        tid = self.task()
-        checkout = self.pipe.worktree(self.get(tid))
-        before = inspected(self, self.get(tid))
-        self.fix.git('switch', '-c', 'different-branch', cwd=checkout)
-        after = inspected(self, self.get(tid))
-        self.assertEqual(before['head'], after['head'])
-        self.assertNotEqual(before['branch'], after['branch'])
 
 
 class PlannerSplitBounds(LedgerCase):

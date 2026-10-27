@@ -8,7 +8,8 @@ from drover import config, contract, dispatcher, repos, stats
 from hub.dispatch import LandingService
 from drover.ledger import ops
 from tests import test_dispatcher, test_pipeline
-from tests.test_pipeline import Base, prog_dict
+from tests.test_pipeline import prog_dict
+from tests.rcw_fixture import PipelineBase as Base
 
 
 def repo(repo, worktrees, platforms=None, gate_platform="windows", default=None):

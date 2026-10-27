@@ -19,9 +19,11 @@ from hub.settings import Settings
 from hub.store import Store, UiView
 from tests.tiers import integration
 from tests.test_waiting import LedgerCase, logical, require
-from tests.test_pipeline import Base as PipelineBase, prog_dict
+from tests.test_pipeline import prog_dict
+from tests.rcw_fixture import PipelineBase
 from tests.test_waiting_characterization import fixture
-from tests.test_landing import LandingCase, fake_decider
+from tests.test_landing import fake_decider
+from tests.waiting_fixture import LandingCase
 
 
 class ConsumerCase(PipelineBase):
@@ -78,7 +80,7 @@ class ScriptsOrigin(ConsumerCase):
 
     def test_origin_release_reopen(self):
         w = self.waiting()
-        self.fix.git('remote', 'set-url', 'origin', str(self.fix.root / 'offline.git'))
+        self.fix.online = False
         tid = self.task()
         self.d.tick()
         cause = self.key('origin', 'p')
@@ -97,7 +99,7 @@ class ScriptsOrigin(ConsumerCase):
         self.assertEqual([q2['id'] for q2 in ops.open_questions(self.conn)], [q['id']])
         self.d.tick()
         self.assertEqual([q2['id'] for q2 in ops.open_questions(self.conn)], [q['id']])
-        self.fix.git('remote', 'set-url', 'origin', str(self.fix.remote))
+        self.fix.online = True
         ops.answer_question(self.conn, q['id'], choice='Retry origin sync')
         self.assertEqual(self.d.tick()['launched'], [tid])
         self.assertEqual(w.state(cause), 'resolved')
@@ -160,7 +162,7 @@ class BaseQueue(LandingCase):
         from drover.ledger.waiting import Waiting, BASE, cause_key
         w = Waiting(self.conn, 'owner')
         tid = self.task('feature', {'feature.txt': 'safe'})
-        sha = self.r.git('rev-parse', 'main')
+        sha = self.r.heads['main']
         cause = cause_key('base', 'p', sha)
         w.wait(('merge_queue', 'p'), BASE, cause_key('p', sha), cause=cause,
                data={'repo': 'p', 'sha': sha, 'mode': 'blocked'})
@@ -178,7 +180,7 @@ class BaseQueue(LandingCase):
     def test_empty_queue_retains_base_retry_grant(self):
         from drover.ledger.waiting import Waiting, BASE, cause_key
         w = Waiting(self.conn, 'owner')
-        sha = self.r.git('rev-parse', 'main')
+        sha = self.r.heads['main']
         cause = cause_key('base', 'p', sha)
         w.wait(('merge_queue', 'p'), BASE, cause_key('p', sha), cause=cause,
                data={'repo': 'p', 'sha': sha, 'mode': 'blocked'})
@@ -196,15 +198,15 @@ class BaseQueue(LandingCase):
         Waiting = require(self, 'drover.ledger.waiting', 'Waiting')
         key = require(self, 'drover.ledger.waiting', 'cause_key')
         w = Waiting(self.conn, 'owner')
-        self.r.commit('poison.txt', 'BAD')
-        self.r.git('push', 'origin', 'HEAD:main')
-        self.r.git('fetch', 'origin')
+        self.r.owner_commit({'poison.txt': 'BAD'})
+        self.r.remote = self.r.heads['main']
+        self.r.tracking = self.r.remote
         tid = self.task('feature', {'feature.txt': 'safe'})
         run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', decider=fake_decider())
         first = run()
         self.assertEqual((first['outcome'], first['dropped']), ('base-red', {}))
         q, = ops.open_questions(self.conn)
-        sha = self.r.git('rev-parse', 'main')
+        sha = self.r.heads['main']
         base_cache.record_base(self.conn, 'other', sha, 'green')
         self.assertEqual(run()['gates'], 0)
         ops.answer_question(self.conn, q['id'], choice='Keep holding')
@@ -218,8 +220,8 @@ class BaseQueue(LandingCase):
         base_cache.record_base(self.conn, 'p', sha, 'green')
         self.assertEqual(w.pending(('merge_queue', 'p')), [])
         self.assertFalse(w.consume_retry(key('base', 'p', sha)))
-        self.r.commit('poison.txt', 'fixed')
-        self.r.git('push', 'origin', 'HEAD:main')
+        self.r.owner_commit({'poison.txt': 'fixed'})
+        self.r.remote = self.r.heads['main']
         self.assertEqual(run()['outcome'], 'landed')
         self.assertEqual(base_cache.base_status(self.conn, 'other', sha), 'green')
 
@@ -252,6 +254,7 @@ class DirtyQueue(LandingCase):
         self.addCleanup(store.close)
         return LandingService(store, Settings(runs_dir=self.r.root / 'receipts'), repos_dir=configs)
 
+    @integration
     def test_dirty_retry_owner_only(self):
         DirtyCheckout = require(self, 'drover.origin', 'DirtyCheckout')
         Waiting = require(self, 'drover.ledger.waiting', 'Waiting')
@@ -262,6 +265,10 @@ class DirtyQueue(LandingCase):
         main = self.r.root / 'owner-main'
         self.r.git('worktree', 'add', main, 'main')
         (main / 'owner.txt').write_text('owner bytes')
+        (main / 'base.txt').write_text('tracked owner bytes')
+        (main / 'staged.txt').write_text('staged owner bytes')
+        self.r.git('add', 'staged.txt', cwd=main)
+        index = self.r.git('ls-files', '--stage', cwd=main)
         before = self.r.git('rev-parse', 'main')
         with self.assertRaises(DirtyCheckout):
             origin.fast_forward(self.r.repo, 'main', self.r.git('rev-parse', 'feature'), before)
@@ -277,12 +284,17 @@ class DirtyQueue(LandingCase):
         self.assertEqual([q2['id'] for q2 in ops.open_questions(self.conn)], [q['id']])
         self.assertEqual(self.r.git('rev-parse', 'main'), before)
         self.assertEqual((main / 'owner.txt').read_text(), 'owner bytes')
+        self.assertEqual((main / 'base.txt').read_text(), 'tracked owner bytes')
+        self.assertEqual((main / 'staged.txt').read_text(), 'staged owner bytes')
+        self.assertEqual(self.r.git('ls-files', '--stage', cwd=main), index)
         self.assertEqual(self.status(tid), 'reviewed')
         (main / 'owner.txt').unlink()  # Simulate the owner's own cleanup.
+        self.r.git('reset', '--hard', cwd=main)
         ops.answer_question(self.conn, q['id'], choice='Retry landing')
         self.assertEqual(run()['outcome'], 'landed')
         self.assertEqual(w.pending(('merge_queue', 'p')), [])
         self.assertTrue(issubclass(DirtyCheckout, origin.SyncError))
+
 
     @integration
     def test_interrupted_ci_precedes_wait_and_rebuild(self):

@@ -1,24 +1,23 @@
-"""CI's public interface, using repo scripts and the real composed runner command.
-
-Tests that start the real runner are in the integration tier (tests/tiers.py); InProcessCITests runs the ones whose
-assertions do not depend on the runner on the in-process launcher so the default tier still exercises CI.run."""
+"""CI policy runs against scripted execution; bounded real adapter contracts."""
 import json
 import os
-import shutil
 import sqlite3
 from pathlib import Path
 import subprocess
 import sys
-import inspect
 import time
 import unittest
 from unittest.mock import patch
 
 from drover import ci, config, repos, runner
 from drover.ledger import db, ci as slots
-from tests.fakeci import InProcessLauncher
 from tests.gitfix import Repo
 from tests.tiers import integration
+
+from tests.ci_fixture import Launcher
+from tests.rcw_repo import MemoryRepo, MemoryRepository
+from drover import placement
+import tempfile
 
 PLATFORM = 'windows' if os.name == 'nt' else 'wsl'
 
@@ -96,142 +95,6 @@ class CITests(unittest.TestCase):
         self.assertIn('heartbeat', status)
 
     @integration
-    def test_exit_code_and_clean_tree_determine_the_result(self):
-        prog = self.configure('print("PASSED summary"); raise SystemExit(7)')
-        commit = self.repo.commit('source.txt', 'changed')
-        result = self.service.run(prog, self.repo.repo, commit)
-        self.assertEqual((result['passed'], result['exit_code'], result['kind']), (False, 7, 'full'))
-        self.assertEqual(result['log_tail'], ['PASSED summary'])
-        self.repo.commit('.drover/scripts/check action.ps1', 'Set-Content source.txt changed-again\nexit 0\n')
-        commit = self.repo.git('rev-parse', 'HEAD')
-        result = self.service.run(prog, self.repo.repo, commit)
-        self.assertEqual((result['exit_code'], result['tree_unchanged'], result['passed']), (0, False, False))
-
-    @integration
-    def test_a_passing_result_does_not_authorize_cancelled_execution(self):
-        from drover.launch import RunnerLauncher
-        class CancelledAfterResult(RunnerLauncher):
-            def launch(self, spec):
-                handle = super().launch(spec)
-                class Follow:
-                    def poll(self):
-                        value = handle.poll()
-                        return {**value, 'status': 'error', 'returncode': returncode} if value else None
-                return Follow()
-        prog = self.configure('print("finished")')
-        commit = self.repo.commit('source.txt', 'changed')
-        for returncode in (-15, 0):
-            with self.subTest(returncode=returncode):
-                service = ci.CI(self.runs, CancelledAfterResult(self.runs))
-                with self.assertRaises(ci.CIError):
-                    service.run(prog, self.repo.repo, commit)
-
-    @integration
-    def test_docs_classification_is_shared_by_checks_and_full_ci(self):
-        prog = self.configure('raise SystemExit(7)', docs=True)
-        commit = self.repo.commit('docs/readme.md', 'documentation\n')
-        for kind in ('checks', 'full'):
-            result = self.service.run(prog, self.repo.repo, commit, kind=kind)
-            self.assertTrue(result['passed'])
-            self.assertEqual(result['kind'], 'docs')
-        self.repo.commit('.drover/scripts/docs.ps1', 'Write-Output "docs script"\nexit 0\n')
-        self.repo.commit('.drover/config.toml', self.repo_config(scripts={'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
-        self.repo.git('branch', '-f', 'main', 'HEAD')
-        commit = self.repo.commit('docs/next.md', 'more docs\n')
-        result = self.service.run(prog, self.repo.repo, commit)
-        self.assertIn('--check', result['steps'][0]['command'])
-        self.assertEqual(result['steps'][1]['command'][-1], '.drover/scripts/docs.ps1')
-        self.assertIn('docs script', result['log_tail'])
-
-    def test_docs_policy_through_prepare(self):
-        self.configure('raise SystemExit(99)', docs=True)
-        original = self.repo.git('rev-parse', 'main')
-        for files, policy, expected in (
-                ({'docs/readme.md': 'docs\n', 'source.py': 'code\n'}, {}, 'checks'),
-                ({'.github/readme.md': 'docs\n'}, {}, 'checks'),
-                ({'docs/readme.md': 'docs\n'}, {'docs_only': False}, 'checks'),
-                ({'guide/readme.rst': 'docs\n'}, {'docs_only_globs': ['guide/**']}, 'docs'),
-                ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': ['guide/**']}, 'checks'),
-                ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': []}, 'checks'),
-                ({'guide/readme.md': 'docs\n'}, {'docs_only_globs': ['**/*.md', '!guide/**']}, 'checks')):
-            with self.subTest(files=files, policy=policy):
-                self.repo.git('checkout', '-B', 'case', original)
-                self.repo.commit('.drover/config.toml', self.repo_config(gate=policy))
-                self.repo.git('branch', '-f', 'main', 'HEAD')
-                for path, content in files.items():
-                    commit = self.repo.commit(path, content)
-                context = self.service.prepare(self.machine, self.repo.repo, commit, 'docs-policy')
-                self.assertEqual(context['kind'], expected)
-                plan = json.loads((self.runs / 'docs-policy' / 'plan.json').read_text())
-                self.assertEqual('--check' in plan['commands'][0], expected == 'docs')
-
-    def test_docs_symlink_addition_and_removal_require_checks(self):
-        self.configure('raise SystemExit(99)', docs=True)
-        # Git's index represents symlinks even on machines without symlink privileges.
-        blob = self.repo.git('hash-object', '-w', '--stdin', input='../base.txt\n')
-        self.repo.git('update-index', '--add', '--cacheinfo', f'120000,{blob},docs/link.md')
-        self.repo.git('commit', '-qm', 'add symlink')
-        commit = self.repo.git('rev-parse', 'HEAD')
-        context = self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-add')
-        self.assertEqual(context['kind'], 'checks')
-        self.repo.git('branch', '-f', 'main', commit)
-        self.repo.git('update-index', '--force-remove', 'docs/link.md')
-        self.repo.git('commit', '-qm', 'remove symlink')
-        commit = self.repo.git('rev-parse', 'HEAD')
-        context = self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-remove')
-        self.assertEqual(context['kind'], 'checks')
-
-    @integration
-    def test_docs_markdown_hard_breaks_pass_the_composed_command(self):
-        prog = self.configure('raise SystemExit(99)', docs=True)
-        commit = self.repo.commit('docs/readme.md', 'line with hard break  \nnext line\n')
-        result = self.service.run(prog, self.repo.repo, commit)
-        self.assertTrue(result['passed'])
-        self.assertEqual(result['kind'], 'docs')
-
-    @integration
-    def test_heartbeat_failure_keeps_the_live_runner_for_adoption(self):
-        from drover.launch import RunnerLauncher
-        count, release = self.repo.root / 'count', self.repo.root / 'release'
-        self.addCleanup(release.touch)
-        code = ('import pathlib,time; p=pathlib.Path("' + str(count).replace('\\', '/') + '"); '
-                'p.write_text(p.read_text()+"start\\n" if p.exists() else "start\\n"); '
-                'print("started",flush=True); '
-                '\nwhile not pathlib.Path("' + str(release).replace('\\', '/') + '").exists(): time.sleep(.05)')
-        prog = self.configure(code)
-        commit = self.repo.commit('source.txt', 'changed')
-        conn = db.connect(self.repo.root / 'ledger.db')
-        self.addCleanup(conn.close)
-        launcher = RunnerLauncher(self.runs)
-        service = ci.CI(self.runs, launcher)
-        def fail_heartbeat(*args):
-            deadline = time.monotonic() + 20
-            while not count.exists() and time.monotonic() < deadline:
-                time.sleep(.05)
-            self.assertTrue(count.exists())
-            raise sqlite3.OperationalError('database is locked')
-        with patch.object(slots, 'lease_heartbeat', side_effect=fail_heartbeat):
-            with self.assertRaises(ci.CIInterrupted) as raised:
-                service.run(prog, self.repo.repo, commit, conn=conn)
-        self.assertIsInstance(raised.exception.__cause__, sqlite3.OperationalError)
-        self.assertEqual(count.read_text(), 'start\n')
-        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
-        self.assertEqual(len(slots.lease_queue(conn)), 1)
-        # A second database error before adoption must retain the same request too.
-        with patch.object(slots, 'lease_acquire', side_effect=sqlite3.OperationalError('database is locked')):
-            with self.assertRaises(ci.CIInterrupted):
-                ci.CI(self.runs, launcher).resume(prog, self.repo.repo, conn=conn)
-        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
-        self.assertEqual(len(slots.lease_queue(conn)), 1)
-        release.touch()
-        resumed = ci.CI(self.runs, launcher)
-        resumed.resume(prog, self.repo.repo, conn=conn)
-        self.assertTrue(resumed.run(prog, self.repo.repo, commit, conn=conn)['passed'])
-        self.assertEqual(count.read_text(), 'start\n')
-        self.assertEqual(slots.lease_queue(conn), [])
-        self.assertFalse(list(self.runs.glob('ci-*.json')))
-
-    @integration
     def test_dead_runner_is_finalized_on_resume_and_retry_finishes(self):
         from drover.launch import RunnerLauncher
         count, pulse = self.repo.root / 'count', self.repo.root / 'pulse'
@@ -286,149 +149,9 @@ class CITests(unittest.TestCase):
         self.assertEqual(slots.lease_queue(conn), [])
 
     @integration
-    def test_docs_script_cannot_bypass_diff_check(self):
-        self.configure('raise SystemExit(99)', docs=True)
-        self.repo.commit('.drover/scripts/docs.ps1', 'Write-Output "docs script ran"\nexit 0\n')
-        self.repo.commit('.drover/config.toml', self.repo_config(scripts={'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
-        self.repo.git('branch', '-f', 'main', 'HEAD')
-        for content, diagnostic in (('<<<<<<< ours\ntext\n=======\nother\n>>>>>>> theirs\n',
-                                     'conflict marker'), ('text\n\n', 'blank line at EOF')):
-            commit = self.repo.commit('docs/readme.md', content)
-            for kind in ('checks', 'full'):
-                with self.subTest(content=diagnostic, kind=kind):
-                    result = self.service.run(self.machine, self.repo.repo, commit, kind=kind)
-                    self.assertFalse(result['passed'])
-                    self.assertEqual(len(result['steps']), 1)
-                    self.assertIn('--check', result['steps'][0]['command'])
-                    self.assertIn(diagnostic, '\n'.join(result['log_tail']))
-                    self.assertNotIn('docs script ran', result['log_tail'])
-
-    @unittest.skipIf(os.name == 'nt', 'Linux resource scope')
-    @integration
-    def test_priority_controls_surround_the_verbatim_script_in_the_runner(self):
-        # A machine executable stand-in lets the composed command run even where
-        # the sandbox cannot access the systemd user bus. It execs the real script.
-        bindir = self.repo.root / 'bin'
-        bindir.mkdir()
-        calls = self.repo.root / 'scopes.jsonl'
-        scope = bindir / 'systemd-run'
-        scope.write_text(f"#!{sys.executable}\n" +
-                         'import json,os,sys\n'
-                         'args=sys.argv[1:]\n'
-                         'if args[-1:] == ["true"]: raise SystemExit(0)\n'
-                         'with open(os.environ["SCOPE_CALLS"], "a") as f: f.write(json.dumps(args)+"\\n")\n'
-                         'inner=args[args.index("--")+1:]\n'
-                         'os.execvp(inner[0], inner)\n')
-        scope.chmod(0o755)
-        prog = self.configure('print("script executed")')
-        commit = self.repo.commit('source.txt', 'changed')
-        self.machine['run']['env'] = {'PATH': str(bindir) + os.pathsep + os.environ['PATH'],
-                                      'SCOPE_CALLS': str(calls)}
-        prog = repos.load(self.machine)
-        command = repos.script_argv(prog, platform=PLATFORM)
-        for priority, weight in (('P0', 1000), ('P1', 1000), ('P2', 100), ('P3', 30), ('P4', 10)):
-            with self.subTest(priority=priority):
-                result = self.service.run(prog, self.repo.repo, commit, priority=priority)
-                self.assertTrue(result['passed'])
-                self.assertEqual(result['steps'][0]['command'], command)
-                self.assertIn('script executed', result['log_tail'])
-                invocation = json.loads(calls.read_text().splitlines()[-1])
-                self.assertEqual(invocation[:4], ['--user', '--scope', '--quiet', '-p'])
-                self.assertIn(f'CPUWeight={weight}', invocation)
-                self.assertIn(f'IOWeight={weight}', invocation)
-                inner = invocation[invocation.index('--')+1:]
-                if priority == 'P4':
-                    self.assertIn('MemoryMax=8G', invocation)
-                    self.assertEqual(inner, ['timeout', '1800', *command])
-                else:
-                    self.assertFalse(any(a.startswith('MemoryMax=') for a in invocation))
-                    self.assertEqual(inner, command)
-
-        # Shorten only the machine's timeout executable for a real expiry test;
-        # the CI command above must still supply the historical 1800 seconds.
-        timeout = bindir / 'timeout'
-        timeout.write_text(f"#!{sys.executable}\nimport os,sys\n" +
-                           'assert sys.argv[1] == "1800"\n' +
-                           f'os.execv({shutil.which("timeout")!r}, ["timeout", ".3", *sys.argv[2:]])\n')
-        timeout.chmod(0o755)
-        commit = self.repo.commit('.drover/scripts/check action.ps1', 'Write-Output "started"\nStart-Sleep 60\nexit 0\n')
-        result = self.service.run(prog, self.repo.repo, commit, priority='P4')
-        self.assertEqual((result['passed'], result['exit_code']), (False, 124))
-        # The old fallback remains valid on machines without a usable user bus.
-        scope.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
-        calls.unlink()
-        commit = self.repo.commit('.drover/scripts/check action.ps1', 'Write-Output "unwrapped"\nexit 0\n')
-        result = self.service.run(prog, self.repo.repo, commit, priority='P4')
-        self.assertTrue(result['passed'])
-        self.assertIn('unwrapped', result['log_tail'])
-        self.assertFalse(calls.exists())
-
-    @integration
-    def test_wall_timeout_stops_a_script_that_keeps_printing(self):
-        self.configure('import time; exec("while True: print(1,flush=True); time.sleep(.05)")')
-        self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False, 'timeout_s': 1}))
-        self.repo.git('branch', '-f', 'main', 'HEAD')
-        commit = self.repo.commit('source.txt', 'changed')
-        prog = repos.load(self.machine)
-        conn = db.connect(self.repo.root / 'ledger.db')
-        self.addCleanup(conn.close)
-        with self.assertRaisesRegex(ci.CIError, 'wall-clock limit'):
-            self.service.run(prog, self.repo.repo, commit, conn=conn)
-        self.assertEqual(slots.lease_queue(conn), [])
-
-    @unittest.skipIf(os.name == 'nt', 'both composed entrypoints execute locally on WSL')
-    @integration
-    def test_full_ci_requires_each_platform_and_stops_at_first_failure(self):
-        from drover.launch import RunnerLauncher
-        prog = self.configure('import os; print("placement:"+os.environ["FIXTURE_PLACEMENT"]); '
-                              'raise SystemExit(int(os.environ["FIXTURE_EXIT"]))')
-        commit = self.repo.commit('source.txt', 'changed')
-        for outcomes, expected in (({'windows': 0, 'wsl': 0}, ['wsl', 'windows']),
-                                   ({'windows': 3, 'wsl': 0}, ['wsl', 'windows']),
-                                   ({'windows': 0, 'wsl': 4}, ['wsl'])):
-            calls = []
-            class OutcomeLauncher(RunnerLauncher):
-                def launch(self, spec):
-                    platform = spec['placement']
-                    calls.append(platform)
-                    cfg = spec['run_config']
-                    spec = {**spec, 'run_config': {**cfg, 'env': {**cfg['env'],
-                            'FIXTURE_PLACEMENT': platform, 'FIXTURE_EXIT': str(outcomes[platform])}}}
-                    return super().launch(spec)
-            with self.subTest(outcomes=outcomes):
-                service = ci.CI(self.runs, OutcomeLauncher(self.runs))
-                result = service.run(prog, self.repo.repo, commit, platforms=['windows', 'wsl'])
-                self.assertEqual(calls, expected)
-                self.assertEqual(result['passed'], all(code == 0 for code in outcomes.values()))
-                self.assertEqual(result['platform'], 'windows+wsl' if result['passed'] else expected[-1])
-
-    @integration
-    def test_dirty_tree_is_refused_and_releases_its_ci_runner(self):
-        prog = self.configure('raise AssertionError("must not execute")')
-        commit = self.repo.commit('source.txt', 'changed')
-        (self.repo.repo / 'untracked').write_text('not committed')
-        conn = db.connect(self.repo.root / 'ledger.db')
-        self.addCleanup(conn.close)
-        with self.assertRaisesRegex(ci.CIError, 'uncommitted'):
-            self.service.run(prog, self.repo.repo, commit, conn=conn)
-        self.assertEqual(slots.lease_queue(conn), [])
-
-    @integration
-    def test_silent_script_times_out_and_releases_its_ci_runner(self):
-        prog = self.configure('import time; time.sleep(60)')
-        self.repo.commit('.drover/config.toml', self.repo_config(gate={'docs_only': False, 'idle_s': .4}))
-        self.repo.git('branch', '-f', 'main', 'HEAD')
-        commit = self.repo.commit('source.txt', 'changed')
-        prog = repos.load(self.machine)
-        conn = db.connect(self.repo.root / 'ledger.db')
-        self.addCleanup(conn.close)
-        with self.assertRaisesRegex(ci.CIError, 'timed out'):
-            self.service.run(prog, self.repo.repo, commit, conn=conn)
-        self.assertEqual(slots.lease_queue(conn), [])
-
-    @integration
     def test_new_hub_adopts_full_ci_without_starting_the_script_twice(self):
         count, release = self.repo.root / 'count', self.repo.root / 'release'
+        self.addCleanup(release.touch)
         code = ('import os,pathlib,time; p=pathlib.Path(os.environ["COUNT_FILE"]); '
                 'p.write_text(p.read_text()+"start\\n" if p.exists() else "start\\n"); '
                 'print("started",flush=True); '\
@@ -442,11 +165,19 @@ class CITests(unittest.TestCase):
             caller = subprocess.Popen([sys.executable, '-c', command], stdout=output, stderr=output, stdin=subprocess.DEVNULL)
             self.addCleanup(lambda: caller.poll() is None and caller.kill())
             deadline = time.monotonic() + 30
-            while not count.exists() and caller.poll() is None and time.monotonic() < deadline:
+            original = None
+            while caller.poll() is None and time.monotonic() < deadline:
+                requests = list(self.runs.glob('ci-*.json'))
+                saved = ci.read_result(requests[0]) if requests else None
+                spec = (saved or {}).get('context', {}).get('spec', {})
+                status = runner.read_status(self.runs, spec['run_id']) if spec else None
+                if (count.exists() and status and status.get('nonce') == spec['nonce']
+                        and status.get('state') == 'running'):
+                    original = status
+                    break
                 time.sleep(.05)
-            self.assertTrue(count.exists(), (self.repo.root / 'caller.log').read_text())
-            status_file = next(self.runs.glob('ci-*/status.json'))
-            original = json.loads(status_file.read_text())
+            self.assertIsNotNone(original, (self.repo.root / 'caller.log').read_text())
+            status_file = self.runs / original['run_id'] / 'status.json'
             caller.terminate()
             caller.wait(timeout=10)
             self.assertEqual(count.read_text(), 'start\n')
@@ -460,18 +191,300 @@ class CITests(unittest.TestCase):
         self.assertFalse(list(self.runs.glob('ci-*.json')))
 
 
-class InProcessCITests(CITests):
-    """The CITests whose assertions only need the gate's verdict, run with the gate executed in-process."""
-    FAST = ('test_exit_code_and_clean_tree_determine_the_result', 'test_docs_classification_is_shared_by_checks_and_full_ci',
-            'test_docs_markdown_hard_breaks_pass_the_composed_command', 'test_docs_script_cannot_bypass_diff_check',
-            'test_dirty_tree_is_refused_and_releases_its_ci_runner')
+    @integration
+    def test_wall_timeout_stops_a_script_that_keeps_printing_and_releases_its_ci_runner(self):
+        pulse = self.repo.root / 'pulse'
+        code = ('import pathlib,time; p=pathlib.Path(' + json.dumps(str(pulse)) + '); '
+                '\nwhile True: p.write_text(str(time.time())); print("watchdog pulse",flush=True); time.sleep(.05)')
+        self.configure(code)
+        self.repo.commit('.drover/config.toml', self.repo_config(gate={'timeout_s': 5, 'idle_s': 10}))
+        commit = self.repo.commit('source.txt', 'changed')
+        conn = db.connect(self.repo.root / 'ledger.db')
+        self.addCleanup(conn.close)
+        with self.assertRaisesRegex(ci.CIError, 'wall-clock limit'):
+            self.service.run(self.machine, self.repo.repo, commit, conn=conn)
+        status_file = next(self.runs.glob('ci-*/status.json'))
+        status = json.loads(status_file.read_text())
+        self.assertEqual(status['state'], 'timeout')
+        self.assertIn('wall-clock limit', status['reason'])
+        self.assertGreaterEqual((status_file.parent / 'out.log').read_text().count('watchdog pulse'), 2)
+        last_pulse = pulse.read_text()
+        time.sleep(.2)
+        self.assertEqual(pulse.read_text(), last_pulse, 'timed-out script is still executing')
+        self.assertEqual(slots.lease_queue(conn), [])
+        self.assertFalse(list(self.runs.glob('ci-*.json')))
 
+    @integration
+    def test_documentation_diff_guard_contract(self):
+        prog = self.configure('raise SystemExit(99)', docs=True)
+        self.repo.commit('.drover/scripts/docs.ps1', 'Write-Output "docs script ran"\nexit 0\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(scripts={
+            'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
+        self.repo.git('branch', '-f', 'main', 'HEAD')
+        commit = self.repo.commit('docs/readme.md', 'line with hard break  \nnext line\n')
+        passed = self.service.run(prog, self.repo.repo, commit)
+        self.assertTrue(passed['passed'])
+        self.assertEqual(passed['kind'], 'docs')
+        for content, diagnostic in (('<<<<<<< ours\ntext\n=======\nother\n>>>>>>> theirs\n', 'conflict marker'),
+                                    ('text\n\n', 'blank line at EOF')):
+            commit = self.repo.commit('docs/readme.md', content)
+            for kind in ('checks', 'full'):
+                with self.subTest(content=diagnostic, kind=kind):
+                    result = self.service.run(self.machine, self.repo.repo, commit, kind=kind)
+                    self.assertFalse(result['passed'])
+                    self.assertEqual(len(result['steps']), 1)
+                    self.assertIn('--check', result['steps'][0]['command'])
+                    self.assertIn(diagnostic, '\n'.join(result['log_tail']))
+                    self.assertNotIn('docs script ran', result['log_tail'])
+        blob = self.repo.git('hash-object', '-w', '--stdin', input='../base.txt\n')
+        self.repo.git('update-index', '--add', '--cacheinfo', f'120000,{blob},docs/link.md')
+        self.repo.git('commit', '-qm', 'add symlink')
+        commit = self.repo.git('rev-parse', 'HEAD')
+        self.assertEqual(self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-add')['kind'], 'checks')
+        self.repo.git('branch', '-f', 'main', commit)
+        self.repo.git('update-index', '--force-remove', 'docs/link.md')
+        self.repo.git('commit', '-qm', 'remove symlink')
+        commit = self.repo.git('rev-parse', 'HEAD')
+        self.assertEqual(self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-remove')['kind'], 'checks')
+
+
+class PolicyCITests(unittest.TestCase):
     def setUp(self):
-        super().setUp()
-        self.service = ci.CI(self.runs, InProcessLauncher(self.runs))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.repo = MemoryRepo(Path(temporary.name))
+        self.source = MemoryRepository(self.repo)
+        self.runs = self.repo.root / 'runs'
+        self.launcher = Launcher(self.runs)
+        self.service = ci.CI(self.runs, self.launcher, poll_s=0)
+        self.machine = {'name': 'fixture', 'repo': str(self.repo.repo), 'run': {'env': {}}}
+        self.raw_modes = ''
+        original = config.get()
+        self.addCleanup(config.use, original)
+        config.use(config.validate({'paths': {'state_dir': str(self.repo.root / 'state')}}))
+        from drover import disk
+        contexts = (
+            patch.object(repos, 'load', self.source.load),
+            patch.object(placement, 'prepare_worktree'),
+            patch.object(ci, 'head', self.source.head),
+            patch.object(ci, 'dirty', side_effect=lambda repo, **kw: self.source.dirty(repo)),
+            patch.object(ci, 'contains', side_effect=lambda path, base, sha:
+                         (self.repo.head(base), self.repo.ancestor(base, sha))),
+            patch.object(ci, 'changed_paths', self.source.changed_paths),
+            patch.object(ci.CI, '_diff_lines', side_effect=self.source.diff_lines),
+            patch.object(ci, 'git', side_effect=self.raw_diff),
+            patch.object(disk, 'read', return_value=[dict(name='fixture', path=str(self.repo.root), free_gb=1000., level='ok')]),
+            patch('subprocess.Popen', side_effect=AssertionError('policy tests must not start a process')),
+            patch('time.sleep', side_effect=AssertionError('policy tests must not sleep')),
+        )
+        for context in contexts:
+            context.start()
+            self.addCleanup(context.stop)
 
+    def raw_diff(self, repo, *args, **kw):
+        self.assertEqual(args[:4], ('diff', '--raw', '--no-renames', '-z'))
+        return subprocess.CompletedProcess(args, 0, self.raw_modes, '')
 
-for _name in dir(CITests):
-    if _name.startswith('test'):
-        setattr(InProcessCITests, _name,
-                inspect.unwrap(getattr(CITests, _name)) if _name in InProcessCITests.FAST else None)
+    repo_config = CITests.repo_config
+
+    def configure(self, *, docs=False, gate=None, scripts=None):
+        self.repo.commit('.drover/scripts/check action.ps1', '# execution adapter supplies the outcome\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(
+            gate={'docs_only': docs, **(gate or {})}, scripts=scripts))
+        self.repo.checkout(self.repo.repo, 'topic', 'HEAD')
+        return repos.load(self.machine)
+
+    def change(self, name='source.txt', text='changed'):
+        return self.repo.commit(name, text)
+
+    def conn(self):
+        conn = db.connect(self.repo.root / 'ledger.db')
+        self.addCleanup(conn.close)
+        return conn
+
+    def test_exit_code_and_clean_tree_determine_the_result(self):
+        prog = self.configure()
+        commit = self.change()
+        self.launcher.code, self.launcher.output = 7, 'PASSED summary\n'
+        result = self.service.run(prog, self.repo.repo, commit)
+        self.assertEqual((result['passed'], result['exit_code'], result['kind']), (False, 7, 'full'))
+        self.assertEqual(result['log_tail'], ['PASSED summary'])
+        self.launcher.code = 0
+        self.launcher.after_command = lambda: (self.repo.repo / 'source.txt').write_text('changed-again')
+        result = self.service.run(prog, self.repo.repo, commit)
+        self.assertEqual((result['exit_code'], result['tree_unchanged'], result['passed']), (0, False, False))
+
+    def test_a_passing_result_does_not_authorize_cancelled_execution(self):
+        prog = self.configure()
+        commit = self.change()
+        for returncode in (-15, 0):
+            with self.subTest(returncode=returncode):
+                self.launcher.execution = dict(status='error', returncode=returncode)
+                with self.assertRaises(ci.CIError):
+                    self.service.run(prog, self.repo.repo, commit)
+
+    def test_docs_classification_is_shared_by_checks_and_full_ci(self):
+        prog = self.configure(docs=True)
+        commit = self.change('docs/readme.md', 'documentation\n')
+        for kind in ('checks', 'full'):
+            result = self.service.run(prog, self.repo.repo, commit, kind=kind)
+            self.assertTrue(result['passed'])
+            self.assertEqual(result['kind'], 'docs')
+        self.repo.commit('.drover/scripts/docs.ps1', '# docs command\n')
+        self.repo.commit('.drover/config.toml', self.repo_config(scripts={
+            'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
+        self.repo.branches['main'] = self.repo.head()
+        commit = self.change('docs/next.md', 'more docs\n')
+        self.launcher.output = 'docs script\n'
+        result = self.service.run(prog, self.repo.repo, commit)
+        self.assertIn('--check', result['steps'][0]['command'])
+        self.assertEqual(result['steps'][1]['command'][-1], '.drover/scripts/docs.ps1')
+        self.assertIn('docs script', result['log_tail'])
+
+    def test_docs_policy_through_prepare(self):
+        self.configure(docs=True)
+        original = self.repo.head('main')
+        for files, policy, expected in (
+                ({'docs/readme.md': 'docs\n', 'source.py': 'code\n'}, {}, 'checks'),
+                ({'.github/readme.md': 'docs\n'}, {}, 'checks'),
+                ({'docs/readme.md': 'docs\n'}, {'docs_only': False}, 'checks'),
+                ({'guide/readme.rst': 'docs\n'}, {'docs_only_globs': ['guide/**']}, 'docs'),
+                ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': ['guide/**']}, 'checks'),
+                ({'docs/readme.md': 'docs\n'}, {'docs_only_globs': []}, 'checks'),
+                ({'guide/readme.md': 'docs\n'}, {'docs_only_globs': ['**/*.md', '!guide/**']}, 'checks')):
+            with self.subTest(files=files, policy=policy):
+                self.repo.checkout(self.repo.repo, 'case', original)
+                self.repo.commit('.drover/config.toml', self.repo_config(gate=policy))
+                self.repo.branches['main'] = self.repo.head()
+                for path, content in files.items():
+                    commit = self.change(path, content)
+                context = self.service.prepare(self.machine, self.repo.repo, commit, 'docs-policy')
+                self.assertEqual(context['kind'], expected)
+                plan = json.loads((self.runs / 'docs-policy' / 'plan.json').read_text())
+                self.assertEqual('--check' in plan['commands'][0], expected == 'docs')
+
+    def test_docs_symlink_addition_and_removal_require_checks(self):
+        self.configure(docs=True)
+        for before, after, name in (('000000', '120000', 'add'), ('120000', '000000', 'remove')):
+            with self.subTest(mode=name):
+                commit = self.change('docs/link.md', name)
+                self.raw_modes = f':{before} {after} old new A\0docs/link.md\0'
+                context = self.service.prepare(self.machine, self.repo.repo, commit, 'symlink-' + name)
+                self.assertEqual(context['kind'], 'checks')
+                self.repo.branches['main'] = commit
+
+    def test_docs_markdown_hard_breaks_pass_the_composed_command(self):
+        prog = self.configure(docs=True)
+        commit = self.change('docs/readme.md', 'line with hard break  \nnext line\n')
+        result = self.service.run(prog, self.repo.repo, commit)
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['kind'], 'docs')
+        self.assertEqual(result['steps'][0]['command'],
+                         ['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', 'main...' + commit])
+
+    def test_heartbeat_failure_keeps_the_live_runner_for_adoption(self):
+        prog = self.configure()
+        commit = self.change()
+        conn = self.conn()
+        count = self.repo.root / 'count'
+        self.launcher.pending = True
+        self.launcher.on_start = lambda: count.write_text(count.read_text() + 'start\n' if count.exists() else 'start\n')
+        with patch.object(slots, 'lease_heartbeat', side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertRaises(ci.CIInterrupted) as raised:
+                self.service.run(prog, self.repo.repo, commit, conn=conn)
+        self.assertIsInstance(raised.exception.__cause__, sqlite3.OperationalError)
+        self.assertEqual(count.read_text(), 'start\n')
+        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
+        self.assertEqual(len(slots.lease_queue(conn)), 1)
+        with patch.object(slots, 'lease_acquire', side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertRaises(ci.CIInterrupted):
+                ci.CI(self.runs, self.launcher).resume(prog, self.repo.repo, conn=conn)
+        self.assertEqual(len(list(self.runs.glob('ci-*.json'))), 1)
+        self.assertEqual(len(slots.lease_queue(conn)), 1)
+        self.launcher.released = True
+        resumed = ci.CI(self.runs, self.launcher)
+        resumed.resume(prog, self.repo.repo, conn=conn)
+        self.assertTrue(resumed.run(prog, self.repo.repo, commit, conn=conn)['passed'])
+        self.assertEqual(count.read_text(), 'start\n')
+        self.assertEqual(len(self.launcher.specs), 1)
+        self.assertEqual(slots.lease_queue(conn), [])
+        self.assertFalse(list(self.runs.glob('ci-*.json')))
+
+    def test_docs_script_cannot_bypass_diff_check(self):
+        self.configure(docs=True, scripts={'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'})
+        for content, diagnostic in (('<<<<<<< ours\ntext\n=======\nother\n>>>>>>> theirs\n', 'conflict marker'),
+                                    ('text\n\n', 'blank line at EOF')):
+            commit = self.change('docs/readme.md', content)
+            self.launcher.code, self.launcher.output = 2, diagnostic + '\n'
+            for kind in ('checks', 'full'):
+                with self.subTest(content=diagnostic, kind=kind):
+                    result = self.service.run(self.machine, self.repo.repo, commit, kind=kind)
+                    self.assertFalse(result['passed'])
+                    self.assertEqual(len(result['steps']), 1)
+                    self.assertIn('--check', result['steps'][0]['command'])
+                    self.assertIn(diagnostic, '\n'.join(result['log_tail']))
+                    self.assertNotIn('docs script ran', result['log_tail'])
+
+    @unittest.skipIf(os.name == 'nt', 'Linux resource scope')
+    def test_priority_controls_surround_the_verbatim_script_in_the_runner(self):
+        from types import SimpleNamespace
+        prog = self.configure()
+        commit = self.change()
+        command = repos.script_argv(prog, platform=PLATFORM)
+        self.launcher.output = 'script executed\n'
+        self.launcher.wrap_command = placement.ci_command
+        for priority, weight in (('P0', 1000), ('P1', 1000), ('P2', 100), ('P3', 30), ('P4', 10)):
+            with self.subTest(priority=priority), patch.object(placement.shutil, 'which', return_value='systemd-run'), \
+                    patch.object(placement, 'subprocess', SimpleNamespace(run=lambda *a, **kw: SimpleNamespace(returncode=0))):
+                result = self.service.run(prog, self.repo.repo, commit, priority=priority)
+                invocation = self.launcher.commands[-1]
+                self.assertEqual(invocation[:5], ['systemd-run', '--user', '--scope', '--quiet', '-p'])
+                self.assertIn(f'CPUWeight={weight}', invocation)
+                self.assertIn(f'IOWeight={weight}', invocation)
+                inner = invocation[invocation.index('--')+1:]
+                if priority == 'P4':
+                    self.assertIn('MemoryMax=8G', invocation)
+                    self.assertEqual(inner, ['timeout', '1800', *command])
+                else:
+                    self.assertFalse(any(a.startswith('MemoryMax=') for a in invocation))
+                    self.assertEqual(inner, command)
+                self.assertTrue(result['passed'])
+                self.assertEqual(result['steps'][0]['command'], command)
+                self.assertIn('script executed', result['log_tail'])
+        self.launcher.code = 124
+        with patch.object(placement.shutil, 'which', return_value='systemd-run'), \
+                patch.object(placement, 'subprocess', SimpleNamespace(run=lambda *a, **kw: SimpleNamespace(returncode=0))):
+            result = self.service.run(prog, self.repo.repo, commit, priority='P4')
+        self.assertEqual((result['passed'], result['exit_code']), (False, 124))
+        self.assertIn('1800', self.launcher.commands[-1])
+        self.launcher.code, self.launcher.output = 0, 'unwrapped\n'
+        with patch.object(placement.shutil, 'which', return_value='systemd-run'), \
+                patch.object(placement, 'subprocess', SimpleNamespace(run=lambda *a, **kw: SimpleNamespace(returncode=1))):
+            result = self.service.run(prog, self.repo.repo, commit, priority='P4')
+        self.assertEqual(self.launcher.commands[-1], command)
+        self.assertTrue(result['passed'])
+        self.assertIn('unwrapped', result['log_tail'])
+
+    def test_full_ci_requires_each_platform_and_stops_at_first_failure(self):
+        prog = self.configure()
+        commit = self.change()
+        for outcomes, expected in (({'windows': 0, 'wsl': 0}, ['wsl', 'windows']),
+                                   ({'windows': 3, 'wsl': 0}, ['wsl', 'windows']),
+                                   ({'windows': 0, 'wsl': 4}, ['wsl'])):
+            with self.subTest(outcomes=outcomes):
+                self.launcher.specs.clear()
+                self.launcher.outcomes = outcomes
+                result = self.service.run(prog, self.repo.repo, commit, platforms=['windows', 'wsl'])
+                self.assertEqual([s['placement'] for s in self.launcher.specs], expected)
+                self.assertEqual(result['passed'], all(code == 0 for code in outcomes.values()))
+                self.assertEqual(result['platform'], 'windows+wsl' if result['passed'] else expected[-1])
+
+    def test_dirty_tree_is_refused_and_releases_its_ci_runner(self):
+        prog = self.configure()
+        commit = self.change()
+        (self.repo.repo / 'untracked').write_text('not committed')
+        conn = self.conn()
+        with self.assertRaisesRegex(ci.CIError, 'uncommitted'):
+            self.service.run(prog, self.repo.repo, commit, conn=conn)
+        self.assertEqual(self.launcher.commands, [])
+        self.assertEqual(slots.lease_queue(conn), [])

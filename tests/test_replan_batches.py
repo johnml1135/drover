@@ -20,6 +20,7 @@ from unittest.mock import patch
 from drover import brief, config, contract, launch, runner
 from drover.ledger import connect, db, ops, schema, states
 from drover.ledger.waiting import Waiting, cause_key, REPLAN, OWNER_ANSWER
+from tests.tiers import integration
 from tests import test_replans as single
 from tests import test_waiting as waiting_tests
 
@@ -437,21 +438,6 @@ class BatchPipelineCase(single.PlannerDispatchCase):
     def planning(self):
         return waiting_tests.require(self, 'drover.replan', 'Replanning')(self.pipe)
 
-    def inspect_once(self):
-        """Inspect each task's checkouts for real once, then reuse that answer for the rest of the test.
-
-        For tests about batching and dispatch whose checkouts never change; every inspection spawns a dozen git
-        processes, which dominates their runtime on Windows.  Tests of freshness do not use it."""
-        from drover.replan import Replanning
-        real, seen = Replanning._inputs, {}
-        def once(replanning, task):
-            if task['id'] not in seen:
-                seen[task['id']] = real(replanning, task)
-            return copy.deepcopy(seen[task['id']])
-        patcher = patch.object(Replanning, '_inputs', once)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def prepare(self, planning, assign=None, now=1000):
         return planning.prepare(assign or (lambda task, inputs: dict(ROUTE)), now=now)
 
@@ -472,7 +458,6 @@ class BatchPipelineCase(single.PlannerDispatchCase):
 
 class Preparation(BatchPipelineCase):
     def test_repo_assignment_partition(self):
-        self.inspect_once()
         planning = self.planning()
         tids, requests = self.queue(9)
         ops.update_task(self.conn, tids[8], repo='P')
@@ -486,8 +471,7 @@ class Preparation(BatchPipelineCase):
         second = self.prepare(planning, lambda task, inputs: routes[task['id']])
         self.assertEqual(tuple(second.task_ids), (tids[2],))
         # Different configured repos with identical assignments still cannot mix.
-        from tests.gitfix import Repo
-        other = Repo()
+        other = self.new_repo()
         self.addCleanup(other.cleanup)
         self.pipe.all_repos()['q'] = single.repos.normalize({**self.prog, 'name': 'q',
                                                           'repo': str(other.repo)})
@@ -498,7 +482,6 @@ class Preparation(BatchPipelineCase):
         self.assertEqual(tuple(third.task_ids), (q,))
 
     def test_epic_dependency_scope_preference_topology(self):
-        self.inspect_once()
         planning = self.planning()
         epic = ops.create_epic(self.conn, 'p', 'preferred')['id']
         other = ops.create_epic(self.conn, 'p', 'unrelated')['id']
@@ -520,7 +503,6 @@ class Preparation(BatchPipelineCase):
         self.assertEqual(len(set(batch.task_ids) & set(unrelated)), 4)
 
     def test_eight_and_brief_caps(self):
-        self.inspect_once()
         planning = self.planning()
         tids, requests = self.queue(10)
         batch = self.prepare(planning)
@@ -602,7 +584,6 @@ class Preparation(BatchPipelineCase):
 
 class Dispatch(BatchPipelineCase):
     def test_eight_requests_one_process_one_seat(self):
-        self.inspect_once()
         ops.add_policy_version(self.conn, 'batch-cap', {'parallel_cap': 1})
         tids, requests, spec = self.run_batch(8)
         self.d.tick()
@@ -620,9 +601,7 @@ class Dispatch(BatchPipelineCase):
         self.assertTrue(all(self.get(tid)['goal'] == single.REVISE['goal'] for tid in tids))
 
     def test_other_bucket_can_launch(self):
-        self.inspect_once()
-        from tests.gitfix import Repo
-        other = Repo()
+        other = self.new_repo()
         self.addCleanup(other.cleanup)
         self.pipe.all_repos()['q'] = single.repos.normalize({**self.prog, 'name': 'q', 'repo': str(other.repo)})
         p, _ = self.queue(2)
@@ -635,7 +614,6 @@ class Dispatch(BatchPipelineCase):
         self.assertNotEqual(attachments[p[0]], attachments[q[0]])
 
     def test_every_member_readonly(self):
-        self.inspect_once()
         tids, requests = self.queue(3)
         sources = [self.pipe.worktree(self.get(tid)) for tid in tids]
         self.d.tick()
@@ -656,8 +634,8 @@ class Dispatch(BatchPipelineCase):
                 self.assertFalse({'Edit', 'Write', 'Bash'} & set(permissions['allow']))
 
     @unittest.skipIf(os.name == 'nt', 'executable stand-ins run on WSL; reviewer checks Windows')
+    @integration
     def test_composed_batch_command(self):
-        self.inspect_once()
         # T4 and T5 gated with T6 for this real composed-command test (erratum 2).
         planning = self.planning()
         executable = Path(self.tmp.name) / 'planner-backend'
@@ -700,10 +678,6 @@ print(json.dumps(payload))
 
 
 class Recovery(BatchPipelineCase):
-    def setUp(self):
-        super().setUp()
-        self.inspect_once()
-
     def test_crash_before_access_event(self):
         planning = self.planning()
         tids, requests = self.queue()
@@ -944,22 +918,14 @@ class WaitRelease(BatchLedgerCase):
                 self.assertEqual(w.pending(('task', follower)), [])
 
 
-class PlannerPermissionsIntegration(unittest.TestCase):
-    @unittest.skipIf(os.name == 'nt', 'executable stand-in runs on WSL; reviewer checks Windows')
+class PlannerPermissions(unittest.TestCase):
     def test_wsl_claude_planner_command_denies_bash(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as directory:
-            executable = Path(directory) / 'backend'
-            executable.write_text(f'#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
-            executable.chmod(0o755)
-            argv, stdin = launch.build_argv(dict(role='planner', write=False, backend='claude',
-                binary=str(executable), model='opus-5.5', effort='high', cwd=directory,
-                placement='wsl', system_append='read-only policy', user_prompt='inspect only'))
-            observed = json.loads(subprocess.run(argv, input=stdin, text=True, capture_output=True,
-                                                 check=True, cwd=directory, timeout=5).stdout)
-            permissions = json.loads(observed[observed.index('--settings') + 1])['permissions']
-            self.assertTrue({'Edit', 'Write', 'Bash'} <= set(permissions['deny']))
-            self.assertNotIn('Bash', observed[observed.index('--tools') + 1].split(','))
+        argv, stdin = launch.build_argv(dict(role='planner', write=False, backend='claude',
+            model='opus-5.5', effort='high', cwd='/planner', placement='wsl',
+            system_append='read-only policy', user_prompt='inspect only'))
+        permissions = json.loads(argv[argv.index('--settings') + 1])['permissions']
+        self.assertTrue({'Edit', 'Write', 'Bash'} <= set(permissions['deny']))
+        self.assertNotIn('Bash', argv[argv.index('--tools') + 1].split(','))
 
 
 class BatchRegressions(BatchLedgerCase):
@@ -976,10 +942,6 @@ class BatchRegressions(BatchLedgerCase):
 
 
 class PreparationRegressions(BatchPipelineCase):
-    def setUp(self):
-        super().setUp()
-        self.inspect_once()
-
     def test_exhausted_seed_does_not_starve_other_members(self):
         planning = self.planning()
         tids, _ = self.queue(3)
@@ -993,10 +955,6 @@ class PreparationRegressions(BatchPipelineCase):
 
 
 class EnvelopeRegressions(BatchPipelineCase):
-    def setUp(self):
-        super().setUp()
-        self.inspect_once()
-
     def test_valid_empty_envelope_retries_members_but_finishes_execution(self):
         planning = self.planning()
         tids, _ = self.queue()
@@ -1009,10 +967,6 @@ class EnvelopeRegressions(BatchPipelineCase):
 
 
 class AssignmentRegressions(BatchPipelineCase):
-    def setUp(self):
-        super().setUp()
-        self.inspect_once()
-
     def test_restore_keeps_assignment_before_access_event(self):
         planning = self.planning()
         self.queue()
@@ -1065,7 +1019,7 @@ class ReadOnlyShellAuthority(unittest.TestCase):
         import tempfile
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        subprocess.run(['git', 'init', '-q', self.dir.name], check=True)
+        (Path(self.dir.name) / '.git').mkdir()
 
     def tools(self, role, **extra):
         argv, _ = launch.build_argv(dict(role=role, write=False, backend='claude', model='opus-5.5', effort='high',
