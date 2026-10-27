@@ -524,6 +524,9 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     work = Path(workdir)
     try:
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
+    except ci.CIDeferred as error:
+        interrupted = True
+        result.update(outcome='queued', reason=str(error))
     except ci.CIInfrastructure as error:
         _infra_failure(conn, recovery_keys, tasks, result, _failure_detail(error.detail))
     except AdmissionHeld as error:
@@ -565,6 +568,8 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
             result['detail'] = _failure_detail(receipt)
         return receipt, red
     except BaseException as error:
+        if isinstance(error, ci.CIDeferred):
+            red = False
         result['detail'] = _failure_detail(getattr(error, 'detail', {'reason': str(error)}))
         raise
     finally:

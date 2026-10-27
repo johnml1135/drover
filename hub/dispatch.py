@@ -129,7 +129,10 @@ class LandingService:
         out_dir = Path(self.settings.runs_dir) / "landing"
         out_dir.mkdir(parents=True, exist_ok=True)
         work = Path(repos.native(repos.worktree_root(prog))) / f"drover-landing-{name.lower()}"
-        self.ci.resume(prog, work, conn=conn)
+        try:
+            self.ci.resume(prog, work, conn=conn)
+        except ci.CIDeferred as error:
+            return {"outcome": "queued", "reason": str(error)}
         if disk.admission(disk.read())['verdict'] == 'hold':
             return {'outcome': contract.HOLD}
         size = 1 if land["policy"] == "single" else None

@@ -140,3 +140,29 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(setting['detail']['run_id'], 'ci-timeout')
         event = ops.events(self.conn, kind='landing.outcome')[-1]
         self.assertEqual(classify(self.conn, event), 'issue')
+
+    def test_load_queues_before_launch_and_releases_runner_ticket(self):
+        from drover.ledger import ci as slots
+        launcher = SimpleNamespace(launch=Mock())
+        service = ci.CI('unused-ci-recovery', launcher)
+        spec = dict(run_id='ci-queued', nonce='nonce', placement='wsl')
+        with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
+                patch.object(service, 'prepare', return_value=dict(spec=spec)), \
+                patch('drover.disk.read', return_value=[]), \
+                patch.object(ci.runner, 'write_json_atomic') as save, \
+                patch.object(resources, 'check', return_value=dict(verdict='queue', reasons=['load too high'])):
+            with self.assertRaisesRegex(ci.CIDeferred, 'load too high'):
+                service.run({}, '.', SHA, platforms=['wsl'], conn=self.conn)
+        launcher.launch.assert_not_called()
+        self.assertEqual(slots.lease_queue(self.conn), [])
+        checkpoint = save.call_args.args[1]
+        self.assertEqual(checkpoint['execution'], 'prepared')
+        self.assertNotIn('ticket', checkpoint)
+
+    def test_resource_deferral_preserves_work_without_spending_recovery(self):
+        with patch.object(landing, 'git') as git:
+            git.return_value = SimpleNamespace(stdout=SHA, returncode=0)
+            result = self.run_batch(Mock(side_effect=ci.CIDeferred('host busy')))
+        self.assertEqual(result['outcome'], 'queued')
+        self.assertFalse(any(call.args[1:3] == ('worktree', 'remove') for call in git.call_args_list))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'landing_recovery:%'").fetchone()[0], 0)

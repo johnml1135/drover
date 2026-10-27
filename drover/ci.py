@@ -43,6 +43,10 @@ class CIInterrupted(CIError):
     """Supervision failed before termination was confirmed; resume before changing the checkout."""
 
 
+class CIDeferred(CIInterrupted):
+    """No execution issued: retain the prepared request until resources recover."""
+
+
 def git_environment(base=None):
     """Environment that keeps Git noninteractive even when a machine has an interactive credential helper."""
     env = os.environ.copy() if base is None else dict(base)
@@ -410,6 +414,20 @@ class CI:
                     saved.pop('ticket', None)
                     runner.write_json_atomic(request, saved)
                     raise CIInterrupted('CI deferred until a healthy disk reading')
+                if not following and kind == 'full':
+                    from . import resources
+                    resource = resources.check(new_workers=1)
+                    verdicts = [resource]
+                    if spec['placement'] == 'wsl':
+                        verdicts.append(resource.get('wsl', {}))
+                    verdicts.append(resource.get('ram_sides', {}).get(spec['placement'], {}))
+                    blocked = [v for v in verdicts if v.get('verdict', 'go') != 'go']
+                    if blocked:
+                        capacity_deferred = True
+                        saved.pop('ticket', None)
+                        runner.write_json_atomic(request, saved)
+                        reason = '; '.join(r for v in blocked for r in v.get('reasons', []))
+                        raise CIDeferred('CI queued for resources: ' + (reason or blocked[0]['verdict']))
                 if not following:
                     guard()
                     spec['_admission_check'] = guard
