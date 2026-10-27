@@ -538,6 +538,34 @@ def _infra_failure(conn, keys, tasks, result, detail):
             ops.set_setting(conn, key, json.dumps(saved))
 
 
+def _queue_stop(conn, waiting, name, sha, base_cause, repair, result):
+    """Held result for an unmet merge-queue prerequisite (blocks a repair), else None."""
+    from .ledger.waiting import BASE, cause_key
+    if not repair and waiting.state(base_cause) in ('open', 'attempting'):
+        if waiting.state(base_cause) == 'attempting':
+            waiting.consume_retry(base_cause)  # abandoned attempt reopens, without granting I/O
+        waiting.wait(('merge_queue', name), BASE, cause_key(name, sha), cause=base_cause,
+                     data={'repo': name, 'sha': sha, 'mode': 'blocked'})
+        return {**result, 'outcome': 'held'}
+    if any(not repair or row['cause'] != base_cause for row in waiting.pending(('merge_queue', name))):
+        return (_block_repair(conn, name, repair, result, 'Repair is waiting on another queue prerequisite') if repair
+                else {**result, 'outcome': 'held'})
+
+
+def _recovery_stop(conn, recovery_keys, result):
+    """The infra-held or queued result while saved infrastructure recovery is not yet due, else None."""
+    recovery = max((json.loads(ops.get_setting(conn, key, '{}')) for key in recovery_keys),
+                   key=lambda r: r.get('failures', 0))
+    if recovery.get('failures', 0) >= 2:
+        if (question := recovery.get('question')) is None or ops.get_question(conn, question)['status'] == 'open':
+            return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
+        _clear_recovery(conn, recovery_keys)  # owner acknowledged: one fresh attempt
+    elif recovery:
+        from . import resources
+        if time.time() < recovery['next_after'] or resources.check(new_workers=1)['verdict'] != 'go':
+            return {**result, 'outcome': 'queued', 'detail': recovery['detail']}
+
+
 def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
@@ -554,12 +582,9 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
         result['control_epoch'] = _control_guard(conn, control_epoch)
     except AdmissionHeld as error:
         return {**result, 'outcome': 'held', 'reason': str(error)}
-    base_ref = branch
-    sync_result = sync_main(conn, repo, remote, branch, repo_name, control_epoch=result['control_epoch'])
-    if sync_result:
-        result.update(sync_result)
-        return result
-    from .ledger.waiting import Waiting, repo_key, cause_key, BASE
+    if synced := sync_main(conn, repo, remote, branch, repo_name, control_epoch=result['control_epoch']):
+        return {**result, **synced}
+    from .ledger.waiting import Waiting, repo_key, cause_key
     waiting = Waiting(conn, actor)
     name = repo_key(repo_name, repo)
     sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
@@ -567,19 +592,9 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     repair = _base_repair(conn, name, sha)
     if repair and repair.get('blocked'):
         return _block_repair(conn, name, repair, result, repair['blocked'])
-    if not repair and waiting.state(base_cause) in ('open', 'attempting'):
-        if waiting.state(base_cause) == 'attempting':
-            waiting.consume_retry(base_cause)  # abandoned attempt reopens, without granting I/O
-        waiting.wait(('merge_queue', name), BASE, cause_key(name, sha), cause=base_cause,
-                     data={'repo': name, 'sha': sha, 'mode': 'blocked'})
-        return {**result, 'outcome': 'held'}
-    pending = waiting.pending(('merge_queue', name))
-    if any(not repair or row['cause'] != base_cause for row in pending):
-        if repair:
-            return _block_repair(conn, name, repair, result, 'Repair is waiting on another queue prerequisite')
-        return {**result, 'outcome': 'held'}
-    tasks = (form_batch(conn, repo, base_ref, 1, repo_name, task_id=repair['task']) if repair
-             else form_batch(conn, repo, base_ref, size, repo_name))
+    if stop := _queue_stop(conn, waiting, name, sha, base_cause, repair, result):
+        return stop
+    tasks = form_batch(conn, repo, branch, 1 if repair else size, repo_name, task_id=repair and repair['task'])
     if repair:
         if len(tasks) != 1 or tasks[0]['head'] != repair['head']:
             return _block_repair(conn, name, repair, result, 'Repair needs a fresh exact-head review')
@@ -589,19 +604,8 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     if not tasks:
         return result
     recovery_keys = [_recovery_key(name, sha, task) for task in tasks]
-    recovery = max((json.loads(ops.get_setting(conn, key, '{}')) for key in recovery_keys),
-                   key=lambda r: r.get('failures', 0))
-    if recovery.get('failures', 0) >= 2:
-        question = recovery.get('question')
-        if question is not None and ops.get_question(conn, question)['status'] != 'open':
-            _clear_recovery(conn, recovery_keys)  # owner acknowledged: one fresh attempt
-            recovery = {}
-        else:
-            return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
-    if recovery:
-        from . import resources
-        if time.time() < recovery['next_after'] or resources.check(new_workers=1)['verdict'] != 'go':
-            return {**result, 'outcome': 'queued', 'detail': recovery['detail']}
+    if stop := _recovery_stop(conn, recovery_keys, result):
+        return stop
     if waiting.state(base_cause) in ('authorized', 'attempting'):
         if not waiting.consume_retry(base_cause):
             return {**result, 'outcome': 'held'}
@@ -609,7 +613,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     interrupted = False
     work = Path(workdir)
     try:
-        _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
+        _drive(conn, repo, work, gate_fn, tasks, result, branch, remote, branch, decider, push, repo_name)
     except ci.CIDeferred as error:
         interrupted = True
         result.update(outcome='queued', reason=str(error))
@@ -670,11 +674,6 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
             result['red'] += red
 
 
-def _failures(receipt, tasks):
-    return [{'test': 'CI command', 'error': '\n'.join(receipt.get('log_tail') or []),
-             'file': None, 'in_diff': False}]
-
-
 def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None):
     stale_retries = 0
     while tasks:
@@ -703,9 +702,10 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 continue
             return
         from .ledger.waiting import repo_key
-        if base_status(conn, repo, work, gate_fn, base_sha, result, repo_key(repo_name, repo), receipt) == 'red':
-            return base_red(conn, result, base_sha, tasks, repo_key(repo_name, repo))
-        failures = _failures(receipt, tasks)
+        key = repo_key(repo_name, repo)
+        if base_status(conn, repo, work, gate_fn, base_sha, result, key, receipt) == 'red':
+            return base_red(conn, result, base_sha, tasks, key)
+        failures = [{'test': 'CI command', 'error': '\n'.join(receipt.get('log_tail') or []), 'file': None, 'in_diff': False}]
         culprit, how, asked = attribute(conn, tasks, failures, decider)
         result['decisions'] += asked
         if culprit is None:

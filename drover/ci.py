@@ -341,12 +341,19 @@ class CI:
                                         'order': repos.gate_order(platforms), 'force_full': force_full}
         from .launch import AdmissionHeld
         from .port import DirectPort
+        from . import disk
         port = DirectPort(conn) if conn is not None else None
         if port is not None:
             saved.setdefault('control_epoch', port.admission()['epoch'] if control_epoch is None else control_epoch)
         def guard():
             if port is not None:
                 port.require_admission(saved['control_epoch'])
+        deferred = []
+        def defer(error):
+            deferred.append(error)
+            saved.pop('ticket', None)
+            runner.write_json_atomic(request, saved)
+            raise error
         # Legacy requests keep their saved order so an issued runner is never relabelled.
         order = saved.get('order', platforms)
         for i in range(saved['index'], len(order)):
@@ -355,8 +362,7 @@ class CI:
             following = context is not None and saved.get('execution') != 'prepared'
             if context is None:
                 guard()
-                rid = 'ci-' + uuid.uuid4().hex
-                context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=order[i], base=base,
+                context = self.prepare(prog, checkout, commit, 'ci-' + uuid.uuid4().hex, kind=kind, platform=order[i], base=base,
                                        priority=priority, **({'force_full': True} if force_full else {}))
                 saved['context'] = context
                 saved['execution'] = 'prepared'
@@ -369,8 +375,7 @@ class CI:
             status = status_now()
             following = following or status is not None
             terminal = status and status.get('state') in ('exited', 'killed', 'timeout')
-            from . import disk
-            interrupted, capacity_deferred = False, False
+            interrupted = False
             try:
                 if following and conn is not None and not terminal:
                     # Preserve the original slot before generic acquisition may
@@ -387,10 +392,7 @@ class CI:
                             self.stop_active(conn, control['epoch'])
                     raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
                 if not following and disk.admission(disk.read())['verdict'] == 'hold':
-                    capacity_deferred = True
-                    saved.pop('ticket', None)
-                    runner.write_json_atomic(request, saved)
-                    raise CIInterrupted('CI deferred until a healthy disk reading')
+                    defer(CIInterrupted('CI deferred until a healthy disk reading'))
                 if conn is not None and not terminal:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
                     while True:
@@ -415,25 +417,19 @@ class CI:
                     if not status:
                         raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
                 if not following and disk.admission(disk.read())['verdict'] == 'hold':
-                    capacity_deferred = True
-                    saved.pop('ticket', None)
-                    runner.write_json_atomic(request, saved)
-                    raise CIInterrupted('CI deferred until a healthy disk reading')
+                    defer(CIInterrupted('CI deferred until a healthy disk reading'))
                 if not following and kind == 'full':
                     from . import resources
                     resource = (self.resource_check or resources.check)(new_workers=1)
-                    verdicts = [resource]
-                    if spec['placement'] == 'wsl':
-                        verdicts.append(resource.get('wsl', {}))
-                    verdicts.append(resource.get('ram_sides', {}).get(spec['placement'], {}))
+                    verdicts = [resource, *([resource.get('wsl', {})] if spec['placement'] == 'wsl' else []),
+                                resource.get('ram_sides', {}).get(spec['placement'], {})]
                     blocked = [v for v in verdicts if v.get('verdict', 'go') != 'go']
                     if blocked:
-                        capacity_deferred = True
-                        saved.pop('ticket', None)
-                        runner.write_json_atomic(request, saved)
-                        reason = '; '.join(r for v in blocked for r in v.get('reasons', []))
-                        raise CIDeferred('CI queued for resources: ' + (reason or blocked[0]['verdict']))
-                if not following:
+                        reason = '; '.join(r for v in blocked for r in v.get('reasons', [])) or blocked[0]['verdict']
+                        defer(CIDeferred('CI queued for resources: ' + reason))
+                if following:
+                    handle = self.launcher.adopt(spec)
+                else:
                     guard()
                     spec['_admission_check'] = guard
                     if conn is not None:
@@ -448,68 +444,12 @@ class CI:
                         # adoption of an older effect cannot clear its reservation.
                         following = False
                         raise
-                else:
-                    handle = self.launcher.adopt(spec)
-                next_scan, missed = time.monotonic() + (0 if status else 30), 0
-                while True:
-                    execution = handle.poll()
-                    if execution is not None:
-                        break
-                    if conn is not None:
-                        slots.lease_heartbeat(conn, ticket)
-                        control = port.admission(epoch=saved['control_epoch'])
-                        if not control['allowed']:
-                            self.stop_active(conn, control['epoch'])
-                            raise CIInterrupted('termination-uncertain: ' + control['reason'])
-                    if time.monotonic() >= next_scan:
-                        next_scan = time.monotonic() + 30
-                        try:
-                            found = self.launcher.runners(want_wsl=spec['placement'] == 'wsl')
-                        except runner.ScanError:
-                            pass  # unknown is not absent; the runner still owns its timeout
-                        else:
-                            current = runner.read_status(self.runs_dir, spec['run_id']) or {}
-                            if str(spec['run_id']) in found or current.get('state') in ('exited', 'killed', 'timeout'):
-                                missed = 0
-                            else:
-                                missed += 1
-                                next_scan = time.monotonic() + .25
-                                if missed >= 2:
-                                    runner.request_stop(self.runs_dir, spec['run_id'], nonce=spec['nonce'])
-                                    if current.get('nonce') != spec['nonce'] or not self.launcher.recover_ci(spec, current):
-                                        raise CIInterrupted('CI runner lost; child termination is not confirmed')
-                                    runner.write_json_atomic(runner.run_dir(self.runs_dir, spec['run_id']) / runner.STATUS_FILE,
-                                                             {**current, 'state': 'killed', 'exit_code': None,
-                                                              'ended': now(), 'reason': 'runner disappeared'})
-                                    handle.cancel()
-                                    raise CIInfrastructure(dict(status='infra', infra=True, passed=False,
-                                        sha=commit, platform=spec['placement'], run_id=spec['run_id'],
-                                        reason='runner disappeared', log_tail=['CI runner disappeared before writing its result']))
-                    time.sleep(self.poll_s)
-                evaluated = self.result(spec['run_id'], execution)
-                receipt = evaluated['receipt']
-                if receipt is not None:
-                    receipt = {**receipt, 'run_id': spec['run_id']}
-                if receipt and receipt.get('status') == contract.CI_REFUSED:
-                    raise CIError(receipt.get('reason') or evaluated['excerpt'])
-                if receipt is None or evaluated['infra']:
-                    request.unlink(missing_ok=True)
-                    return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
-                            'platform': spec['placement'], 'run_id': spec['run_id'],
-                            'reason': 'timeout' if execution.get('status') == 'timeout' else 'infrastructure',
-                            'log_tail': evaluated['excerpt'].splitlines(), 'receipt': receipt}
-                saved['results'].append(receipt)
-                saved['index'] = i + 1
-                saved.pop('context', None)
-                saved.pop('ticket', None)
-                saved.pop('execution', None)
-                saved.pop('held_reason', None)
-                runner.write_json_atomic(request, saved)
-                if not evaluated['passed']:
-                    request.unlink(missing_ok=True)
-                    return receipt
+                execution = self._supervise(handle, spec, conn, port, ticket, saved, bool(status), commit)
+                done = self._classify(spec, execution, saved, request, commit, i)
+                if done is not None:
+                    return done
             except BaseException as error:
-                if capacity_deferred:
+                if deferred:
                     raise
                 status = runner.read_status(self.runs_dir, spec['run_id']) or {}
                 interrupted = following and not (status.get('nonce') == spec['nonce']
@@ -528,6 +468,66 @@ class CI:
         request.unlink(missing_ok=True)
         # The final result certifies every placement; keep each individual result.
         return {**saved['results'][-1], 'platform': '+'.join(platforms), 'results': saved['results']}
+
+    def _supervise(self, handle, spec, conn, port, ticket, saved, was_following, commit):
+        next_scan, missed = time.monotonic() + (0 if was_following else 30), 0
+        while True:
+            execution = handle.poll()
+            if execution is not None:
+                return execution
+            if conn is not None:
+                slots.lease_heartbeat(conn, ticket)
+                control = port.admission(epoch=saved['control_epoch'])
+                if not control['allowed']:
+                    self.stop_active(conn, control['epoch'])
+                    raise CIInterrupted('termination-uncertain: ' + control['reason'])
+            if time.monotonic() >= next_scan:
+                next_scan = time.monotonic() + 30
+                try:
+                    found = self.launcher.runners(want_wsl=spec['placement'] == 'wsl')
+                except runner.ScanError:
+                    found = None  # unknown is not absent; the runner still owns its timeout
+                current = runner.read_status(self.runs_dir, spec['run_id']) or {}
+                if found is not None and (str(spec['run_id']) in found or current.get('state') in ('exited', 'killed', 'timeout')):
+                    missed = 0
+                elif found is not None:
+                    missed += 1
+                    next_scan = time.monotonic() + .25
+                    if missed >= 2:
+                        runner.request_stop(self.runs_dir, spec['run_id'], nonce=spec['nonce'])
+                        if current.get('nonce') != spec['nonce'] or not self.launcher.recover_ci(spec, current):
+                            raise CIInterrupted('CI runner lost; child termination is not confirmed')
+                        runner.write_json_atomic(runner.run_dir(self.runs_dir, spec['run_id']) / runner.STATUS_FILE,
+                                                 {**current, 'state': 'killed', 'exit_code': None,
+                                                  'ended': now(), 'reason': 'runner disappeared'})
+                        handle.cancel()
+                        raise CIInfrastructure(dict(status='infra', infra=True, passed=False,
+                            sha=commit, platform=spec['placement'], run_id=spec['run_id'],
+                            reason='runner disappeared', log_tail=['CI runner disappeared before writing its result']))
+            time.sleep(self.poll_s)
+
+    def _classify(self, spec, execution, saved, request, commit, i):
+        evaluated = self.result(spec['run_id'], execution)
+        receipt = evaluated['receipt']
+        if receipt is not None:
+            receipt = {**receipt, 'run_id': spec['run_id']}
+        if receipt and receipt.get('status') == contract.CI_REFUSED:
+            raise CIError(receipt.get('reason') or evaluated['excerpt'])
+        if receipt is None or evaluated['infra']:
+            request.unlink(missing_ok=True)
+            return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
+                    'platform': spec['placement'], 'run_id': spec['run_id'],
+                    'reason': 'timeout' if execution.get('status') == 'timeout' else 'infrastructure',
+                    'log_tail': evaluated['excerpt'].splitlines(), 'receipt': receipt}
+        saved['results'].append(receipt)
+        saved['index'] = i + 1
+        for field in ('context', 'ticket', 'execution', 'held_reason'):
+            saved.pop(field, None)
+        runner.write_json_atomic(request, saved)
+        if evaluated['passed']:
+            return None
+        request.unlink(missing_ok=True)
+        return receipt
 
 
 def _execute(plan):
