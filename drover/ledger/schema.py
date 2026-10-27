@@ -373,4 +373,8 @@ ALTER TABLE gate_tickets ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinn
 UPDATE gate_tickets SET pinned=1 WHERE slot IS NOT NULL AND holder LIKE 'ci-%';
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14)]
+V15 = """
+ALTER TABLE gate_tickets ADD COLUMN platform TEXT NOT NULL DEFAULT 'windows';
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15)]

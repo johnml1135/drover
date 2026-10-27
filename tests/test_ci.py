@@ -383,9 +383,9 @@ class CITests(unittest.TestCase):
         prog = self.configure('import os; print("placement:"+os.environ["FIXTURE_PLACEMENT"]); '
                               'raise SystemExit(int(os.environ["FIXTURE_EXIT"]))')
         commit = self.repo.commit('source.txt', 'changed')
-        for outcomes, expected in (({'windows': 0, 'wsl': 0}, ['windows', 'wsl']),
-                                   ({'windows': 3, 'wsl': 0}, ['windows']),
-                                   ({'windows': 0, 'wsl': 4}, ['windows', 'wsl'])):
+        for outcomes, expected in (({'windows': 0, 'wsl': 0}, ['wsl', 'windows']),
+                                   ({'windows': 3, 'wsl': 0}, ['wsl', 'windows']),
+                                   ({'windows': 0, 'wsl': 4}, ['wsl'])):
             calls = []
             class OutcomeLauncher(RunnerLauncher):
                 def launch(self, spec):

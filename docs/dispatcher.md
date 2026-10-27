@@ -69,7 +69,12 @@ Run files live in `<state dir>\runs\<id>\`.
 
 - CI runners: hub settings `gate_slots` (default 5, clamped 1..32) and `gate_reserved` (default 1, clamped 0..slots-1) set how
   many checks run at once; owner-only, read each tick, no restart. An invalid value logs once and uses the default. The
-  heartbeat carries `gate_queue: {waiting, oldest_s, slots}`. Merge groups (`run_leased`) keep the default slot count.
+  heartbeat carries `gate_queue: {waiting, oldest_s, slots}`. Full merge gates share these limits.
+  `gate_windows_slots` (default 1, clamped 1..32) additionally caps Windows gates across checks and full CI.
+  One Drover Windows gate normally starts eight test workers; this prevents five gate slots from starting forty.
+  The cap applies to all priorities, including reserved slots; WSL work can pass a blocked Windows ticket.
+  Lowering the cap leaves already-issued gates running and blocks new Windows admission until capacity is free.
+  Tickets retain placement across restart; pre-v15 tickets conservatively count as Windows.
 - One instance: the hub holds `<state dir>\dispatcher.lock`; `python -m drover.dispatcher` refuses while it is held and
   refuses to run at all off Windows (the lock is not shared between Windows and WSL).
 - Restart: open runs are adopted by run id from `runner.find_runners()` plus `wsl.exe --exec python3 -m drover.runner

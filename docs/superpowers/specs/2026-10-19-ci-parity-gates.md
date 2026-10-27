@@ -374,3 +374,24 @@ Acceptance evidence for the implemented system must show: both required placemen
 G5 fixtures must show fair turns between eligible repos with different lane/unit settings under sustained load, including a larger request that cheaper work cannot starve. G6 fixtures must show two scoped-green tasks sharing one merge-full run, zero routine full pre-review runs, and no duplicate full on finish/review reuse; failure/base movement must produce linked exceptional attempts with correct red-rate denominators. G7 fixtures must show a five-member independent group, a nimble-low/Haiku-confident decision, both-models-uncertain splitting, a dirty pair accepted only with valid review coverage, a dirty triple rejected, a replay conflict rejected, and an interaction that bisection cannot falsely attribute to one member. Every decision, confidence, subset and eventual outcome must be queryable by its original stack decision ID.
 
 Use fixture-based tests for policy and failure paths, then admitted real-platform pilots for runtime claims. A docs-only check of this spec is not a gate receipt for any implementation SHA. The reported 600-second Windows failure remains an execution diagnosis until a fresh actual gate receipt establishes otherwise; T-ce changes only this specification, and I5a/I5 carry its runner fix/verification handoff.
+
+
+### Platform scheduling and Windows capacity (Q4/Q5)
+
+Checks and full gates run WSL first when both platforms are configured and stop
+on its failure. They remain sequential because repository scripts run against
+the same mutable checkout: generated files, build caches and tracked-tree
+validation can race. The script contract provides no concurrent-execution
+isolation guarantee. Parallel gates require isolated checkouts or an explicit
+repository safety contract before they can be enabled.
+
+Every required platform must pass for the exact candidate SHA. Individual run
+receipts remain separate. Saved full-CI requests retain their execution order,
+nonce, index and capacity ticket across restart, including pre-upgrade requests
+that already started Windows first. Cancellation retains uncertain executions'
+capacity until terminal reconciliation.
+
+The hub setting `gate_windows_slots` defaults to one simultaneous Windows gate
+across checks and full CI (normally eight child test workers). It supplements
+`gate_slots` and `gate_reserved`; priority never bypasses the Windows cap.
+WSL gates can use remaining general capacity while Windows admission waits.

@@ -301,7 +301,7 @@ class CI:
                 self._resumed[str(checkout)] = (key, result)
 
     def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None):
-        """Run all placements in order, or adopt a saved runner after a hub restart.
+        """Run placements WSL first in the shared checkout, or adopt a saved runner after a hub restart.
 
         Queued tickets can expire; a possibly-issued execution pins its acquired
         ticket until terminal reconciliation, even across STOP and long downtime.
@@ -318,7 +318,8 @@ class CI:
         if cached and cached[0] == key:
             return cached[1]
         saved = read_result(request) or {'index': 0, 'results': [], 'checkout': str(checkout),
-                                        'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority}
+                                        'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority,
+                                        'order': repos.gate_order(platforms)}
         from .launch import AdmissionHeld
         from .port import DirectPort
         port = DirectPort(conn) if conn is not None else None
@@ -327,14 +328,16 @@ class CI:
         def guard():
             if port is not None:
                 port.require_admission(saved['control_epoch'])
-        for i in range(saved['index'], len(platforms)):
+        # Legacy requests keep their saved order so an issued runner is never relabelled.
+        order = saved.get('order', platforms)
+        for i in range(saved['index'], len(order)):
             context = saved.get('context')
             # Old saved requests had no phase. Treat those as possibly issued.
             following = context is not None and saved.get('execution') != 'prepared'
             if context is None:
                 guard()
                 rid = 'ci-' + uuid.uuid4().hex
-                context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=platforms[i], base=base,
+                context = self.prepare(prog, checkout, commit, rid, kind=kind, platform=order[i], base=base,
                                        priority=priority)
                 saved['context'] = context
                 saved['execution'] = 'prepared'
@@ -375,11 +378,12 @@ class CI:
                         if not following:
                             guard()
                         if ticket is None:
-                            ticket = slots.lease_request(conn, key, priority, holder=spec['run_id'])
+                            ticket = slots.lease_request(conn, key, priority, holder=spec['run_id'], platform=spec['placement'])
                             saved['ticket'] = ticket
                             runner.write_json_atomic(request, saved)
                         try:
-                            if slots.lease_acquire(conn, ticket, *limits, ttl=600) is not None:
+                            if slots.lease_acquire(conn, ticket, *limits, ttl=600,
+                                    windows_slots=slots.configured_windows_limit(lambda k, d: ops.get_setting(conn, k, d))) is not None:
                                 break
                         except slots.SlotExpired:
                             if following:

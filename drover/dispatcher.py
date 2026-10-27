@@ -512,7 +512,7 @@ class Dispatcher:
     def _start_gates(self, policy):
         """Start the gate run of every running task whose worker finished done. Derived from the ledger each tick."""
         p, started = self.port, []
-        live_tasks = {tid for _, tid, _ in self.live.values()}
+        live_tasks = {tid for _, tid, _ in self.live.values()} | {tid for tid, _, _ in self.cancelling.values()}
         self.ci_runners.heartbeat({tid for _, tid, spec in self.live.values() if spec.get("role") == "gate"})
         allow = dispatch_repos.allowed(p.get_setting)
         for t in p.list_tasks("running"):
@@ -554,7 +554,7 @@ class Dispatcher:
             return False
         if platform == "wsl" and self._wsl_blocked():
             return False
-        if self.ci_runners.reserve(task) is None:
+        if self.ci_runners.reserve(task, platform=platform) is None:
             return False                                     # waiting for a gate slot
         gate_run = p.start_run(tid, "gate", "local", "gate")
         if hasattr(p, "set_run_context"):
@@ -572,13 +572,15 @@ class Dispatcher:
                                            'control_epoch': self._control_epoch}, tid)
             spec['_admission_check'] = lambda: p.require_admission(spec['control_epoch'], tid)
             spec['_admission_check']()
+            self.ci_runners.pin(tid)
             handle = self.launcher.launch(spec)
         except launch_mod.AdmissionHeld as error:
             self.ci_runners.release(tid)
             p.finish_run(gate_run, 'control-held', note=str(error))
             return False
         except Exception as e:
-            self.ci_runners.release(tid)
+            if not getattr(e, 'cancel_requested', False):
+                self.ci_runners.release(tid)
             self._launch_error(task, gate_run, {"backend": "local"}, platform, e, nonce, role="gate")
             return False
         self.live[gate_run] = (handle, tid, spec)
@@ -594,9 +596,8 @@ class Dispatcher:
                 and outcome.get(e["data"]["gate_run"]) == "passed"}
 
     def _next_gate_platform(self, task, prog, worker_id, sha):
-        """The first of the repo's gate platforms that has not yet passed for this commit: `both` is run in order
-        windows then wsl, one gate run at a time, and every one must pass."""
-        platforms = repos_mod.gate_platforms(prog)
+        """Run WSL first in the shared checkout, stopping on failure; every platform must pass."""
+        platforms = repos_mod.gate_order(repos_mod.gate_platforms(prog))
         done = self._gate_passed_platforms(task["id"], worker_id, sha)
         return next((x for x in platforms if x not in done), platforms[0])
 
@@ -984,6 +985,9 @@ class Dispatcher:
                 self.unavailable[(route['backend'], placement)] = self.now()
             return None
         p.finish_run(run_id, "launch-error", note=(f"launch failed: {exc}"[:270] + (" cancel-requested" if cancelled else "")))
+        if cancelled:
+            self.cancelling[run_id] = (tid, placement, nonce)
+            p.append_event("launch-cancel", {"run": run_id, "placement": placement}, tid)
         if getattr(exc, "missing", False) or isinstance(exc, FileNotFoundError):
             self.unavailable[(route["backend"], placement)] = self.now()
         streak = 0
@@ -994,8 +998,6 @@ class Dispatcher:
         if streak >= MAX_LAUNCH_ERRORS:
             return p.set_status(tid, "needs-owner", reason=f"{streak} launch errors in a row: {exc}"[:300])
         if cancelled:
-            self.cancelling[run_id] = (tid, placement, nonce)
-            p.append_event("launch-cancel", {"run": run_id, "placement": placement}, tid)
             return None
         if role == "worker":
             return p.set_status(tid, "ready", reason="launch failed")
@@ -1080,10 +1082,9 @@ class Dispatcher:
         p, policy = self.port, self.port.get_policy()
         places, nonces = self._placements(), self._nonces()
         cleared = {e['data']['run'] for e in p.events('launch-cancel-cleared')}
-        planner_launches = {batch['run_id'] for batch in p.waiting.replan_runs()}
         for event in p.events('launch-cancel'):
             rid = event['data']['run']
-            if rid in planner_launches and rid not in cleared:
+            if rid not in cleared:
                 self.cancelling[rid] = (event['task_id'], places.get(rid, 'unknown'), nonces.get(rid))
         recovered, live_tasks = [], {tid for _, tid, _ in self.live.values()}
         for t in p.list_tasks("running"):
@@ -1091,7 +1092,8 @@ class Dispatcher:
             if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or any(r["ended"] is None for r in runs):
                 continue
             last = runs[-1] if runs else None
-            if last and last["outcome"] == "launch-error" and "cancel-requested" in (last["note"] or ""):
+            if (last and last['id'] not in cleared and last["outcome"] == "launch-error"
+                    and "cancel-requested" in (last["note"] or "")):
                 self.cancelling[last["id"]] = (t["id"], places.get(last["id"], "unknown"), nonces.get(last["id"]))
                 continue
             if self._awaiting_gate(runs):
@@ -1163,6 +1165,7 @@ class Dispatcher:
                     stop(rid, nonce)                  # ask again; the task stays where it is
                 continue
             del self.cancelling[rid]
+            self.ci_runners.release(tid)
             p = self.port
             p.append_event("launch-cancel-cleared", {"run": rid}, tid)
             if p.get_task(tid)["status"] == "running" and not any(r["ended"] is None for r in p.list_runs(tid)):

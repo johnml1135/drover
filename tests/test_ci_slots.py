@@ -71,9 +71,10 @@ class LeaseTests(unittest.TestCase):
         old = ledger_db.connect(Path(self.tmp.name) / 'v13.db', migrate_db=False)
         self.addCleanup(old.close)
         ledger_db.migrate(old, MIGRATIONS[:13])
-        ticket = gate.lease_request(old, 'ordinary', 'P2', at=100)
+        ticket = old.execute("INSERT INTO gate_tickets(task_id,rank,holder,requested,heartbeat) VALUES('ordinary',3,'gate',100,100)").lastrowid
         old.execute('UPDATE gate_tickets SET slot=0 WHERE id=?', (ticket,))
-        issued = gate.lease_request(old, 'group-ci', 'P1', holder='ci-' + 'a' * 32, at=100)
+        issued = old.execute("INSERT INTO gate_tickets(task_id,rank,holder,requested,heartbeat) VALUES('group-ci',2,?,100,100)",
+                             ('ci-' + 'a' * 32,)).lastrowid
         old.execute('UPDATE gate_tickets SET slot=1 WHERE id=?', (issued,))
         ledger_db.migrate(old)
         rows = {row['id']: row for row in gate.lease_queue(old)}
@@ -150,6 +151,7 @@ class RunnerSettings(LeaseTests):
 
     def test_lease_honours_slots_setting(self):
         ops.set_setting(self.conn, "gate_slots", "8")
+        ops.set_setting(self.conn, "gate_windows_slots", "8")
         ops.set_setting(self.conn, "gate_reserved", "0")
         tasks = [{"id": f"t{i}", "priority": "P2"} for i in range(9)]
         runners = gate.Runners(self.conn)

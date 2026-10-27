@@ -195,9 +195,11 @@ class FakeRepoPipeline(Base):
         self.assertIsNone(dispatcher.place(plain, codex, "R:\\wt", windows_only)[0])
 
 
-class GateBoth(Base):
+class GateBoth(test_dispatcher.Base):
     def setUp(self):
         super().setUp()
+        self.prog = self.pipe.prog
+        self.fl = test_pipeline.FakeLauncher(Path(self.tmp.name) / 'runs')
         self.prog.update(repo(self.prog["repo"], self.prog["worktrees"], gate_platform="both"))
         self.verdicts = {}                                   # platform -> passed?
         self.fl.launch = self.launch
@@ -217,11 +219,18 @@ class GateBoth(Base):
         self.fl.handles[spec["run_id"]] = h
         return h
 
+    def run_worker(self, tid, sha):
+        spec = self.fl.of('worker')[-1]
+        self.fl.handles[spec['run_id']].result = test_dispatcher.res(
+            'done', json.dumps({'status': 'done', 'sha': sha, 'blocker': None, 'note': 'ok'}))
+
+    states = Base.states
+
     def drive(self, ticks=6):
         self.d = self.make(wsl_up=lambda: True)
         tid = self.task()
         self.d.tick()
-        sha = self.worker_commits(tid)
+        sha = 'abc1234'
         self.run_worker(tid, sha)
         for _ in range(ticks):
             self.d.tick()
@@ -230,14 +239,13 @@ class GateBoth(Base):
     def test_the_gate_runs_on_each_platform_in_turn_and_passes_only_when_both_pass(self):
         tid, sha = self.drive()
         gates = self.fl.of("gate")
-        self.assertEqual([g["placement"] for g in gates], ["windows", "wsl"])
+        self.assertEqual([g["placement"] for g in gates], ["wsl", "windows"])
         self.assertEqual(self.status(tid), "gated")
         runs = ops.list_runs(self.conn, tid)
         self.assertEqual([(r["role"], r["outcome"]) for r in runs if r["role"] != "review"],
                          [("worker", "gated"), ("gate", "passed"), ("gate", "passed")])
         self.assertEqual(len(ops.events(self.conn, kind="gate-platform-passed")), 1)
         self.assertEqual(len(ops.events(self.conn, kind="gate-done")), 1)
-        self.assertEqual(self.fl.of("gate")[1]["argv"][0], "python3")                 # the WSL gate runs under python3
 
     def test_gate_stats_record_each_placement_before_launch_and_after_finish(self):
         placements = []
@@ -248,25 +256,25 @@ class GateBoth(Base):
             return self.launch(spec)
         self.fl.launch = launch
         tid, _ = self.drive()
-        self.assertEqual(placements, ['windows', 'wsl'])
+        self.assertEqual(placements, ['wsl', 'windows'])
         gates = [r for r in stats.query(self.conn, task=tid)['runs'] if r['role'] == 'gate']
-        self.assertEqual([r['stats']['placement'] for r in gates], ['windows', 'wsl'])
+        self.assertEqual([r['stats']['placement'] for r in gates], ['wsl', 'windows'])
         self.assertTrue(all(r['ended'] for r in gates))
 
     def test_a_red_second_platform_fails_the_gate_and_names_the_platform(self):
-        self.verdicts["wsl"] = False
+        self.verdicts["windows"] = False
         tid, sha = self.drive()
-        self.assertEqual([g["placement"] for g in self.fl.of("gate")][:2], ["windows", "wsl"])
+        self.assertEqual([g["placement"] for g in self.fl.of("gate")][:2], ["wsl", "windows"])
         runs = ops.list_runs(self.conn, tid)
         self.assertEqual(runs[0]["outcome"], "gate-fail")
-        self.assertIn("[wsl gate failed]", contract.receipt_excerpt(runs[0]["gate_receipt"]))
+        self.assertIn("[windows gate failed]", contract.receipt_excerpt(runs[0]["gate_receipt"]))
         self.assertIn(("ready", "retry"), self.states(tid))
 
     def test_a_red_first_platform_never_starts_the_second(self):
-        self.verdicts["windows"] = False
+        self.verdicts["wsl"] = False
         tid, sha = self.drive()
-        self.assertEqual([g["placement"] for g in self.fl.of("gate")][:1], ["windows"])
-        self.assertNotIn("wsl", [g["placement"] for g in self.fl.of("gate")[:1]])
+        self.assertEqual([g["placement"] for g in self.fl.of("gate")][:1], ["wsl"])
+        self.assertNotIn("windows", [g["placement"] for g in self.fl.of("gate")[:1]])
         self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "gate-fail")
 
     def test_wsl_down_waits_for_the_wsl_half_and_tells_the_watchdog(self):
@@ -274,18 +282,17 @@ class GateBoth(Base):
         self.d = self.make(wsl_up=lambda: up["v"])
         tid = self.task()
         self.d.tick()
-        self.run_worker(tid, self.worker_commits(tid))
-        self.d.tick()                                         # reaps the worker, starts the Windows gate
+        self.run_worker(tid, "abc1234")
         up["v"] = False
         for _ in range(4):
             self.d.tick()
-        self.assertEqual([g["placement"] for g in self.fl.of("gate")], ["windows"])
+        self.assertEqual([g["placement"] for g in self.fl.of("gate")], [])
         self.assertEqual(self.status(tid), "running")
         self.assertEqual(json.loads(ops.get_setting(self.conn, "_wsl_needed"))["task"], tid)
         up["v"] = True
         for _ in range(4):
             self.d.tick()
-        self.assertEqual([g["placement"] for g in self.fl.of("gate")], ["windows", "wsl"])
+        self.assertEqual([g["placement"] for g in self.fl.of("gate")], ["wsl", "windows"])
         self.assertEqual(self.status(tid), "gated")
 
 

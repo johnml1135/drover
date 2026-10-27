@@ -337,6 +337,11 @@ def gate_platforms(prog):
     return list(PLATFORMS) if plat == "both" else [plat]
 
 
+def gate_order(platforms):
+    """WSL first: arbitrary repo scripts share a checkout and cannot safely overlap."""
+    return sorted(platforms, key=lambda platform: platform != 'wsl')
+
+
 def ci_policy(prog):
     """Validated CI planning and runner limits, owned by the repo loader."""
     return {**prog["gate"], "base": prog["default_branch"]}
