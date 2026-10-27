@@ -377,4 +377,8 @@ V15 = """
 ALTER TABLE gate_tickets ADD COLUMN platform TEXT NOT NULL DEFAULT 'windows';
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15)]
+V16 = """
+ALTER TABLE landing_batches ADD COLUMN detail TEXT NOT NULL DEFAULT '{}';
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15), (16, V16)]

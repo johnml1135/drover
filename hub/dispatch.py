@@ -160,6 +160,7 @@ class LandingService:
         last = landing_storage.last_outcome(conn)
         ops.set_setting(conn, "gate", json.dumps({
             "status": last or "idle",
+            "detail": landing_storage.last_detail(conn),
             "median": f"{v['median_gate_s']:.0f}s" if v["median_gate_s"] is not None else None,
             "red_rate": f"{v['red_rate']:.0%}" if v["red_rate"] is not None else None}))
 

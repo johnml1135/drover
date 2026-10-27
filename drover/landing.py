@@ -457,7 +457,7 @@ def _infra_failure(conn, keys, tasks, result, detail):
         if count >= 2 and not saved.get('question'):
             reason = 'Landing infrastructure recovery exhausted: ' + detail.get('reason', 'infrastructure failure')
             qid = ops.ask_question(conn, 'task', tasks[0]['id'], 'Landing needs a healthy host',
-                                   reason + '\n' + '\n'.join(detail.get('log_tail', [])),
+                                   reason + '\n' + detail.get('log_excerpt', ''),
                                    options=[{'label': 'Acknowledged'}], actor='landing')
             saved['question'] = qid
             waiting = Waiting(conn, 'landing')
@@ -525,12 +525,13 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     try:
         _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push, repo_name)
     except ci.CIInfrastructure as error:
-        _infra_failure(conn, recovery_keys, tasks, result, error.detail)
+        _infra_failure(conn, recovery_keys, tasks, result, _failure_detail(error.detail))
     except AdmissionHeld as error:
         result.update(outcome='held', reason=str(error))
     except BaseException as e:
         interrupted = isinstance(e, ci.CIInterrupted)
         result['outcome'], result['error'] = 'error', repr(e)
+        result.setdefault('detail', _failure_detail({'reason': str(e)}))
         storage.record_batch(conn, result)
         raise
     finally:
@@ -545,17 +546,32 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     return result
 
 
+def _failure_detail(receipt):
+    excerpt = receipt.get('log_excerpt') or '\n'.join(receipt.get('log_tail') or [])
+    return {'reason': receipt.get('reason') or ('CI gate ' + receipt.get('status', 'failed')),
+            'run_id': receipt.get('run_id'), 'platform': receipt.get('platform'),
+            'log_excerpt': excerpt[-4096:]}
+
+
 def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
     t0 = time.monotonic()
-    receipt = gate_fn(work, tip, tasks)
-    result['gate_s'].append(round(time.monotonic() - t0, 3))
-    result['gates'] += 1
-    result['bisect_gates'] += bisecting
-    if receipt.get('infra') or receipt['status'] == 'infra':
-        raise ci.CIInfrastructure(receipt)
-    red = receipt['status'] == 'failed'
-    result['red'] += red
-    return receipt, red
+    red = True
+    try:
+        receipt = gate_fn(work, tip, tasks)
+        if receipt.get('infra') or receipt['status'] == 'infra':
+            raise ci.CIInfrastructure(receipt)
+        red = receipt['status'] == 'failed'
+        if red:
+            result['detail'] = _failure_detail(receipt)
+        return receipt, red
+    except BaseException as error:
+        result['detail'] = _failure_detail(getattr(error, 'detail', {'reason': str(error)}))
+        raise
+    finally:
+        result['gate_s'].append(round(time.monotonic() - t0, 3))
+        result['gates'] += 1
+        result['bisect_gates'] += bisecting
+        result['red'] += red
 
 
 def _failures(receipt, tasks):

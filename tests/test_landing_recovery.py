@@ -101,3 +101,42 @@ class RecoveryTests(unittest.TestCase):
                 patch.object(landing, 'build_tip', return_value=('d' * 40, [self.task, other], [])):
             self.assertEqual(self.run_batch(gate)['outcome'], 'infra-held')
         self.assertEqual(gate.call_count, 2)
+
+    def test_failure_detail_and_task_event_are_atomic(self):
+        result = self.run_batch(Mock(return_value=INFRA))
+        row = self.conn.execute('SELECT * FROM landing_batches').fetchone()
+        detail = json.loads(row['detail'])
+        self.assertEqual((detail['reason'], detail['run_id'], detail['platform']),
+                         ('timeout', 'ci-timeout', 'wsl'))
+        self.assertIn('timed out', detail['log_excerpt'])
+        event, = ops.events(self.conn, kind='landing.outcome')
+        self.assertEqual(event['task_id'], self.task['id'])
+        self.assertEqual(event['data']['batch_id'], result['batch_id'])
+        self.assertEqual(event['data']['detail'], detail)
+        from drover.ledger import landing as storage
+        with patch.object(ops, 'event', side_effect=RuntimeError('notice unavailable')):
+            with self.assertRaises(RuntimeError):
+                storage.record_batch(self.conn, result)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM landing_batches').fetchone()[0], 1)
+
+    def test_gate_exception_records_timing_and_reason(self):
+        gate = Mock(side_effect=RuntimeError('broken adapter'))
+        with self.assertRaisesRegex(RuntimeError, 'broken adapter'):
+            self.run_batch(gate)
+        row = self.conn.execute('SELECT * FROM landing_batches').fetchone()
+        self.assertEqual((row['gates'], row['red']), (1, 1))
+        self.assertEqual(len(json.loads(row['gate_s'])), 1)
+        self.assertIn('broken adapter', json.loads(row['detail'])['reason'])
+
+    def test_gate_setting_exposes_detail_and_exhaustion_is_issue(self):
+        from hub.dispatch import LandingService
+        from drover.notifications.core import classify
+        self.run_batch(Mock(return_value=INFRA))
+        self.clock.return_value = 1100
+        self.run_batch(Mock(return_value=INFRA))
+        LandingService._write_gate(self.conn)
+        setting = json.loads(ops.get_setting(self.conn, 'gate'))
+        self.assertEqual(setting['status'], 'infra-held')
+        self.assertEqual(setting['detail']['run_id'], 'ci-timeout')
+        event = ops.events(self.conn, kind='landing.outcome')[-1]
+        self.assertEqual(classify(self.conn, event), 'issue')

@@ -29,13 +29,19 @@ def drop_lock(conn, holder):
 def record_batch(conn, r):
     with tx(conn):
         cur = conn.execute(
-            "INSERT INTO landing_batches(at,tasks,outcome,tip,gates,gate_s,red,bisect_gates,decisions,dropped) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO landing_batches(at,tasks,outcome,tip,gates,gate_s,red,bisect_gates,decisions,dropped,detail) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (ops.stamp(), json.dumps(r['batch']), r['outcome'], r['tip'], r['gates'], json.dumps(r['gate_s']),
-             r['red'], r['bisect_gates'], r['decisions'], json.dumps(r['dropped'])))
+             r['red'], r['bisect_gates'], r['decisions'], json.dumps(r['dropped']), json.dumps(r.get('detail', {}))))
         r['batch_id'] = cur.lastrowid
         conn.execute("UPDATE task_landed SET batch_id=? WHERE task_id IN (%s)" % ','.join('?' * len(r['landed'])),
                      (cur.lastrowid, *r['landed'])) if r['landed'] else None
+        for task_id in r['batch']:
+            ops.event(conn, 'landing.outcome', 'landing',
+                      {'batch_id': r['batch_id'], 'outcome': r['outcome'],
+                       'reason': r.get('detail', {}).get('reason') or r.get('error') or r['outcome'],
+                       'detail': r.get('detail', {})}, task_id=task_id)
+
 
 
 def land_sha(conn, task_id):
@@ -56,6 +62,11 @@ def batches(conn):
 def last_outcome(conn):
     row = conn.execute("SELECT outcome FROM landing_batches ORDER BY id DESC LIMIT 1").fetchone()
     return row[0] if row else None
+
+
+def last_detail(conn):
+    row = conn.execute('SELECT detail FROM landing_batches ORDER BY id DESC LIMIT 1').fetchone()
+    return json.loads(row[0]) if row else {}
 
 
 def forget_base(conn, repo, sha):

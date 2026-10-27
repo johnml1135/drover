@@ -465,6 +465,8 @@ class CI:
                     time.sleep(self.poll_s)
                 evaluated = self.result(spec['run_id'], execution)
                 receipt = evaluated['receipt']
+                if receipt is not None:
+                    receipt = {**receipt, 'run_id': spec['run_id']}
                 if receipt is None or evaluated['infra']:
                     request.unlink(missing_ok=True)
                     return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
