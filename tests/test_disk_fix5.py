@@ -5,18 +5,21 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from drover import config, disk_cleanup, disk_state, placement
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase as WorktreeCase, ProcessFreeDiskCase
+from tests.test_disk_worktrees import WorktreeCase as GitWorktreeCase
 
 
-class Startup(DiskCase):
+class Startup(ProcessFreeDiskCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX session semantics')
     @integration
     def test_composed_worker_already_session_leader(self):
@@ -229,7 +232,7 @@ class Startup(DiskCase):
                 self.assertTrue(scans, 'wsl.exe exit alone is not remote termination proof')
 
 
-class UserScope(unittest.TestCase):
+class UserScope(ProcessFreeDiskCase):
     @unittest.skipIf(os.name == 'nt', 'WSL process ownership')
     def test_wsl_status_uid_scopes_unreadable_cwd_but_keeps_named_paths(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -279,16 +282,25 @@ class BoundedReport(WorktreeCase):
         wt = self.worktree('large')
         folder = wt / 'generated'
         folder.mkdir()
-        # Real synthetic tree, with long paths to expose per-file report growth.
-        for i in range(6000):
-            (folder / (f'{i:06}-' + 'x' * 110)).write_bytes(b'x' * (i % 100 + 1))
+        # Virtual leaves drive the real recursive inventory/cache. No 6,000
+        # physical files: size, sample bounds and one traversal are still checked.
+        leaves = {folder / (f'{i:06}-' + 'x' * 110): i % 100 + 1 for i in range(6000)}
         scans = []
-        iterdir = Path.iterdir
+        iterdir, path_stat, lstat = Path.iterdir, Path.stat, Path.lstat
         def counted(path):
             if path == folder:
                 scans.append(str(path))
+                return iter(leaves)
             return iterdir(path)
-        with patch.object(Path, 'iterdir', counted):
+        def measured(path, *args, **kwargs):
+            if path in leaves:
+                return SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_size=leaves[path],
+                                       st_mtime=self.now, st_file_attributes=0)
+            return path_stat(path, *args, **kwargs)
+        def unlinked(path, *args, **kwargs):
+            return measured(path) if path in leaves else lstat(path, *args, **kwargs)
+        with patch.object(Path, 'iterdir', counted), patch.object(Path, 'stat', measured), \
+                patch.object(Path, 'lstat', unlinked):
             result = self.cleanup()
         rows = [r for r in result['items'] if r.get('reason_code') == 'untracked_or_ignored' and r['path'] == str(wt)]
         self.assertEqual(len(rows), 1)
@@ -345,19 +357,7 @@ class BoundedReport(WorktreeCase):
             self.assertEqual(len(rows), 1, result)
             self.assertEqual(rows[0]['count'], 172 if reason == 'process_out_of_scope' else 1)
 
-    def test_excluded_repo_names_exact_owner_action(self):
-        (self.repos_dir / 'alpha.toml').write_text(config.dumps(dict(
-            name='alpha', repo=str(self.r.repo), worktrees=str(self.trees),
-            scripts=dict(test='.drover/scripts/test.ps1'))))
-        # Dirty repo edits cannot repair machine policy rejected against HEAD.
-        entry = self.r.repo / '.drover' / 'config.toml'
-        entry.write_text(entry.read_text() + '\n# uncommitted migration preparation\n')
-        result = self.cleanup()
-        row = next(e for e in result['errors'] if e.get('reason_code') == 'excluded_repo')
-        self.assertEqual(row['owner_action'], 'commit .drover/config.toml, then drover config migrate-machine alpha')
-
-
-class Timeout(DiskCase):
+class Timeout(ProcessFreeDiskCase):
     def test_configured_cap_is_per_worker(self):
         self.assertEqual(config.validate({})['disk_cleanup']['worker_timeout_s'], 1800)
         for value in (0, -1, True, float('inf'), '10'):
@@ -379,7 +379,7 @@ class Timeout(DiskCase):
         self.assertEqual(calls, [2345, 2345])
 
 
-class VisibilityReport(DiskCase):
+class VisibilityReport(ProcessFreeDiskCase):
     def test_foreign_process_count_is_once_per_run_across_drives_and_workers(self):
         self.cfg['trackers'].append(dict(self.cfg['trackers'][0], name='second-drive'))
         def worker(side, request):
@@ -405,3 +405,17 @@ class VisibilityReport(DiskCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['count'], 20)
         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
+
+
+class RegistrationContract(GitWorktreeCase):
+    @integration
+    def test_excluded_repo_names_exact_owner_action(self):
+        (self.repos_dir / 'alpha.toml').write_text(config.dumps(dict(
+            name='alpha', repo=str(self.r.repo), worktrees=str(self.trees),
+            scripts=dict(test='.drover/scripts/test.ps1'))))
+        # Dirty repo edits cannot repair machine policy rejected against HEAD.
+        entry = self.r.repo / '.drover' / 'config.toml'
+        entry.write_text(entry.read_text() + '\n# uncommitted migration preparation\n')
+        result = self.cleanup()
+        row = next(e for e in result['errors'] if e.get('reason_code') == 'excluded_repo')
+        self.assertEqual(row['owner_action'], 'commit .drover/config.toml, then drover config migrate-machine alpha')

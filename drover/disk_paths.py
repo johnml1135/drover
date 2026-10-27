@@ -44,7 +44,6 @@ def safe_path(path):
 
 
 def repository_root(candidate):
-    import os
     marker = candidate / '.git'
     if candidate.name == '.git':
         return True
@@ -56,25 +55,28 @@ def repository_root(candidate):
     # Even partial administrative layouts may contain unpublished objects.
     if any((candidate / name).exists() for name in ('HEAD', 'objects', 'refs')):
         return True
+    return repository_config(candidate) if (candidate / 'config').exists() else False
+
+
+def repository_config(candidate):
+    """Git's config/administrative evidence, separate from path safety policy."""
+    import os
     cfg = candidate / 'config'
-    if cfg.exists():
-        try:
-            env = dict(os.environ, GIT_DIR=str(candidate))
-            bare = placement.git(candidate, 'rev-parse', '--is-bare-repository',
-                                 env=env, timeout=60)
-            if bare.returncode == 0 and bare.stdout.strip() in ('true', 'false'):
-                return True
-            # Git owns its config grammar (BOM, quoting, comments, casing).
-            parsed = placement.git(candidate, 'config', '--file', str(cfg), '--list',
-                                   env=env, timeout=60)
-            if parsed.returncode or parsed.stderr:
-                return True
-            keys = [line.partition('=')[0].casefold() for line in parsed.stdout.splitlines()]
-            if any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys):
-                return True
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return True  # No certain parse, including unavailable Git: retain.
-    return False
+    try:
+        env = dict(os.environ, GIT_DIR=str(candidate))
+        bare = placement.git(candidate, 'rev-parse', '--is-bare-repository',
+                             env=env, timeout=60)
+        if bare.returncode == 0 and bare.stdout.strip() in ('true', 'false'):
+            return True
+        # Git owns its config grammar (BOM, quoting, comments, casing).
+        parsed = placement.git(candidate, 'config', '--file', str(cfg), '--list',
+                               env=env, timeout=60)
+        if parsed.returncode or parsed.stderr:
+            return True
+        keys = [line.partition('=')[0].casefold() for line in parsed.stdout.splitlines()]
+        return any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return True  # No certain parse, including unavailable Git: retain.
 
 
 def repository_tree(path, *, boundary=None):
@@ -322,7 +324,7 @@ def disposable_match(relative, declarations):
 
 def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     from . import ownership
-    from .disk_worktrees import git, outputs_at
+    from .disk_worktrees import head_at, outputs_at
     path = Path(placement.native(entry['worktree']))
     if placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo']) or not path.is_dir() or not safe_path(path) or \
             placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
@@ -332,13 +334,13 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
         raise ValueError('process using worktree')
     if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < 3 * 86400:
         raise ValueError('worktree idle less than three days')
-    head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
+    head = head_at(path)
     return path, head, ownership.read(str(path)), outputs_at(machine, path)
 
 
 def outputs(request: dict) -> dict:
     """Remove only declared ignored/untracked files; source edits always survive."""
-    from .disk_worktrees import registration_identity, entries, git, overlaps_worktrees, status
+    from .disk_worktrees import registration_identity, entries, tracked_at, overlaps_worktrees, status
     out = result()
     for machine in request['repos']:
         try:
@@ -352,7 +354,7 @@ def outputs(request: dict) -> dict:
                             Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
                             for name in dirty + ignored):
                         dirty, ignored = status(path)
-                    tracked = set(git(path, 'ls-files', '-z').split('\0'))
+                    tracked = set(tracked_at(path))
                     touched = set()
                     for name in dict.fromkeys(dirty + ignored):
                         target = Path(name)
@@ -378,7 +380,7 @@ def outputs(request: dict) -> dict:
                                     if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
                                             fresh_evidence[1:] != evidence[1:] or \
                                             name not in current_dirty + current_ignored or \
-                                            git(path, 'ls-files', '-z', '--', str(relative)) or \
+                                            tracked_at(path, relative) or \
                                             facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
                                         raise ValueError('disposable evidence changed')
                                     after = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
@@ -406,7 +408,7 @@ def report(request: dict) -> dict:
     """One bounded summary per worktree/folder; this stage never mutates."""
     from . import ownership
     from .disk_inventory import Inventory
-    from .disk_worktrees import entries, status, task_facts, merged, git
+    from .disk_worktrees import entries, status, task_facts, merged, head_at
     inventory = request.get('_inventory') or Inventory(request['now'])
     out = result()
     budgeted = set()
@@ -427,7 +429,7 @@ def report(request: dict) -> dict:
                 worktree_row = record(path, 'worktree_inventory', owner)
                 if tag and tag['owner'].startswith('drover:') and task_facts(request, path, tag)[0] and \
                         placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side() and \
-                        merged(machine, git(path, 'rev-parse', '--verify', 'HEAD').strip()):
+                        merged(machine, head_at(path)):
                     record(path, 'merged_live_task', owner).update(task_id=tag['owner'][len('drover:'):], repo=machine['name'])
                 if machine.get('budget_gb') and placement.cleanup_path(path) not in budgeted and safe_path(path) and \
                         placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side():

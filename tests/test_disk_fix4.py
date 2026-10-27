@@ -5,11 +5,12 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import ownership, placement
+from drover import disk_worktrees, ownership, placement
 from drover.disk_side import serve
 from tests import test_disk_fix2 as fix2
 from tests.disk_fixture import DiskCase
-from tests.test_disk_worktrees import WorktreeCase
+from tests.tiers import integration
+from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 
 
 class CurrentOwner(WorktreeCase):
@@ -80,19 +81,24 @@ class UncertaintyReports(WorktreeCase):
                 request = fix2.PathSafety.request(self, 5)
                 request['repos'] = [dict(name='alpha', repo=str(self.r.repo),
                     worktrees=str(self.trees), remote='origin', default_branch='main')]
-                real_git = placement.git
-                def git(repo, *args, **kwargs):
-                    if unknown == 'status-timeout' and str(repo) == str(path) and 'status' in args:
-                        raise subprocess.TimeoutExpired(['git', 'status'], 60)
-                    if unknown == 'status' and str(repo) == str(path) and 'status' in args or \
-                            unknown == 'listing' and str(repo) == str(self.r.repo) and 'list' in args:
-                        return subprocess.CompletedProcess(['git'], 128, '', 'repository unavailable')
-                    return real_git(repo, *args, **kwargs)
+                real_status, real_entries = disk_worktrees.status, disk_worktrees.entries
+                def status(repo, **kwargs):
+                    if str(repo) == str(path):
+                        if unknown == 'status-timeout':
+                            raise subprocess.TimeoutExpired(['git', 'status'], 60)
+                        if unknown == 'status':
+                            raise ValueError('repository unavailable')
+                    return real_status(repo, **kwargs)
+                def entries(repo):
+                    if unknown == 'listing' and str(repo) == str(self.r.repo):
+                        raise ValueError('repository unavailable')
+                    return real_entries(repo)
                 proof = SimpleNamespace(busy=lambda p: unknown == 'process' and p == str(path),
                                         reason='process visibility unavailable', unknown=True)
                 with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                         patch.object(placement, 'cleanup_processes', return_value=proof), \
-                        patch.object(placement, 'git', side_effect=git):
+                        patch.object(disk_worktrees, 'status', side_effect=status), \
+                        patch.object(disk_worktrees, 'entries', side_effect=entries):
                     result = serve(request)
                 self.assertTrue(target.exists(), result)
                 reported_path = str(self.r.repo if unknown == 'listing' else path)
@@ -105,6 +111,7 @@ class UncertaintyReports(WorktreeCase):
 
 
 class FixtureEncoding(DiskCase):
+    @integration
     def test_bom_git_config_fixture_uses_utf8_with_non_utf8_locale(self):
         code = '''from tests.disk_fixture import DiskCase
 case = DiskCase()

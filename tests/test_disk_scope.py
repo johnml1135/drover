@@ -4,8 +4,7 @@ import os
 from unittest import mock
 
 from drover import placement
-from tests.gitfix import Repo
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 
 
 class Scope(WorktreeCase):
@@ -13,8 +12,7 @@ class Scope(WorktreeCase):
         from drover import disk_cleanup, disk_side, ownership
         for side, other in (('wsl', 'windows'), ('windows', 'wsl')):
             with self.subTest(side=side):
-                extra = Repo()
-                self.addCleanup(extra.cleanup)
+                extra = self.new_repo('beta-' + side)
                 trees = extra.root / 'beta.worktrees'
                 self.register(extra, 'beta-' + side, trees)
                 own = self.worktree('own-' + side, lock=side)
@@ -24,8 +22,7 @@ class Scope(WorktreeCase):
                 self.r.commit('foreign-' + side, cwd=foreign)
                 self.merge(foreign)
                 second = trees / ('own-' + side)
-                extra.git('worktree', 'add', '-q', '-b', 'work-' + side, second, 'origin/main')
-                extra.git('worktree', 'lock', '--reason', side, second)
+                extra.add(second, branch='work-' + side, lock=side)
                 extra.commit('unmerged.txt', 'pending change', cwd=second)
                 ownership.tag(str(second), 'beta-' + side, 'session:beta',
                               self.now + 86400, now=self.now)
@@ -40,7 +37,7 @@ class Scope(WorktreeCase):
                 self.cfg['disk_cleanup']['temp_roots'] = [str(self.temp_root)]
                 self.cfg['disk_cleanup']['report_roots'] = [str(self.report_root)]
                 self.tasks = {'at': self.now, 'tasks': [], 'active_worktrees': []}
-                before_lock = self.r.git('worktree', 'list', '--porcelain', '-z')
+                before_lock = self.registrations()
                 requests = []
                 base_runtime = self.runtime(real=True)
                 def call(target, request):

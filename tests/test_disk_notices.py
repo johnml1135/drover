@@ -3,12 +3,13 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.disk_fixture import DiskCase
+from tests.disk_memory import MemoryWorktreeCase
 
 
-class Notices(DiskCase):
+class Notices(MemoryWorktreeCase):
     def setUp(self):
         super().setUp()
+        (self.repos_dir / 'alpha.toml').unlink()
         mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
         mapping.start()
         self.addCleanup(mapping.stop)
@@ -84,9 +85,7 @@ class Notices(DiskCase):
     def test_budget_alert_and_duplicate_replay(self):
         from drover.ledger import connect, ops, disk_notices
         from drover import config, disk_cleanup, ownership
-        from tests.gitfix import Repo
-        repo = Repo()
-        self.addCleanup(repo.cleanup)
+        repo = self.new_repo('notice-budget')
         repo.commit('.drover/config.toml', config.dumps({'schema_version': 1}))
         trees = repo.root / 'budget.worktrees'
         machine = {'name': 'fixture', 'repo': str(repo.repo), 'worktrees': str(trees),
@@ -105,8 +104,7 @@ class Notices(DiskCase):
         self.assertFalse(any(n.get('kind') == 'budget' for n in self.durable_notices()),
                          'external symlink target is not charged to the repo')
         wt = trees / 'second physical directory'
-        repo.git('worktree', 'add', '-q', '-b', 'budget-topic', wt, 'HEAD')
-        repo.git('worktree', 'lock', '--reason', self.side, wt)
+        repo.add(wt, branch='budget-topic', lock=self.side)
         ownership.tag(str(wt), 'fixture', 'session:budget', self.now + 86400, now=self.now)
         (wt / 'second payload').write_bytes(b'y' * (512 * 1024))
         self.run_cleanup(apply=True, real=True)
@@ -152,9 +150,7 @@ class Notices(DiskCase):
 
     def test_daily_healthy_budget_is_independent_of_exhaustion(self):
         from drover import config
-        from tests.gitfix import Repo
-        repo = Repo()
-        self.addCleanup(repo.cleanup)
+        repo = self.new_repo('notice-budget')
         repo.commit('.drover/config.toml', config.dumps({'schema_version': 1}))
         (self.repos_dir / 'budget.toml').write_text(config.dumps(dict(name='budget', repo=str(repo.repo),
                    worktrees=str(repo.root / 'trees'), budget_gb=0.0001)))

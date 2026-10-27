@@ -1,7 +1,9 @@
 """Only committed output declarations authorize stage-five deletion."""
 from pathlib import Path
 
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
+from tests.test_disk_worktrees import WorktreeCase as GitWorktreeCase
+from tests.tiers import integration
 
 
 class Outputs(WorktreeCase):
@@ -36,8 +38,7 @@ class Outputs(WorktreeCase):
             output.parent.mkdir()
             output.write_text(name)
         (paths['dirty'] / 'pending.txt').write_text('uncommitted edit')
-        self.r.git('add', '-f', 'generated/result', cwd=paths['tracked'])
-        self.r.git('commit', '-q', '-m', 'tracked generated data', cwd=paths['tracked'])
+        self.r.track(paths['tracked'], 'generated/result')
         outside = self.root / 'outside'
         outside.mkdir()
         (outside / 'keep').write_text('link target')
@@ -62,23 +63,22 @@ class Outputs(WorktreeCase):
 
     def test_output_rechecks_marker_after_final_status(self):
         from unittest import mock
-        from drover import placement
+        from drover import disk_worktrees
         wt = self.worktree('output-race')
         self.r.commit('pending.txt', cwd=wt)
         output = wt / 'generated' / 'result'
         output.parent.mkdir()
         output.write_text('preserve on ownership change')
         self.cleanup()
-        real_git = placement.git
+        real_status = disk_worktrees.status
         checks = []
-        def git(repo, *args, **kw):
-            if str(repo) == str(wt) and 'status' in args:
-                checks.append(args)
+        def status(repo, **kw):
+            if str(repo) == str(wt):
+                checks.append(kw)
                 if len(checks) == 3:
-                    self.r.git('worktree', 'unlock', wt)
-                    self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
-            return real_git(repo, *args, **kw)
-        with mock.patch.object(placement, 'git', side_effect=git):
+                    self.r.lock(wt, self.other_side)
+            return real_status(repo, **kw)
+        with mock.patch.object(disk_worktrees, 'status', side_effect=status):
             self.cleanup(apply=True)
         self.assertGreaterEqual(len(checks), 3)
         self.assertEqual(output.read_text(), 'preserve on ownership change')
@@ -88,8 +88,7 @@ class Outputs(WorktreeCase):
         wt = self.worktree('outer output')
         self.r.commit('unmerged.txt', cwd=wt)
         inner = wt / 'generated' / 'foreign-inner'
-        self.r.git('worktree', 'add', '-q', '-b', 'foreign-inner', inner, 'origin/main')
-        self.r.git('worktree', 'lock', '--reason', self.other_side, inner)
+        self.r.add(inner, branch='foreign-inner', lock=self.other_side)
         (inner / '.git').chmod(0o666)
         (inner / '.git').unlink()
         keep = inner / 'keep'
@@ -171,3 +170,47 @@ class Outputs(WorktreeCase):
         self.cleanup()
         self.cleanup(apply=True)
         self.assertTrue(all(not path.exists() for path in paths))
+
+
+@integration
+class OutputsContracts(GitWorktreeCase):
+    def test_output_rechecks_marker_after_final_status(self):
+        from unittest import mock
+        from drover import placement
+        wt = self.worktree('output-race')
+        self.r.commit('pending.txt', cwd=wt)
+        output = wt / 'generated' / 'result'
+        output.parent.mkdir()
+        output.write_text('preserve on ownership change')
+        self.cleanup()
+        real_git = placement.git
+        checks = []
+        def git(repo, *args, **kw):
+            if str(repo) == str(wt) and 'status' in args:
+                checks.append(args)
+                if len(checks) == 3:
+                    self.r.git('worktree', 'unlock', wt)
+                    self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
+            return real_git(repo, *args, **kw)
+        with mock.patch.object(placement, 'git', side_effect=git):
+            self.cleanup(apply=True)
+        self.assertGreaterEqual(len(checks), 3)
+        self.assertEqual(output.read_text(), 'preserve on ownership change')
+        self.assertIn('locked ' + self.other_side, self.registrations())
+
+    def test_changed_default_branch_output_scope_requires_another_report(self):
+        from drover import config
+        wt = self.worktree('changed output scope')
+        self.r.commit('unmerged.txt', cwd=wt)
+        data = wt / 'data' / 'keep'
+        data.parent.mkdir()
+        data.write_text('not in original report')
+        self.cleanup()
+        self.r.commit('.drover/config.toml', config.dumps({
+            'schema_version': 1, 'cleanup': {'disposable': ['data']}}))
+        with self.assertRaisesRegex(ValueError, 'dry report'):
+            self.cleanup(apply=True)
+        self.assertEqual(data.read_text(), 'not in original report')
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertFalse(data.exists())

@@ -11,10 +11,10 @@ from drover import config, placement
 from drover.disk_side import serve
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase as WorktreeCase, ProcessFreeDiskCase
 
 
-class PathSafety(DiskCase):
+class PathSafety(ProcessFreeDiskCase):
     def request(self, stage):
         return dict(stage=stage, mode='triggered', apply=True, now=self.now,
                     state_dir=str(self.state), repos=[], tasks={},
@@ -175,7 +175,7 @@ class OutputSafety(WorktreeCase):
             self.assertTrue(path.exists(), result)
 
 
-class WorkerSafety(DiskCase):
+class WorkerSafety(ProcessFreeDiskCase):
     request = PathSafety.request
 
     def test_successful_worker_requires_termination_confirmation_under_lock(self):
@@ -297,3 +297,17 @@ subprocess.run = _bounded_cache_run
                                     os.kill(pid, 9)
                                 except ProcessLookupError:
                                     pass
+
+
+class RepositoryConfigContract(DiskCase):
+    @integration
+    def test_git_config_grammar_protects_repository_evidence(self):
+        from drover.disk_paths import repository_root
+        for index, text in enumerate(('[core]\n bare = true\n',
+                '[core] # section comment\n bare = true\n',
+                '\ufeff[CoRe]\n BaRe = true\n', '[include]\n path = elsewhere\n',
+                '[core]\n bare = "unterminated')):
+            with self.subTest(config=text):
+                root = self.root / str(index)
+                self.file(root / 'config', text)
+                self.assertTrue(repository_root(root))

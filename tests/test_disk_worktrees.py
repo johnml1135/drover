@@ -6,6 +6,8 @@ from unittest import mock
 from drover import config, placement
 from drover.ledger import states
 from tests.disk_fixture import DiskCase
+from tests.disk_memory import MemoryWorktreeCase
+from tests.tiers import integration
 from tests.gitfix import Repo, sh
 
 
@@ -77,7 +79,8 @@ class WorktreeCase(DiskCase):
         self.assertIn(json.dumps(str(path), ensure_ascii=False), json.dumps(result['items'], ensure_ascii=False))
 
 
-class Settled(WorktreeCase):
+class SettledContracts(WorktreeCase):
+    @integration
     def test_merge_cherry_and_multicommit_squash(self):
         from drover import disk_cleanup
         for mode in ('ancestry', 'cherry', 'squash'):
@@ -103,6 +106,8 @@ class Settled(WorktreeCase):
                 self.assertEqual(self.branches(), before)
                 self.assertTrue(self.r.repo.is_dir(), 'main checkout survives')
 
+
+class Settled(MemoryWorktreeCase):
     def test_dirty_busy_other_side_and_lock_notes(self):
         from drover import disk_cleanup
         paths = {key: self.worktree(key, lock=lock) for key, lock in (

@@ -13,6 +13,38 @@ def git(repo, *args, env=None):
     return done.stdout
 
 
+def head_at(path):
+    return git(path, 'rev-parse', '--verify', 'HEAD').strip()
+
+
+def gitdir_at(path):
+    return git(path, 'rev-parse', '--absolute-git-dir').strip()
+
+
+def tracked_at(path, relative=None):
+    args = ['ls-files', '-z'] + (['--', str(relative)] if relative is not None else [])
+    return [name for name in git(path, *args).split('\0') if name]
+
+
+def unlock_at(repo, path):
+    git(repo, 'worktree', 'unlock', '--', path)
+
+
+def lock_at(repo, path, reason):
+    # Recovery is best effort, like the original unchecked Git command.
+    placement.git(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout=60)
+
+
+def discard_at(repo, path):
+    git(repo, 'worktree', 'remove', '--force', '--', path)
+
+
+def rescue_at(repo, ref, head):
+    git(repo, 'update-ref', ref, head, '')
+    if git(repo, 'rev-parse', ref).strip() != head:
+        raise ValueError('rescue ref verification failed')
+
+
 def entries(repo):
     rows = []
     for block in git(repo, 'worktree', 'list', '--porcelain', '-z').split('\0\0'):
@@ -149,8 +181,8 @@ def inspect(request, machine, entry):
     row.update(dirty=dirty, ignored=ignored)
     if dirty:
         return decision()
-    head = git(path, 'rev-parse', '--verify', 'HEAD').strip()
-    row.update(head=head, gitdir=git(path, 'rev-parse', '--absolute-git-dir').strip())
+    head = head_at(path)
+    row.update(head=head, gitdir=gitdir_at(path))
     row.update(facts(path, request['now'], request=request))
     lease = bool(tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now'])
     observed['settlement'] = dict(live=live, terminal=terminal,
@@ -276,9 +308,7 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
                                                   row['side_lock'], '--', str(path)]) if row.get('side_lock') else None)
         store.append(record)
         if rescue:
-            git(machine['repo'], 'update-ref', rescue, row['head'], '')
-            if git(machine['repo'], 'rev-parse', rescue).strip() != row['head']:
-                raise ValueError('rescue ref verification failed')
+            rescue_at(machine['repo'], rescue, row['head'])
         if not safe_path(path) or not placement.cleanup_contains(request, str(path)):
             raise ValueError('worktree path became linked or protected')
         if row.get('unlisted') and unlisted_live(request, path):
@@ -287,19 +317,19 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
             store.append(dict(record, phase='failed'))
             return row
         if row.get('side_lock'):
-            git(machine['repo'], 'worktree', 'unlock', '--', path)
+            unlock_at(machine['repo'], path)
             unlocked = True
         if row.get('unlisted'):
             import shutil
             shutil.rmtree(path)
         else:
-            git(machine['repo'], 'worktree', 'remove', '--force', '--', path)
+            discard_at(machine['repo'], path)
         row.update(action='removed', manifest=record['id'])
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         if unlocked:
             # On removal failure, restore only the marker we just proved and unlocked.
-            placement.git(machine['repo'], 'worktree', 'lock', '--reason', row['side_lock'], '--', str(path), timeout=60)
+            lock_at(machine['repo'], path, row['side_lock'])
         row.update(action='keep' if row['action'] != 'removed' else 'removed', error=str(error))
         if record:
             try:

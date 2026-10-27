@@ -2,7 +2,9 @@
 import shutil
 from pathlib import Path
 
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
+from tests.test_disk_worktrees import WorktreeCase as GitWorktreeCase
+from tests.tiers import integration
 
 DAY = 86400
 
@@ -56,10 +58,8 @@ class Quarantine(WorktreeCase):
         (paths['dirty'] / 'scratch').write_text('busy')
         self.r.commit('moved.txt', cwd=paths['moved-head'])
         recreated = paths['recreated']
-        self.r.git('worktree', 'unlock', recreated)
-        self.r.git('worktree', 'remove', recreated)
-        self.r.git('worktree', 'add', '-q', '-b', 'replacement', recreated, 'origin/main')
-        self.r.git('worktree', 'lock', '--reason', self.side, recreated)
+        self.r.discard(recreated)
+        self.r.add(recreated, branch='replacement', lock=self.side)
         self.cleanup(apply=True)
         (paths['dirty'] / 'scratch').unlink()
         self.now += DAY
@@ -71,6 +71,65 @@ class Quarantine(WorktreeCase):
         for name in ('dirty', 'recreated', 'moved-head'):
             self.assertFalse(paths[name].exists(), name)
 
+    def test_unlisted_clean_folder_and_unknown_folder_report_only(self):
+        from drover import disk_cleanup
+        # A positively identified snapshot loses its registration but retains a valid
+        # pointer to this repo's objects. A random directory is never "clean".
+        clean = self.worktree('unlisted', lease=False)
+        head = self.r.head(clean)
+        clean_git = clean / '.git'
+        admin = Path(clean_git.read_text().split(': ', 1)[1].strip())
+        if not admin.is_absolute():
+            admin = clean / admin
+        shutil.rmtree(admin)
+        snapshot = self.trees / 'proven snapshot'
+        shutil.copytree(self.r.repo, snapshot, ignore=shutil.ignore_patterns('.git'))
+        snapshot_head = self.r.head()
+        unknown = self.trees / 'unknown'
+        unknown.mkdir()
+        (unknown / 'precious').write_text('not git')
+        foreign = self.trees / 'independent'
+        (foreign / '.git').mkdir(parents=True)
+        (foreign / 'precious').write_text('separate repo')
+        self.cleanup()
+        result = self.cleanup(apply=True)
+        self.assertTrue(snapshot.exists(), 'positive snapshot proof still requires grace')
+        self.assertTrue(clean.exists(), 'broken pointer is report-only')
+        self.reported(result, clean)
+        self.reported(result, unknown)
+        self.now += 3 * DAY
+        result = self.cleanup(apply=True)
+        # Broken pointers provide no positive snapshot proof, even after grace.
+        self.assertFalse(snapshot.exists(), 'known clean snapshot can expire after full grace')
+        records = [r for r in self.journal() if r['path'] == str(snapshot)]
+        self.assertEqual(records[-1]['head'], snapshot_head)
+        self.assertIn('--detach', records[-1]['restore_argv'])
+        self.assertTrue(clean.exists())
+        self.assertTrue(unknown.exists())
+        self.assertTrue((foreign / '.git').is_dir())
+        self.assertEqual((unknown / 'precious').read_text(), 'not git')
+        self.assertIn(head, self.r.merged_heads)
+
+    def test_unlisted_activity_cancels_elapsed_grace(self):
+        snapshot = self.trees / 'busy snapshot'
+        self.trees.mkdir(exist_ok=True)
+        shutil.copytree(self.r.repo, snapshot, ignore=shutil.ignore_patterns('.git'))
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.now += 2 * DAY
+        self.busy_paths.add(str(snapshot))
+        self.cleanup(apply=True)
+        self.busy_paths.clear()
+        self.now += DAY
+        self.cleanup(apply=True)
+        self.assertTrue(snapshot.exists(), 'busy observation must cancel original grace')
+        self.now += 3 * DAY
+        self.cleanup(apply=True)
+        self.assertFalse(snapshot.exists())
+
+
+@integration
+class QuarantineContracts(GitWorktreeCase):
     def test_unlisted_clean_folder_and_unknown_folder_report_only(self):
         from drover import disk_cleanup
         # A positively identified snapshot loses its registration but retains a valid
@@ -110,20 +169,3 @@ class Quarantine(WorktreeCase):
         self.assertTrue((foreign / '.git').is_dir())
         self.assertEqual((unknown / 'precious').read_text(), 'not git')
         self.assertEqual(self.r.git('rev-parse', head), head)
-
-    def test_unlisted_activity_cancels_elapsed_grace(self):
-        snapshot = self.trees / 'busy snapshot'
-        self.trees.mkdir(exist_ok=True)
-        shutil.copytree(self.r.repo, snapshot, ignore=shutil.ignore_patterns('.git'))
-        self.cleanup()
-        self.cleanup(apply=True)
-        self.now += 2 * DAY
-        self.busy_paths.add(str(snapshot))
-        self.cleanup(apply=True)
-        self.busy_paths.clear()
-        self.now += DAY
-        self.cleanup(apply=True)
-        self.assertTrue(snapshot.exists(), 'busy observation must cancel original grace')
-        self.now += 3 * DAY
-        self.cleanup(apply=True)
-        self.assertFalse(snapshot.exists())
