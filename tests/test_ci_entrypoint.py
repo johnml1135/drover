@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.tiers import integration
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINT = ROOT / '.drover' / 'scripts' / 'test.ps1'
@@ -25,6 +27,7 @@ def _is_supported_platform():
     return bool(os.environ.get('WSL_DISTRO_NAME')) or 'microsoft' in version
 
 
+@integration
 class CiEntrypointTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -205,12 +208,13 @@ exit $scriptExitCode
         self.assertFalse(state['testJobsPresent'])
         self.assertEqual(state['environment']['PATH'], state['pathAtStart'])
 
-    def test_non_checks_kinds_run_complete_integration_suite(self):
+    def test_non_checks_kinds_run_both_complete_tiers(self):
         for kind in ('full', None, 'unrecognized'):
             with self.subTest(kind=kind):
                 result, calls, state = self._run_entrypoint(kind=kind, changed_files='["tests/test_ci.py"]')
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual([call['argv'] for call in calls], [self._runner_args('integration')])
+                self.assertEqual([call['argv'] for call in calls], [
+                    self._runner_args('integration'), self._runner_args('default')])
                 self.assertTrue(state['restored'])
 
     def test_checks_without_changed_test_modules_run_the_complete_default_tier(self):
@@ -220,12 +224,13 @@ exit $scriptExitCode
         self.assertEqual([call['argv'] for call in calls], [self._runner_args('default')])
         self.assertTrue(state['restored'])
 
-    def test_missing_or_malformed_changed_file_metadata_falls_back_to_integration(self):
+    def test_missing_or_malformed_changed_file_metadata_runs_both_complete_tiers(self):
         for changed in (None, 'not-json', '["../tests/test_ci.py"]'):
             with self.subTest(changed=changed):
                 result, calls, state = self._run_entrypoint(changed_files=changed)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual([call['argv'] for call in calls], [self._runner_args('integration')])
+                self.assertEqual([call['argv'] for call in calls], [
+                    self._runner_args('integration'), self._runner_args('default')])
                 self.assertTrue(state['restored'])
 
     def test_changed_module_precheck_failure_propagates_and_short_circuits_default_tier(self):

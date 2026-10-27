@@ -2,12 +2,12 @@
 """Run Drover's unittest modules in parallel worker processes and aggregate the result.
 
     python3 scripts/test.py                       # default tier, two cores left free, at most 16 workers (DROVER_TEST_JOBS overrides)
-    python3 scripts/test.py --tier integration    # both tiers: the pre-landing run (sets DROVER_TESTS=integration)
+    python3 scripts/test.py --tier integration    # integration contracts only (sets DROVER_TESTS=integration)
     python3 scripts/test.py -j 4 tests.test_ci    # chosen modules, 4 workers
     python3 scripts/test.py --durations 10        # also list each worker's slowest tests
 
-Each module runs as `python -m unittest <module>` in its own process (tests/__init__ gives every process its own
-DROVER_HOME).  Exit status is 0 only if every module passed and at least one test ran.  Use the interpreter whose
+Each module runs as `python -m tests.tiers <module>` in its own process (tests/__init__ gives every process its own
+DROVER_HOME).  Exit status is 0 if every selected test passed; an empty tier is successful.  Use the interpreter whose
 packages you want tested: hub tests skip when fastapi is missing (on Windows use the hub venv's python.exe).
 Modules are started longest first (timings from the previous run), so wall time is about the slowest module.
 """
@@ -36,10 +36,8 @@ HEAVY = {'tests.test_pipeline', 'tests.test_landing', 'tests.test_replans', 'tes
          'tests.test_replan_batches', 'tests.test_ci', 'tests.test_repo_entry'}  # before any timing exists
 LIST_IDS = '''
 import sys, unittest
-def flat(s):
-    for t in s:
-        yield from flat(t) if isinstance(t, unittest.TestSuite) else [t]
-for t in flat(unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])):
+from tests.tiers import enabled, select
+for t in select(unittest.defaultTestLoader.loadTestsFromName(sys.argv[1]), 'integration' if enabled() else 'default'):
     print(t.id())
 '''
 
@@ -79,7 +77,7 @@ def test_ids(name, env):
 
 def run_module(name, env, durations, timeout, ids=None):
     start = time.monotonic()
-    cmd = [sys.executable, '-m', 'unittest', *(ids or [name])] + (['--durations', str(durations)] if durations else [])
+    cmd = [sys.executable, '-m', 'tests.tiers', *(ids or [name])] + (['--durations', str(durations)] if durations else [])
     try:
         r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, errors='replace', timeout=timeout,
                            stdin=subprocess.DEVNULL)
@@ -102,7 +100,7 @@ def main(argv=None):
     p.add_argument('modules', nargs='*', help='dotted test modules (default: every tests/test_*.py)')
     p.add_argument('-j', '--jobs', type=int, default=default_jobs())
     p.add_argument('--tier', choices=('default', 'integration'), default='default',
-                   help="'integration' also runs the integration tier (sets DROVER_TESTS=integration)")
+                   help="select one disjoint tier; landing gates run default and integration")
     p.add_argument('--durations', type=int, default=0, metavar='N', help='show each module worker its N slowest tests')
     p.add_argument('--timeout', type=int, default=MODULE_TIMEOUT_S, help='per-module wall limit in seconds')
     args = p.parse_args(argv)
@@ -189,8 +187,7 @@ def main(argv=None):
     print(f"\nRan {ran} tests ({skipped} skipped) in {len({r['module'] for r in results})} modules, wall {wall:.1f}s, "
           f"{len(failed)} failed modules" + (f"; modules over {SLOW_MODULE_S}s: {', '.join(slow)}" if slow else ''))
     if ran == 0 and not failed:
-        print('no tests ran')
-        return 1
+        print('no tests selected for this tier')
     return 1 if failed else 0
 
 

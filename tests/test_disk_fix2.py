@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from drover import config, placement
 from drover.disk_side import serve
+from tests.tiers import integration
 from tests.disk_fixture import DiskCase
 from tests.test_disk_worktrees import WorktreeCase
 
@@ -195,6 +196,7 @@ class WorkerSafety(DiskCase):
                     runtime.now, runtime.read, placement.cleanup_call, runtime.toast))
         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
 
+    @integration
     def test_composed_worker_reaps_descendants_after_success_failure_and_inner_timeout(self):
         # Child inherits the worker's group/job; its stdio does not delay parent exit.
         # The finalizer is only a hermetic test safety net, never the asserted cleanup.

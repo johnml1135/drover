@@ -1,5 +1,6 @@
 """Fifth cleanup review: startup, user visibility and bounded inventories."""
 import errno
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -10,12 +11,14 @@ import unittest
 from unittest.mock import patch
 
 from drover import config, disk_cleanup, disk_state, placement
+from tests.tiers import integration
 from tests.disk_fixture import DiskCase
 from tests.test_disk_worktrees import WorktreeCase
 
 
 class Startup(DiskCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX session semantics')
+    @integration
     def test_composed_worker_already_session_leader(self):
         execute = subprocess.run
         def session(argv, **kw):
@@ -41,6 +44,7 @@ class Startup(DiskCase):
                          'the existing session group must be drained')
 
     @unittest.skipIf(os.name == 'nt', 'POSIX session semantics')
+    @integration
     def test_startup_failures_are_reaped_and_release_lock_with_report(self):
         execute = subprocess.run
         rt = self.runtime()
@@ -66,6 +70,7 @@ class Startup(DiskCase):
                 self.assertIn('worker_error', (self.state / 'disk' / 'last-report.json').read_text())
 
     @unittest.skipIf(os.name == 'nt', 'executes the composed WSL proof locally')
+    @integration
     def test_remote_startup_executes_its_composed_absence_proof(self):
         self.cfg['paths']['wsl_distro'] = 'Fixture'
         execute = subprocess.run
@@ -81,15 +86,17 @@ class Startup(DiskCase):
             return execute(argv, **kw)
         request = dict(stage=1, apply=False, now=self.now, state_dir=str(self.state),
                        repos=[], tasks={}, drive=dict(path=str(self.root)), paths={})
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(subprocess, 'run', side_effect=locally), \
-                disk_state.CleanupLock(self.state):
+        # Acquire the native lock before simulating the remote transport.
+        with disk_state.CleanupLock(self.state), \
+                patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(subprocess, 'run', side_effect=locally):
             result = placement.cleanup_call('wsl', request)
         self.assertEqual(len(observed), 2)
         self.assertTrue(result['errors'][0]['termination_confirmed'])
         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
 
     @unittest.skipIf(os.name == 'nt', 'reads /proc')
+    @integration
     def test_startup_proof_skips_unreadable_environ_but_keeps_argv_token_and_unknown_errors(self):
         token = 'tok-' + os.urandom(4).hex()
         real = Path.read_bytes
@@ -126,6 +133,7 @@ class Startup(DiskCase):
             sys.argv = saved
 
     @unittest.skipIf(os.name == 'nt', 'reads /proc')
+    @integration
     def test_startup_proof_walks_ancestry_when_environ_is_unreadable(self):
         token = 'tok-' + os.urandom(4).hex()
         real_bytes, real_text, real_iterdir = Path.read_bytes, Path.read_text, Path.iterdir
@@ -154,25 +162,35 @@ class Startup(DiskCase):
             return 0
 
         # The parent carries the token in argv; its child (no token, unreadable environ) was started by Drover.
+        @contextmanager
         def family(*extra):
-            parent = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys, time\n'
-                                       'c = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])\n'
-                                       'print(c.pid, flush=True); time.sleep(30)', *extra], stdout=subprocess.PIPE, text=True)
-            return parent, int(parent.stdout.readline())
-        parent, child_pid = family(token)
-        try:
+            # The parent owns and reaps its child before exiting. Closing stdin
+            # requests shutdown even when an assertion or PID parsing fails.
+            code = ('import subprocess, sys\n'
+                    'with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],\n'
+                    '        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as c:\n'
+                    '    try:\n'
+                    '        print(c.pid, flush=True)\n'
+                    '        sys.stdin.read()\n'
+                    '    finally:\n'
+                    '        c.kill()\n'
+                    '        c.wait()\n')
+            with subprocess.Popen([sys.executable, '-c', code, *extra], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True) as parent:
+                try:
+                    child_pid = int(parent.stdout.readline())
+                    yield parent, child_pid
+                finally:
+                    parent.communicate(timeout=5)  # closes stdin/stdout and waits for the reaping parent
+                self.assertEqual(parent.returncode, 0)
+                self.assertFalse(Path('/proc', str(child_pid)).exists(), 'the child must be reaped')
+
+        with family(token) as (parent, child_pid):
             self.assertEqual(proof(child_pid), 1)
-        finally:
-            parent.kill()
-            parent.wait()
         # A token-less parent whose stat cannot be read leaves the chain unknown: fail closed.
-        parent, child_pid = family()
-        try:
+        with family() as (parent, child_pid):
             self.assertEqual(proof(child_pid), 0)
             self.assertEqual(proof(child_pid, stat_error_pid=parent.pid), 2)
-        finally:
-            parent.kill()
-            parent.wait()
         # No Drover ancestor anywhere: skipped.
         lone = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
         try:

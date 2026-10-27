@@ -17,6 +17,7 @@ from drover.port import DirectPort
 from hub.dispatch import DispatcherService, LandingService
 from hub.settings import Settings
 from hub.store import Store
+from tests.tiers import integration
 from tests.fakeci import execute_gate
 from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
@@ -1339,6 +1340,7 @@ class Decisions(Base):
 
 
 class Landing(Base):
+    @integration
     def test_restart_finishes_pending_ci_before_changed_queue_and_base_rebuild(self):
         import threading
         tid = self.task()

@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-# Task checks precheck changed integration modules, then run the complete default tier; full runs all integration modules.
+# Task checks precheck changed integration modules, then run the complete default tier; full runs both complete, disjoint tiers.
 
 function Test-ProcessEnvironmentVariablePresent {
     param([string]$Name)
@@ -132,12 +132,12 @@ $uvArguments = @('run', '--project', 'hub', '--frozen', '--python', '3.13', 'pyt
 $ciKind = [Environment]::GetEnvironmentVariable('DROVER_CI_KIND', 'Process')
 $changedTestModules = @()
 $runIntegration = $true
-$runDefault = $false
+$runDefault = $true
 
 if ($ciKind -ceq 'checks') {
     $changedMetadata = Get-ChangedTestModules -Json ([Environment]::GetEnvironmentVariable('DROVER_CHANGED_FILES', 'Process'))
     if (-not $changedMetadata.IsValid) {
-        Write-Warning 'DROVER_CHANGED_FILES is absent or malformed; running the complete integration tier.'
+        Write-Warning 'DROVER_CHANGED_FILES is absent or malformed; running both complete test tiers.'
     } else {
         $changedTestModules = @($changedMetadata.Modules)
         if ($changedTestModules.Count -gt 0) {
@@ -152,9 +152,7 @@ if ($ciKind -ceq 'checks') {
 $uvInvocations = [System.Collections.Generic.List[object]]::new()
 if ($runIntegration) {
     $integrationArguments = @($uvArguments) + @('--tier', 'integration')
-    if ($runDefault) {
-        $integrationArguments += $changedTestModules
-    }
+    $integrationArguments += $changedTestModules
     $uvInvocations.Add([string[]]$integrationArguments)
 }
 if ($runDefault) {

@@ -17,6 +17,7 @@ from drover.port import DirectPort
 from hub.dispatch import LandingService
 from hub.settings import Settings
 from hub.store import Store, UiView
+from tests.tiers import integration
 from tests.test_waiting import LedgerCase, logical, require
 from tests.test_pipeline import Base as PipelineBase, prog_dict
 from tests.test_waiting_characterization import fixture
@@ -283,6 +284,7 @@ class DirtyQueue(LandingCase):
         self.assertEqual(w.pending(('merge_queue', 'p')), [])
         self.assertTrue(issubclass(DirtyCheckout, origin.SyncError))
 
+    @integration
     def test_interrupted_ci_precedes_wait_and_rebuild(self):
         Waiting = require(self, 'drover.ledger.waiting', 'Waiting')
         key = require(self, 'drover.ledger.waiting', 'cause_key')

@@ -124,17 +124,20 @@ Run checks from the checkout root:
 pwsh -NoLogo -NoProfile -NonInteractive -File .drover/scripts/test.ps1
 ```
 
-The script selects the platform's Python and runs `scripts/test.py --tier integration` (see below), which runs
-the test modules in parallel, cleans up its temporary fixtures, and fails any module that stalls past 15 minutes. Install the hub dependencies
+The script selects the platform's Python and runs both `scripts/test.py --tier integration` and
+`scripts/test.py --tier default` (see below). The runner executes modules in parallel, cleans up its temporary
+fixtures, and fails any module that stalls past 15 minutes. Install the hub dependencies
 with `uv sync --project hub` and use that environment to include hub tests.
 
 ### Test tiers and the parallel runner
 
 `python3 scripts/test.py` runs every `tests/test_*.py` module in its own process, up to 8 at a time, and exits
 non-zero if any module fails. It runs the **default tier**: fast tests that fake the runner, the decision model and
-the clock. `python3 scripts/test.py --tier integration` (equivalently `DROVER_TESTS=integration`) also runs the
+the clock. `python3 scripts/test.py --tier integration` runs only the
 **integration tier**, the tests that start the real `drover.runner`, real child processes, real timeouts or a real
-gate script; this is the pre-landing run and what `.drover/scripts/test.ps1` executes. Mark such a test with
+gate script. The tiers are disjoint: `.drover/scripts/test.ps1` runs both complete tiers before landing,
+regardless of changed-file metadata. Task checks run changed modules’ integration contracts and the complete
+default tier. Mark such a test with
 `@integration` from `tests/tiers.py`; a test is moved to that tier, never deleted. On Windows run the script with
 the hub venv's `python.exe` so the hub tests are included. Plain `python -m unittest discover -s tests -t .` still
 works and runs the default tier. Tests mock the decision model and use no real sleeps; a test that takes over a
