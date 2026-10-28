@@ -135,7 +135,7 @@ class StaleLock(DiskCase):
 
     def test_acquire_records_side_and_birth(self):
         from drover.disk_state import CleanupLock
-        with patch('drover.placement.cleanup_identity', self.identity('boot:7')):
+        with patch('drover.placement.cleanup_identity', self.identity('boot:7')) as _placement_patch_1, patch('drover.placement_process.cleanup_identity', _placement_patch_1), patch('drover.placement_proof.cleanup_identity', _placement_patch_1):
             with CleanupLock(self.state) as lock:
                 owner = json.loads((lock.path / 'owner.json').read_text())
         self.assertEqual((owner['side'], owner['birth']), (self.side, 'boot:7'))
@@ -143,7 +143,7 @@ class StaleLock(DiskCase):
     def test_dead_holder_is_reclaimed(self):
         from drover.disk_state import CleanupLock
         lock = self.plant()
-        with patch('drover.placement.cleanup_identity', self.identity('absent')):
+        with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_2, patch('drover.placement_process.cleanup_identity', _placement_patch_2), patch('drover.placement_proof.cleanup_identity', _placement_patch_2):
             with CleanupLock(self.state) as mine:
                 self.assertNotEqual(json.loads((lock / 'owner.json').read_text())['token'], 'dead-token')
                 self.assertTrue(mine.acquired)
@@ -153,7 +153,7 @@ class StaleLock(DiskCase):
     def test_live_holder_is_kept(self):
         from drover.disk_state import CleanupLock
         lock = self.plant()
-        with patch('drover.placement.cleanup_identity', self.identity('boot:100')):
+        with patch('drover.placement.cleanup_identity', self.identity('boot:100')) as _placement_patch_3, patch('drover.placement_process.cleanup_identity', _placement_patch_3), patch('drover.placement_proof.cleanup_identity', _placement_patch_3):
             with self.assertRaises(BlockingIOError):
                 CleanupLock(self.state).__enter__()
         self.assertEqual(json.loads((lock / 'owner.json').read_text())['token'], 'dead-token')
@@ -161,7 +161,7 @@ class StaleLock(DiskCase):
     def test_reused_pid_with_different_birth_is_reclaimed(self):
         from drover.disk_state import CleanupLock
         self.plant()
-        with patch('drover.placement.cleanup_identity', self.identity('boot:999')):
+        with patch('drover.placement.cleanup_identity', self.identity('boot:999')) as _placement_patch_4, patch('drover.placement_process.cleanup_identity', _placement_patch_4), patch('drover.placement_proof.cleanup_identity', _placement_patch_4):
             with CleanupLock(self.state) as mine:
                 self.assertTrue(mine.acquired)
 
@@ -170,7 +170,7 @@ class StaleLock(DiskCase):
         for over in (dict(side=self.other_side), dict(host='another-host'), dict(birth=None), dict(side=None)):
             with self.subTest(over=over):
                 lock = self.plant(**over)
-                with patch('drover.placement.cleanup_identity', self.identity('absent')):
+                with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_11, patch('drover.placement_process.cleanup_identity', _placement_patch_11), patch('drover.placement_proof.cleanup_identity', _placement_patch_11):
                     with self.assertRaises(BlockingIOError):
                         CleanupLock(self.state).__enter__()
                 (lock / 'owner.json').unlink()
@@ -178,7 +178,7 @@ class StaleLock(DiskCase):
         lock = self.state / 'disk-cleanup.lock'
         lock.mkdir()
         (lock / 'owner.json').write_text('{not json')
-        with patch('drover.placement.cleanup_identity', self.identity('absent')):
+        with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_5, patch('drover.placement_process.cleanup_identity', _placement_patch_5), patch('drover.placement_proof.cleanup_identity', _placement_patch_5):
             with self.assertRaises(BlockingIOError):
                 CleanupLock(self.state).__enter__()
 
@@ -191,7 +191,7 @@ class StaleLock(DiskCase):
         (lock / 'owner.json').write_text(json.dumps(old), encoding='utf-8')
         self.assertFalse(holder_dead(old))
         for identity in ('absent', 'boot:1'):
-            with patch('drover.placement.cleanup_identity', self.identity(identity)):
+            with patch('drover.placement.cleanup_identity', self.identity(identity)) as _placement_patch_10, patch('drover.placement_process.cleanup_identity', _placement_patch_10), patch('drover.placement_proof.cleanup_identity', _placement_patch_10):
                 with self.assertRaises(BlockingIOError):
                     CleanupLock(self.state).__enter__()
         self.assertEqual(lock_blocker(self.state)['token'], 'old-token')
@@ -220,7 +220,7 @@ class StaleLock(DiskCase):
         def hook(name):
             if name == 'after_rename':
                 c.append(self.enter())  # C: plain mkdir wins the gap
-        with patch('drover.placement.cleanup_identity', self.identity('absent')), self.hooked(hook):
+        with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_6, patch('drover.placement_process.cleanup_identity', _placement_patch_6), patch('drover.placement_proof.cleanup_identity', _placement_patch_6), self.hooked(hook):
             a, a_won = self.enter()
         self.assertFalse(a_won)
         self.assertTrue(c[0][1])
@@ -234,7 +234,7 @@ class StaleLock(DiskCase):
             if name == 'before_guard' and not a:
                 a.append(None)
                 a[0] = self.enter()  # A runs a whole reclaim after B read the stale owner
-        with patch('drover.placement.cleanup_identity', self.identity('absent')), self.hooked(hook):
+        with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_7, patch('drover.placement_process.cleanup_identity', _placement_patch_7), patch('drover.placement_proof.cleanup_identity', _placement_patch_7), self.hooked(hook):
             b, b_won = self.enter()
         self.assertFalse(b_won)
         self.assertTrue(a[0][1])
@@ -247,7 +247,7 @@ class StaleLock(DiskCase):
             if name == 'after_guard' and not seen:
                 seen.append(self.enter())  # B and C arrive while A holds the guard
                 seen.append(self.enter())
-        with patch('drover.placement.cleanup_identity', self.identity('absent')), self.hooked(hook):
+        with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_8, patch('drover.placement_process.cleanup_identity', _placement_patch_8), patch('drover.placement_proof.cleanup_identity', _placement_patch_8), self.hooked(hook):
             a, a_won = self.enter()
         self.assertTrue(a_won)
         self.assertEqual([won for _, won in seen], [False, False])
@@ -256,7 +256,7 @@ class StaleLock(DiskCase):
     def test_stuck_guard_is_never_reclaimed_automatically(self):
         self.plant()
         (self.state / 'disk-cleanup.lock.reclaim').mkdir()
-        with patch('drover.placement.cleanup_identity', self.identity('absent')):
+        with patch('drover.placement.cleanup_identity', self.identity('absent')) as _placement_patch_9, patch('drover.placement_process.cleanup_identity', _placement_patch_9), patch('drover.placement_proof.cleanup_identity', _placement_patch_9):
             lock, won = self.enter()
         self.assertFalse(won)
         self.assertEqual(self.holder(), 'dead-token')

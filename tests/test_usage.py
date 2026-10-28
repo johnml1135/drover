@@ -203,7 +203,7 @@ class DispatcherSeats(unittest.TestCase):
                 tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], goal=f'platform: {platform}')['id']
                 ops.approve(conn, tid)
                 windows_os = SimpleNamespace(name='nt', path=ntpath, environ=os.environ)
-                with patch.object(config, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
+                with patch.object(config, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
                     self.assertEqual(d.tick()['launched'], [tid])
                 account = ntpath.normpath(r'R:\Users\acme\.claude')
                 self.assertEqual([ntpath.normpath(p) if p else p for p in probes], [account])
@@ -378,7 +378,7 @@ class ObservationEdges(unittest.TestCase):
                     # Execute the WSL reader with fictional local paths, without starting WSL.
                     code = argv[argv.index('-c') + 1]
                     return subprocess.run([sys.executable, '-c', code, *argv[-2:]], **kw)
-                with patch('drover.placement.to_wsl_path', side_effect=lambda p: p):
+                with patch('drover.placement.to_wsl_path', side_effect=lambda p: p) as _placement_patch_2, patch('drover.placement_exec.to_wsl_path', _placement_patch_2), patch('drover.placement_git.to_wsl_path', _placement_patch_2), patch('drover.placement_host.to_wsl_path', _placement_patch_2), patch('drover.placement_paths.to_wsl_path', _placement_patch_2):
                     poller = usage.Poller(self.conn, run=run, now=lambda: NOW, windows=windows)
                     self.assertIsNone(poller.refresh(seat))
                 row = usage.readings(self.conn)[-1]

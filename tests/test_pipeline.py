@@ -432,8 +432,8 @@ class Worktrees(PolicyBase):
                 fake = CheckoutGit(committed, legacy=legacy)
                 tid = self.task()
                 wt = Path(self.tmp.name) / 'wts' / f'drover-{tid}'
-                with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True), \
-                        patch.object(placement, 'routes_through_wsl', return_value=False):
+                with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_9, patch('drover.placement_exec.is_linux_native', _placement_patch_9), patch('drover.placement_host.is_linux_native', _placement_patch_9), patch('drover.placement_paths.is_linux_native', _placement_patch_9), \
+                        patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_10, patch('drover.placement_git.routes_through_wsl', _placement_patch_10), patch('drover.placement_paths.routes_through_wsl', _placement_patch_10):
                     pipeline.Repository().add(self.fix.repo, wt, f'drover/{tid}', 'main')
                 self.assertEqual(len(fake.adds), 2 if legacy else 1)
                 for name, blob in committed.items():
@@ -522,8 +522,8 @@ class Worktrees(PolicyBase):
             if side == 'wsl':
                 return []  # owning inventory unavailable
             return [dict(worktree=str(phantom), branch='refs/heads/feat', locked='wsl')]
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, 'routes_through_wsl', return_value=False), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
+                patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_2, patch('drover.placement_git.routes_through_wsl', _placement_patch_2), patch('drover.placement_paths.routes_through_wsl', _placement_patch_2), \
                 patch.object(self.repository, 'inventory', side_effect=inventory):
             wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertNotEqual(Path(wt).resolve(), phantom.resolve())
@@ -562,7 +562,7 @@ class Worktrees(PolicyBase):
         def probe(path):
             return placement.reachable(path) if str(path) == stale else reachable(path)
         with patch('subprocess.run', fake_wsl), \
-                patch.object(placement, 'routes_through_wsl', lambda p, nt=None: str(p) == stale), \
+                patch.object(placement, 'routes_through_wsl', lambda p, nt=None: str(p) == stale) as _placement_patch_3, patch('drover.placement_git.routes_through_wsl', _placement_patch_3), patch('drover.placement_paths.routes_through_wsl', _placement_patch_3), \
                 patch.object(self.repository, 'reachable', side_effect=probe):
             wt = repos.native(self.pipe.worktree(self.get(tid)))
         self.assertTrue(calls and calls[0][:5] == ['wsl.exe', '-d', 'Ubuntu', '--exec', 'git'], calls)
@@ -757,14 +757,14 @@ class Safety(PolicyBase):
         tid = self.task()
         dest = Path(self.tmp.name) / 'wts' / f'drover-{tid}'
         adapter = pipeline.Repository()
-        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=False), \
-                patch.object(placement, 'routes_through_wsl', return_value=False):
+        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=False) as _placement_patch_4, patch('drover.placement_exec.is_linux_native', _placement_patch_4), patch('drover.placement_host.is_linux_native', _placement_patch_4), patch('drover.placement_paths.is_linux_native', _placement_patch_4), \
+                patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_5, patch('drover.placement_git.routes_through_wsl', _placement_patch_5), patch('drover.placement_paths.routes_through_wsl', _placement_patch_5):
             with self.assertRaises(pipeline.WorktreeRefused) as cm:
                 adapter.add(self.fix.repo, dest, f'drover/{tid}', 'main')
         self.assertIn('relative-paths', str(cm.exception))
         self.assertFalse(dest.exists())
-        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True), \
-                patch.object(placement, 'routes_through_wsl', return_value=False):
+        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_6, patch('drover.placement_exec.is_linux_native', _placement_patch_6), patch('drover.placement_host.is_linux_native', _placement_patch_6), patch('drover.placement_paths.is_linux_native', _placement_patch_6), \
+                patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_7, patch('drover.placement_git.routes_through_wsl', _placement_patch_7), patch('drover.placement_paths.routes_through_wsl', _placement_patch_7):
             # A native filesystem may use absolute pointers with old Git.
             adapter.add(self.fix.repo, dest, f'drover/{tid}', 'main')
             self.assertTrue((dest / '.git').is_file())
@@ -786,7 +786,7 @@ class Safety(PolicyBase):
             results.append(result)
             return result
         # Exercise the production fetch caller and wrapper, while making its timeout deterministic.
-        with mock.patch.object(placement, "git", side_effect=timeout_error) as placed_git:
+        with mock.patch.object(placement, "git", side_effect=timeout_error) as placed_git, mock.patch('drover.placement_git.git', placed_git):
             with mock.patch.object(pipeline, "git", side_effect=run_pipeline_git) as run_git:
                 self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))
         run_git.assert_called_once_with(self.fix.repo, *fetch_args, check=False,
@@ -989,7 +989,7 @@ class ReadyToCommit(PolicyBase):
                         patch.object(adapter, 'ahead', return_value=True), \
                         patch.object(pipe, 'repo', return_value=self.prog), \
                         patch.object(ci, 'git', side_effect=AssertionError('commit recovery used CI Git')), \
-                        patch.object(placement, 'git', side_effect=placed) as calls:
+                        patch.object(placement, 'git', side_effect=placed) as calls, patch('drover.placement_git.git', calls):
                     self.assertEqual(pipe.commit_ready(task, 1, 'Recover'), 'commit-sha')
                 self.assertEqual(calls.call_count, 1 if recovered else 2)
                 for call in calls.call_args_list:

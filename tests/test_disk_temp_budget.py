@@ -30,7 +30,7 @@ class BusyIndex(DiskCase):
         proof = evidence(self.ROWS * 50)
         calls = []
         real = placement.cleanup_normalize
-        with patch.object(placement, 'cleanup_normalize', lambda *a, **k: calls.append(a) or real(*a, **k)):
+        with patch.object(placement, 'cleanup_normalize', lambda *a, **k: calls.append(a) or real(*a, **k)) as _placement_patch_1, patch('drover.placement_host.cleanup_normalize', _placement_patch_1), patch('drover.placement_paths.cleanup_normalize', _placement_patch_1), patch('drover.placement_proof.cleanup_normalize', _placement_patch_1):
             for number in range(200):
                 proof.busy(f'/tmp/x{number}')
         self.assertLess(len(calls), 100 * 5 + 200 * 2)

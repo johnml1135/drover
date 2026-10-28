@@ -24,9 +24,9 @@ class Processes(DiskCase):
                     identity=dict(pid=77, side='windows', birth='20'), cwd=r'C:\known'))
                 row = dict(pid=77, name='python.exe', same_user=True, cmd='', exe=None)
                 row[field] = r'H:\candidate\tool.exe'
-                with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}), \
-                        patch.object(placement, '_windows_cwd', return_value=None), \
-                        patch.object(placement, '_cim_rows', return_value=[row]):
+                with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}) as _placement_patch_25, patch('drover.placement_proof._windows_processes', _placement_patch_25), \
+                        patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_26, patch('drover.placement_proof._windows_cwd', _placement_patch_26), \
+                        patch.object(placement, '_cim_rows', return_value=[row]) as _placement_patch_27, patch('drover.placement_process._cim_rows', _placement_patch_27), patch('drover.placement_proof._cim_rows', _placement_patch_27):
                     proof = placement.cleanup_processes(windows=True, request=request)
                 self.assertTrue(proof.busy('/mnt/h/candidate'))
                 self.assertTrue(proof.busy(r'C:\known'))
@@ -37,9 +37,9 @@ class Processes(DiskCase):
                               {'1': ['service.exe', 10]})
         row = dict(pid=77, name='git.exe', same_user=True, cmd=r'H:\candidate\input', exe=r'C:\tools\git.exe')
         with patch.object(placement, '_windows_processes', return_value={
-                '1': ['service.exe', 10], '77': ['git.exe', 20]}), \
-                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
-                patch.object(placement, '_cim_rows', return_value=[row]) as query:
+                '1': ['service.exe', 10], '77': ['git.exe', 20]}) as _placement_patch_1, patch('drover.placement_proof._windows_processes', _placement_patch_1), \
+                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2), \
+                patch.object(placement, '_cim_rows', return_value=[row]) as query, patch('drover.placement_process._cim_rows', query), patch('drover.placement_proof._cim_rows', query):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertEqual(query.call_args.args[1], ['77'])
         self.assertTrue(proof.busy(r'H:\candidate'))
@@ -47,8 +47,8 @@ class Processes(DiskCase):
 
     def test_failed_transient_read_does_not_tell_owner_to_close_it(self):
         request = self.cached([], {})
-        with patch.object(placement, '_windows_processes', return_value={'77': ['git.exe', 20]}), \
-                patch.object(placement, '_cim_rows', side_effect=OSError('gone')):
+        with patch.object(placement, '_windows_processes', return_value={'77': ['git.exe', 20]}) as _placement_patch_4, patch('drover.placement_proof._windows_processes', _placement_patch_4), \
+                patch.object(placement, '_cim_rows', side_effect=OSError('gone')) as _placement_patch_5, patch('drover.placement_process._cim_rows', _placement_patch_5), patch('drover.placement_proof._cim_rows', _placement_patch_5):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([p['pid'] for p in proof.unreadable], [77])
@@ -185,8 +185,8 @@ class FreshDecisions(DiskCase):
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='decisions',
                        stage=2, drive=dict(path='H:/'))
         row = dict(pid=77, name='python.exe', same_user=True, cmd='', cwd=r'C:\elsewhere')
-        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}), \
-                patch.object(placement, '_cim_rows', return_value=[row]) as query:
+        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}) as _placement_patch_6, patch('drover.placement_proof._windows_processes', _placement_patch_6), \
+                patch.object(placement, '_cim_rows', return_value=[row]) as query, patch('drover.placement_process._cim_rows', query), patch('drover.placement_proof._cim_rows', query):
             placement.cleanup_processes(windows=True, request=request)
             placement.cleanup_processes(windows=True, request=request)
             self.assertEqual(query.call_count, 1)
@@ -236,7 +236,7 @@ class RunnerPids(DiskCase):
         def birth(pid):
             seen.append(pid)
             return 20
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(placement, '_windows_birth', side_effect=birth), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_8, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_8), patch('drover.placement_git.IS_WINDOWS', _placement_patch_8), patch('drover.placement_host.IS_WINDOWS', _placement_patch_8), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_8), patch('drover.placement_process.IS_WINDOWS', _placement_patch_8), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_8), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_8), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_8), patch.object(placement, '_windows_birth', side_effect=birth) as _placement_patch_9, patch('drover.placement_process._windows_birth', _placement_patch_9), \
                 patch.object(os, 'getpid', return_value=31156), patch.object(os, 'getppid', return_value=1):
             with placement.cleanup_process_record(self.state, self.root, pid=17700):
                 row = json.loads((self.state / 'disk' / 'process-windows-17700.json').read_text())
@@ -253,8 +253,8 @@ class SafetyDecisions(DiskCase):
         request = dict(now=self.now, repos=[], paths={})
         machine = dict(repo=r'\\?\H:\Repo', name='alpha')
         entry = dict(worktree='/mnt/h/repo', HEAD='unused')
-        with patch.object(placement, 'cleanup_side', return_value='windows'), \
-                patch.object(placement, 'worktree_side', return_value='windows'), \
+        with patch.object(placement, 'cleanup_side', return_value='windows') as _placement_patch_10, patch('drover.placement_process.cleanup_side', _placement_patch_10), \
+                patch.object(placement, 'worktree_side', return_value='windows') as _placement_patch_11, patch('drover.placement_paths.worktree_side', _placement_patch_11), \
                 patch.object(placement, 'cleanup_contains', return_value=True):
             self.assertEqual(inspect(request, machine, entry)['reason_code'], 'main_checkout')
             with self.assertRaisesRegex(ValueError, 'not an eligible'):
@@ -292,8 +292,8 @@ class SafetyDecisions(DiskCase):
         from types import SimpleNamespace
         for marker, calls in (('wsl', 2), ('owner note', 1)):
             listing = 'worktree /mnt/h/repo\0locked ' + marker + '\0\0'
-            with patch.object(placement, 'IS_WINDOWS', False), \
-                    patch.object(placement, 'git', return_value=SimpleNamespace(returncode=0, stdout=listing)) as git:
+            with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_23, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_23), patch('drover.placement_git.IS_WINDOWS', _placement_patch_23), patch('drover.placement_host.IS_WINDOWS', _placement_patch_23), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_23), patch('drover.placement_process.IS_WINDOWS', _placement_patch_23), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_23), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_23), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_23), \
+                    patch.object(placement, 'git', return_value=SimpleNamespace(returncode=0, stdout=listing)) as git, patch('drover.placement_git.git', git):
                 placement.unlock_worktree('/tmp/repo', r'\\?\H:\Repo')
             self.assertEqual(git.call_count, calls)
 
@@ -313,7 +313,7 @@ class SafetyDecisions(DiskCase):
     def test_physical_scope_uses_canonical_mount_identity(self):
         request = dict(drive=dict(path='/physical/disk'))
         with patch.object(placement, 'cleanup_path_side', return_value='wsl'), \
-                patch.object(placement, 'cleanup_side', return_value='wsl'), \
+                patch.object(placement, 'cleanup_side', return_value='wsl') as _placement_patch_12, patch('drover.placement_process.cleanup_side', _placement_patch_12), \
                 patch.object(placement, 'physical_disk_path', side_effect=['/physical/disk/.', '/physical/disk']):
             self.assertTrue(placement.cleanup_contains(request, '/candidate'))
 
@@ -380,8 +380,8 @@ class ReportingIntegration(DiskCase):
         def read(path):
             observed.append(path)
             return dict(sparse=True, allocated_bytes=4, apparent_bytes=8)
-        with patch.dict(sys.modules, winreg=registry), patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, '_vhdx_reading', side_effect=read):
+        with patch.dict(sys.modules, winreg=registry), patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_13, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_13), patch('drover.placement_git.IS_WINDOWS', _placement_patch_13), patch('drover.placement_host.IS_WINDOWS', _placement_patch_13), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_13), patch('drover.placement_process.IS_WINDOWS', _placement_patch_13), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_13), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_13), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_13), \
+                patch.object(placement, '_vhdx_reading', side_effect=read) as _placement_patch_14, patch('drover.placement_host._vhdx_reading', _placement_patch_14):
             rows = placement.cleanup_vhdx_report()
         self.assertEqual({row['distro'] for row in rows}, {'Distro 0', 'Distro 1'})
         self.assertEqual(observed, [ntpath.join(r'C:\Users\fixture\AppData', key, 'ext4.vhdx') for key in ('0', '1')])
@@ -400,8 +400,8 @@ class ProcessReadFailures(DiskCase):
     def test_failed_post_query_identity_enumeration_still_names_conservative_pid(self):
         request = dict(state_dir=str(self.state), paths={}, _inventory_id='post-query')
         disk_state.save_file(self.state, 'processes-post-query.json', dict(rows=[], identities={}))
-        with patch.object(placement, '_windows_processes', side_effect=[{'77': ['git.exe', 20]}, OSError('denied')]), \
-                patch.object(placement, '_cim_rows', return_value=[dict(pid=77, name='git.exe', same_user=False, cmd='', cwd=None)]):
+        with patch.object(placement, '_windows_processes', side_effect=[{'77': ['git.exe', 20]}, OSError('denied')]) as _placement_patch_15, patch('drover.placement_proof._windows_processes', _placement_patch_15), \
+                patch.object(placement, '_cim_rows', return_value=[dict(pid=77, name='git.exe', same_user=False, cmd='', cwd=None)]) as _placement_patch_16, patch('drover.placement_process._cim_rows', _placement_patch_16), patch('drover.placement_proof._cim_rows', _placement_patch_16):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([row['pid'] for row in proof.unreadable], [77])
@@ -410,8 +410,8 @@ class ProcessReadFailures(DiskCase):
     def test_changed_birth_during_targeted_read_discards_new_evidence(self):
         request = dict(state_dir=str(self.state), paths={}, _inventory_id='race')
         disk_state.save_file(self.state, 'processes-race.json', dict(rows=[], identities={}))
-        with patch.object(placement, '_windows_processes', side_effect=[{'77': ['git.exe', 20]}, {'77': ['git.exe', 21]}]), \
-                patch.object(placement, '_cim_rows', return_value=[dict(pid=77, name='git.exe', same_user=False, cmd='', cwd=None)]):
+        with patch.object(placement, '_windows_processes', side_effect=[{'77': ['git.exe', 20]}, {'77': ['git.exe', 21]}]) as _placement_patch_17, patch('drover.placement_proof._windows_processes', _placement_patch_17), \
+                patch.object(placement, '_cim_rows', return_value=[dict(pid=77, name='git.exe', same_user=False, cmd='', cwd=None)]) as _placement_patch_18, patch('drover.placement_process._cim_rows', _placement_patch_18), patch('drover.placement_proof._cim_rows', _placement_patch_18):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([row['pid'] for row in proof.unreadable], [77])
@@ -419,7 +419,7 @@ class ProcessReadFailures(DiskCase):
     def test_confirmed_own_cwd_cannot_hide_unreadable_argv(self):
         disk_state.save_file(self.state, 'process-windows-77.json', dict(
             identity=dict(pid=77, side='windows', birth='20'), cwd=r'C:\known'))
-        with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side='windows', birth='20')):
+        with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side='windows', birth='20')) as _placement_patch_19, patch('drover.placement_process.cleanup_identity', _placement_patch_19), patch('drover.placement_proof.cleanup_identity', _placement_patch_19):
             proof = placement.cleanup_processes(windows=True, request=dict(state_dir=str(self.state)), cim=lambda: [dict(
                 pid=77, name='python.exe', same_user=True, cwd=None, cmd=None, exe=r'C:\Python\python.exe')])
         self.assertTrue(proof.busy(r'H:\candidate'))
@@ -435,7 +435,7 @@ class ProcessReadFailures(DiskCase):
 
 class CrossPlacementPaths(unittest.TestCase):
     def test_windows_coordinator_keeps_linux_path_case_distinct(self):
-        with patch.object(placement, 'IS_WINDOWS', True):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_20, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_20), patch('drover.placement_git.IS_WINDOWS', _placement_patch_20), patch('drover.placement_host.IS_WINDOWS', _placement_patch_20), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_20), patch('drover.placement_process.IS_WINDOWS', _placement_patch_20), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_20), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_20), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_20):
             self.assertNotEqual(placement.cleanup_parts('/home/owner/Case'),
                                 placement.cleanup_parts('/home/owner/case'))
             self.assertEqual(placement.cleanup_parts('/mnt/h/Case'), placement.cleanup_parts(r'\\?\H:\case'))
@@ -456,6 +456,6 @@ class ReadRootSafety(unittest.TestCase):
         def path(value):
             resolved = r'H:\work' if str(value).casefold() == r'h:\alias' else str(value)
             return SimpleNamespace(resolve=lambda: resolved)
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(placement, 'Path', side_effect=path):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_21, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_21), patch('drover.placement_git.IS_WINDOWS', _placement_patch_21), patch('drover.placement_host.IS_WINDOWS', _placement_patch_21), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_21), patch('drover.placement_process.IS_WINDOWS', _placement_patch_21), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_21), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_21), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_21), patch.object(placement, 'Path', side_effect=path) as _placement_patch_22, patch('drover.placement_git.Path', _placement_patch_22), patch('drover.placement_host.Path', _placement_patch_22), patch('drover.placement_paths.Path', _placement_patch_22), patch('drover.placement_process.Path', _placement_patch_22), patch('drover.placement_proof.Path', _placement_patch_22):
             with self.assertRaisesRegex(ValueError, 'read-only checkout'):
                 task_access.check_read_roots(r'H:\work', [r'H:\alias'])

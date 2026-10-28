@@ -9,7 +9,7 @@ from tests.disk_fixture import DiskCase, GIB, empty_result
 class Trim(DiskCase):
     def test_root_argv_and_retrim_threshold(self):
         from drover import placement
-        with patch.object(placement, 'IS_WINDOWS', True):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
             argv = placement.trim_argv()
         self.assertEqual(argv[0].lower().removesuffix('.exe'), 'wsl')
         self.assertEqual(argv[argv.index('-u') + 1], 'root')

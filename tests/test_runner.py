@@ -80,10 +80,10 @@ class WindowsMetricsTests(unittest.TestCase):
             return 1
 
         kernel.QueryInformationJobObject.side_effect = query
-        spec = importlib.util.spec_from_file_location("drover._placement_windows_test", placement.__file__)
+        spec = importlib.util.spec_from_file_location("drover._placement_windows_test", Path(placement.__file__).with_name("placement_tree.py"))
         windows_runner = importlib.util.module_from_spec(spec)
         # Load the Windows implementation on either OS, without touching real jobs.
-        with patch.object(sys, "platform", "win32"), \
+        with patch.object(sys, "platform", "win32"), patch("drover.placement_paths.IS_WINDOWS", True), \
              patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
             spec.loader.exec_module(windows_runner)
         tree = windows_runner.WindowsTree.__new__(windows_runner.WindowsTree)
@@ -619,7 +619,7 @@ class DetachTests(Base):
                 return observed_status
 
             clock = Mock(return_value=100)
-            with patch.multiple(placement, IS_WINDOWS=True, create=True, **flags), \
+            with patch.multiple('drover.placement_exec', IS_WINDOWS=True, create=True, **flags), \
                     patch.dict(os.environ, {}, clear=True), \
                     patch.object(runner.subprocess, "Popen", popen), \
                     patch.object(runner, "read_status", side_effect=read_child_status), \
@@ -666,7 +666,7 @@ class DetachTests(Base):
         fallback_error = OSError(87, "fallback spawn failed")
         popen = Mock(side_effect=[first_error, fallback_error])
 
-        with patch.multiple(placement, IS_WINDOWS=True, create=True, **flags), \
+        with patch.multiple('drover.placement_exec', IS_WINDOWS=True, create=True, **flags), \
                 patch.dict(os.environ, {}, clear=True), \
                 patch.object(runner.subprocess, "Popen", popen), \
                 patch.object(runner.time, "monotonic", Mock(return_value=100)):
@@ -740,13 +740,9 @@ class FindTests(Base):
 
     @unittest.skipUnless(runner.IS_WINDOWS, "CIM is Windows only")
     def test_windows_scan_failure_raises(self):
-        orig = placement._powershell
-        placement._powershell = lambda: "no-such-powershell-xyz"
-        try:
+        with patch("drover.placement_process._powershell", return_value="no-such-powershell-xyz"):
             with self.assertRaises(runner.ScanError):
                 runner.find_runners()
-        finally:
-            placement._powershell = orig
 
 
 def ok_argv(rid):

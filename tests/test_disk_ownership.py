@@ -95,7 +95,7 @@ class Ownership(unittest.TestCase):
                 local[0] = sys.executable
                 local[3] = placement.native(local[3])  # worker directory; payload stays literal
             return local
-        with patch.object(placement, 'routes_through_wsl', return_value=True), \
+        with patch.object(placement, 'routes_through_wsl', return_value=True) as _placement_patch_1, patch('drover.placement_git.routes_through_wsl', _placement_patch_1), patch('drover.placement_paths.routes_through_wsl', _placement_patch_1), \
                 patch.object(placement.WSL, 'command', new=local_transport):
             record = ownership.tag(str(tree), 'alpha', 'session: "quote"\n雪', NOW + 1, now=NOW)
             self.assertEqual(ownership.read(str(tree)), record)

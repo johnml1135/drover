@@ -215,7 +215,7 @@ class SingleProcess(Trigger):
     def test_identity_timeout_after_spawn_keeps_the_claim(self):
         proc = type('P', (), {'pid': 4242})()
         with patch.object(placement, 'detach', return_value=(proc, False)), \
-                patch.object(placement, 'cleanup_identity', side_effect=__import__('subprocess').TimeoutExpired('ps', 15)):
+                patch.object(placement, 'cleanup_identity', side_effect=__import__('subprocess').TimeoutExpired('ps', 15)) as _placement_patch_1, patch('drover.placement_process.cleanup_identity', _placement_patch_1), patch('drover.placement_proof.cleanup_identity', _placement_patch_1):
             answer = placement.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
         self.assertEqual(answer['identity']['pid'], 4242)
         self.assertIsNone(answer['identity']['birth'])
@@ -223,7 +223,7 @@ class SingleProcess(Trigger):
     def test_not_yet_visible_process_is_unknown_not_dead(self):
         proc = type('P', (), {'pid': 4242})()
         with patch.object(placement, 'detach', return_value=(proc, False)), \
-                patch.object(placement, 'cleanup_identity', return_value=dict(pid=4242, birth='absent', side=placement.cleanup_side())):
+                patch.object(placement, 'cleanup_identity', return_value=dict(pid=4242, birth='absent', side=placement.cleanup_side())) as _placement_patch_2, patch('drover.placement_process.cleanup_identity', _placement_patch_2), patch('drover.placement_proof.cleanup_identity', _placement_patch_2):
             answer = placement.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
         self.assertIsNone(answer['identity']['birth'])
 
@@ -295,19 +295,19 @@ class StuckClaim(Trigger):
 
     def test_old_claim_is_released_although_the_query_keeps_timing_out(self):
         launches, enqueue, flaky = self.stuck(self.now - 25 * 3600)
-        with patch.object(placement, 'cleanup_identity', side_effect=flaky):
+        with patch.object(placement, 'cleanup_identity', side_effect=flaky) as _placement_patch_3, patch('drover.placement_process.cleanup_identity', _placement_patch_3), patch('drover.placement_proof.cleanup_identity', _placement_patch_3):
             self.tick(enqueue)
         self.assertEqual(len(launches), 2)
 
     def test_young_claim_waits_when_the_query_times_out(self):
         launches, enqueue, flaky = self.stuck(self.now - 3600)
-        with patch.object(placement, 'cleanup_identity', side_effect=flaky):
+        with patch.object(placement, 'cleanup_identity', side_effect=flaky) as _placement_patch_4, patch('drover.placement_process.cleanup_identity', _placement_patch_4), patch('drover.placement_proof.cleanup_identity', _placement_patch_4):
             self.tick(enqueue)
         self.assertEqual(len(launches), 1)
 
     def test_legacy_claim_without_at_counts_as_old(self):
         launches, enqueue, flaky = self.stuck(None)
-        with patch.object(placement, 'cleanup_identity', side_effect=flaky):
+        with patch.object(placement, 'cleanup_identity', side_effect=flaky) as _placement_patch_5, patch('drover.placement_process.cleanup_identity', _placement_patch_5), patch('drover.placement_proof.cleanup_identity', _placement_patch_5):
             self.tick(enqueue)
         self.assertEqual(len(launches), 2)
 

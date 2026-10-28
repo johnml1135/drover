@@ -92,7 +92,7 @@ class Policy(unittest.TestCase):
         from drover import placement
         scratch = self.fix.root / 'agent scratch'
         scratch.mkdir()
-        with patch.object(placement, 'CLEANUP_SCRATCH_ROOTS', (str(scratch),)), \
+        with patch.object(placement, 'CLEANUP_SCRATCH_ROOTS', (str(scratch),)) as _placement_patch_1, patch('drover.placement_host.CLEANUP_SCRATCH_ROOTS', _placement_patch_1), \
                 patch.object(placement.shutil, 'which', side_effect=lambda tool: '/tools/' + tool if tool in ('uv', 'npm') else None), \
                 patch('tempfile.gettempdir', return_value=str(self.fix.root / 'os temp')):
             raw = {'paths': {'state_dir': str(self.fix.root / 'state')}}

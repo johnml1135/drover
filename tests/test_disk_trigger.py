@@ -201,9 +201,9 @@ class Trigger(DiskCase):
     def test_windows_absent_pid_is_proven_dead(self):
         from drover import placement
         # PID12 can be this interpreter inside a sandbox; discard its actual-side cache.
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, '_SELF_IDENTITY', None), \
-                patch.object(placement, '_read_windows_birth', side_effect=ProcessLookupError(87, 'absent')) as birth:
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
+                patch('drover.placement_process._SELF_IDENTITY', None), \
+                patch.object(placement, '_read_windows_birth', side_effect=ProcessLookupError(87, 'absent')) as birth, patch('drover.placement_process._read_windows_birth', birth):
             self.assertFalse(placement.cleanup_claim_alive(dict(pid=12, birth='old', side='windows')))
         birth.assert_called_once_with(12)
 
@@ -292,7 +292,7 @@ class LockBackoff(DiskCase):
         self.plant(side=self.side, birth='boot:1')
         self.free = 60
         ident = lambda pid=None: dict(pid=pid, birth='absent', side=self.side)
-        with patch('drover.placement.cleanup_identity', ident):
+        with patch('drover.placement.cleanup_identity', ident) as _placement_patch_4, patch('drover.placement_process.cleanup_identity', _placement_patch_4), patch('drover.placement_proof.cleanup_identity', _placement_patch_4):
             self.tick(lambda: launches.append(1) or {})
         self.assertEqual(launches, [1])
 
@@ -308,7 +308,7 @@ class ProcessQueryTimeout(DiskCase):
         from drover import disk
         launches = []
         slow = subprocess.TimeoutExpired('powershell.exe', 15)
-        with patch('drover.placement.cleanup_identity', side_effect=slow):
+        with patch('drover.placement.cleanup_identity', side_effect=slow) as _placement_patch_5, patch('drover.placement_process.cleanup_identity', _placement_patch_5), patch('drover.placement_proof.cleanup_identity', _placement_patch_5):
             result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60,
                                enqueue=lambda: launches.append(1) or {})
         self.assertEqual(launches, [])
@@ -318,6 +318,6 @@ class ProcessQueryTimeout(DiskCase):
         from drover import disk, disk_state
         disk_state.update(self.state, lambda s: s.update(episodes={'test-drive': {'claim': dict(
             id='c1', identity=dict(pid=5, birth='b', side=self.side), applied=False)}}))
-        with patch('drover.placement.cleanup_identity', side_effect=subprocess.TimeoutExpired('p', 15)):
+        with patch('drover.placement.cleanup_identity', side_effect=subprocess.TimeoutExpired('p', 15)) as _placement_patch_6, patch('drover.placement_process.cleanup_identity', _placement_patch_6), patch('drover.placement_proof.cleanup_identity', _placement_patch_6):
             result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60, enqueue=lambda: {})
         self.assertIn('drives', result)

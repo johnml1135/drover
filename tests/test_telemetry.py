@@ -13,7 +13,7 @@ class TelemetryTests(unittest.TestCase):
     def test_worker_environment_preserves_owner_values_and_wsl_bridge(self):
         values = {**placement.TELEMETRY_OPTOUT, 'DOTNET_NOLOGO': 'owner'}
         with patch.dict(os.environ, {'DOTNET_NOLOGO': 'owner', 'WSLENV': 'OTHER/p:DOTNET_NOLOGO/w'}, clear=True):
-            runpy.run_path(placement.__file__)
+            runpy.run_module('drover.placement_exec', run_name='drover._telemetry_check')
             self.assertEqual({k: os.environ[k] for k in values}, values)
             self.assertIn('OTHER/p', os.environ['WSLENV'].split(':'))
             self.assertIn('DOTNET_NOLOGO', os.environ['WSLENV'].split(':'))

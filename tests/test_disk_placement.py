@@ -43,13 +43,13 @@ class Facts(unittest.TestCase):
             with self.subTest(path=ambiguous):
                 self.assertIsNone(placement.worktree_side(ambiguous))
         self.assertIsNone(placement.worktree_side('H:/trees/topic', 'keep for review'))
-        with patch.object(placement, 'IS_WINDOWS', False), \
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': 'Fixture'}), \
-                patch.object(placement, 'vhdx_dir', return_value=None):
+                patch.object(placement, 'vhdx_dir', return_value=None) as _placement_patch_2, patch('drover.placement_host.vhdx_dir', _placement_patch_2):
             self.assertIsNone(placement.physical_disk_path('/home/user/topic'))
-        with patch.object(placement, 'IS_WINDOWS', False), \
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': 'Fixture'}), \
-                patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Ubuntu'):
+                patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Ubuntu') as _placement_patch_4, patch('drover.placement_host.vhdx_dir', _placement_patch_4):
             self.assertEqual(placement.drive(placement.physical_disk_path('/home/user/topic')), 'H')
             self.assertEqual(placement.drive(placement.physical_disk_path('C:/repo')), 'C')
 
@@ -62,9 +62,9 @@ class Facts(unittest.TestCase):
             self.assertTrue(placement.cleanup_processes(proc_root=proc, windows=False).busy('/candidate'))
 
     def test_native_windows_vhdx_host_is_a_physical_root(self):
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, 'distro', return_value='Fixture'), \
-                patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_5, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_5), patch('drover.placement_git.IS_WINDOWS', _placement_patch_5), patch('drover.placement_host.IS_WINDOWS', _placement_patch_5), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_5), patch('drover.placement_process.IS_WINDOWS', _placement_patch_5), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_5), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_5), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_5), \
+                patch.object(placement, 'distro', return_value='Fixture') as _placement_patch_6, patch('drover.placement_exec.distro', _placement_patch_6), patch('drover.placement_git.distro', _placement_patch_6), patch('drover.placement_host.distro', _placement_patch_6), \
+                patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}) as _placement_patch_7, patch('drover.placement_host.detect_vhdx_drives', _placement_patch_7):
             self.assertEqual(placement.physical_disk_path('/home/user/topic'), 'H:/')
 
     def test_windows_shell_cwd_and_missing_visibility_retain_candidates(self):

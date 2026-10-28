@@ -87,7 +87,7 @@ class Migration(unittest.TestCase):
             config.validate(proposed)
             virtual_only = {'trackers': [disk('virtual-host', '~/repos', wsl_source='vhdx',
                                               queue_gb=95.0, hold_gb=35.0)]}
-            with patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Fixture'):
+            with patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Fixture') as _placement_patch_5, patch('drover.placement_host.vhdx_dir', _placement_patch_5):
                 resolved = config.migrate_disk_config(virtual_only)['trackers'][0]
             self.assertEqual(placement.drive(resolved['path']), 'H')
             self.assertEqual(levels(resolved), (150, 95, 35, 25))
@@ -131,18 +131,18 @@ class Migration(unittest.TestCase):
             unresolved = {'trackers': [disk('h', '~/repos', wsl_source='vhdx', queue_gb=75.0, hold_gb=25.0)]}
             path.write_text(config.dumps(unresolved))
             unresolved_bytes = path.read_bytes()
-            with patch.object(placement, 'vhdx_dir', return_value=None), \
-                    patch.object(placement, 'detect_vhdx_drives', return_value={}):
+            with patch.object(placement, 'vhdx_dir', return_value=None) as _placement_patch_6, patch('drover.placement_host.vhdx_dir', _placement_patch_6), \
+                    patch.object(placement, 'detect_vhdx_drives', return_value={}) as _placement_patch_7, patch('drover.placement_host.detect_vhdx_drives', _placement_patch_7):
                 self.assertEqual(cli('--apply')[0], 2)
             self.assertEqual(path.read_bytes(), unresolved_bytes)
             self.assertEqual(list(state.glob('*bak*')), backups)
 
     def test_native_windows_virtual_source_delegates_host_resolution(self):
         raw = {'trackers': [disk('legacy', '~/repos', wsl_source='vhdx', queue_gb=95, hold_gb=35)]}
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}), \
-                patch.object(placement, 'distro', return_value='Fixture'), \
-                patch.object(placement, 'vhdx_dir', side_effect=AssertionError('WSL-only helper')):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
+                patch.object(placement, 'detect_vhdx_drives', return_value={'Fixture': 'H:'}) as _placement_patch_2, patch('drover.placement_host.detect_vhdx_drives', _placement_patch_2), \
+                patch.object(placement, 'distro', return_value='Fixture') as _placement_patch_3, patch('drover.placement_exec.distro', _placement_patch_3), patch('drover.placement_git.distro', _placement_patch_3), patch('drover.placement_host.distro', _placement_patch_3), \
+                patch.object(placement, 'vhdx_dir', side_effect=AssertionError('WSL-only helper')) as _placement_patch_4, patch('drover.placement_host.vhdx_dir', _placement_patch_4):
             row = config.migrate_disk_config(raw)['trackers'][0]
         self.assertEqual(placement.drive(row['path']), 'H')
         self.assertEqual(levels(row), (150, 95, 35, 25))

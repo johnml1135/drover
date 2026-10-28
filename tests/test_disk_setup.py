@@ -11,9 +11,9 @@ KEYS = ('warn_gb', 'queue_gb', 'hold_gb', 'critical_gb')
 class Setup(unittest.TestCase):
     def test_physical_defaults_without_virtual_disk_tracker(self):
         default_disk_trackers = placement.default_disk_trackers
-        with patch.object(placement, 'IS_WINDOWS', True), patch.dict(os.environ, {}, clear=True):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.dict(os.environ, {}, clear=True):
             windows = default_disk_trackers()
-        with patch.object(placement, 'IS_WINDOWS', False), \
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': 'Fixture'}, clear=True):
             wsl = default_disk_trackers()
         self.assertEqual(wsl, windows)
@@ -23,7 +23,7 @@ class Setup(unittest.TestCase):
             self.assertNotIn('wsl_source', row)
             self.assertEqual(tuple(row[k] for k in KEYS),
                              (60, 40, 25, 15) if placement.drive(row['path']) == 'C' else (150, 100, 50, 25))
-        with patch.object(placement, 'IS_WINDOWS', False), patch.dict(os.environ, {}, clear=True):
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), patch.dict(os.environ, {}, clear=True):
             linux = default_disk_trackers()
         self.assertEqual(len(linux), 1)
         self.assertEqual(linux[0]['path'], '/')

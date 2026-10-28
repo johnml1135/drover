@@ -192,7 +192,7 @@ class OutputsContracts(GitWorktreeCase):
                     self.r.git('worktree', 'unlock', wt)
                     self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
             return real_git(repo, *args, **kw)
-        with mock.patch.object(placement, 'git', side_effect=git):
+        with mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_1, mock.patch('drover.placement_git.git', _placement_patch_1):
             self.cleanup(apply=True)
         self.assertGreaterEqual(len(checks), 3)
         self.assertEqual(output.read_text(), 'preserve on ownership change')

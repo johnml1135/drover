@@ -25,7 +25,7 @@ class PlacementSafety(DiskCase):
             save_file(self.state, 'worker-' + payload['_worker_id'] + '.json', dict(
                 pid=123456789, run_id=payload['_worker_id']))
             return subprocess.CompletedProcess(argv, 0, json.dumps(empty_result()), '')
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(subprocess, 'run', side_effect=execute):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(subprocess, 'run', side_effect=execute):
             with patch.object(placement, 'recover_ci_children', return_value=True):
                 placement.cleanup_call('wsl', self.request())
         self.assertEqual(observed[0]['paths']['temp_roots'], ['/home/user/temp'])
@@ -44,7 +44,7 @@ class PlacementSafety(DiskCase):
 
     def test_linux_longest_mount_is_used_for_measurement_and_scope(self):
         mountinfo = '1 0 8:1 / / rw - ext4 /dev/root rw\n2 1 8:2 / /data rw - ext4 /dev/data rw\n3 2 8:3 / /data/deep\\040space rw - ext4 /dev/extra rw\n'
-        with patch.object(placement, 'IS_WINDOWS', False), \
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
                 patch.dict('os.environ', {'WSL_DISTRO_NAME': ''}), \
                 patch('pathlib.Path.read_text', return_value=mountinfo):
             self.assertEqual(placement.physical_disk_path('/data/build'), '/data')
@@ -186,7 +186,7 @@ class PlacementSafety(DiskCase):
         request = self.request()
         request['paths']['temp_roots'] = ['/mnt/h/temp with spaces']
         request['paths']['caches'] = [dict(path='/mnt/h/cache folder', placement='windows')]
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                 patch.object(placement, 'physical_disk_path', return_value='H:/'):
             scoped = placement.cleanup_scope(request)
         self.assertEqual(scoped['paths']['temp_roots'], [r'H:\temp with spaces'])

@@ -51,7 +51,7 @@ class Scope(WorktreeCase):
                 runtime = disk_cleanup.CleanupRuntime(base_runtime.now, base_runtime.read,
                                                        call, base_runtime.toast)
                 # Simulated owning side and path mapping; Git always uses the real native platform.
-                with mock.patch.object(placement, 'cleanup_side', return_value=side), \
+                with mock.patch.object(placement, 'cleanup_side', return_value=side) as _placement_patch_1, mock.patch('drover.placement_process.cleanup_side', _placement_patch_1), \
                      mock.patch.object(placement, 'cleanup_path_side', return_value=side), \
                      mock.patch.object(placement, 'cleanup_runtime', return_value=runtime), \
                      mock.patch.object(placement, 'cleanup_processes',

@@ -67,7 +67,7 @@ class PlacementTests(unittest.TestCase):
         dotgit.write_text('gitdir: H:/repo/.git/worktrees/wt\n')
         before = dotgit.read_bytes()
         real = placement.to_wsl_path
-        with patch.object(placement, 'to_wsl_path', side_effect=lambda p: admin if p == 'H:/repo/.git/worktrees/wt' else real(p)):
+        with patch.object(placement, 'to_wsl_path', side_effect=lambda p: admin if p == 'H:/repo/.git/worktrees/wt' else real(p)) as _placement_patch_1, patch('drover.placement_exec.to_wsl_path', _placement_patch_1), patch('drover.placement_git.to_wsl_path', _placement_patch_1), patch('drover.placement_host.to_wsl_path', _placement_patch_1), patch('drover.placement_paths.to_wsl_path', _placement_patch_1):
             self.assertEqual(ci.head(wt), repo.git('rev-parse', 'HEAD'))
             self.assertEqual(ci.dirty(wt), '')
             self.assertEqual(dotgit.read_bytes(), before)
@@ -150,9 +150,9 @@ class PlacementTests(unittest.TestCase):
 
 class CleanupIdentityCache(unittest.TestCase):
     def test_own_identity_is_read_once_per_process(self):
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, '_read_windows_birth', return_value=1234) as birth, \
-                patch.object(placement, '_SELF_IDENTITY', None):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
+                patch.object(placement, '_read_windows_birth', return_value=1234) as birth, patch('drover.placement_process._read_windows_birth', birth), \
+                patch('drover.placement_process._SELF_IDENTITY', None):
             first = placement.cleanup_identity()
             second = placement.cleanup_identity()
             placement.cleanup_identity(os.getpid() + 1)
@@ -161,9 +161,9 @@ class CleanupIdentityCache(unittest.TestCase):
         self.assertEqual(birth.call_args_list, [unittest.mock.call(os.getpid()), unittest.mock.call(os.getpid() + 1)])
 
     def test_a_cached_identity_from_another_pid_is_not_reused(self):
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, '_read_windows_birth', return_value=5678) as birth, \
-                patch.object(placement, '_SELF_IDENTITY', dict(pid=os.getpid() + 1, birth='1234', side='windows')):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_5, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_5), patch('drover.placement_git.IS_WINDOWS', _placement_patch_5), patch('drover.placement_host.IS_WINDOWS', _placement_patch_5), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_5), patch('drover.placement_process.IS_WINDOWS', _placement_patch_5), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_5), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_5), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_5), \
+                patch.object(placement, '_read_windows_birth', return_value=5678) as birth, patch('drover.placement_process._read_windows_birth', birth), \
+                patch('drover.placement_process._SELF_IDENTITY', dict(pid=os.getpid() + 1, birth='1234', side='windows')):
             current = placement.cleanup_identity()
         self.assertEqual(current['birth'], '5678')
         birth.assert_called_once_with(os.getpid())
@@ -179,7 +179,7 @@ class NativeCleanupIdentity(unittest.TestCase):
             created._obj.dwHighDateTime, created._obj.dwLowDateTime = 42, 17
             return times
         kernel.GetProcessTimes.side_effect = read
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_8, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_8), patch('drover.placement_git.IS_WINDOWS', _placement_patch_8), patch('drover.placement_host.IS_WINDOWS', _placement_patch_8), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_8), patch('drover.placement_process.IS_WINDOWS', _placement_patch_8), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_8), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_8), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_8), \
                 patch.object(ctypes, 'WinDLL', return_value=kernel, create=True), \
                 patch.object(ctypes, 'get_last_error', return_value=error, create=True), \
                 patch.object(placement.subprocess, 'run', side_effect=AssertionError('identity spawned a process')):

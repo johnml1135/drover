@@ -23,14 +23,14 @@ class Recovery(unittest.TestCase):
             self.assertNotIn('RESULT_SENTINEL', repr((argv, kw.get('env'))))
             # Execute the exact Python composed for WSL on this test host.
             return run([sys.executable, *argv[argv.index('-c'):]], **kw)
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(placement, 'distro', return_value='Fixture'), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(placement, 'distro', return_value='Fixture') as _placement_patch_2, patch('drover.placement_exec.distro', _placement_patch_2), patch('drover.placement_git.distro', _placement_patch_2), patch('drover.placement_host.distro', _placement_patch_2), \
                 patch.object(subprocess, 'run', side_effect=execute):
             self.assertTrue(placement.recover_ci_children('wsl', dict(
                 pid=123456789, runner_pid=123456789, run_id='fixture', result='RESULT_SENTINEL' * 6000), '/tmp'))
         self.assertEqual(json.loads(captured[0][0][-1]), dict(pid=123456789, runner_pid=123456789, run_id='fixture'))
 
     def test_all_wsl_builders_use_bounded_command_boundary(self):
-        tree = ast.parse(Path(placement.__file__).read_text())
+        tree = ast.parse(Path(placement.__file__).with_name("placement_exec.py").read_text())
         builders = []
         for function in tree.body:
             if isinstance(function, (ast.FunctionDef, ast.ClassDef)):
@@ -130,8 +130,8 @@ class ProcessQuery(DiskCase):
         self.assertEqual(config.validate(dict(disk_cleanup=dict(process_query_timeout_s=300)))['disk_cleanup']['process_query_timeout_s'], 300)
         request = dict(stage=2, apply=False, now=self.now, paths=dict(process_query_timeout_s=300),
                        state_dir=str(self.state), repos=[], drive=dict(path=str(self.root)), _inventory_id='fixture')
-        with patch.object(placement, 'IS_WINDOWS', True), \
-                patch.object(placement, '_windows_processes', return_value={}), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
+                patch.object(placement, '_windows_processes', return_value={}) as _placement_patch_4, patch('drover.placement_proof._windows_processes', _placement_patch_4), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
                 patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('cim', 300)) as query, \
                 patch.object(placement.time, 'monotonic', side_effect=[10., 310.25, 400., 700.25]):
@@ -153,8 +153,8 @@ class ProcessQuery(DiskCase):
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=rows)), '')
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='fixture')
         with patch.object(subprocess, 'run', return_value=done) as query, \
-                patch.object(placement, '_windows_processes', return_value={'123456789': ['service.exe', 1]}), \
-                patch.object(placement, '_windows_cwd', return_value=None):
+                patch.object(placement, '_windows_processes', return_value={'123456789': ['service.exe', 1]}) as _placement_patch_5, patch('drover.placement_proof._windows_processes', _placement_patch_5), \
+                patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_6, patch('drover.placement_proof._windows_cwd', _placement_patch_6):
             for stage, drive in ((2, 'H:/'), (4, 'H:/'), (5, 'C:/')):
                 proof = placement.cleanup_processes(windows=True, request=dict(request, stage=stage, drive=dict(path=drive)))
                 self.assertTrue(proof.busy(r'H:\candidate'))
@@ -194,10 +194,10 @@ class ReviewRegressions(DiskCase):
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
             ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1, CommandLine='old.exe')])), '')
         with patch.object(subprocess, 'run', return_value=done) as query, \
-                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
+                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_7, patch('drover.placement_proof._windows_cwd', _placement_patch_7), \
                 patch.object(placement, '_windows_processes', create=True,
                              side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
-                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]):
+                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]) as _placement_patch_8, patch('drover.placement_proof._windows_processes', _placement_patch_8):
             first = placement.cleanup_processes(windows=True, request=request)
             second = placement.cleanup_processes(windows=True, request=request)
         self.assertFalse(first.busy(r'C:\candidate'))
@@ -238,14 +238,14 @@ class ReviewRegressions(DiskCase):
                        drive=dict(path=str(self.root)), paths=self.cfg['disk_cleanup'], _inventory_id='fixture')
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
             ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1, CommandLine='old.exe')])), '')
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_9, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_9), patch('drover.placement_git.IS_WINDOWS', _placement_patch_9), patch('drover.placement_host.IS_WINDOWS', _placement_patch_9), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_9), patch('drover.placement_process.IS_WINDOWS', _placement_patch_9), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_9), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_9), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_9), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
                 patch.object(subprocess, 'run', return_value=done), \
-                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
+                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_10, patch('drover.placement_proof._windows_cwd', _placement_patch_10), \
                 patch.object(placement, '_windows_processes',
                              side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
-                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]):
+                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]) as _placement_patch_11, patch('drover.placement_proof._windows_processes', _placement_patch_11):
             answer = serve(request)
         self.assertTrue(old.exists())
         row = next(r for r in answer['items'] if r['reason_code'] == 'process_visibility_unavailable' and r['action'] == 'report')

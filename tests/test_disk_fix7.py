@@ -48,8 +48,8 @@ class CachedIdentity(DiskCase):
                                      dict(rows=[cached], identities={'77': ['python.exe', baseline]}))
                 # PID reuse: stale foreign evidence must not hide the new unreadable process.
                 fresh = dict(pid=77, name='python.exe', same_user=None, cmd='', cwd=None)
-                with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', current]}), \
-                        patch.object(placement, '_cim_rows', return_value=[fresh]) as query:
+                with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', current]}) as _placement_patch_14, patch('drover.placement_proof._windows_processes', _placement_patch_14), \
+                        patch.object(placement, '_cim_rows', return_value=[fresh]) as query, patch('drover.placement_process._cim_rows', query), patch('drover.placement_proof._cim_rows', query):
                     for _ in range(2):
                         proof = placement.cleanup_processes(windows=True, request=request)
                         self.assertEqual(proof.busy(r'H:\candidate'), refresh)
@@ -60,10 +60,10 @@ class CachedIdentity(DiskCase):
         disk_state.save_file(self.state, 'processes-reused.json', dict(
             rows=[dict(pid=77, name='python.exe', same_user=False, cmd='', cwd=None)],
             identities={'77': ['python.exe', 10]}))
-        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}), \
-                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere'), \
+        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}) as _placement_patch_1, patch('drover.placement_proof._windows_processes', _placement_patch_1), \
+                patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2), \
                 patch.object(placement, '_cim_rows', return_value=[dict(
-                    pid=77, name='python.exe', same_user=True, cmd=r'H:\candidate\tool')]):
+                    pid=77, name='python.exe', same_user=True, cmd=r'H:\candidate\tool')]) as _placement_patch_3, patch('drover.placement_process._cim_rows', _placement_patch_3), patch('drover.placement_proof._cim_rows', _placement_patch_3):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertFalse(proof.busy(r'H:\unrelated'))
@@ -74,9 +74,9 @@ class CachedIdentity(DiskCase):
         disk_state.save_file(self.state, 'processes-argv.json', dict(
             rows=[dict(pid=77, name='python.exe', same_user=False, cwd=None, cmd='')],
             identities={'77': ['python.exe', 10]}))
-        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}), \
+        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}) as _placement_patch_4, patch('drover.placement_proof._windows_processes', _placement_patch_4), \
                 patch.object(placement, '_cim_rows', return_value=[dict(
-                    pid=77, name='python.exe', same_user=True, cwd=r'C:\elsewhere', cmd=None)]):
+                    pid=77, name='python.exe', same_user=True, cwd=r'C:\elsewhere', cmd=None)]) as _placement_patch_5, patch('drover.placement_process._cim_rows', _placement_patch_5), patch('drover.placement_proof._cim_rows', _placement_patch_5):
             self.assertTrue(placement.cleanup_processes(windows=True, request=request).busy(r'H:\candidate'))
 
 
@@ -85,8 +85,8 @@ class CachedIdentity(DiskCase):
         disk_state.save_file(self.state, 'processes-failed.json', dict(
             rows=[dict(pid=77, name='python.exe', same_user=False, cwd=None, cmd='')],
             identities={'77': ['python.exe', None]}))
-        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', None]}), \
-                patch.object(placement, '_cim_rows', side_effect=subprocess.TimeoutExpired('cim', 240)):
+        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', None]}) as _placement_patch_6, patch('drover.placement_proof._windows_processes', _placement_patch_6), \
+                patch.object(placement, '_cim_rows', side_effect=subprocess.TimeoutExpired('cim', 240)) as _placement_patch_7, patch('drover.placement_process._cim_rows', _placement_patch_7), patch('drover.placement_proof._cim_rows', _placement_patch_7):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([p['pid'] for p in proof.unreadable], [77])
@@ -97,16 +97,16 @@ class CachedIdentity(DiskCase):
         for side in ('windows', 'wsl'):
             for birth in (None, '', 'absent'):
                 with self.subTest(side=side, birth=birth), \
-                        patch.object(placement, 'cleanup_side', return_value=side), \
-                        patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side=side, birth=birth)):
+                        patch.object(placement, 'cleanup_side', return_value=side) as _placement_patch_16, patch('drover.placement_process.cleanup_side', _placement_patch_16), \
+                        patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side=side, birth=birth)) as _placement_patch_17, patch('drover.placement_process.cleanup_identity', _placement_patch_17), patch('drover.placement_proof.cleanup_identity', _placement_patch_17):
                     alive = placement.cleanup_claim_alive(dict(pid=77, side=side, birth=birth))
                     self.assertIsNot(alive, True)
 
 
     def test_missing_pid_and_other_side_cannot_confirm_a_process_identity(self):
         for side in ('windows', 'wsl'):
-            with patch.object(placement, 'cleanup_side', return_value=side), \
-                    patch.object(placement, 'cleanup_identity', return_value=dict(pid=None, side=side, birth='boot:10')):
+            with patch.object(placement, 'cleanup_side', return_value=side) as _placement_patch_10, patch('drover.placement_process.cleanup_side', _placement_patch_10), \
+                    patch.object(placement, 'cleanup_identity', return_value=dict(pid=None, side=side, birth='boot:10')) as _placement_patch_11, patch('drover.placement_process.cleanup_identity', _placement_patch_11), patch('drover.placement_proof.cleanup_identity', _placement_patch_11):
                 self.assertIsNone(placement.cleanup_claim_alive(dict(pid=None, side=side, birth='boot:10')))
                 other = 'wsl' if side == 'windows' else 'windows'
                 self.assertIsNone(placement.cleanup_claim_alive(dict(pid=77, side=other, birth='absent')))
@@ -124,14 +124,14 @@ class CachedIdentity(DiskCase):
             self.assertIsNone(placement.cleanup_claim_alive(dict(identity, birth='old:10')))
 
     def test_missing_run_identity_cannot_authorize_child_recovery(self):
-        with patch.object(placement, 'IS_WINDOWS', False), \
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_8, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_8), patch('drover.placement_git.IS_WINDOWS', _placement_patch_8), patch('drover.placement_host.IS_WINDOWS', _placement_patch_8), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_8), patch('drover.placement_process.IS_WINDOWS', _placement_patch_8), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_8), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_8), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_8), \
                 patch.object(Path, 'iterdir', side_effect=AssertionError('must not inspect an unidentified tree')):
             self.assertFalse(placement.stop_ci_children(dict(pid=77, run_id=None)))
 
 
     @unittest.skipIf(os.name == 'nt', 'proc identity')
     def test_legacy_birth_without_boot_identity_stays_unknown(self):
-        with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side='wsl', birth='boot:10')):
+        with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side='wsl', birth='boot:10')) as _placement_patch_9, patch('drover.placement_process.cleanup_identity', _placement_patch_9), patch('drover.placement_proof.cleanup_identity', _placement_patch_9):
             self.assertIsNone(placement.cleanup_claim_alive(dict(pid=77, side='wsl', birth='10')))
 
     @unittest.skipUnless(os.name == 'nt', 'native Windows CIM command')
@@ -143,8 +143,8 @@ class CachedIdentity(DiskCase):
             disk_state.save_file(self.state, 'processes-native.json', dict(
                 rows=[dict(pid=child.pid, name=name, same_user=False, cwd=None, cmd='')],
                 identities={str(child.pid): [name, 1]}))
-            with patch.object(placement, '_windows_processes', return_value={str(child.pid): [name, 2]}), \
-                    patch.object(placement, '_windows_cwd', return_value=str(self.root / 'elsewhere')):
+            with patch.object(placement, '_windows_processes', return_value={str(child.pid): [name, 2]}) as _placement_patch_12, patch('drover.placement_proof._windows_processes', _placement_patch_12), \
+                    patch.object(placement, '_windows_cwd', return_value=str(self.root / 'elsewhere')) as _placement_patch_13, patch('drover.placement_proof._windows_cwd', _placement_patch_13):
                 proof = placement.cleanup_processes(windows=True, request=request)
             self.assertTrue(proof.busy(str(self.root / 'candidate')))
             self.assertFalse(proof.busy(str(self.root / 'unrelated')))
@@ -255,7 +255,7 @@ class OwnProcesses(DiskCase):
                     disk_state.save_file(self.state, f'process-{side}-77.json',
                                          dict(identity=identity, cwd='/known' if side == 'wsl' else r'C:\known'))
                     request = dict(state_dir=str(self.state), paths={})
-                    with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side=side, birth=actual)):
+                    with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side=side, birth=actual)) as _placement_patch_21, patch('drover.placement_process.cleanup_identity', _placement_patch_21), patch('drover.placement_proof.cleanup_identity', _placement_patch_21):
                         if side == 'windows':
                             proof = placement.cleanup_processes(windows=True, request=request, cim=lambda: [dict(
                                 pid=77, name='python.exe', same_user=True, cwd=None, cmd='')])
@@ -284,10 +284,10 @@ class OwnProcesses(DiskCase):
                 disk_state.save_file(self.state, 'process-windows-77.json', dict(
                     identity=dict(pid=77, side='windows', birth='20'), cwd=r'C:\known'))
                 with patch.object(placement, '_windows_processes', return_value={
-                        '1': ['service.exe', 10], '77': ['python.exe', 20]}), \
-                        patch.object(placement, '_windows_cwd', return_value=None), \
+                        '1': ['service.exe', 10], '77': ['python.exe', 20]}) as _placement_patch_18, patch('drover.placement_proof._windows_processes', _placement_patch_18), \
+                        patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_19, patch('drover.placement_proof._windows_cwd', _placement_patch_19), \
                         patch.object(placement, '_cim_rows', return_value=[dict(
-                            pid=77, name='python.exe', same_user=True, cmd='', exe=r'C:\Python\python.exe')]):
+                            pid=77, name='python.exe', same_user=True, cmd='', exe=r'C:\Python\python.exe')]) as _placement_patch_20, patch('drover.placement_process._cim_rows', _placement_patch_20), patch('drover.placement_proof._cim_rows', _placement_patch_20):
                     proof = placement.cleanup_processes(windows=True, request=request)
                 self.assertFalse(proof.busy(r'H:\unrelated'))
                 self.assertTrue(proof.busy(r'C:\known'))

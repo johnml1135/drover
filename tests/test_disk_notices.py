@@ -176,7 +176,7 @@ class Notices(MemoryWorktreeCase):
         from drover import disk_cleanup, placement
         self.approve_report()
         rt = self.runtime()
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired(['powershell.exe'], 15)):
             answer = disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
                 rt.now, rt.read, rt.call, placement.disk_toast))

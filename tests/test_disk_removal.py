@@ -120,7 +120,7 @@ class Removal(MemoryCleanupCase):
         observations = self.evidence.observe(request)
         state = {'quarantine': {}}
         before = copy.deepcopy((request, observations, state))
-        with mock.patch.object(placement, 'cleanup_parts', side_effect=AssertionError('decision probed paths')):
+        with mock.patch.object(placement, 'cleanup_parts', side_effect=AssertionError('decision probed paths')) as _placement_patch_1, mock.patch('drover.placement_paths.cleanup_parts', _placement_patch_1):
             answer = decide(request, observations, state, self.now)
         self.assertEqual((request, observations, state), before)
         self.assertEqual(answer['events'][0]['kind'], 'quarantine_started')
@@ -175,7 +175,7 @@ class RemovalContracts(WorktreeCase):
         def git(repo, *args, **kw):
             calls.append(args)
             return real_git(repo, *args, **kw)
-        with mock.patch.object(placement, 'git', side_effect=git):
+        with mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_2, mock.patch('drover.placement_git.git', _placement_patch_2):
             self.cleanup(apply=True)
         listed = self.registrations()
         self.assertNotIn(str(native), listed)
@@ -214,7 +214,7 @@ class RemovalContracts(WorktreeCase):
                             elif change == 'status-error':
                                 return subprocess.CompletedProcess(['git'], 128, '', 'unavailable')
                     return real_git(repo, *args, **kw)
-                with mock.patch.object(placement, 'git', side_effect=git):
+                with mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_4, mock.patch('drover.placement_git.git', _placement_patch_4):
                     result = self.cleanup(apply=True)
                 self.assertGreaterEqual(len(status_calls), 2, 'must revalidate full status')
                 self.assertTrue(wt.exists(), change)
@@ -290,7 +290,7 @@ class RemovalContracts(WorktreeCase):
             calls.append(args)
             return real_git(repo, *args, **kwargs)
         with mock.patch.object(disk_state, 'append_manifest', side_effect=OSError('cannot sync journal')), \
-             mock.patch.object(placement, 'git', side_effect=git):
+             mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_3, mock.patch('drover.placement_git.git', _placement_patch_3):
             result = self.cleanup(apply=True)
         self.assertTrue(wt.exists(), result)
         self.assertIn('locked ' + self.side, self.registrations())

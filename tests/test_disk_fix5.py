@@ -91,7 +91,7 @@ class Startup(ProcessFreeDiskCase):
                        repos=[], tasks={}, drive=dict(path=str(self.root)), paths={})
         # Acquire the native lock before simulating the remote transport.
         with disk_state.CleanupLock(self.state), \
-                patch.object(placement, 'IS_WINDOWS', True), \
+                patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 patch.object(subprocess, 'run', side_effect=locally):
             result = placement.cleanup_call('wsl', request)
         self.assertEqual(len(observed), 2)
@@ -214,7 +214,7 @@ class Startup(ProcessFreeDiskCase):
                     return subprocess.CompletedProcess(argv, 0 if absent else 1, '', '')
                 request = dict(stage=1, apply=False, now=self.now, state_dir=str(self.state),
                                repos=[], tasks={}, drive=dict(path=str(self.root)), paths={})
-                with patch.object(placement, 'IS_WINDOWS', True), \
+                with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                         patch.object(subprocess, 'run', side_effect=execute):
                     if absent:
                         with disk_state.CleanupLock(self.state):
@@ -269,7 +269,7 @@ class UserScope(ProcessFreeDiskCase):
             done.stdout = json.dumps(dict(sid='invoker', processes=rows))
             with self.subTest(same_user=same_user), \
                     patch.object(subprocess, 'run', return_value=done) as query, \
-                    patch.object(placement, '_windows_cwd', return_value=None):
+                    patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2):
                 proof = placement.cleanup_processes(windows=True)
             self.assertIn('OpenProcessToken', query.call_args.args[0][-1])  # one batched pass, owners from tokens
             self.assertTrue(proof.busy(r'H:\candidate'))

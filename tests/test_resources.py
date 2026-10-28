@@ -103,7 +103,7 @@ class Windows(unittest.TestCase):
         from types import SimpleNamespace
         tracker = config.validate({'trackers': [{'kind': 'disk', 'name': 'physical', 'path': 'R:/'}]})
         tracker['trackers'] = [t for t in tracker['trackers'] if t['name'] == 'physical']
-        with mock.patch.object(placement, 'IS_WINDOWS', True), \
+        with mock.patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, mock.patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), mock.patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 mock.patch.object(disk.shutil, 'disk_usage', return_value=SimpleNamespace(free=10 * resources.GB)) as usage:
             rows = disk.read(tracker)
         usage.assert_called_once_with(placement.to_windows_path('R:/'))

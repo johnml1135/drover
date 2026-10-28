@@ -147,13 +147,13 @@ class WorktreeTests(LandingCase):
                     return subprocess.CompletedProcess(args, 129, '', "error: unknown option `relative-paths'")
             return real(repo, *args, **kw)
 
-        with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=False), patch.object(placement, 'routes_through_wsl', return_value=False):
+        with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=False) as _placement_patch_1, patch('drover.placement_exec.is_linux_native', _placement_patch_1), patch('drover.placement_host.is_linux_native', _placement_patch_1), patch('drover.placement_paths.is_linux_native', _placement_patch_1), patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_2, patch('drover.placement_git.routes_through_wsl', _placement_patch_2), patch('drover.placement_paths.routes_through_wsl', _placement_patch_2):
             with self.assertRaisesRegex(ci.CIError, 'both Windows and WSL: update git'):
                 landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 1)
         self.assertFalse(self.work.exists())
         calls.clear()
-        with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=True), patch.object(placement, 'routes_through_wsl', return_value=False):
+        with patch.object(landing, 'git', git), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_3, patch('drover.placement_exec.is_linux_native', _placement_patch_3), patch('drover.placement_host.is_linux_native', _placement_patch_3), patch('drover.placement_paths.is_linux_native', _placement_patch_3), patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_4, patch('drover.placement_git.routes_through_wsl', _placement_patch_4), patch('drover.placement_paths.routes_through_wsl', _placement_patch_4):
             landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 2)
         for args in calls:

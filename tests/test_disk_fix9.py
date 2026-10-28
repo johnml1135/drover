@@ -18,8 +18,8 @@ class Processes(DiskCase):
         for before, after in ((None, None), (20, None)):
             with self.subTest(before=before, after=after), \
                     patch.object(placement, '_windows_processes', side_effect=[
-                        {'77': ['foreign.exe', before]}, {'77': ['foreign.exe', after]}]), \
-                    patch.object(placement, '_cim_rows', return_value=[row]):
+                        {'77': ['foreign.exe', before]}, {'77': ['foreign.exe', after]}]) as _placement_patch_1, patch('drover.placement_proof._windows_processes', _placement_patch_1), \
+                    patch.object(placement, '_cim_rows', return_value=[row]) as _placement_patch_2, patch('drover.placement_process._cim_rows', _placement_patch_2), patch('drover.placement_proof._cim_rows', _placement_patch_2):
                 proof = placement.cleanup_processes(windows=True, request=request)
             self.assertTrue(proof.busy(r'H:\unrelated'))
             self.assertEqual(proof.reason, 'process visibility unavailable')
@@ -34,7 +34,7 @@ class Processes(DiskCase):
             (r'''tool.exe H:\repo\a\"b\input''', r'H:\repo'),
         ]
         for command, root in cases:
-            with self.subTest(command=command), patch.object(placement, 'IS_WINDOWS', True):
+            with self.subTest(command=command), patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3):
                 proof = placement.cleanup_processes(windows=True, cim=lambda: [dict(
                     pid=77, name='foreign.exe', same_user=False, cwd=None, cmd=command)])
                 self.assertTrue(proof.busy(root))
@@ -98,7 +98,7 @@ class DefaultBranchPolicy(DiskCase):
                 patch.object(placement, 'reachable', return_value=True),
                 patch.object(placement, 'cleanup_contains', return_value=True),
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)),
-                patch.object(placement, 'git', side_effect=self.git),
+                patch.object(placement, 'git', side_effect=self.git), patch('drover.placement_git.git', side_effect=self.git),
                 patch.object(disk_worktrees, 'entries', return_value=[self.entry])):
             context.start()
             self.addCleanup(context.stop)

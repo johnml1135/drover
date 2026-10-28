@@ -11,7 +11,7 @@ from tests.disk_fixture import DiskCase
 class Windows(DiskCase):
     def plan(self, apply=False):
         from drover import placement
-        with patch.object(placement, 'IS_WINDOWS', True):
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
             return placement.disk_schedule_plan(self.cfg, apply=apply)
 
     def test_current_user_15min_and_daily_argv(self):
@@ -58,7 +58,7 @@ class Windows(DiskCase):
         def runner(argv, **kwargs):
             commands.append(list(argv))
             return subprocess.CompletedProcess(argv, 0, '', '')
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
             before = set(self.root.rglob('*'))
             plan = disk_schedule.install(self.cfg, dry_run=True, runner=runner)
@@ -89,7 +89,7 @@ class Windows(DiskCase):
         seeded = dict(temp_roots=[str(self.temp_root)], report_roots=[], caches=[
             dict(path=str(self.root / 'detected cache'), placement='windows', max_age_days=30)])
         runner = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', '')
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                 patch.object(placement, 'detected_cleanup_policy', return_value=seeded):
             before = target.read_bytes()
             plan = disk_schedule.install(self.cfg, dry_run=True, runner=runner)

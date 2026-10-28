@@ -90,7 +90,7 @@ class CancellationSafety(ProcessFreeDiskCase):
             drained.append(True)
             return True
         request = fix2.PathSafety.request(self, 2)
-        with patch.object(placement, 'IS_WINDOWS', True), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 patch.object(subprocess, 'run', side_effect=KeyboardInterrupt), \
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
                     terminate=terminate, close=lambda: None)):
@@ -236,9 +236,9 @@ class LinuxIdentitySafety(ProcessFreeDiskCase):
             return PureWindowsPath(value)
         request = fix2.PathSafety.request(self, 2)
         request['drive']['path'] = '/data'
-        with patch.object(placement, 'IS_WINDOWS', False), \
+        with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}), \
-                patch.object(placement, 'Path', side_effect=windows_path):
+                patch.object(placement, 'Path', side_effect=windows_path) as _placement_patch_3, patch('drover.placement_git.Path', _placement_patch_3), patch('drover.placement_host.Path', _placement_patch_3), patch('drover.placement_paths.Path', _placement_patch_3), patch('drover.placement_process.Path', _placement_patch_3), patch('drover.placement_proof.Path', _placement_patch_3):
             self.assertTrue(placement.cleanup_contains(request, '/data/candidate'))
             self.assertFalse(placement.cleanup_contains(request, '/Data/candidate'))
 
@@ -310,7 +310,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                             # Real path detectors produce facts at the adapter boundary.
                             # Unknown config parsing fails closed in-process; native grammar
                             # is checked by the real deletion contract.
-                            with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')):
+                            with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')) as _placement_patch_6, patch('drover.placement_git.git', _placement_patch_6):
                                 excluded = disk_paths.repository_tree(candidate / 'generated', boundary=candidate)
                             observation['excluded'] = [str(folder)] if excluded else []
                             observation['checks'].update(other_drive=kind == 'mount', busy=kind == 'live')
@@ -348,7 +348,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                                 patch.object(placement, 'cleanup_free', return_value=80), \
                                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
                                 patch.object(placement, 'trim_argv', return_value=None), \
-                                patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')):
+                                patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')) as _placement_patch_5, patch('drover.placement_git.git', _placement_patch_5):
                             first = serve(request)
                             request['now'] += 4 * 86400
                             request['tasks']['at'] = request['now']
@@ -393,6 +393,6 @@ class RepositorySafety(ProcessFreeDiskCase):
                     valuable = self.file(root / 'unpublished')
                     self.age(root, 40 * 86400)
                     self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
-                    with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')):
+                    with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')) as _placement_patch_4, patch('drover.placement_git.git', _placement_patch_4):
                         result = self.execute(self.request(stage))
                     self.assertTrue(valuable.exists(), result)

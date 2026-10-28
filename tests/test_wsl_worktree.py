@@ -15,7 +15,7 @@ class AddOnExt4(unittest.TestCase):
         def run(repo, *args, check=False, **kw):
             calls.append((repo, args, kw))
             return subprocess.CompletedProcess(args, 0, "", "")
-        with patch.object(placement, "IS_WINDOWS", nt):
+        with patch.object(placement, "IS_WINDOWS", nt) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
             placement.add_worktree("H:\\repos\\acme", dest, "-b", "drover/T1", dest, "main", run=run)
         return calls
 
@@ -56,7 +56,7 @@ class ListingSide(unittest.TestCase):
             seen.append(kw.get('side'))
             out = wsl if kw.get('side') == 'wsl' else native
             return subprocess.CompletedProcess(args, 127 if out is None else 0, out or '', '')
-        with patch.object(placement, 'IS_WINDOWS', True), patch.object(pipeline, 'git', fake), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), patch.object(pipeline, 'git', fake), \
                 patch.object(placement, 'reachable', side_effect=reachable):
             pipe = pipeline.Pipeline.__new__(pipeline.Pipeline)
             pipe.repository = pipeline.Repository()
@@ -103,7 +103,7 @@ class ListingSide(unittest.TestCase):
             seen.append(kw.get('side'))
             out = 'worktree /home/dev/work/a\0locked wsl\0\0'
             return subprocess.CompletedProcess(args, 0, out, '')
-        with patch.object(placement, 'git', fake):
+        with patch.object(placement, 'git', fake) as _placement_patch_3, patch('drover.placement_git.git', _placement_patch_3):
             placement.unlock_worktree('H:\\repos\\a', '/home/dev/work/a')
         self.assertEqual(seen, ['wsl', 'wsl'])
 
@@ -114,11 +114,11 @@ class CleanupCoversBothRoots(unittest.TestCase):
         from drover import disk_paths
         machine = {"name": "a", "worktrees": "H:\\repos\\a.worktrees"}
         self.assertEqual(len(disk_paths.worktree_roots(machine)), 2)
-        with patch.object(placement, "IS_WINDOWS", False), \
+        with patch.object(placement, "IS_WINDOWS", False) as _placement_patch_4, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_4), patch('drover.placement_git.IS_WINDOWS', _placement_patch_4), patch('drover.placement_host.IS_WINDOWS', _placement_patch_4), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_4), patch('drover.placement_process.IS_WINDOWS', _placement_patch_4), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_4), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_4), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_4), \
                 patch.object(placement, "wsl_worktrees_root", return_value="/home/dev/work"):
             mine = disk_paths.worktree_roots(machine, this_side=True)
         self.assertEqual(mine[-1], Path("/home/dev/work/a.worktrees"))         # WSL scans ext4 as well
-        with patch.object(placement, "IS_WINDOWS", True):
+        with patch.object(placement, "IS_WINDOWS", True) as _placement_patch_5, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_5), patch('drover.placement_git.IS_WINDOWS', _placement_patch_5), patch('drover.placement_host.IS_WINDOWS', _placement_patch_5), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_5), patch('drover.placement_process.IS_WINDOWS', _placement_patch_5), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_5), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_5), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_5):
             self.assertEqual(disk_paths.worktree_roots({"name": "a"}, this_side=True), [])    # Windows leaves ext4 to WSL
         self.assertEqual(disk_paths.worktree_roots({"worktrees": "H:\\x"}), [Path(placement.native("H:\\x"))])
 
