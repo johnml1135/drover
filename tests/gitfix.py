@@ -9,7 +9,6 @@ import tempfile
 import threading
 from pathlib import Path
 
-
 def clean_parent():
     """A temp parent with no `.git` at or above it (a stray /tmp/.git must not turn fixtures into repo content)."""
     for base in (tempfile.gettempdir(), '/dev/shm', '/var/tmp'):
@@ -18,7 +17,6 @@ def clean_parent():
             return str(path)
     raise RuntimeError('no temp directory without a `.git` at or above it (tried the system temp dir, /dev/shm, /var/tmp); '
                        'set DROVER_TEST_TMPDIR to a clean directory')
-
 
 def sh(*args, cwd=None, check=True, text=True, input=None):
     command = [str(a) for a in args]
@@ -86,10 +84,8 @@ def _template(ignore):
                 sh('git', '-C', repo, 'add', name)
                 sh('git', '-C', repo, 'commit', '-q', '-m', name)
             sh('git', '-C', repo, 'push', '-q', 'origin', 'HEAD:main')
-            sh('git', '-C', repo, 'fetch', '-q', 'origin')
             _templates[ignore] = root
         return _templates[ignore]
-
 
 class Repo:
     """A bare `remote.git` and a clone `repo` with one pushed base commit on main.
@@ -104,7 +100,11 @@ class Repo:
         self.remote, self.repo = self.root / 'remote.git', self.root / 'repo'
         shutil.copytree(template / 'remote.git', self.remote)
         shutil.copytree(template / 'repo', self.repo)
-        self.git('config', 'remote.origin.url', self.remote.resolve().as_uri())
+        cfg = self.repo / '.git' / 'config'
+        old, text = (template / 'remote.git').resolve().as_uri(), cfg.read_text(encoding='utf-8')
+        if text.count(old) != 1:
+            raise AssertionError('fixture origin URL missing or ambiguous')
+        cfg.write_text(text.replace(old, self.remote.resolve().as_uri()), encoding='utf-8')
 
     def cleanup(self):
         self.tmp.cleanup()

@@ -34,6 +34,8 @@ SHARD_SIZE = 12             # tests per shard
 HEAVY = {'tests.test_pipeline', 'tests.test_landing', 'tests.test_replans', 'tests.test_garden', 'tests.test_hub_runtime',
          'tests.test_waiting_consumers', 'tests.test_platforms', 'tests.test_waiting_characterization',
          'tests.test_replan_batches', 'tests.test_ci', 'tests.test_repo_entry'}  # before any timing exists
+SHARD_LIMITS = {'tests.test_hub_runtime': 8, 'tests.test_deploy_hub': 7, 'tests.test_garden_branch': 4,
+                'tests.test_disk_worktree_add': 2, 'tests.test_garden': 2, 'tests.test_dispatch_repos': 6}
 LIST_IDS = '''
 import sys, unittest
 from tests.tiers import enabled, select
@@ -49,17 +51,14 @@ def default_jobs():
     except (KeyError, ValueError):
         return max(1, min(MAX_JOBS, (os.cpu_count() or 1) - 2))
 
-
 def modules():
     return sorted(f'tests.{p.stem}' for p in (ROOT / 'tests').glob('test_*.py'))
-
 
 def load_timings():
     try:
         return json.loads(TIMINGS.read_text())
     except (OSError, ValueError):
         return {}
-
 
 def counts(output):
     ran = re.search(r'^Ran (\d+) tests? in', output, re.M)
@@ -137,10 +136,11 @@ def main(argv=None):
     jobs = []
     for name in chosen:
         ids = None
-        if args.jobs > 1 and (timings.get(name, 0) > SHARD_ABOVE_S or (name not in timings and name in HEAVY)):
+        if args.jobs > 1 and (name in SHARD_LIMITS or timings.get(name, 0) > SHARD_ABOVE_S or (name not in timings and name in HEAVY)):
             ids = test_ids(name, env)
-        if ids and len(ids) > SHARD_SIZE:
-            count = -(-len(ids) // SHARD_SIZE)
+        limit = SHARD_LIMITS.get(name, SHARD_SIZE)
+        if ids and len(ids) > limit:
+            count = -(-len(ids) // limit)
             size = -(-len(ids) // count)
             jobs += [(name, ids[i:i + size]) for i in range(0, len(ids), size)]
         else:

@@ -26,7 +26,6 @@ class WorktreeCase(DiskCase):
         self.r.commit('.drover/config.toml', config.dumps({
             'schema_version': 1, 'cleanup': {'disposable': ['generated']}}))
         self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
         self.register(self.r, 'alpha', self.trees)
 
     def register(self, repo, name, trees):
@@ -57,7 +56,6 @@ class WorktreeCase(DiskCase):
         if squash:
             self.r.git('commit', '-q', '-m', 'squashed work')
         self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
 
     def cleanup(self, *, apply=False, mode='on-demand'):
         return self.run_cleanup(apply=apply, mode=mode, real=True)

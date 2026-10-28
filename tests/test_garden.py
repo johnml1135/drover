@@ -33,7 +33,6 @@ class GardenCase(WorktreeCase):
 
     def land(self, branch):
         self.r.git('push', '-q', 'origin', f'{branch}:main')
-        self.r.git('fetch', '-q', 'origin')
 
 
 class ClassifyTests(GardenCase):
@@ -51,7 +50,6 @@ class ClassifyTests(GardenCase):
         self.r.git('push', '-q', 'origin', 'HEAD:main')
         sh('git', '-C', self.r.repo, 'cherry-pick', 'rb', check=False)
         self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
         self.assertEqual(self.r.git('cherry', 'origin/main', 'rb').count('+'), 0)
         self.assertEqual(self.names(self.propose()['removable']), ['rb'])
 
@@ -62,7 +60,6 @@ class ClassifyTests(GardenCase):
         self.r.git('merge', '--squash', 'sq')
         self.r.git('commit', '-q', '-m', 'squash')
         self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
         self.assertEqual(self.names(self.propose()['removable']), ['sq'])
 
 

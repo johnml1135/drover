@@ -14,13 +14,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
-
+from functools import lru_cache
 from hub.runtime import ReleaseError, prepare_release, check_eligibility, check_recovery, child_command
+from hub.runtime import _blob_digests
 from tests.gitfix import sh, _remove_tree
 
-
 INSTANCE = '10000000-0000-4000-8000-000000000001'
-
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
@@ -60,6 +59,7 @@ def setUpModule():
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch('hub.runtime._blob_digests', lru_cache()(_blob_digests)))
         self.temp = tempfile.TemporaryDirectory(prefix='Runtime spaces ')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

@@ -151,11 +151,11 @@ class AccessTests(unittest.TestCase):
         self.assertIn('read checkout HEAD', b)
 
 
-from tests.test_pipeline import Base, result, done
-from unittest.mock import patch
+from tests.rcw_fixture import PipelineBase
+from tests.test_pipeline import result, done
 
 
-class WorkerAccessTests(Base):
+class WorkerAccessTests(PipelineBase):
     def test_read_task_has_no_task_worktree_and_does_not_commit_or_gate(self):
         tid = self.task(kind='research')
         with patch.object(self.pipe, 'worktree', side_effect=AssertionError('must not create worktree')):

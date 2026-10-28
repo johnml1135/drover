@@ -3,6 +3,7 @@ service operations are injected so no test stops anything."""
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -63,7 +64,6 @@ class CrossSideAdd(unittest.TestCase):
 
     def add(self, local, windows):
         calls, exe = [], []
-        from unittest import mock
         with self.posix_paths(), \
                 mock.patch.object(deploy_hub, 'git', lambda repo, *a, **k: calls.append((str(repo), a))), \
                 mock.patch.object(deploy_hub.subprocess, 'run',
@@ -85,7 +85,6 @@ class CrossSideAdd(unittest.TestCase):
                                     'H:\\repos\\x.deploy', 'abc']])
 
     def test_no_windows_git_and_old_local_git_is_refused(self):
-        from unittest import mock
         with self.posix_paths(), mock.patch.object(deploy_hub, 'git'):
             with self.assertRaises(deploy_hub.DeployError):
                 deploy_hub.add_deploy_worktree('/mnt/h/x', '/mnt/h/x.d', 'abc', self.versions('2.53.0', None))
@@ -118,35 +117,36 @@ class CrossSideAdd(unittest.TestCase):
 
 
 class DeployTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.template = tempfile.TemporaryDirectory(dir=clean_parent())
+        cls.addClassCleanup(cls.template.cleanup)
+        src = Path(cls.template.name) / 'src'
+        src.mkdir()
+        sh('git', 'init', '-b', 'main', cwd=src)
+        sh('git', 'config', 'user.email', 't@t', cwd=src)
+        sh('git', 'config', 'user.name', 't', cwd=src)
+        for name in ('a', 'b', 'c'):
+            if name == 'c':
+                sh('git', 'branch', 'side', cls.c1, cwd=src)
+                sh('git', 'checkout', '-q', '-b', 'topic', cwd=src)
+            (src / name).write_text(name)
+            sh('git', 'add', name, cwd=src)
+            sh('git', 'commit', '-m', name, cwd=src)
+            setattr(cls, {'a': 'c1', 'b': 'c2', 'c': 'off'}[name], sh('git', 'rev-parse', 'HEAD', cwd=src).stdout.strip())
+        sh('git', 'checkout', '-q', 'main', cwd=src)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=clean_parent())
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.src, self.dep = root / 'src', root / 'src.deploy'
-        self.src.mkdir()
-        sh('git', 'init', '-b', 'main', cwd=self.src)
-        sh('git', 'config', 'user.email', 't@t', cwd=self.src)
-        sh('git', 'config', 'user.name', 't', cwd=self.src)
-        self.c1 = self.commit('a')
-        self.c2 = self.commit('b')
-        sh('git', 'branch', 'side', self.c1, cwd=self.src)
-        sh('git', 'checkout', '-q', '-b', 'topic', cwd=self.src)
-        self.off = self.commit('c')          # on topic only, not on main
-        sh('git', 'checkout', '-q', 'main', cwd=self.src)
+        shutil.copytree(Path(self.template.name) / 'src', self.src)
         self.receipt = root / 'receipt.json'
-
-    def commit(self, name):
-        (self.src / name).write_text(name)
-        sh('git', 'add', name, cwd=self.src)
-        sh('git', 'commit', '-m', name, cwd=self.src)
-        return sh('git', 'rev-parse', 'HEAD', cwd=self.src).stdout.strip()
-
     def write_receipt(self, sha, passed=True):
         self.receipt.write_text(json.dumps({'sha': sha, 'passed': passed}))
-
     def head(self):
         return sh('git', 'rev-parse', 'HEAD', cwd=self.dep).stdout.strip()
-
     def run_main(self, *argv, fake=None):
         fake = fake or Fake()
         fake.src = self.src

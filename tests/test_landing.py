@@ -73,7 +73,6 @@ class LandingCase(unittest.TestCase):
         script = str(self.script).replace("'", "''")
         self.r.commit('.drover/scripts/check.ps1', f"& '{exe}' '{script}'\nexit $LASTEXITCODE\n")
         self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
         self.prog = repos.normalize({'name': 'p', 'repo': str(self.r.repo),
                                      'scripts': {'test': '.drover/scripts/check.ps1'}, 'gate': {'docs_only': False}})
         self.ci = self.make_ci(self.r.root / 'receipts')

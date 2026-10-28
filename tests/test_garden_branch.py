@@ -39,7 +39,6 @@ class TestDeleteBranch(Base):
     def test_merged_branch_is_deleted_without_a_rescue(self):
         self.r.branch("done", {"d.txt": "d\n"})
         self.r.git("push", "-q", "origin", "done:main")
-        self.r.git("fetch", "-q", "origin")
         res = self.run_del("done")
         self.assertTrue(res["ok"], res)
         self.assertFalse(self.exists("done"))
@@ -54,7 +53,6 @@ class TestDeleteBranch(Base):
         self.r.commit("s.txt", "s\n", cwd=wt, msg="same: s.txt")  # same patch, different commit
         self.r.git("push", "-q", "origin", "other:main")
         self.r.git("worktree", "remove", "--force", wt)
-        self.r.git("fetch", "-q", "origin")
         self.assertTrue(self.run_del("same")["ok"])
         self.assertFalse(self.exists("same"))
 

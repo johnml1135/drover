@@ -19,7 +19,7 @@ def only(conn, *names):
         dispatch_repos.clear(conn)
 
 
-class Filter(tp.Base):
+class Filter(tp.PolicyBase):
     def setUp(self):
         super().setUp()
         self.pipe._repos["q"] = self.prog                     # a second repo; the tests filter between "p" and "q"
