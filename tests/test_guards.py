@@ -22,7 +22,6 @@ INTEGRATION_CEILING = 93  # pinned today; owner target is INTEGRATION_TARGET
 OVER = {
     "drover/notifications/core.py": 984,
     "drover/notifications/roles.py": 557,
-    "drover/tasktypes/schema.py": 882,
     "hub/reload_protocol.py": 571,
     "hub/runtime.py": 612,
     "tests/test_decide.py": 638,
