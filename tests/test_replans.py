@@ -291,9 +291,15 @@ class PlannerDispatchCase(PipelineBase):
     def setUp(self):
         super().setUp()
         # Publish the same configured repos to ledger access validation as to Pipeline.
-        self.repo_registry = patch('drover.repos.load_all', return_value=self.pipe.all_repos())
-        self.repo_registry.start()
-        self.addCleanup(self.repo_registry.stop)
+        self.repo_registries = (
+            patch('drover.repos.load_all', side_effect=self.pipe.all_repos),
+            patch('drover.repos.registered_names', side_effect=lambda: set(self.pipe.all_repos())),
+            patch('drover.repos.load_named',
+                  side_effect=lambda name: self.pipe.all_repos().get(str(name).lower())),
+        )
+        for registry in self.repo_registries:
+            registry.start()
+            self.addCleanup(registry.stop)
         # Model the launcher's public adoption protocol with the same process handles.
         self.fl.adopt = lambda spec, started=None: self.fl.handles[spec['run_id']]
 

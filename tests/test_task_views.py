@@ -81,7 +81,11 @@ class StateTests(unittest.TestCase):
 class ContextApiTests(api_tests.HubCase):
     def test_kind_access_description_branch_and_connections(self):
         b = self.task()
-        with patch('drover.repos.load_all', return_value={'p': {'default_branch': 'main'}}):
+        configured = {'p': {'default_branch': 'main'}}
+        with (patch('drover.repos.load_all', return_value=configured),
+              patch('drover.repos.registered_names', return_value=set(configured)),
+              patch('drover.repos.load_named',
+                    side_effect=lambda name: configured.get(str(name).lower()))):
             response = self.post('/tasks', dict(title='Research', repo='p', kind='research',
                                                description='**Why**', branch='topic', read_access=['p@main'],
                                                deps=[dict(depends_on=b, kind='waits-for')], related=[b]))
@@ -110,7 +114,11 @@ class ContextApiTests(api_tests.HubCase):
 
 class ContextUiTests(ui_tests.UiTests):
     def test_full_form_title_edit_preserves_unknown_repo_read_access(self):
-        with patch('drover.repos.load_all', return_value={}):
+        configured = {}
+        with (patch('drover.repos.load_all', return_value=configured),
+              patch('drover.repos.registered_names', return_value=set(configured)),
+              patch('drover.repos.load_named',
+                    side_effect=lambda name: configured.get(str(name).lower()))):
             task = self.st.create_task('Original title', repo='unconfigured', description='Keep this description')
             tid = task['id']
             page = self.c.get('/tasks/' + tid)
