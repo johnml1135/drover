@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from drover import config, repos
-from tests.gitfix import Repo
+from tests.gitfix import Repo, clean_parent
 
 PROCESS_IGNORE = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
                   'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
@@ -115,7 +115,7 @@ class Policy(unittest.TestCase):
             'schema_version': 1, 'cleanup': {'disposable': ['*.log', '**/obj', 'literal path']}}))
         self.assertEqual(repos.cleanup_config(repos.load(self.machine, revision))['disposable'],
                          ['*.log', '**/obj', 'literal path'])
-        entry = dict(path=str(self.fix.root / 'cache'), placement='wsl')
+        entry = dict(path=os.path.join(clean_parent(), self.fix.root.name, 'cache'), placement='wsl')
         cfg = config.validate({'disk_cleanup': {'caches': [entry]}})
         self.assertEqual(cfg['disk_cleanup']['caches'][0], dict(entry, max_age_days=30))
         for extra in ({'max_age_days': 0}, {'max_age_days': True}, {'max_age_days': float('inf')},
