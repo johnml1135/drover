@@ -121,6 +121,29 @@ def ci_policy(prog):
     return {**prog["gate"], "base": prog["default_branch"]}
 
 
+def _registration_inventory(directory=None):
+    """{lowercase name: (raw registration, path)} without resolving effective policy."""
+    out = {}
+    for path in sorted(Path(directory or repos_dir()).glob("*.toml")):
+        raw = read_machine(path)
+        out[str(raw.get("name") or path.stem).lower()] = (raw, path)
+    return out
+
+
+def registered_names(directory=None):
+    """Registered repo names, without loading effective policies or caching results."""
+    return set(_registration_inventory(directory))
+
+
+def load_named(name, directory=None):
+    """Load one registered repo's effective policy, or return None when it is unknown."""
+    registration = _registration_inventory(directory).get(str(name).lower())
+    if registration is None:
+        return None
+    raw, path = registration
+    return load({**raw, "name": raw.get("name") or path.stem}, machine_path=path)
+
+
 def load_all(directory=None):
     """{lowercase name: repo} for every *.toml in the repos directory."""
     out = {}

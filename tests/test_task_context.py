@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from drover import repos, task_context
 from drover.ledger import connect, migrate, ops, schema_version
 from drover.ledger.schema import MIGRATIONS
 
@@ -46,13 +47,51 @@ class TaskContextTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.task(kind='oops')
 
-    @patch('drover.repos.load_all', return_value={'p': {'default_branch': 'trunk'}})
-    def test_read_access_validation(self, _):
-        self.assertEqual(self.task()['read_access'], ['p@trunk'])
-        self.assertEqual(self.task(read_access=['p', 'p@topic/x'])['read_access'], ['p', 'p@topic/x'])
-        for entries in (['missing'], ['p@../secret'], ['p@-bad'], ['p@'], 'p', [3]):
-            with self.subTest(entries=entries), self.assertRaises(ValueError):
-                self.task(read_access=entries)
+    def test_read_access_validation_avoids_unrelated_policy_loads(self):
+        registrations = Path(self.tmp.name) / 'repos'
+        registrations.mkdir()
+        (registrations / 'p.toml').write_text('name = "p"\nrepo = "/p"\n')
+        (registrations / 'slow.toml').write_text('name = "slow"\nrepo = "/slow"\n')
+        loaded = []
+
+        def load_policy(machine, **_):
+            loaded.append(machine['name'])
+            if machine['name'] == 'slow':
+                raise RuntimeError('unrelated policy loader should not run')
+            return {'default_branch': 'trunk'}
+
+        with (patch('drover.repos.repos_dir', return_value=registrations),
+              patch('drover.repos._registration_inventory', wraps=repos._registration_inventory) as inventory,
+              patch('drover.repos.load', side_effect=load_policy) as load,
+              patch('drover.repos.load_all', side_effect=AssertionError('global loading is forbidden'))):
+            self.assertEqual(task_context.read_access([], 'p'), [])
+            inventory.assert_not_called()
+
+            self.assertEqual(self.task()['read_access'], ['p@trunk'])
+            self.assertEqual(task_context.read_access(['p', 'p@topic/x'], 'p'),
+                             ['p', 'p@topic/x'])
+            self.assertEqual(self.task(read_access=['p', 'p@topic/x'])['read_access'],
+                             ['p', 'p@topic/x'])
+            load.assert_called_once()
+            self.assertEqual(loaded, ['p'])
+
+            self.assertEqual(task_context.read_access(None, 'p'), ['p@trunk'])
+            self.assertEqual(loaded, ['p', 'p'])
+            self.assertEqual(task_context.read_access(None, 'missing'), ['missing@main'])
+            self.assertEqual(loaded, ['p', 'p'])
+
+            invalid = (
+                (['missing'], "unknown read repo 'missing'"),
+                (['p@../secret'], "invalid read branch '../secret'"),
+                (['p@-bad'], "invalid read branch '-bad'"),
+                (['p@'], "invalid read branch ''"),
+                ('p', 'read_access must be a list'),
+                ([3], 'read_access entries must be repo or repo@branch'),
+            )
+            for entries, error in invalid:
+                with self.subTest(entries=entries), self.assertRaises(ValueError) as raised:
+                    task_context.read_access(entries, 'p')
+                self.assertEqual(str(raised.exception), error)
 
     def test_connections_are_symmetric_and_atomic(self):
         a, b, c = [self.task(s)['id'] for s in ('a', 'b', 'c')]

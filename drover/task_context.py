@@ -156,12 +156,15 @@ def split_read(entry):
 
 
 def read_access(entries, repo, configured=None):
-    configured = repos.load_all() if configured is None else configured
     if entries is None:
-        default = configured.get(str(repo).lower(), {}).get('default_branch', 'main')
+        selected = repos.load_named(str(repo)) if configured is None else configured.get(str(repo).lower())
+        default = (selected or {}).get('default_branch', 'main')
         return [f'{repo}@{default}']
     if not isinstance(entries, (list, tuple)):
         raise ValueError('read_access must be a list')
+    if not entries:
+        return []
+    configured = repos.registered_names() if configured is None else configured
     out = []
     for entry in entries:
         name, _ = split_read(entry)
