@@ -23,7 +23,6 @@ OVER = {
     "drover/ci.py": 579,
     "drover/config.py": 1046,
     "drover/disk_cleanup.py": 559,
-    "drover/dispatcher.py": 1579,
     "drover/importer.py": 632,
     "drover/landing.py": 766,
     "drover/launch.py": 787,
