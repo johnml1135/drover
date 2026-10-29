@@ -106,6 +106,12 @@ class LandingOwnerWakeTests(unittest.TestCase):
         self.now += 1800
         self.assertEqual(self.service.wake_landing_questions(), [])
         self.assertEqual(self.service.owner_attention(), [])
+        self.conn.close()
+        self.open_ledger()
+        self.now += 1800
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.assertEqual(self.service.owner_attention(), [])
+        self.assertEqual(ops.events(self.conn, kind='notification.landing-owner-wake'), [])
 
     def test_keep_holding_retracts_an_existing_wake(self):
         qid = self.question(base=True)
@@ -115,6 +121,12 @@ class LandingOwnerWakeTests(unittest.TestCase):
         self.assertEqual(self.service.owner_attention(), [])
         self.now += 1800
         self.assertEqual(self.service.wake_landing_questions(), [])
+        self.conn.close()
+        self.open_ledger()
+        self.now += 1800
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.assertEqual(self.service.owner_attention(), [])
+        self.assertEqual(len(ops.events(self.conn, kind='notification.landing-owner-wake')), 1)
 
     def test_new_question_has_its_own_deadline_and_identity(self):
         first = self.question()

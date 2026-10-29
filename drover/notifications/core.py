@@ -168,7 +168,7 @@ class Notifications(OwnershipMixin, ReplayMixin):
         rather than session state or an old question-asked notification intent.
         """
         from ..ledger import states
-        from ..ledger.waiting import Waiting
+        from ..ledger.waiting import OPEN, Waiting
         waiting = Waiting(self.conn)
         landing_ids = {r[0] for r in self.conn.execute(
             "SELECT json_extract(data,'$.question') FROM task_events WHERE kind='question-asked' AND actor='landing'")}
@@ -181,11 +181,10 @@ class Notifications(OwnershipMixin, ReplayMixin):
                     (task := ops.get_task(self.conn, key))['status'] not in states.TERMINAL and not task['archived'])
                        for kind, key in question['subjects']):
                 continue
-            if question['cause']:
-                cause = self.conn.execute('SELECT state,accepted_event FROM wait_causes WHERE cause=?',
-                                          (question['cause'],)).fetchone()
-                if cause['state'] != 'open' or cause['accepted_event'] is not None:
-                    continue  # Keep holding is an answer even though it reopens the question.
+            if question['cause'] and waiting.state(question['cause']) != OPEN:
+                continue
+            # Keep holding is an owner action even though Waiting reopens the
+            # question. Consult its answer history without reading Waiting tables.
             if self.conn.execute("SELECT 1 FROM task_events WHERE kind IN ('question-answered','question-superseded') "
                                  "AND json_extract(data,'$.question')=? LIMIT 1", (question['id'],)).fetchone():
                 continue
