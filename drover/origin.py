@@ -1,28 +1,16 @@
 """Sync local main with its remote and keep its checkout consistent."""
 import subprocess
 from pathlib import Path
-
 from . import placement
-
 FETCH_TIMEOUT_S = 120
-
-
 class SyncError(ValueError):
     pass
-
-
 class FetchFailed(SyncError):
     pass
-
-
 class DirtyCheckout(SyncError):
     pass
-
-
 class MainMoved(SyncError):
     pass
-
-
 def git(repo, *args, check=True, timeout=None):
     try:
         r = placement.git(repo, *args, timeout=timeout)
@@ -32,7 +20,6 @@ def git(repo, *args, check=True, timeout=None):
         # Git's stderr can contain a credential-bearing remote URL.
         raise SyncError(f'git {args[0]} failed')
     return r
-
 
 def fast_forward(repo, main, new, old, *, run=git):
     """Advance a branch through its clean checkout, or CAS its ref when unchecked out."""
@@ -78,6 +65,19 @@ def sync(repo, remote='origin', main='main', *, run=git, timeout=FETCH_TIMEOUT_S
     except MainMoved as e:
         raise SyncError(f'{main} moved during origin sync; retry') from e
     return upstream
+
+
+def observe(repo, remote, main, stopped, moved, tracking, interval):
+    """Poll remote main without changing local refs or a checkout."""
+    while not stopped.is_set():
+        result = git(repo, 'ls-remote', '--heads', remote, f'refs/heads/{main}', check=False, timeout=FETCH_TIMEOUT_S)
+        fields = result.stdout.split()
+        if (result.returncode == 0 and len(fields) == 2 and fields[1] == f'refs/heads/{main}'
+                and tracking and fields[0] != tracking):
+            moved.set()
+            return
+        if stopped.wait(interval):
+            return
 
 
 def ahead(repo, remote='origin', main='main'):

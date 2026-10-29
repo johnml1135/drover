@@ -1,8 +1,7 @@
 """Checks and full CI: repo scripts on exact commits, supervised by the runner.
-
 CI.prepare produces a runner spec for asynchronous checks. CI.run starts or adopts
 full CI and waits for its result. Planning, docs classification, output and verdicts
-are shared by both. No command or output format is inferred from a repository.
+are shared by both. Targeted diagnostics require the repository script contract.
 """
 import argparse
 import datetime
@@ -15,7 +14,6 @@ import sys
 import time
 import uuid
 from pathlib import Path
-
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from drover import placement, repos, runner, contract
@@ -27,39 +25,24 @@ else:
     from .ledger import ci as slots, ops
     from .ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
                             _glob_hit, docs_only, status_problems, read_result, _tail)
-
-
 GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
-
-
 class CIError(RuntimeError):
     pass
-
-
 class CIInfrastructure(CIError):
     """A terminal infrastructure failure, carrying its structured CI outcome."""
     def __init__(self, detail):
         self.detail = detail
         super().__init__(detail.get('reason') or '\n'.join(detail.get('log_tail', [])))
-
-
 class CIInterrupted(CIError):
     """Supervision failed before termination was confirmed; resume before changing the checkout."""
-
-
 class CIDeferred(CIInterrupted):
     """No execution issued: retain the prepared request until resources recover."""
-
-
 def git_environment(base=None):
     """Environment that keeps Git noninteractive even when a machine has an interactive credential helper."""
     env = os.environ.copy() if base is None else dict(base)
     env.update(GIT_PROMPT_ENV)
     return env
-
-
 # ---- git ------------------------------------------------------------------------------------------------
-
 def git(repo, *args, check=True):
     try:
         result = placement.git(repo, *args, env=git_environment(), timeout=60)
@@ -68,33 +51,22 @@ def git(repo, *args, check=True):
     if check and result.returncode:
         raise CIError(f'git {" ".join(args)}: {result.stderr.strip()}')
     return result
-
-
 def head(repo):
     return git(repo, 'rev-parse', 'HEAD').stdout.strip()
-
-
 def dirty(repo, *, post_run=False):
     """Tracked edits, plus bounded untracked discovery before testing or verifying a commit."""
     tracked = git(repo, *placement.status_args(repo)).stdout.strip()
     if tracked or post_run:
         return tracked
     return git(repo, 'ls-files', '--others', '--exclude-standard', '--directory', '--no-empty-directory').stdout.strip()
-
-
 def contains(repo, base_ref, sha):
     base = git(repo, 'rev-parse', '--verify', '--quiet', base_ref + '^{commit}', check=False).stdout.strip()
     if not base:
         return None, False
     return base, git(repo, 'merge-base', '--is-ancestor', base, sha, check=False).returncode == 0
-
-
 # ---- changed paths and documentation guards ---------------------------------------------------------------
-
 def changed_paths(repo, base, tip='HEAD'):
     return [p for p in git(repo, '-c', 'core.quotepath=false', 'diff', '--name-only', '--no-renames', '-z', f'{base}...{tip}').stdout.split('\0') if p]
-
-
 def changed_docs_only(repo, base, tip, globs):
     """docs_only for `base...tip`, and false when any changed path is or was a symlink (git mode 120000)."""
     paths = changed_paths(repo, base, tip)
@@ -130,7 +102,7 @@ class CI:
         self.resource_check = resource_check  # admission probe; None means resources.check, tests inject one
         self._resumed = {}
 
-    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2', force_full=False):
+    def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2', force_full=False, module=None, tier=None):
         """Plan a repo script at commit and return its runner spec and CI context."""
         source = self.source
         (source.prepare_worktree if source else placement.prepare_worktree)(checkout)
@@ -139,7 +111,7 @@ class CI:
         platform = platform or repos.gate_platforms(prog)[0]
         base = base or policy['base']
         paths = (source.changed_paths if source else changed_paths)(checkout, base, commit)
-        docs = not force_full and policy['docs_only'] and (source.changed_docs_only if source else changed_docs_only)(
+        docs = not (force_full or module) and policy['docs_only'] and (source.changed_docs_only if source else changed_docs_only)(
             checkout, base, commit, policy['docs_only_globs'])
         effective = 'docs' if docs else kind
         commands = []
@@ -148,7 +120,16 @@ class CI:
         if not docs or repos.has_script(prog, 'docs'):
             commands.append(repos.script_argv(prog, 'docs' if docs else 'test', platform))
         cfg = repos.run_config(prog)
-        cfg['env'] = {**cfg['env'], **GIT_PROMPT_ENV, 'DROVER_CI_KIND': effective,
+        if module:
+            script = Path(placement.native(checkout)) / prog['scripts']['test']
+            try:
+                supported = 'DROVER_CI_DIAGNOSTIC_V1' in script.read_text(encoding='utf-8')
+            except (OSError, UnicodeError):
+                supported = False
+            if not re.fullmatch(r'tests\.test_[A-Za-z0-9_]+', module) or tier not in ('default', 'integration') or not supported:
+                raise CIInfrastructure(dict(reason='base test script lacks a valid module diagnostic selector', platform=platform))
+        cfg['env'] = {**cfg['env'], **GIT_PROMPT_ENV, 'DROVER_CI_MODULE': module or '', 'DROVER_CI_TIER': tier or '',
+                      'DROVER_CI_KIND': effective,
                       'DROVER_CHANGED_FILES': json.dumps(paths)}
         d = runner.run_dir(self.runs_dir, run_id)
         d.mkdir(parents=True, exist_ok=True)
@@ -183,7 +164,7 @@ class CI:
                       and execution.get('returncode') == 0)
         code = (receipt or {}).get('exit_code')
         infra = timed_out or not receipt or receipt.get('status') == contract.CI_REFUSED \
-            or not (isinstance(code, int) and code >= 0) \
+            or bool(receipt and receipt.get('infra')) or not (isinstance(code, int) and code >= 0) \
             or bool(receipt and receipt.get('passed') and (abnormal or execution.get('returncode') != 0))
         lines = []
         if timed_out:
@@ -228,12 +209,13 @@ class CI:
                 key = request.stem.removeprefix('ci-')
                 result = self.run(prog, checkout, saved['commit'], kind=saved['kind'],
                                   platforms=saved['platforms'], base=saved['base'], conn=conn,
-                                  priority=saved.get('priority', 'P1'), force_full=saved.get('force_full', False))
+                                  priority=saved.get('priority', 'P1'), force_full=saved.get('force_full', False),
+                                  module=saved.get('module'), tier=saved.get('tier'))
                 self._resumed[str(checkout)] = (key, result)
                 if result.get('infra') and not terminal_outcomes:
                     raise CIInfrastructure(result)
 
-    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None, force_full=False):
+    def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None, force_full=False, module=None, tier=None):
         """Run placements WSL first in the shared checkout, or adopt a saved runner after a hub restart.
 
         Queued tickets can expire; a possibly-issued execution pins its acquired
@@ -244,6 +226,8 @@ class CI:
         prog = repos.load(prog, commit, checkout)
         platforms = platforms or repos.gate_platforms(prog)
         key = hashlib.sha256(json.dumps([str(checkout), commit, kind, platforms, base]).encode()).hexdigest()[:24]
+        if module:
+            key += '-' + hashlib.sha256(json.dumps([module, tier]).encode()).hexdigest()[:12]
         if force_full:
             key += '-full'
         if priority != 'P1':
@@ -254,7 +238,7 @@ class CI:
             return cached[1]
         saved = read_result(request) or {'index': 0, 'results': [], 'checkout': str(checkout),
                                         'commit': commit, 'kind': kind, 'platforms': platforms, 'base': base, 'priority': priority,
-                                        'order': repos.gate_order(platforms), 'force_full': force_full}
+                                        'order': repos.gate_order(platforms), 'force_full': force_full, 'module': module, 'tier': tier}
         from .launch import AdmissionHeld
         from .port import DirectPort
         from . import disk
@@ -279,7 +263,8 @@ class CI:
             if context is None:
                 guard()
                 context = self.prepare(prog, checkout, commit, 'ci-' + uuid.uuid4().hex, kind=kind, platform=order[i], base=base,
-                                       priority=priority, **({'force_full': True} if force_full else {}))
+                                       priority=priority, **({'force_full': True} if force_full else {}),
+                                       **({'module': module, 'tier': tier} if module else {}))
                 saved['context'] = context
                 saved['execution'] = 'prepared'
                 runner.write_json_atomic(request, saved)
@@ -433,7 +418,7 @@ class CI:
             request.unlink(missing_ok=True)
             return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
                     'platform': spec['placement'], 'run_id': spec['run_id'],
-                    'reason': 'timeout' if execution.get('status') == 'timeout' else 'infrastructure',
+                    'reason': 'timeout' if execution.get('status') == 'timeout' else (receipt or {}).get('reason', 'infrastructure'),
                     'log_tail': evaluated['excerpt'].splitlines(), 'receipt': receipt}
         saved['results'].append(receipt)
         saved['index'] = i + 1
@@ -476,6 +461,21 @@ def _execute(plan):
                    exit_code=steps[-1]['exit_code'], tree_unchanged=unchanged, passed=passed,
                    status=contract.CI_PASSED if passed else contract.CI_FAILED,
                    log=plan['log'], log_tail=_tail(plan['log']))
+    if not passed:
+        try:
+            failures, uncertainty = set(), None
+            with open(plan['log'], encoding='utf-8', errors='replace') as stream:
+                for line in stream:
+                    if m := re.fullmatch(r'DROVER_CI_FAILURE (default|integration) (tests\.test_[A-Za-z0-9_]+)\s*', line):
+                        failures.add(m.groups())
+                    if m := re.search(r'\bCIInterrupted: (termination-uncertain: [^\r\n]+)', line):
+                        uncertainty = m.group(1)
+            if len(failures) == 1:
+                receipt['tier'], receipt['module'] = failures.pop()
+            if uncertainty:
+                receipt.update(status='infra', infra=True, reason=uncertainty)
+        except OSError:
+            pass
     runner.write_json_atomic(Path(plan['out']), receipt)
     return 0 if passed else 1
 

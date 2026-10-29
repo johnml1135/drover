@@ -1,12 +1,9 @@
 # Drover design
-
 Drover coordinates coding workers from an owner's plan to checked commits.
 The hub owns scheduling, durable state, approval and the website.
 Workers execute bounded tasks in isolated worktrees.
 This document defines the system's contracts; the glossary defines its terms.
-
 ## Ownership and placement
-
 Windows is the home of the hub and the durable ledger.
 WSL is a worker pool for Linux tools and workloads.
 The dispatcher runs inside the hub process.
@@ -16,7 +13,6 @@ The optional WSL-facing HTTP listener and bearer token are disabled by default.
 The watchdog starts WSL when queued work needs it.
 WSL restarts affect its workers without taking down the owner website.
 See ADRs 0001 and 0002 for the ownership and placement rationale.
-
 ## Durable state
 
 The default state directory is `%USERPROFILE%\.drover` on Windows.
@@ -158,6 +154,10 @@ Check and CI actions use the same fixed PowerShell invocation on both platforms.
 The scripts receive `DROVER_CHANGED_FILES`, a JSON string array, and `DROVER_CI_KIND`:
 `checks` for task checks, `full` for merge CI, or `docs` for documentation-only checks.
 Scoping and test policy belong entirely to the repo script.
+Scripts that support targeted diagnosis declare `DROVER_CI_DIAGNOSTIC_V1` and accept
+`DROVER_CI_MODULE` and `DROVER_CI_TIER` to run exactly one named module and tier.
+Failed modules are reported as `DROVER_CI_FAILURE <tier> <module>` lines.
+Without one identified module or a selector on the exact base, diagnosis stops as infrastructure; it never runs the full base suite.
 Results keep the process exit code and output tail for owner review and triage.
 Review verdicts also identify the exact reviewed SHA.
 Merge groups exist only to share CI time across disjoint tasks.

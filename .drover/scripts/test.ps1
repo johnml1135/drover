@@ -1,9 +1,8 @@
 $ErrorActionPreference = 'Stop'
 # Task checks precheck changed integration modules, then run the complete default tier; full runs both complete, disjoint tiers.
-
+# DROVER_CI_DIAGNOSTIC_V1: DROVER_CI_MODULE and DROVER_CI_TIER select exactly one module and tier.
 function Test-ProcessEnvironmentVariablePresent {
     param([string]$Name)
-
     $variables = [Environment]::GetEnvironmentVariables('Process')
     if ($IsWindows) {
         foreach ($variableName in $variables.Keys) {
@@ -13,34 +12,27 @@ function Test-ProcessEnvironmentVariablePresent {
         }
         return $false
     }
-
     return $variables.Contains($Name)
 }
-
 $originalProjectEnvironment = [Environment]::GetEnvironmentVariable('UV_PROJECT_ENVIRONMENT', 'Process')
 $originalTestJobs = [Environment]::GetEnvironmentVariable('DROVER_TEST_JOBS', 'Process')
 $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
 $originalProjectEnvironmentPresent = Test-ProcessEnvironmentVariablePresent 'UV_PROJECT_ENVIRONMENT'
 $originalTestJobsPresent = Test-ProcessEnvironmentVariablePresent 'DROVER_TEST_JOBS'
 $originalPathPresent = Test-ProcessEnvironmentVariablePresent 'PATH'
-
 function Get-ChangedTestModules {
     param([string]$Json)
-
     if ([string]::IsNullOrWhiteSpace($Json)) {
         return [pscustomobject]@{ IsValid = $false; Modules = @() }
     }
-
     try {
         $changedFiles = ConvertFrom-Json -InputObject $Json -NoEnumerate -ErrorAction Stop
     } catch {
         return [pscustomobject]@{ IsValid = $false; Modules = @() }
     }
-
     if ($changedFiles -isnot [System.Array]) {
         return [pscustomobject]@{ IsValid = $false; Modules = @() }
     }
-
     $modules = [System.Collections.Generic.List[string]]::new()
     foreach ($filePath in $changedFiles) {
         if ($filePath -isnot [string] -or [string]::IsNullOrEmpty($filePath) -or
@@ -49,12 +41,10 @@ function Get-ChangedTestModules {
             $filePath -match '(^|/)\.{1,2}(/|$)' -or $filePath -match '(^/|/$|//)') {
             return [pscustomobject]@{ IsValid = $false; Modules = @() }
         }
-
         if ($filePath -cmatch '^tests/test_.*\.py$') {
             if ($filePath -cnotmatch '^tests/test_[A-Za-z0-9_]*\.py$') {
                 return [pscustomobject]@{ IsValid = $false; Modules = @() }
             }
-
             $modulePath = Join-Path $repositoryRoot $filePath
             if (Test-Path -LiteralPath $modulePath -PathType Leaf) {
                 $moduleName = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($filePath)
@@ -150,6 +140,16 @@ if ($ciKind -ceq 'checks') {
 }
 
 $uvInvocations = [System.Collections.Generic.List[object]]::new()
+$diagnosticModule = [Environment]::GetEnvironmentVariable('DROVER_CI_MODULE', 'Process')
+$diagnosticTier = [Environment]::GetEnvironmentVariable('DROVER_CI_TIER', 'Process')
+if ($diagnosticModule -or $diagnosticTier) {
+    if ($diagnosticModule -cnotmatch '^tests\.test_[A-Za-z0-9_]+$' -or $diagnosticTier -cnotin @('default', 'integration')) {
+        throw 'Invalid CI diagnostic module or tier.'
+    }
+    $uvInvocations.Add([string[]](@($uvArguments) + @('--tier', $diagnosticTier, $diagnosticModule)))
+    $runIntegration = $false
+    $runDefault = $false
+}
 if ($runIntegration) {
     $integrationArguments = @($uvArguments) + @('--tier', 'integration')
     $integrationArguments += $changedTestModules

@@ -1,5 +1,4 @@
 """The dispatcher inside the hub (ADR 0002): a thread with DirectPort on its own ledger connection.
-
 A file lock held for the thread's life keeps a second dispatcher (another hub, `python -m drover.dispatcher`) out.
 """
 from drover import placement
@@ -7,8 +6,7 @@ import json
 import logging
 import threading
 from pathlib import Path
-
-from drover import ci, contract, disk, dispatch_repos, landing, repos
+from drover import ci, contract, disk, dispatch_repos, landing, origin, repos
 from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
 from drover.ledger import ops, landing as landing_storage
@@ -136,16 +134,18 @@ class LandingService:
         if disk.admission(disk.read())['verdict'] == 'hold':
             return {'outcome': contract.HOLD}
         size = 1 if land["policy"] == "single" else None
-        def gate(checkout, commit, tasks, *, platform=None, signature=None):
+        def gate(checkout, commit, tasks, *, platform=None, signature=None, module=None, tier=None):
             ops.set_setting(conn, "landing_batch", json.dumps({"status": "landing", "tasks": [
                 {"id": t["id"], "title": t["title"]} for t in tasks]}))
-            return self.ci.run(prog, checkout, commit, base=base_ref, conn=conn, control_epoch=epoch,
-                               platforms=[platform] if platform else None,
+            if not tasks and not module:
+                raise ci.CIInfrastructure(dict(reason='failed CI did not identify one diagnostic module', platform=platform))
+            return self.ci.run(prog, checkout, commit, base=commit if module else base_ref, conn=conn, control_epoch=epoch,
+                               platforms=[platform] if platform else None, module=module, tier=tier,
                                force_full=bool(platform) or any(t.get('base_repair') for t in tasks))
         try:
             r = landing.run_batch(conn, repo, gate, remote=repos.remote_name(prog),
                                   branch=base_ref, size=size, repo_name=name, workdir=work, push=push, control_epoch=epoch,
-                                  required_platforms=repos.gate_platforms(prog))
+                                  required_platforms=repos.gate_platforms(prog), observe=origin.observe)
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)

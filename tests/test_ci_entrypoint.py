@@ -1,5 +1,4 @@
 """Behavioral contract tests for the PowerShell CI test entrypoint."""
-
 import json
 import os
 import shutil
@@ -8,14 +7,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-
+from unittest.mock import patch
 from tests.tiers import integration
-
-
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINT = ROOT / '.drover' / 'scripts' / 'test.ps1'
 RESULT_PREFIX = 'DROVER_ENTRYPOINT_RESULT:'
-
 
 def _is_supported_platform():
     if os.name == 'nt':
@@ -216,6 +212,10 @@ exit $scriptExitCode
                 self.assertEqual([call['argv'] for call in calls], [
                     self._runner_args('integration'), self._runner_args('default')])
                 self.assertTrue(state['restored'])
+        with patch.dict(os.environ, {'DROVER_CI_MODULE': 'tests.test_ci', 'DROVER_CI_TIER': 'integration'}):
+            result, calls, _ = self._run_entrypoint(kind='full')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call['argv'] for call in calls], [self._runner_args('integration', ['tests.test_ci'])])
 
     def test_checks_without_changed_test_modules_run_the_complete_default_tier(self):
         result, calls, state = self._run_entrypoint(changed_files='["src/changed.py"]')

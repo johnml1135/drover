@@ -4,26 +4,19 @@ import inspect
 import json
 import re
 import time
-
 from . import ci, origin
 from .ledger import ops, states, landing as storage
 from .ledger.db import tx
 from .landing_batch import git, reviewed_tasks, build_tip, _gate, RETRY, KEEP_HOLDING, FETCH_TIMEOUT_S
-
-
 def _control_guard(conn, epoch=None):
     from .port import DirectPort
     return DirectPort(conn).require_admission(epoch)['epoch']
-
-
 def _controlled_git(conn, epoch):
     def run(repo, *args, **kwargs):
         if args and args[0] in ('merge', 'update-ref', 'push'):
             _control_guard(conn, epoch)
         return git(repo, *args, **kwargs)
     return run
-
-
 def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch=None):
     """Advance local main and its checkout, with a receipt and an explicit ancestry check."""
     control_epoch = _control_guard(conn, control_epoch)
@@ -88,7 +81,9 @@ def base_status(conn, repo, work, gate_fn, base_sha, result, repo_key, failure=N
     failure = failure or {}
     platform = failure.get('platform')
     signature = _failure_signature(failure)
-    known = storage.base_status(conn, repo_key, base_sha, platform, signature)
+    module, tier = failure.get('module'), failure.get('tier')
+    identity = json.dumps([signature, module, tier]) if module else signature
+    known = storage.base_status(conn, repo_key, base_sha, platform, identity)
     if known:
         return known
     tip, _, _ = build_tip(repo, work, base_sha, [])
@@ -96,11 +91,16 @@ def base_status(conn, repo, work, gate_fn, base_sha, result, repo_key, failure=N
     contextual = 'platform' in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
     def diagnose(work, tip, tasks):
         if contextual and platform:
-            return gate_fn(work, tip, tasks, platform=platform, signature=signature)
+            kwargs = {'platform': platform, 'signature': signature}
+            if module and ('module' in params or any(p.kind == p.VAR_KEYWORD for p in params.values())):
+                kwargs['module'] = module
+                if 'tier' in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                    kwargs['tier'] = tier
+            return gate_fn(work, tip, tasks, **kwargs)
         return gate_fn(work, tip, tasks)
     _, red = _gate(diagnose, work, tip, [], result)
     status = 'red' if red else 'green'
-    storage.record_base(conn, repo_key, base_sha, status, platform, signature)
+    storage.record_base(conn, repo_key, base_sha, status, platform, identity)
     if not contextual and platform:
         storage.record_base(conn, repo_key, base_sha, status)
     return status
@@ -117,7 +117,7 @@ def base_red(conn, result, base_sha, tasks, repo_key):
                  data={'repo': repo_key, 'sha': base_sha, 'mode': 'blocked'})
     qid = waiting.ask(
         cause, 'epic', _epic(conn, 'Landing'), 'The base branch is red: landing is held',
-        f'The full gate fails on the base commit {base_sha[:12]} itself, so no task was blamed and '
+        f'The diagnostic fails on the base commit {base_sha[:12]} itself, so no task was blamed and '
         f'{len(tasks)} reviewed task(s) are waiting. Fix the base, then choose Retry landing.',
         options=[{'label': RETRY, 'description': 'gate the base again and resume landing', 'recommended': True},
                  {'label': KEEP_HOLDING, 'description': 'stay held'}], allow_text=False)
@@ -262,7 +262,7 @@ def _infra_failure(conn, keys, tasks, result, detail):
         if count >= 2 and not saved.get('question'):
             reason = 'Landing infrastructure recovery exhausted: ' + detail.get('reason', 'infrastructure failure')
             qid = ops.ask_question(conn, 'task', tasks[0]['id'], 'Landing needs a healthy host',
-                                   reason + '\n' + detail.get('log_excerpt', ''),
+                                   reason + '\nTasks: ' + ', '.join(saved['tasks']) + '\n' + detail.get('log_excerpt', ''),
                                    options=[{'label': 'Acknowledged'}], actor='landing')
             saved['question'] = qid
             waiting = Waiting(conn, 'landing')

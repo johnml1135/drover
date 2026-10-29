@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Run Drover's unittest modules in parallel worker processes and aggregate the result.
-
     python3 scripts/test.py                       # default tier, two cores left free, at most 16 workers (DROVER_TEST_JOBS overrides)
     python3 scripts/test.py --tier integration    # integration contracts only (sets DROVER_TESTS=integration)
     python3 scripts/test.py -j 4 tests.test_ci    # chosen modules, 4 workers
@@ -181,6 +180,7 @@ def main(argv=None):
 
     failed = [r for r in results if r['code'] != 0]
     for r in failed:
+        print(f"DROVER_CI_FAILURE {args.tier} {r['module']}")
         print(f"\n===== {r['module']} (exit {r['code']}) =====\n{r['output']}")
     if args.durations:
         for r in sorted(results, key=lambda r: -r['seconds']):

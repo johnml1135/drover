@@ -1,22 +1,9 @@
-"""Landing batches: form, gate the tip, attribute red, land fast-forward only, keep velocity. Software only.
-
-A batch is 1..policy `landing_batch_size` reviewed tasks whose diffs share no file. Their commits are replayed in
-a scratch worktree on a fresh base and the full gate runs once on the tip. On red: one owning task is dropped and
-the rest regated; ambiguous failures go to one `batch_culprit` decision; below tau (or on fallback) we bisect.
-"""
-import hashlib
-import inspect
-import json
-import re
-import statistics
-import subprocess
+"""Form and gate merge groups, attribute failures, and land by fast-forward."""
 import time
-from pathlib import Path, PureWindowsPath
-
-from . import config, ci, placement, origin
+import threading
+from pathlib import Path
+from . import ci, placement, origin
 from .ledger import ops, states, landing as storage
-from .ledger.db import tx
-
 from .landing_batch import (
     MIN_SIZE, MAX_SIZE, default_size, BATCHING_OFF_MEDIAN_S, MIN_GATES_FOR_OFF, VERDICT,
     RETRY, KEEP_HOLDING, PRIORITY_ORDER, FETCH_TIMEOUT_S, git, policy_batch_size, velocity,
@@ -29,18 +16,14 @@ from .landing_control import (
     base_status, base_red, _dirty_wait, sync_main, designate_base_repair, _base_repair,
     _block_repair, _recovery_key, _clear_recovery, _infra_failure, _queue_stop, _recovery_stop, INFRA_BACKOFF_S,
 )
-
-
 def __getattr__(name):   # DEFAULT_SIZE stays importable; it follows the active config
     if name == 'DEFAULT_SIZE':
         return default_size()
     raise AttributeError(name)
-
-
-def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', size=None, repo_name=None,
+ORIGIN_OBSERVE_INTERVAL_S = 120
+def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
-
     The hub supplies a stable per-repo workdir and calls CI.resume before rebuilding it.
     CIInterrupted preserves that checkout and checkpoint for the next service pass.
     push=False lands on the local branch only: the base is the local branch (so one batch builds on the last) and
@@ -84,7 +67,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     interrupted = False
     work = Path(workdir)
     try:
-        _drive(conn, repo, work, gate_fn, tasks, result, branch, remote, branch, decider, push, repo_name)
+        _drive(conn, repo, work, gate_fn, tasks, result, branch, remote, branch, decider, push, repo_name, observe)
     except ci.CIDeferred as error:
         interrupted = True
         result.update(outcome='queued', reason=str(error))
@@ -94,7 +77,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
         result.update(outcome='held', reason=str(error))
     except BaseException as e:
         interrupted = isinstance(e, ci.CIInterrupted)
-        result['outcome'], result['error'] = 'error', repr(e)
+        result['outcome'], result['error'] = ('infra-uncertain' if interrupted else 'error'), repr(e)
         result.setdefault('detail', _failure_detail({'reason': str(e)}))
         storage.record_batch(conn, result)
         raise
@@ -112,9 +95,7 @@ def run_batch(conn, repo, gate_fn, *, workdir, remote='origin', branch='main', s
     _clear_recovery(conn, recovery_keys if result['outcome'] == 'landed' else (), [*result['landed'], *result['dropped']])
     storage.record_batch(conn, result)
     return result
-
-
-def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None):
+def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None, observe=None):
     stale_retries = 0
     while tasks:
         _control_guard(conn, result.get('control_epoch'))
@@ -127,7 +108,29 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             result['outcome'] = 'conflict'
             return
         _control_guard(conn, result.get('control_epoch'))
-        receipt, red = _gate(gate_fn, work, tip, tasks, result)
+        stopped, moved = threading.Event(), threading.Event()
+        if observe:
+            tracking = git(repo, 'rev-parse', '--verify', f'refs/remotes/{remote}/{branch}', check=False).stdout.strip()
+            watcher = threading.Thread(target=observe, args=(repo, remote, branch, stopped, moved, tracking,
+                                                            ORIGIN_OBSERVE_INTERVAL_S),
+                                       daemon=True, name='landing-origin-observer')
+            watcher.start()
+        try:
+            receipt, red = _gate(gate_fn, work, tip, tasks, result)
+        finally:
+            stopped.set()
+            if observe:
+                watcher.join(FETCH_TIMEOUT_S + 1)
+        if red and observe:
+            if moved.is_set():
+                result['outcome'] = 'stale-base'
+                return
+            if synced := sync_main(conn, repo, remote, branch, repo_name, control_epoch=result.get('control_epoch')):
+                result.update(synced)
+                return
+            if git(repo, 'rev-parse', base_ref).stdout.strip() != base_sha:
+                result['outcome'] = 'stale-base'
+                return
         if not red:
             if result.get('required_platforms') is not None:
                 certified = {r.get('platform') for r in receipt.get('results', [receipt])
@@ -158,8 +161,6 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         requeue(conn, culprit, failures, how)
         tasks = [t for t in tasks if t['id'] != culprit]
     result['outcome'] = 'red'
-
-
 def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=False, repo_name=None):
     result['tip'] = tip
     for t in tasks:
@@ -200,7 +201,5 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
             result['alert'] = str(e)
             ops.ask_question(conn, 'epic', _epic(conn, 'Landing'), 'Push main failed', str(e),
                              options=[{'label': 'Acknowledged'}], actor='landing')
-
-
 def land_sha(conn, task_id):
     return storage.land_sha(conn, task_id)
