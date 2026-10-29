@@ -86,7 +86,9 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
         render = getattr(request.state, "render_ms", None)
         response.headers["Server-Timing"] = f'total;dur={duration:.2f}, git;desc="{counts["spawns"]} spawns"' + (f", render;dur={render:.2f}" if render is not None else "")
         body = getattr(response, "body_iterator", None)
-        if body is None or response.media_type == "text/event-stream":
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            return response  # a long-lived stream is not a slow request
+        if body is None:
             app.state.perf.record(route, request.method, duration, counts["spawns"])
             return response
         async def timed_body():  # perf covers the time to send the body, not only to build it

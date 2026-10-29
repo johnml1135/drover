@@ -129,13 +129,14 @@ class WebPerfTests(unittest.TestCase):
             self.app.state.bus.publish('unrelated', {})
             self.app.state.bus.publish(kind, data)
             self.assertIsNone(view._repo_at, kind)
-            self.assertIsNotNone(view._repo_cache, kind)  # the last good copy is kept
-            view.ui_repos()
-            view._repo_pending.result(5)
+            self.assertIsNotNone(view._repo_cache, kind)
+            before = len(self.spawns)
+            view.ui_repos()      # a change event: waits for a fresh load
+            self.assertEqual(len(self.spawns), before + 6, kind)
         self.spawns.clear()
         repos.load_all()
         self.assertEqual(len(self.spawns), 6)
-    def test_expired_or_invalidated_repo_cache_serves_old_data_and_refreshes_once(self):
+    def test_expired_repo_cache_serves_old_data_and_refreshes_once(self):
         view = self.app.state.ui_view
         old = view.ui_repos()
         self.spawns.clear()
@@ -145,32 +146,65 @@ class WebPerfTests(unittest.TestCase):
             release.wait(5)
             return {'new': {}}
         self.addCleanup(release.set)
+        view._repo_at = -1000  # TTL expired
         with patch('hub.store_ui.repos.load_all', side_effect=slow_load) as load:
-            view.invalidate_repos()
-            self.assertIs(view.ui_repos(), old)          # stale data, no wait
+            self.assertIs(view.ui_repos(), old)          # old data, no wait
             self.assertTrue(started.wait(5))
-            view.invalidate_repos()
             self.assertIs(view.ui_repos(), old)          # refresh already running: not started twice
             self.assertIs(view.ui_repos(), old)
             self.assertEqual(load.call_count, 1)
             release.set()
             view._repo_pending.result(5)
         self.assertEqual(self.spawns, [])
-        self.assertIsNone(view._repo_at)                 # invalidated mid-load: next call refreshes again
-        with patch('hub.store_ui.repos.load_all', return_value={'newer': {}}):
-            view.ui_repos()
-            view._repo_pending.result(5)
-        self.assertEqual(view.ui_repos(), {'newer': {}})
-    def test_failed_background_refresh_keeps_last_good_repos(self):
+        self.assertEqual(view.ui_repos(), {'new': {}})
+    def test_invalidation_waits_for_fresh_load_and_discards_inflight_one(self):
+        view = self.app.state.ui_view
+        view.ui_repos()
+        release, started = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def old_load():
+            started.set()
+            release.wait(5)
+            return {'before-change': {}}
+        view._repo_at = -1000
+        with patch('hub.store_ui.repos.load_all', side_effect=old_load):
+            view.ui_repos()                              # background load of pre-change data
+            self.assertTrue(started.wait(5))
+            view.invalidate_repos()
+            result = {}
+            with patch('hub.store_ui.repos.load_all', return_value={'after-change': {}}):
+                thread = threading.Thread(target=lambda: result.update(v=view.ui_repos()))
+                thread.start()
+                thread.join(0.3)
+                self.assertTrue(thread.is_alive())       # the request waits instead of serving stale data
+                release.set()
+                thread.join(5)
+        self.assertEqual(result['v'], {'after-change': {}})
+        self.assertEqual(view.ui_repos(), {'after-change': {}})
+    def test_failed_refresh_keeps_last_good_repos_and_backs_off(self):
         view = self.app.state.ui_view
         old = view.ui_repos()
         view.invalidate_repos()
-        with patch('hub.store_ui.repos.load_all', side_effect=OSError('git down')), \
-             self.assertLogs('hub', level=logging.ERROR):
+        with patch('hub.store_ui.repos.load_all', side_effect=OSError('git down')) as load, \
+             self.assertLogs('hub', level=logging.ERROR) as logs:
             self.assertIs(view.ui_repos(), old)
-            with self.assertRaises(OSError):
-                view._repo_pending.result(5)
-        self.assertIs(view.ui_repos(), old)
+            for _ in range(5):
+                self.assertIs(view.ui_repos(), old)
+            self.assertEqual(load.call_count, 1)         # backed off: no new load or traceback per request
+            self.assertEqual(len(logs.output), 1)
+    def test_event_stream_is_not_a_slow_request(self):
+        from fastapi.responses import StreamingResponse
+        @self.app.get('/perf-stream')
+        def stream():
+            return StreamingResponse(iter([b'data: x\n\n']), media_type='text/event-stream')
+        self.client.get('/perf-stream')
+        self.assertEqual(self.app.state.perf.snapshot()['routes'], [])
+    def test_events_limit_zero_is_all_and_negative_is_rejected(self):
+        store = self.app.state.store
+        for n in range(3):
+            store.add_event('noise', 'test', {'n': n})
+        self.assertEqual(len(store.list_events(kind='noise', limit=0)), 3)
+        self.assertEqual(self.client.get('/api/v1/events?limit=-1', headers={'Authorization': 'Bearer tok'}).status_code, 400)
     def test_health_and_events_read_only_what_they_return(self):
         store = self.app.state.store
         for n in range(30):

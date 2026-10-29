@@ -185,7 +185,9 @@ class Store:
         return self.list_events(kind=kind, limit=1)[-1]
 
     def list_events(self, task_id=None, epic_id=None, kind=None, since_id=0, limit=200):
-        return ops.events(self.conn, task_id, epic_id, kind, after=since_id, limit=limit, newest=True)
+        if limit is not None and limit < 0:
+            raise BadRequest("limit must be nonnegative")
+        return ops.events(self.conn, task_id, epic_id, kind, after=since_id, limit=limit or None, newest=True)
 
     # -- comments, questions, decisions ----------------------------------
     @_translate

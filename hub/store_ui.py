@@ -25,13 +25,14 @@ class UiView:
         self.dispatcher = dispatcher  # hub.dispatch.DispatcherService
         self.runs_dir = runs_dir
         self._repo_lock, self._repo_cache, self._repo_at = threading.Lock(), None, 0
-        self._repo_gen, self._repo_pending = 0, None
+        self._repo_gen, self._repo_pending, self._repo_pending_gen = 0, None, 0
         self._repo_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='repo-config')
     def close(self):
         self.repo_states.close()
         self._repo_pool.shutdown(wait=False, cancel_futures=True)
     def invalidate_repos(self):
-        """Mark the configured repos stale; the last good copy is still served while a refresh runs."""
+        """A change event: the next ui_repos() waits for a fresh load, and a load already running
+        (started before the change) is discarded when it finishes."""
         with self._repo_lock:
             self._repo_gen += 1
             self._repo_at = None
@@ -40,25 +41,38 @@ class UiView:
             loaded = repos.load_all()
         except Exception:
             logging.getLogger("hub").exception("repo config refresh failed")
+            with self._repo_lock:
+                if self._repo_cache is not None and gen == self._repo_gen:
+                    self._repo_at = time.monotonic()  # back off: keep the last good copy for a full TTL
             raise
         with self._repo_lock:
-            self._repo_cache = loaded
-            self._repo_at = time.monotonic() if gen == self._repo_gen else None
+            if gen == self._repo_gen:
+                self._repo_cache, self._repo_at = loaded, time.monotonic()
         return loaded
     def refresh_repos(self):
-        """Start one background refresh unless one is already running; never blocks."""
+        """Start one load for the current generation unless it is already running; never blocks."""
         with self._repo_lock:
-            if self._repo_pending is None or self._repo_pending.done():
+            if self._repo_pending is None or self._repo_pending.done() or self._repo_pending_gen != self._repo_gen:
+                self._repo_pending_gen = self._repo_gen
                 self._repo_pending = self._repo_pool.submit(self._load_repos, self._repo_gen)
             return self._repo_pending
     def ui_repos(self):
-        """Last good repo config. Expiry or invalidation refreshes in the background (one at a time);
-        only the very first call, with nothing to serve yet, waits for the load."""
+        """Fresh -> the cache. TTL expiry -> the last good copy now, refreshed in the background (one at a time).
+        Cold or invalidated by a change event -> wait for a load that started after the change."""
         cache, at = self._repo_cache, self._repo_at
-        if cache is not None and at is not None and time.monotonic() - at < REPO_TTL:
+        if cache is not None and at is not None:
+            if time.monotonic() - at >= REPO_TTL:
+                self.refresh_repos()
             return cache
-        pending = self.refresh_repos()
-        return cache if cache is not None else pending.result()
+        while True:
+            try:
+                self.refresh_repos().result()
+            except Exception:
+                if cache is None:
+                    raise
+                return cache
+            if self._repo_at is not None:
+                return self._repo_cache
     def inbox_count(self):
         counts = self.c.execute("SELECT status, count(*) FROM tasks WHERE archived=0 "
                                 "AND status IN ('needs-owner','proposed','failed','blocked') GROUP BY status").fetchall()
