@@ -5,13 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Drover</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/tree.css">
 </head>
 {% from "_macros.html" import dispatch_ctl %}
 <body data-tab="{{ tab }}">
 <header class="top">
-  <h1>Drover</h1>
-  <div id="dispatch-ctl">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','runs','landing','health','stats') else '/health') }}</div>
+  <h1>Drover</h1> <div id="dispatch-ctl">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','tree','runs','landing','health','stats') else '/health') }}</div>
   <nav class="tabs" aria-label="Sections">
     {% for key, label in tabs %}
     <a href="/{{ key }}" class="tab{% if key == tab %} on{% endif %}"{% if key == tab %} aria-current="page"{% endif %}>
@@ -19,6 +18,7 @@
     </a>
     {% endfor %}
   </nav>
+  <form action="/jump" method="get" class="tree-jump"><input type="text" name="q" aria-label="Go to T-label" placeholder="Go to T-…"></form>
   <div class="refresh">
     <span class="muted">Updated <span id="updated">{{ updated }}</span></span>
     <button type="button" id="refresh" class="btn">Refresh</button>

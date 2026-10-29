@@ -5,15 +5,14 @@ import time
 import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from hub import api, auth, events, notifications, outside, web
+from hub import api, auth, events, notifications, outside, web, tree_web
 from hub.perf import Perf
 from hub.dispatch import DispatcherService
 from hub.services import Services
 from hub.settings import Settings
 from hub.store import BadRequest, Forbidden, NotFound, Store, UiView
 from hub.watchdog import Watchdog, real_wsl
-def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dispatcher=None,
-               services=None) -> FastAPI:
+def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dispatcher=None, services=None) -> FastAPI:
     settings = settings or Settings()
     bus = events.Bus()
     store = Store(db_path, publish=bus.publish)
@@ -108,4 +107,5 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
     app.include_router(events.router)
     app.dependency_overrides[web.get_store] = lambda: ui_view
     app.include_router(web.router)
+    app.include_router(tree_web.router)
     return app

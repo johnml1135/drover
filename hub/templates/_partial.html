@@ -2,4 +2,4 @@
 {% block content %}{% endblock %}
 <span id="updated" hx-swap-oob="true">{{ updated }}</span>
 <span id="badge" class="badge" hx-swap-oob="true" {% if not unread %}hidden{% endif %}>{{ unread }}</span>
-<div id="dispatch-ctl" hx-swap-oob="true">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','runs','landing','health','stats') else '/health') }}</div>
+<div id="dispatch-ctl" hx-swap-oob="true">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','tree','runs','landing','health','stats') else '/health') }}</div>

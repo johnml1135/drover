@@ -1,0 +1,68 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% macro task_row(t) %}
+<details class="tree-task{% if t.status in ('landed', 'closed', 'cancelled', 'abandoned') %} tree-dim{% endif %}" data-search="{{ t.id }} {{ t.title }}">
+  <summary class="tree-row">
+    <a class="tree-id" href="/tasks/{{ t.id }}">{{ t.id }}</a>
+    <span class="pill status tree-status-{{ t.status }}">{{ t.status }}</span>
+    <span class="tree-title" title="{{ t.title }}">{{ t.title }}</span>
+    <span class="tree-meta" title="{{ t.repo or '' }}">{{ t.repo or '—' }}</span>
+    <span class="tree-meta" title="{{ t.kind }}">{{ t.kind }}</span>
+    <span class="tree-deps" title="Waiting on unlanded dependencies">{% if t.waiting %}⧗ {{ t.waiting | map(attribute='id') | join(', ') }}{% endif %}</span>
+    <span class="tree-age" title="Last status change">{{ t.age }}</span>
+  </summary>
+  <div class="tree-detail">
+    {% if t.description %}<p class="tree-description">{{ t.description }}</p>{% endif %}
+    <p>Depends on: {% for d in t.deps %}<a href="/tasks/{{ d.id }}">{{ d.id }}</a> ({{ d.kind }}){% if not loop.last %}, {% endif %}{% else %}none{% endfor %}<br>
+    Blocks: {% for d in t.blocks %}<a href="/tasks/{{ d.id }}">{{ d.id }}</a> ({{ d.kind }}){% if not loop.last %}, {% endif %}{% else %}none{% endfor %}<br>
+    Branch: {{ t.branch or '—' }}<br>
+    Last event: {% if t.last_event %}{{ t.last_event.kind }} by {{ t.last_event.actor }} · {{ t.last_event.at }} · {{ t.last_event.data }}{% else %}none{% endif %}<br>
+    {% if t.current_run %}Current run: <a href="/runs/{{ t.current_run.id }}">#{{ t.current_run.id }}</a> · {{ t.current_run.role }} · {{ t.current_run.backend }} {{ t.current_run.model or '' }} · {{ t.current_run.started }}<br>{% endif %}
+    <a href="/tasks/{{ t.id }}">Full task page</a></p>
+  </div>
+  {% for child in t.children %}{{ task_row(child) }}{% endfor %}
+</details>
+{% endmacro %}
+{% block content %}
+<h2>Task tree</h2>
+<label for="tree-search">Search tasks and epics</label>
+<input id="tree-search" type="text" value="{{ q }}" placeholder="T-label, E-label, or title" autocomplete="off">
+<div id="tree-groups">
+{% for e in epics %}
+<details class="tree-epic" data-search="{{ e.id }} {{ e.title }}" data-default-open="{{ '1' if e.open else '0' }}" {% if e.open %}open{% endif %}>
+  <summary class="tree-epic-row"><strong>{{ e.id or 'No epic' }}</strong>{% if e.id %}<span class="tree-title" title="{{ e.title }}">{{ e.title }}</span><span class="pill">{{ e.status }}</span>{% endif %}<span class="tree-counts">{% for status, count in e.counts.items() %}{{ count }} {{ status }}{% if not loop.last %} · {% endif %}{% endfor %}</span></summary>
+  {% for t in e.tasks %}{{ task_row(t) }}{% endfor %}
+</details>
+{% else %}<p class="muted">No epics or tasks.</p>{% endfor %}
+</div>
+<script>
+(function () {
+  const input = document.getElementById('tree-search');
+  const groups = document.querySelectorAll('#tree-groups .tree-epic');
+  function filter() {
+    const q = input.value.trim().toLowerCase();
+    groups.forEach(function (group) {
+      const epicMatch = q && group.dataset.search.toLowerCase().includes(q);
+      const rows = Array.from(group.querySelectorAll('.tree-task'));
+      rows.forEach(function (row) {
+        row.hidden = !!q && !epicMatch && !row.dataset.search.toLowerCase().includes(q);
+      });
+      if (q) {
+        rows.forEach(function (row) {
+          if (!row.hidden) {
+            let parent = row.parentElement.closest('.tree-task');
+            while (parent) { parent.hidden = false; parent.open = true; parent = parent.parentElement.closest('.tree-task'); }
+          }
+        });
+        group.hidden = !epicMatch && !rows.some(function (row) { return !row.hidden; });
+        if (!group.hidden) group.open = true;
+      } else {
+        group.hidden = false;
+        group.open = group.dataset.defaultOpen === '1';
+      }
+    });
+  }
+  input.addEventListener('input', filter);
+  filter();
+}());
+</script>
+{% endblock %}

@@ -22,7 +22,7 @@ DISPLAY_LABELS = {"gated": "checked", "landed": "merged", "needs-owner": "Waitin
 templates.env.filters["label"] = lambda v: DISPLAY_LABELS.get(v, v)
 router = APIRouter()
 
-TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("runs", "Runs"), ("landing", "Merge queue"), ("health", "Health"), ("stats", "Stats")]
+TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("tree", "Tree"), ("runs", "Runs"), ("landing", "Merge queue"), ("health", "Health"), ("stats", "Stats")]
 GROUPS = ("epic", "state", "repo", "model")
 FILTERS = ("state", "repo", "model", "low")
 KINDS = {"owner", "import", "tuner", "garden", "task", "epic", "question", "run"}
