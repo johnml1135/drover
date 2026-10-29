@@ -18,9 +18,10 @@ def clean_parent():
     raise RuntimeError('no temp directory without a `.git` at or above it (tried the system temp dir, /dev/shm, /var/tmp); '
                        'set DROVER_TEST_TMPDIR to a clean directory')
 
-def sh(*args, cwd=None, check=True, text=True, input=None):
+def sh(*args, cwd=None, check=True, text=True, input=None, runner=None, env=None):
+    """Run fixture Git commands; inject FakeCommands.run and env for process-free tests."""
     command = [str(a) for a in args]
-    env = os.environ.copy()
+    env = dict(os.environ if env is None else env)
     env.update(GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never', GIT_ASKPASS='')
     is_clone = len(command) > 1 and Path(command[0]).stem.lower() == 'git' and command[1] == 'clone'
     attempts = 2 if is_clone else 1
@@ -28,8 +29,8 @@ def sh(*args, cwd=None, check=True, text=True, input=None):
     for _ in range(attempts):
         try:
             run_env = {**env, **({'GIT_TRACE': '1'} if is_clone else {})}
-            r = subprocess.run(command, cwd=cwd, env=run_env, text=text, capture_output=True, timeout=60,
-                               **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))
+            r = (runner or subprocess.run)(command, cwd=cwd, env=run_env, text=text, capture_output=True, timeout=60,
+                                          **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))
         except subprocess.TimeoutExpired as error:
             stdout, stderr = error.stdout or '', error.stderr or ''
             if isinstance(stdout, bytes):
