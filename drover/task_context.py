@@ -1,5 +1,7 @@
 """Task kinds and declarative repository read access, shared by all input paths."""
+import json
 import re
+import subprocess
 from pathlib import Path
 
 from . import repos
@@ -31,7 +33,31 @@ def worker_instructions():
     return '## Firm decisions\n' + WORKER_DECISIONS + '\n\n' + KEEP_GOING
 
 
-def continuation_criteria():
+def continuation_choices(blocker):
+    """Give the choice model actionable alternatives when the worker asks A or B.
+
+    The systemone client returns a choice label, not generated prose. Put the actual
+    resolutions in its criteria so both the durable event and resumed prompt carry
+    the selected implementation, rather than another instruction to make a choice.
+    """
+    detail = str(blocker.get('detail') or '').strip()
+    match = re.search(
+        r'\b(use|choose|pick|select|adopt|implement|be)\s+(.+?)\s+(?:or|versus|vs\.?)\s+([^?\n]+)',
+        detail, re.IGNORECASE)
+    if match:
+        verb, left, right = match.groups()
+        verb = 'choose' if verb.lower() == 'be' else verb
+    else:
+        match = re.fullmatch(r'(?:[Ww]hether\s+)?(`[^`]+`|[\w./+-]+)\s+(?:or|versus|vs\.?)\s+(`[^`]+`|[\w./+-]+)\??', detail)
+        if not match:
+            return dict(CONTINUE_DECISIONS)
+        verb, (left, right) = 'choose', match.groups()
+    options = [left.strip(' .'), right.rstrip(' .?')]
+    return {f'option_{i}': f'{verb.capitalize()} {option}.'
+            for i, option in enumerate(options, 1)}
+
+
+def continuation_criteria(choices=None):
     """An inline criteria file lets this bounded decision use the existing decider client."""
     from . import decide
     return {'version': 1, 'defaults': decide.load_criteria()['defaults'], 'questions': {
@@ -42,11 +68,10 @@ def continuation_criteria():
                 'and recorded decisions. Do not treat a request for skill approval, implementation '
                 'uncertainty, missing tests or a sandbox limitation as owner authority. '
                 'Select owner only for a specific choice reserved to the owner or contradictory acceptance. '
-                'The selected continuation is a firm decision the same worker must implement.'),
-            'criteria': {
-                'follow_spec': 'Implement the approved goal and acceptance exactly; no further design approval is needed.',
-                'minimal_change': 'Use existing repository patterns and choose the smallest reversible change within scope.',
-                'verify': 'Finish the implementation, repair failures and run targeted verification before reporting completion.',
+                'Select only alternatives authorized by the task and repository rules. Prefer the existing '
+                'conventions and honor recorded decisions. The selected continuation is a firm '
+                'decision the same worker must implement.'),
+            'criteria': {**(choices or CONTINUE_DECISIONS),
                 'owner': 'A specific unresolved choice requires owner authority or changes the approved acceptance.'}}}}
 
 
@@ -70,14 +95,10 @@ def owner_question(blocker, exhausted=False):
     return detail if detail.endswith('?') else 'How should the worker resolve ' + detail.rstrip('.') + '?'
 
 
-def repository_rules(task, cwd):
-    """Provide the decider the root and scoped instructions the worker is subject to."""
-    if not cwd:
-        return {}
-    from . import placement
-    root = Path(placement.native(cwd)).resolve()
+def _read_repository_rules(cwd, scopes):
+    root = Path(cwd).resolve()
     directories = {root}
-    for scope in task.get('scope_files') or []:
+    for scope in scopes:
         path = (root / scope.split(':', 1)[0]).resolve()
         if path.is_relative_to(root):
             directories.update(p for p in (path, *path.parents) if p.is_relative_to(root))
@@ -87,9 +108,31 @@ def repository_rules(task, cwd):
             path = directory / name
             try:
                 rules[str(path.relative_to(root))] = path.read_text(encoding='utf-8')
-            except (OSError, UnicodeError):
+            except (FileNotFoundError, NotADirectoryError):
                 pass
     return rules
+
+
+def repository_rules(task, cwd):
+    """Read root and scoped rules through the worktree's placement; fail closed on IO errors."""
+    if not cwd:
+        return {}
+    from . import placement
+    scopes = task.get('scope_files') or []
+    if not placement.routes_through_wsl(cwd):
+        return _read_repository_rules(placement.native(cwd), scopes)
+    # Ship the fixed reader itself, so native and remote reads have identical path
+    # containment and error handling. No Drover installation is needed in the worktree.
+    import inspect
+    code = ('import json, sys\nfrom pathlib import Path\n' +
+            inspect.getsource(_read_repository_rules) +
+            '\nprint(json.dumps(_read_repository_rules(sys.argv[1], json.load(sys.stdin))))')
+    argv = placement.WSL().command(['python3', '-c', code, str(cwd)])
+    result = subprocess.run(argv, input=json.dumps(scopes), capture_output=True,
+                            text=True, encoding='utf-8', timeout=15, **placement.NO_WINDOW)
+    if result.returncode:
+        raise OSError(result.stderr.strip() or 'cannot read repository rules')
+    return json.loads(result.stdout)
 
 
 def check_kind(kind):

@@ -27,16 +27,38 @@ class FinishSteps:
         if history and last and history[-1]['run'] == last['id'] and history[-1]['answer'] != 'owner':
             return history[-1]
 
+    def _launch(self, task, route, policy, placement, cwd=None):
+        """Reserve firm instructions and decisions before optional brief content is trimmed."""
+        p = self.port
+        last = self._last_nongate(p.list_runs(task['id']))
+        excerpt = contract.receipt_excerpt(last['gate_receipt']) \
+            if last and last['outcome'] in ('gate-fail', 'hold') else None
+        prog = self.pipeline.repo(task)
+        if prog:
+            task = {**task, 'repo_brief': repos.brief_text(prog)}
+        history = self._continuation_history(task)
+        mandatory = task_context.worker_instructions()
+        if history:
+            # Routing and accounting fields stay in the ledger, not in the worker's token budget.
+            mandatory += '\n\n## Recorded decisions\n' + '\n'.join(
+                json.dumps({k: h[k] for k in ('attempt', 'answer', 'decision', 'blocker') if k in h},
+                           ensure_ascii=True) for h in history)
+        try:
+            pinned = brief.pinned_text()
+            b = brief.assemble(task, retry_excerpt=excerpt, handoff=task.get('handoff') or None,
+                               notes=p.owner_notes(task['id']), pinned=pinned + '\n\n' + mandatory)
+            # assemble's pinned argument reserves space without trimming mandatory context.
+            # Keep task decisions in the user prompt and the safety block in the system prompt.
+            b = {**b, 'system_append': pinned, 'user_prompt': b['user_prompt'] + '\n\n' + mandatory}
+        except brief.BriefTooLarge as error:
+            return p.set_status(task['id'], 'needs-owner', reason=str(error))
+        cwd = cwd if cwd is not None else self.pipeline.worktree(task)
+        if not cwd:
+            return p.set_status(task['id'], 'needs-owner', reason='task has no worktree')
+        return self._spawn(task, route, policy, placement, cwd, b, 'worker')
+
     def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
-        """Apply worker policy at the shared launch seam, including resumed and read-only workers."""
         if role == 'worker':
-            history = self._continuation_history(task)
-            instructions = task_context.worker_instructions()
-            if history:
-                instructions += '\n\n## Recorded decisions\n' + json.dumps(history, ensure_ascii=True)
-            b = {**b, 'user_prompt': b['user_prompt'] + '\n\n' + instructions}
-            if brief.estimate_tokens(b['system_append'] + b['user_prompt']) > b['budget']:
-                return self.port.set_status(task['id'], 'needs-owner', reason='worker decisions exceed brief budget')
             pending = self._pending_continuation(task)
             if pending and pending.get('session'):
                 # A continuation keeps its backend, seat, model and placement. Admission still runs normally.
@@ -49,8 +71,34 @@ class FinishSteps:
         return super()._spawn(task, route, policy, placement, cwd, b, role, extra, run_id)
 
     def _continuation_history(self, task):
-        return [e['data'] for e in self.port.events('worker-decision')
-                if e['task_id'] == task['id'] and e['data']['run'] > task['retry_after_run']]
+        """Continuation budgets survive replans and owner retry markers.
+
+        Question answers already live durably in the ledger. Mirror each relevant
+        answer once as a decision so it reaches both future deciders and workers,
+        including after a dispatcher restart.
+        """
+        p, task_id = self.port, task['id']
+        with ops.tx(p.conn):
+            events = [e for kind in ('worker-decision', 'worker-owner-decision')
+                      for e in p.events(kind) if e['task_id'] == task_id]
+            answered = {e['data'].get('question') for e in events
+                        if e['kind'] == 'worker-owner-decision'}
+            for event in list(events):
+                data = event['data']
+                qid = data.get('question')
+                if data['answer'] != 'owner' or not qid or qid in answered:
+                    continue
+                question = p.get_question(qid)
+                if question['status'] != 'answered':
+                    continue
+                resolution = '\n'.join(str(question[k]) for k in ('answer_choice', 'answer_text')
+                                       if question.get(k))
+                answer = {**data, 'answer': 'owner_answer', 'decision': resolution,
+                          'decision_id': None, 'model': None, 'fallback': None}
+                eid = p.append_event('worker-owner-decision', answer, task_id, actor='owner')
+                events.append({'id': eid, 'data': answer})
+                answered.add(qid)
+        return [e['data'] for e in sorted(events, key=lambda e: e['id'])]
 
     def _ask(self, name, state, rule_answer, task_id, criteria_path=None):
         """Call the decider (never raises), record the decision, return the raw result or None."""
@@ -185,6 +233,9 @@ class FinishSteps:
         the run and asking an owner question are atomic, so a failed reap cannot ask twice.
         """
         p, task = self.port, self.port.get_task(task_id)
+        if any(e['task_id'] == task_id and e['data']['run'] == run_id
+               for e in p.events('worker-decision')):
+            return
         history = self._continuation_history(task)
         try:
             budget = max(0, int(p.get_setting(task_context.CONTINUE_SETTING, task_context.CONTINUE_ATTEMPTS)))
@@ -194,23 +245,27 @@ class FinishSteps:
         blocker = rec.get('blocker') or {'kind': result['status'],
                   'detail': (result.get('text') or 'Worker stopped before acceptance was verified.')[-2000:]}
         owner_only = task_context.owner_choice(blocker)
-        exhausted = len(history) >= budget
+        attempts = sum(h['answer'] not in ('owner', 'owner_answer') for h in history)
+        exhausted = attempts >= budget
+        choices = task_context.continuation_choices(blocker)
         rule = 'owner' if owner_only else 'verify' if result['status'] != 'blocked' else 'minimal_change'
-        prog = self.pipeline.repo(task)
-        state = {'task': task, 'blocker': blocker, 'stop': result['status'], 'history': history,
-                 'repository_rules': task_context.repository_rules(task, spec.get('cwd') or task.get('worktree')),
-                 'pinned_rules': spec.get('system_append') or brief.pinned_text(),
-                 'repo_brief': repos.brief_text(prog) if prog else '', 'owner_notes': p.owner_notes(task_id),
-                 'firm_decisions': task_context.WORKER_DECISIONS}
+        if rule != 'owner' and rule not in choices:
+            rule = next(iter(choices))
         decision = None
         if not exhausted:
+            prog = self.pipeline.repo(task)
+            state = {'task': task, 'blocker': blocker, 'stop': result['status'], 'history': history,
+                     'repository_rules': task_context.repository_rules(task, spec.get('cwd') or task.get('worktree')),
+                     'pinned_rules': spec.get('system_append') or brief.pinned_text(),
+                     'repo_brief': repos.brief_text(prog) if prog else '', 'owner_notes': p.owner_notes(task_id),
+                     'firm_decisions': task_context.WORKER_DECISIONS}
             directory = runner.run_dir(getattr(self.launcher, 'runs_dir', self.pipeline.runs_dir), run_id)
             directory.mkdir(parents=True, exist_ok=True)
             criteria_path = directory / 'worker-continue-criteria.json'
-            runner.write_json_atomic(criteria_path, task_context.continuation_criteria())
+            runner.write_json_atomic(criteria_path, task_context.continuation_criteria(choices))
             decision = self._ask('worker_continue', state, rule, task_id, criteria_path=criteria_path)
         answer = decision.get('answer') if decision and decision.get('acted') else rule
-        if answer not in (*task_context.CONTINUE_DECISIONS, 'owner'):
+        if answer not in (*choices, 'owner'):
             answer = rule
         if owner_only or exhausted:
             answer = 'owner'
@@ -222,18 +277,21 @@ class FinishSteps:
         # Adopted runs do not carry every launch field. The ledger preserves their model and effort.
         run = next(r for r in p.list_runs(task_id) if r['id'] == run_id)
         route = {k: spec.get(k) or run.get(k) for k in ('backend', 'model', 'effort', 'seat')}
-        data = {'run': run_id, 'attempt': len(history) + 1, 'budget': budget,
-                'answer': answer, 'decision': task_context.CONTINUE_DECISIONS.get(answer, 'Owner decision required.'),
+        data = {'run': run_id, 'attempt': attempts + 1, 'budget': budget,
+                'answer': answer, 'decision': choices.get(answer, 'Owner decision required.'),
                 'blocker': blocker, 'decision_id': (decision or {}).get('decision_id'),
                 'model': (decision or {}).get('model'), 'fallback': (decision or {}).get('fallback'),
                 'session': session, 'route': route,
                 'placement': spec.get('placement', 'windows')}
         question = task_context.owner_question(blocker, exhausted)
         with ops.tx(p.conn):
-            p.append_event('worker-decision', data, task_id)
+            # Reaping can be retried after the transaction committed but before live was cleared.
+            if any(e['task_id'] == task_id and e['data']['run'] == run_id
+                   for e in p.events('worker-decision')):
+                return
             p.finish_run(run_id, result['status'], note=(rec.get('note') or blocker['detail'])[:300], **usage)
             if answer == 'owner':
-                p.ask_question('task', task_id, question,
+                data['question'] = p.ask_question('task', task_id, question,
                                body='Decision history:\n' + json.dumps([*history, data], ensure_ascii=True, indent=2),
                                needs_owner=True)
             elif session:
@@ -246,6 +304,7 @@ class FinishSteps:
                 # No session was initialized. Keep these stops in the same durable budget;
                 # generic retry/replan handling can reset it or leave unverified runs parked.
                 p.set_status(task_id, 'ready', reason='recorded worker decision; restart until verified')
+            p.append_event('worker-decision', data, task_id)
 
     def _provider_streak(self, task_id, runs):
         marker = self.port.get_task(task_id)['retry_after_run']
@@ -368,3 +427,235 @@ class FinishSteps:
                 self.port.record_outcome(it["id"], outcome)
             except Exception as e:
                 self._safe_event("decide-error", {"question": it["q"], "outcome_error": repr(e)}, task_id)
+
+
+def load_tests(loader, suite, pattern):
+    """Scoped regression suite: python -m unittest drover.dispatcher_finish.
+
+    Kept with this implementation because this task's write scope excludes tests/.
+    Imports and fixtures are loaded only by unittest, never by the dispatcher.
+    """
+    import subprocess
+    import unittest
+    from pathlib import Path
+    from unittest.mock import patch
+    from tests.test_dispatcher import Base, DONE, res
+
+    class WorkerContinuationTests(Base):
+        def setUp(self):
+            super().setUp()
+            self.allow['codex'] = False
+            self.states = []
+            self.choice = 'option_2'
+            self.d.decide_fn = self.decider
+
+        def decider(self, name, state, rule_answer=None, **kw):
+            if name != 'worker_continue':
+                return super().decide(name, state, rule_answer)
+            state = json.loads(state)
+            criteria = json.loads(Path(kw['criteria_path']).read_text())['questions'][name]
+            self.assertEqual(criteria['mode'], 'live')
+            answer = self.choice if self.choice in criteria['criteria'] else rule_answer
+            self.states.append(state)
+            return {'acted': True, 'answer': answer, 'model': 'fake-decider', 'confidence': 1}
+
+        def stop(self, index, kind='plan', detail='Should I use A or B?', status='blocked', session=True):
+            record = {'status': status, 'sha': '', 'commit_message': '',
+                      'blocker': {'kind': kind, 'detail': detail}, 'note': ''}
+            result = res(status, json.dumps(record))
+            if session:
+                # Exercise real initialization-event parsing rather than the fake result shortcut.
+                spec = self.fl.specs[index]
+                directory = runner.run_dir(self.pipe.runs_dir, spec['run_id'])
+                directory.mkdir(parents=True, exist_ok=True)
+                event = ({'type': 'thread.started', 'thread_id': 'same-session'} if spec['backend'] == 'codex'
+                         else {'type': 'system', 'subtype': 'init', 'session_id': 'same-session'})
+                (directory / runner.OUT_FILE).write_text(json.dumps(event) + '\n', encoding='utf-8')
+            self.finish(index, result)
+            self.d.reap()
+
+        def test_same_session_decision_then_success_without_owner(self):
+            tid = self.task(acceptance=['Choose B and verify the change'])
+            self.d.tick()
+            self.stop(0)
+            self.assertEqual(self.status(tid), 'ready')
+            decision = self.events('worker-decision')[0]['data']
+            self.assertEqual(decision['decision'], 'Use B.')
+            self.assertIsInstance(decision['decision_id'], int)
+            self.assertEqual(self.states[0]['task']['acceptance'], ['Choose B and verify the change'])
+            self.d = self.make()  # A hub restart must retain route, session, budget and prompt context.
+            self.d.decide_fn = self.decider
+            self.d.tick()
+            first, resumed = self.fl.specs
+            self.assertEqual(resumed['run_config']['_drover_continue'],
+                             {'backend': first['backend'], 'session': 'same-session'})
+            for field in ('backend', 'seat', 'model', 'effort', 'placement', 'cwd'):
+                self.assertEqual(resumed[field], first[field])
+            prompt = resumed['system_append'] + resumed['user_prompt']
+            self.assertIn('Use B.', prompt)
+            self.assertIn(task_context.KEEP_GOING, prompt)
+            # Fake worker completes only after receiving the resolved choice and verification mandate.
+            self.finish(1, res('done', DONE))
+            self.d.reap()
+            self.assertEqual(self.port.list_runs(tid)[-1]['outcome'], 'done')
+            self.assertEqual(ops.open_questions(self.conn), [])
+
+        def test_codex_same_session_continuation(self):
+            self.allow.update(codex=True, claude=False)
+            self.test_same_session_decision_then_success_without_owner()
+
+        def test_owner_choice_asks_once_without_resuming_even_if_model_disagrees(self):
+            tid = self.task()
+            self.d.tick()
+            self.stop(0, 'new_dependency', 'May I install package X?')
+            for _ in range(3):
+                self.d.tick()
+            self.assertEqual(self.status(tid), 'needs-owner')
+            self.assertEqual(len(self.fl.specs), 1)
+            questions = ops.open_questions(self.conn)
+            self.assertEqual(len(questions), 1)
+            self.assertEqual(questions[0]['title'], 'May I install package X?')
+            # Repeating a finish after its transaction committed must not duplicate the question.
+            spec = self.fl.specs[0]
+            self.d._continue_worker(tid, spec['run_id'], spec, self.fl.handles[0].result,
+                                    {'tokens_in': 10, 'tokens_out': 5, 'tokens_cached': 1})
+            self.assertEqual(len(self.events('question-asked')), 1)
+            self.assertEqual(len(self.events('worker-decision')), 1)
+
+        def test_configurable_exhaustion_preserves_history_across_retry_markers(self):
+            self.port.set_setting(task_context.CONTINUE_SETTING, '2')
+            tid = self.task()
+            self.d.tick()
+            for index in range(3):
+                self.stop(index)
+                if index < 2:
+                    request = self.port.waiting.request_replan(tid, 'blocker')
+                    self.port.waiting._request_done(request['id'], 'revised')
+                    self.assertEqual(self.port.get_task(tid)['retry_after_run'],
+                                     self.fl.specs[index]['run_id'])
+                    self.d.tick()
+            for _ in range(3):
+                self.d.tick()
+            self.assertEqual(len(self.fl.specs), 3)
+            self.assertEqual(len(self.states), 2)
+            questions = ops.open_questions(self.conn)
+            self.assertEqual(len(questions), 1)
+            self.assertIn('budget exhausted', questions[0]['title'])
+            history = json.loads(questions[0]['body'].split('\n', 1)[1])
+            self.assertEqual([h['attempt'] for h in history], [1, 2, 3])
+            self.assertEqual([h['decision'] for h in history[:2]], ['Use B.', 'Use B.'])
+            self.assertEqual(len(self.events('worker-decision')), 3)
+
+        def test_owner_answer_is_durable_and_reaches_resumed_worker_and_decider(self):
+            tid = self.task()
+            self.d.tick()
+            self.stop(0, 'owner_only', 'Which interface is approved?')
+            question = ops.open_questions(self.conn)[0]
+            ops.answer_question(self.conn, question['id'], text='Use interface B; preserve the public API.')
+            self.d = self.make()
+            self.d.decide_fn = self.decider
+            self.d.tick()
+            self.assertEqual(len(self.fl.specs), 2)
+            resumed = self.fl.specs[1]
+            self.assertEqual(resumed['run_config']['_drover_continue']['session'], 'same-session')
+            self.assertIn('Use interface B; preserve the public API.', resumed['system_append'] + resumed['user_prompt'])
+            self.assertEqual(len(self.events('worker-owner-decision')), 1)
+            self.d._continuation_history(self.port.get_task(tid))
+            self.assertEqual(len(self.events('worker-owner-decision')), 1)
+            self.stop(1, detail='Targeted checks are still failing.')
+            history = self.states[-1]['history']
+            self.assertEqual(history[0]['answer'], 'owner')
+            self.assertEqual(history[1]['decision'], 'Use interface B; preserve the public API.')
+
+        def test_zero_budget_and_unverified_stops_are_bounded(self):
+            self.port.set_setting(task_context.CONTINUE_SETTING, '0')
+            tid = self.task()
+            self.d.tick()
+            with patch.object(task_context, 'repository_rules', side_effect=AssertionError('budget already spent')):
+                self.stop(0, status='no-record')
+            self.d.tick()
+            self.assertEqual(self.status(tid), 'needs-owner')
+            self.assertEqual(len(ops.open_questions(self.conn)), 1)
+            self.assertEqual(self.states, [])
+            self.assertEqual(len(self.fl.specs), 1)
+
+        def test_unverified_worker_is_resumed_to_verify(self):
+            tid = self.task()
+            self.d.tick()
+            self.stop(0, detail='Targeted checks have not run.', status='no-record')
+            self.d.tick()
+            self.assertEqual(len(self.fl.specs), 2)
+            self.assertEqual(self.events('worker-decision')[0]['data']['answer'], 'verify')
+            self.assertEqual(ops.open_questions(self.conn), [])
+            self.assertEqual(self.status(tid), 'running')
+
+        def test_optional_notes_trim_before_mandatory_instructions(self):
+            tid = self.task(size='S')
+            ops.add_comment(self.conn, 'task', tid, 'owner', 'x' * 30000)
+            self.d.tick()
+            self.assertEqual(len(self.fl.specs), 1)
+            spec = self.fl.specs[0]
+            self.assertIn(task_context.KEEP_GOING, spec['system_append'] + spec['user_prompt'])
+            self.assertLessEqual(brief.estimate_tokens(spec['system_append'] + spec['user_prompt']),
+                                 brief.BUDGET_TOKENS['S'])
+            self.stop(0)
+            self.d.tick()
+            self.assertEqual(len(self.fl.specs), 2)
+            self.assertIn('Use B.', self.fl.specs[1]['user_prompt'])
+
+        def test_model_selects_concrete_choice_through_real_decider_client(self):
+            from . import decide
+            choices = task_context.continuation_choices({'detail': 'Should I use A or B?'})
+            criteria = Path(self.tmp.name) / 'criteria.json'
+            criteria.write_text(json.dumps(task_context.continuation_criteria(choices)))
+            response = {'answers': {'worker_continue': {'choice': 'option_2', 'confidence': 1}}}
+            with patch.object(decide, 'call_systemone', return_value=response) as call:
+                result = decide.decide('worker_continue', '{}', criteria_path=criteria,
+                                       device='gpu', base='http://fake-decider', recorder=lambda r: None)
+            self.assertTrue(result['acted'])
+            self.assertEqual(choices[result['answer']], 'Use B.')
+            self.assertEqual(call.call_args.args[1]['questions']['worker_continue']['criteria']['option_2'],
+                             'Use B.')
+
+        def test_concrete_alternatives_and_routine_fallback(self):
+            for detail in ('Should I use A or B?', 'Whether to use A or B?', 'A or B?',
+                           'Should the cache be per-task or global?'):
+                with self.subTest(detail=detail):
+                    choices = task_context.continuation_choices({'detail': detail})
+                    self.assertEqual(list(choices), ['option_1', 'option_2'])
+                    self.assertNotIn(' or ', choices['option_2'])
+            self.assertEqual(task_context.continuation_choices({'detail': 'Checks failed.'}),
+                             task_context.CONTINUE_DECISIONS)
+
+        def test_runner_resume_argv_preserves_flags_and_targets_only_named_session(self):
+            codex = ['codex', 'exec', '--json', '-m', 'gpt-6.1-terra', '-s', 'workspace-write', '-']
+            self.assertEqual(runner.resume_argv(codex, 'codex', 'same-session'),
+                             [*codex[:-1], 'resume', 'same-session', '-'])
+            claude = ['claude', '-p', '--model', 'sonnet', '--output-format', 'stream-json']
+            self.assertEqual(runner.resume_argv(claude, 'claude', 'same-session'),
+                             [*claude, '--resume', 'same-session'])
+            for invalid in ('--latest', '../other-session', '', None):
+                with self.subTest(session=invalid), self.assertRaises(ValueError):
+                    runner.resume_argv(codex, 'codex', invalid)
+
+        def test_repository_rules_read_on_owning_placement(self):
+            root = Path(self.tmp.name)
+            (root / 'AGENTS.md').write_text('Root rules', encoding='utf-8')
+            (root / 'src').mkdir()
+            (root / 'src' / 'CLAUDE.md').write_text('Scoped rules', encoding='utf-8')
+            task = {'scope_files': ['src/file.py:1-20', '../outside/file']}
+            self.assertEqual(task_context.repository_rules(task, root),
+                             {'AGENTS.md': 'Root rules', 'src/CLAUDE.md': 'Scoped rules'})
+            from . import placement
+            with patch.object(placement, 'routes_through_wsl', return_value=True), \
+                    patch.object(placement.WSL, 'command', return_value=['owning-wsl-reader']) as command, \
+                    patch.object(task_context.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                        [], 0, '{"AGENTS.md": "WSL rules"}', '')) as execute:
+                self.assertEqual(task_context.repository_rules(task, '/home/worker/repo'),
+                                 {'AGENTS.md': 'WSL rules'})
+                self.assertEqual(command.call_args.args[0][-1], '/home/worker/repo')
+                self.assertEqual(execute.call_args.args[0], ['owning-wsl-reader'])
+                self.assertEqual(json.loads(execute.call_args.kwargs['input']), task['scope_files'])
+
+    suite.addTests(loader.loadTestsFromTestCase(WorkerContinuationTests))
+    return suite
