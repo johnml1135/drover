@@ -45,7 +45,7 @@ class ScriptsOrigin(ConsumerCase):
         q = w.ask(cause, 'task', tid, 'Origin?', options=[{'label': 'Retry origin sync'}], allow_text=False)
         ops.answer_question(self.conn, q, choice='Retry origin sync')
         self.assertTrue(w.consume_retry(cause))
-        with patch('drover.ledger.waiting.PROCESS_SESSION', 'replacement-process'):
+        with patch('drover.ledger.waiting_events.PROCESS_SESSION', 'replacement-process'):
             self.assertFalse(self.pipe.prepare_dispatch(self.get(tid)))
         self.assertEqual(w.state(cause), 'open')
         self.assertEqual(ops.get_question(self.conn, q)['status'], 'open')
@@ -171,7 +171,7 @@ class BaseQueue(LandingCase):
         ops.answer_question(self.conn, q, choice='Retry landing')
         self.assertTrue(w.consume_retry(cause))
         run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', decider=fake_decider())
-        with patch('drover.ledger.waiting.PROCESS_SESSION', 'replacement-process'):
+        with patch('drover.ledger.waiting_events.PROCESS_SESSION', 'replacement-process'):
             self.assertEqual(run()['outcome'], 'held')
             self.assertEqual(w.state(cause), 'open')
             self.assertEqual(run()['outcome'], 'held')

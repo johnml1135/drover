@@ -397,7 +397,7 @@ class Questions(LedgerCase):
         cause2, q2, choice2 = self.retry(w, ('task', self.task()), repo='other')
         ops.answer_question(self.conn, q2, choice=choice2)
         self.assertTrue(w.consume_retry(cause2))
-        with patch('drover.ledger.waiting.PROCESS_SESSION', 'a-new-process'):
+        with patch('drover.ledger.waiting_events.PROCESS_SESSION', 'a-new-process'):
             self.assertFalse(self.waiting(conn=second).consume_retry(cause2))
         self.assertEqual(ops.get_question(self.conn, q2)['status'], 'open')
         ops.answer_question(self.conn, q2, choice=choice2)

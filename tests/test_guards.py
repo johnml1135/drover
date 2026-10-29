@@ -23,7 +23,6 @@ OVER = {
     "drover/ci.py": 579,
     "drover/disk_cleanup.py": 559,
     "drover/ledger/ops.py": 941,
-    "drover/ledger/waiting.py": 1139,
     "drover/ledger/waiting_migration.py": 741,
     "drover/notifications/core.py": 984,
     "drover/notifications/roles.py": 557,
