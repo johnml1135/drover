@@ -21,7 +21,6 @@ INTEGRATION_CEILING = 93  # pinned today; owner target is INTEGRATION_TARGET
 # Files over MAX_LINES, pinned at their current line counts (wc -l). Shrink-only: never add a file.
 OVER = {
     "drover/ci.py": 579,
-    "drover/config.py": 1046,
     "drover/disk_cleanup.py": 559,
     "drover/importer.py": 632,
     "drover/landing.py": 766,

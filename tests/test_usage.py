@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.dispatch_fixture import make_dispatcher
-from drover import config, usage
+from drover import config, config_paths, usage
 from drover.ledger import connect
 
 NOW = datetime(2026, 10, 17, 16, tzinfo=timezone.utc).timestamp()
@@ -203,7 +203,7 @@ class DispatcherSeats(unittest.TestCase):
                 tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], goal=f'platform: {platform}')['id']
                 ops.approve(conn, tid)
                 windows_os = SimpleNamespace(name='nt', path=ntpath, environ=os.environ)
-                with patch.object(config, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
+                with patch.object(config, 'os', windows_os), patch.object(config_paths, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
                     self.assertEqual(d.tick()['launched'], [tid])
                 account = ntpath.normpath(r'R:\Users\acme\.claude')
                 self.assertEqual([ntpath.normpath(p) if p else p for p in probes], [account])
