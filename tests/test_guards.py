@@ -28,7 +28,6 @@ OVER = {
     "drover/notifications/core.py": 984,
     "drover/notifications/roles.py": 557,
     "drover/repos.py": 557,
-    "drover/runner.py": 588,
     "drover/tasktypes/schema.py": 882,
     "drover/tuner.py": 586,
     "hub/reload_protocol.py": 571,
