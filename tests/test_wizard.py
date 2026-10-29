@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, placement, repos, wizard
+from drover import config, placement, repos, wizard, wizard_detect
 from drover.tool_discovery import DISCOVERY_SCRIPT
 
 DRIVES = [{"path": "C:\\", "free_gb": 200.0, "total_gb": 500.0}, {"path": "R:\\", "free_gb": 600.0, "total_gb": 1000.0}]
@@ -412,15 +412,15 @@ class Tools(Base):
     def test_wsl_probes_windows_through_cmd_exe_and_accepts_only_native_executables(self):
         from unittest import mock
         done = lambda out, rc=0: mock.Mock(stdout=out, returncode=rc)
-        with mock.patch.object(wizard, "is_windows", return_value=False), \
+        with mock.patch.object(wizard_detect, "is_windows", return_value=False), \
                 mock.patch("pathlib.Path.exists", return_value=True), \
-                mock.patch.object(wizard, "_run", return_value=done(b"C:\\Users\\me\\claude.exe\r\nC:\\n\\claude.cmd\r\n")):
+                mock.patch.object(wizard_detect, "_run", return_value=done(b"C:\\Users\\me\\claude.exe\r\nC:\\n\\claude.cmd\r\n")):
             self.assertEqual(wizard._windows_exe("claude"), ("C:\\Users\\me\\claude.exe", True))
-        with mock.patch.object(wizard, "is_windows", return_value=False), \
+        with mock.patch.object(wizard_detect, "is_windows", return_value=False), \
                 mock.patch("pathlib.Path.exists", return_value=True), \
-                mock.patch.object(wizard, "_run", return_value=done(b"C:\\n\\claude.cmd\r\n")):
+                mock.patch.object(wizard_detect, "_run", return_value=done(b"C:\\n\\claude.cmd\r\n")):
             self.assertEqual(wizard._windows_exe("claude"), (None, True))
-        with mock.patch.object(wizard, "is_windows", return_value=False), mock.patch("pathlib.Path.exists", return_value=False):
+        with mock.patch.object(wizard_detect, "is_windows", return_value=False), mock.patch("pathlib.Path.exists", return_value=False):
             self.assertEqual(wizard._windows_exe("claude"), (None, False))
 
     def test_wizard_reports_wsl_native_paths_from_the_shared_resolver(self):
@@ -428,12 +428,12 @@ class Tools(Base):
         native = "/opt/agents/bin/codex"
         claude = "/opt/agents/bin/claude"
         done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\nDROVER_TOOL|claude|{claude}\n".encode(), returncode=0)
-        with mock.patch.object(wizard, "is_windows", return_value=True), \
-                mock.patch.object(wizard, "_windows_exe", return_value=(None, True)), \
+        with mock.patch.object(wizard_detect, "is_windows", return_value=True), \
+                mock.patch.object(wizard_detect, "_windows_exe", return_value=(None, True)), \
                 mock.patch.object(wizard.placement, "detect_distros", return_value=[
                     {"name": "Ubuntu", "state": "Running", "version": 2, "default": True}
                 ]), \
-                mock.patch.object(wizard, "_run", return_value=done) as run:
+                mock.patch.object(wizard_detect, "_run", return_value=done) as run:
             found = wizard.detect_tools("Ubuntu")
         self.assertEqual(found["codex"]["wsl"], native)
         self.assertEqual(found["claude"]["wsl"], claude)
@@ -464,7 +464,7 @@ class Benchmark(Base):
         seen = []
         with mock.patch("drover.decide.bench", side_effect=lambda n, **kw: seen.append(n) or
                         {"n": n, "ok": n, "failed": 0, "p50_ms": 5.0, "p95_ms": 6.0}), \
-                mock.patch.object(wizard, "_model_in_vram", return_value=False):
+                mock.patch.object(wizard_detect, "_model_in_vram", return_value=False):
             out = wizard.bench_decider("cpu", "http://x")
         self.assertEqual(seen, [1, wizard.BENCH_CALLS])
         self.assertEqual((out["p50_ms"], out["honoured"]), (5.0, True))

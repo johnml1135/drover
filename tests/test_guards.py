@@ -34,7 +34,6 @@ OVER = {
     "drover/runner.py": 588,
     "drover/tasktypes/schema.py": 882,
     "drover/tuner.py": 586,
-    "drover/wizard.py": 933,
     "hub/reload_protocol.py": 571,
     "hub/runtime.py": 612,
     "hub/store.py": 839,
