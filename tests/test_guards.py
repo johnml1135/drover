@@ -31,8 +31,6 @@ OVER = {
     "tests/test_launch_runner.py": 580,
     "tests/test_ledger.py": 754,
     "tests/test_notification_api.py": 637,
-    "tests/test_replan_batches.py": 1037,
-    "tests/test_replans.py": 758,
     "tests/test_runner.py": 848,
     "tests/test_waiting.py": 688,
     "tests/test_waiting_consumers.py": 657,
