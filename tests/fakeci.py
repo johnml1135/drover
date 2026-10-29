@@ -5,8 +5,10 @@ repo's gate script, polled every 0.25 s.  Most tests only need the gate script's
 the same plan (`ci._execute`) in the test process: the gate script still runs for real, but the runner spawn, the
 second Python start and the poll sleep are gone.  The few tests that check the runner/launcher wiring itself use the
 real RunnerLauncher and live in the integration tier (see tests/tiers.py).
+Inject FakeCommands.run as command_runner to script the gate commands as well.
 """
 import argparse
+import io
 import json
 import os
 import subprocess
@@ -88,7 +90,17 @@ class FakeCommands:
             if target == subprocess.PIPE:
                 return value
             if hasattr(target, 'write') and value is not None:
-                target.write(value)
+                # Real children write bytes to the file descriptor even in text
+                # mode. Use a file's buffer to avoid Windows newline translation.
+                stream = getattr(target, 'buffer', target)
+                if stream is not target:
+                    target.flush()
+                if isinstance(stream, io.TextIOBase):
+                    value = value.decode(encoding, errors) if isinstance(value, bytes) else value
+                else:
+                    value = value.encode(encoding, errors) if isinstance(value, str) else value
+                stream.write(value)
+                stream.flush()
             return None
         result = subprocess.CompletedProcess(command, code, emit(output, stdout_target), emit(stderr, stderr_target))
         if options.get('check') and code:
@@ -112,7 +124,8 @@ class FakeCommands:
 
     def __getattr__(self, name):
         value = getattr(subprocess, name)
-        if callable(value) and not (isinstance(value, type) and issubclass(value, subprocess.SubprocessError)):
+        if callable(value) and value is not subprocess.CompletedProcess and not (
+                isinstance(value, type) and issubclass(value, subprocess.SubprocessError)):
             raise AssertionError(f'unscripted subprocess API: {name}')
         return value
 
@@ -120,13 +133,13 @@ class FakeCommands:
 class _Subprocess:
     """`ci.subprocess` with every run() writing its output to the run's log, as the runner would."""
 
-    def __init__(self, log):
-        self.log = log
+    def __init__(self, log, command_runner=None):
+        self.log, self.command_runner = log, command_runner
 
     def run(self, *args, **kw):
         kw.setdefault('stdout', self.log)
         kw.setdefault('stderr', subprocess.STDOUT)
-        return subprocess.run(*args, **kw)
+        return (self.command_runner or subprocess.run)(*args, **kw)
 
     def __getattr__(self, name):
         return getattr(subprocess, name)
@@ -162,8 +175,12 @@ class Handle:
         pass
 
 
-def execute_gate(spec, runs_dir):
-    """Run a gate spec's plan in-process; returns the execution dict a finished runner handle reports."""
+def execute_gate(spec, runs_dir, *, command_runner=None):
+    """Run a gate plan in-process, optionally injecting FakeCommands.run for its commands.
+
+    Git and placement consumers can be patched separately with FakeCommands.patch.
+    Returns the execution dict a finished runner handle reports.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--plan', required=True)
     plan_file = parser.parse_known_args(spec['argv'][1:])[0].plan
@@ -171,7 +188,7 @@ def execute_gate(spec, runs_dir):
     log = runner.run_dir(runs_dir, spec['run_id']) / runner.OUT_FILE
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, 'w', encoding='utf-8') as out, _environment((spec.get('run_config') or {}).get('env', {})), \
-            mock.patch.object(ci, 'subprocess', _Subprocess(out)):
+            mock.patch.object(ci, 'subprocess', _Subprocess(out, command_runner)):
         try:
             code = ci._execute(plan)
         except (ci.CIError, OSError, ValueError, KeyError) as error:
@@ -188,12 +205,13 @@ def execute_gate(spec, runs_dir):
 class InProcessLauncher:
     """A CI launcher whose gate runs finish inside launch()."""
 
-    def __init__(self, runs_dir):
+    def __init__(self, runs_dir, *, command_runner=None):
         self.runs_dir, self.specs = str(runs_dir), []
+        self.command_runner = command_runner
 
     def launch(self, spec):
         self.specs.append(spec)
-        return Handle(execute_gate(spec, self.runs_dir))
+        return Handle(execute_gate(spec, self.runs_dir, command_runner=self.command_runner))
 
     def adopt(self, spec):
         raise AssertionError('the in-process launcher never leaves a runner to adopt')

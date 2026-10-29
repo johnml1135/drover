@@ -14,7 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import tests
-from tests.fakeci import FakeCommands
+from tests.fakeci import FakeCommands, InProcessLauncher
 from tests.gitfix import sh
 from tests.tiers import MARKER, enabled
 
@@ -172,6 +172,15 @@ class FakeCommandBoundaries(unittest.TestCase):
         self.fake.expect(argv, output='bytes', stderr_output=b'error', capture_output=True)
         result = self.fake.run(argv, capture_output=True)
         self.assertEqual((result.stdout, result.stderr), (b'bytes', b'error'))
+        for mode, text in (('w', False), ('wb', True)):
+            with self.subTest(mode=mode, text=text):
+                log = self.fake.root / 'redirected.log'
+                with log.open(mode) as stream:
+                    options = dict(stdout=stream, stderr=subprocess.STDOUT, text=text)
+                    self.fake.expect(argv, output='out\n', stderr_output='err\n', **options)
+                    result = self.fake.run(argv, **options)
+                    self.assertEqual(log.read_bytes(), b'out\nerr\n')
+                    self.assertEqual((result.stdout, result.stderr), (None, None))
         self.fake.assert_done()
 
     def test_patch_is_local_and_production_git_checks_the_boundary(self):
@@ -213,6 +222,70 @@ class FakeCommandBoundaries(unittest.TestCase):
         self.assertEqual(len(self.fake.calls), 2)
         self.assertEqual(self.fake.env.get('GIT_TRACE'), None)
         self.fake.assert_done()
+
+    def test_patched_git_preserves_missing_executable_result(self):
+        from drover import placement_git
+        argv = ['git', '-C', str(self.fake.cwd), 'rev-parse', 'HEAD']
+        options = dict(text=True, capture_output=True, encoding='utf-8', errors='replace',
+                       timeout=23, env=self.fake.env, **placement_git.NO_WINDOW)
+        self.fake.expect(argv, error=FileNotFoundError('fixture git is missing'), **options)
+        with self.fake.patch(placement_git):
+            result = placement_git.git(self.fake.cwd, 'rev-parse', 'HEAD', timeout=23, env=self.fake.env)
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertEqual((result.returncode, result.stdout), (127, ''))
+        self.assertIn('fixture git is missing', result.stderr)
+
+    def test_in_process_ci_uses_fake_pwsh_python_and_git_without_processes_or_sleeps(self):
+        from drover import ci, placement_exec, placement_git, runner
+        repo, sha, base = str(self.fake.cwd), 'a' * 40, 'b' * 40
+        runs = self.fake.root / 'runs'
+        run_dir = runner.run_dir(runs, 'fake-gate')
+        receipt, log = run_dir / 'receipt.json', run_dir / runner.OUT_FILE
+        commands = [[str(self.fake.pwsh), '-NoProfile', '-File', str(self.fake.cwd / 'gate.ps1')],
+                    [str(self.fake.python), '-m', 'unittest', 'tests.sample']]
+        plan = dict(repo=repo, sha=sha, base='main', kind='full', platform='windows',
+                    commands=commands, out=str(receipt), log=str(log))
+        plan_file = self.fake.root / 'plan.json'
+        plan_file.write_text(json.dumps(plan), encoding='utf-8')
+        env = {**self.fake.env, **ci.GIT_PROMPT_ENV}
+        options = dict(text=True, capture_output=True, encoding='utf-8', errors='replace',
+                       timeout=60, env=env, **placement_git.NO_WINDOW)
+
+        def expect_git(args, output=''):
+            self.fake.expect(['git', '-C', repo, *args], output=output, **options)
+
+        expect_git(['rev-parse', 'HEAD'], sha + '\n')
+        expect_git(['status', '--porcelain', '--untracked-files=no'])
+        expect_git(['ls-files', '--others', '--exclude-standard', '--directory', '--no-empty-directory'])
+        expect_git(['rev-parse', '--verify', '--quiet', 'main^{commit}'], base + '\n')
+        expect_git(['merge-base', '--is-ancestor', base, sha])
+        for argv in commands:
+            self.fake.expect(argv, cwd=repo, env=env, stdout=mock.ANY, stderr=subprocess.STDOUT,
+                             output='gate output\n', stderr_output='gate diagnostic\n')
+        expect_git(['rev-parse', 'HEAD'], sha + '\n')
+        expect_git(['status', '--porcelain', '--untracked-files=no'])
+        launcher = InProcessLauncher(runs, command_runner=self.fake.run)
+        spec = dict(run_id='fake-gate', nonce='fixture-nonce',
+                    argv=[str(self.fake.python), '-m', 'drover.ci', '--plan', str(plan_file)])
+        seen = list(getattr(tests, 'VIOLATIONS', []))
+        with mock.patch.object(subprocess, 'Popen', side_effect=AssertionError('real process')) as starts, \
+                mock.patch.object(time, 'sleep', side_effect=AssertionError('real sleep')) as sleeps, \
+                mock.patch.dict(os.environ, self.fake.env, clear=True), \
+                self.fake.patch(placement_git, placement_exec):
+            handle = launcher.launch(spec)
+            self.assertEqual(handle.poll()['status'], 'done')
+            starts.assert_not_called()
+            sleeps.assert_not_called()
+        self.assertEqual(getattr(tests, 'VIOLATIONS', []), seen)
+        saved = json.loads(receipt.read_text(encoding='utf-8'))
+        self.assertTrue(saved['passed'])
+        self.assertEqual([step['command'] for step in saved['steps']], commands)
+        self.assertEqual(log.read_text(encoding='utf-8'), 'gate output\ngate diagnostic\n' * 2)
+        self.assertEqual(json.loads((run_dir / runner.STATUS_FILE).read_text())['exit_code'], 0)
+        self.assertEqual(len(self.fake.calls), 9)
+        for _, observed in self.fake.calls[5:7]:
+            self.assertEqual(Path(observed['stdout'].name), log)
+            self.assertTrue(observed['stdout'].closed)
 
 
 @unittest.skipIf(enabled(), 'the purity guard applies to the default tier only')
