@@ -32,12 +32,12 @@ SLOW_MODULE_S = 60
 SHARD_ABOVE_S = 40          # a module whose last run took longer than this is split across workers
 SHARD_SIZE = 12             # tests per shard
 HEAVY = {'tests.test_pipeline_basics', 'tests.test_pipeline_worktrees', 'tests.test_pipeline_safety_commit',
-         'tests.test_pipeline_review', 'tests.test_pipeline_contract_landing', 'tests.test_landing', 'tests.test_replans',
-         'tests.test_replans_records', 'tests.test_replans_dispatch',
-         'tests.test_garden', 'tests.test_hub_runtime',
-         'tests.test_waiting_consumers', 'tests.test_platforms', 'tests.test_waiting_characterization',
-         'tests.test_replan_batches', 'tests.test_replan_batches_ledger', 'tests.test_replan_batches_dispatch',
-         'tests.test_replan_batches_recovery', 'tests.test_ci', 'tests.test_repo_entry'}  # before any timing exists
+         'tests.test_pipeline_review', 'tests.test_pipeline_contract_landing', 'tests.test_landing',
+         'tests.test_replans', 'tests.test_replans_records', 'tests.test_replans_dispatch', 'tests.test_garden',
+         'tests.test_hub_runtime', 'tests.test_waiting_consumers', 'tests.test_platforms',
+         'tests.test_waiting_characterization', 'tests.test_replan_batches', 'tests.test_replan_batches_ledger',
+         'tests.test_replan_batches_dispatch', 'tests.test_replan_batches_recovery', 'tests.test_ci',
+         'tests.test_repo_entry', 'tests.test_landing_repository', 'tests.test_waiting_consumers_lifecycle'}  # before any timing exists
 SHARD_LIMITS = {'tests.test_hub_runtime': 8, 'tests.test_deploy_hub': 7, 'tests.test_garden_branch': 4,
                 'tests.test_disk_worktree_add': 2, 'tests.test_garden': 2, 'tests.test_dispatch_repos': 6}
 LIST_IDS = '''
