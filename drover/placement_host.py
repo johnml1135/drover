@@ -257,8 +257,10 @@ def cleanup_vhdx_report(*, paths=None, read=None):
             row.update((read or _vhdx_reading)(path))
             if row['sparse'] is False:
                 distro_arg = subprocess.list2cmdline([name])
-                row['owner_action'] = (f'wsl --shutdown, then wsl --manage {distro_arg} --set-sparse true '
-                                       '(and compact once with Optimize-VHD)')
+                row['owner_action'] = (
+                    f'Periodically run `wsl -d {distro_arg} -u root -- fstrim -v /`; to return space, '
+                    f'run `wsl --shutdown`, then run `Optimize-VHD -Path "{path}" -Mode Full` '
+                    '(requires admin) in elevated PowerShell.')
         except OSError as error:
             row['error'] = str(error)
         rows.append(row)

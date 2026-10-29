@@ -141,8 +141,14 @@ class VhdxReport(DiskCase):
             self.assertEqual(row['allocated_bytes'], 590)
             self.assertEqual(row['apparent_bytes'], 1024)
         row = next(r for r in rows if r['distro'] == 'Ubuntu')
-        self.assertEqual(row['owner_action'], 'wsl --shutdown, then wsl --manage Ubuntu --set-sparse true (and compact once with Optimize-VHD)')
-        self.assertNotIn('owner_action', next(r for r in rows if r['distro'] == 'Other'))
+        self.assertEqual(
+            row['owner_action'],
+            'Periodically run `wsl -d Ubuntu -u root -- fstrim -v /`; to return space, '
+            'run `wsl --shutdown`, then run `Optimize-VHD -Path "H:\\WSL\\Ubuntu\\ext4.vhdx" -Mode Full` '
+            '(requires admin) in elevated PowerShell.')
+        sparse_row = next(r for r in rows if r['distro'] == 'Other')
+        self.assertTrue(sparse_row['sparse'])
+        self.assertNotIn('owner_action', sparse_row)
 
     def test_unreadable_vhdx_reports_unknown_without_advising_a_change(self):
         rows = placement.cleanup_vhdx_report(paths={'Ubuntu': r'H:\ext4.vhdx'},
