@@ -9,7 +9,7 @@
   <section class="card"><h3>CPU, RAM and disk</h3><div id="chart-resources" class="chart" aria-label="Resource history"></div></section>
   <section class="card"><h3>Merges per day</h3><div id="chart-throughput" class="chart" aria-label="Throughput"></div></section>
 </div>
-<h2>Seats</h2>
+<h2>Request performance</h2><section class="card"><h3>Routes (last 500 requests)</h3><table><tr><th>Route</th><th>Count</th><th>p50 ms</th><th>p95 ms</th></tr>{% for r in perf.routes %}<tr><td>{{ r.method }} {{ r.path }}</td><td>{{ r.count }}</td><td>{{ '%.1f'|format(r.p50_ms) }}</td><td>{{ '%.1f'|format(r.p95_ms) }}</td></tr>{% endfor %}</table><h3>Recent slow requests</h3><ul>{% for r in perf.slow %}<li>{{ r.method }} {{ r.path }}: {{ '%.1f'|format(r.duration_ms) }} ms, {{ r.git_spawns }} git spawns</li>{% else %}<li>None.</li>{% endfor %}</ul></section><h2>Seats</h2>
 {% for s in seats %}
 <section class="card">
   <h3>{{ loop.index }}. {{ s.seat }} <span class="pill {{ 'ok' if s.eligible else 'warn' }}">{{ 'available' if s.eligible else 'waiting' }}</span></h3>

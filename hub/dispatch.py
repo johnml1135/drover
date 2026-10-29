@@ -20,7 +20,6 @@ log = logging.getLogger("hub.dispatcher")
 class HubPort(DirectPort):
     """DirectPort that also tells the UI (the bus) about what the dispatcher changes, and keeps the heartbeat the
     health page reads."""
-
     def __init__(self, store, **kw):
         super().__init__(store.conn, **kw)
         self.store = store
@@ -149,6 +148,8 @@ class LandingService:
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)
+            if getattr(self, "store", None) is not None:
+                self.store._changed("landing.changed", repo=name)
         return r
 
     @staticmethod
@@ -160,7 +161,6 @@ class LandingService:
             "detail": landing_storage.last_detail(conn),
             "median": f"{v['median_gate_s']:.0f}s" if v["median_gate_s"] is not None else None,
             "red_rate": f"{v['red_rate']:.0%}" if v["red_rate"] is not None else None}))
-
 
 class DispatcherService:
     def __init__(self, store, settings, make_dispatcher=None, lock_path=None, sleep=None, landing_service=None):

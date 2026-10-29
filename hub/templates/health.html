@@ -40,7 +40,8 @@
 </dl></section>
 {% if h.ollama is defined %}
 <h2>Ollama</h2>
-<section class="card"><p>{{ badge('reachable' if h.ollama.reachable else 'unreachable', 'ok' if h.ollama.reachable else 'bad') }}
+<p class="muted">Snapshot {{ "not yet updated" if h.snapshot_age is none else "updated " ~ h.snapshot_age ~ "s ago" }}.</p>
+<section class="card"><p>{{ badge('unknown' if h.ollama.reachable is none else ('reachable' if h.ollama.reachable else 'unreachable'), 'warn' if h.ollama.reachable is none else ('ok' if h.ollama.reachable else 'bad')) }}
   {% if h.ollama.p95_ms is not none %} p95 <strong>{{ h.ollama.p95_ms }} ms</strong> (target under 2000){% else %} <span class="muted">No bench data.</span>{% endif %}</p></section>
 {% endif %}
 {% if h.disks %}

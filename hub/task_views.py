@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from markupsafe import Markup
-from drover import repos, placement
+from drover import repos, placement, origin
 from drover.placement import NO_WINDOW
 
 
@@ -108,7 +108,7 @@ def _join(base, name):
 
 
 def probe(prog):
-    """Two bounded git calls per repo, only on the cache's background thread."""
+    """Probe repository state only on the cache's background thread."""
     def git(*args):
         r = subprocess.run(['git', '-C', repos.native(repos.repo_path(prog)), *args],
                            capture_output=True, text=True, timeout=1, **NO_WINDOW)
@@ -124,8 +124,9 @@ def probe(prog):
             paths.add(str(Path(repos.native(path)).resolve()))
             if lines.get('branch', '').startswith('refs/heads/'):
                 branch_paths[lines['branch'][11:]] = path
-    return dict(branches=branches, paths=paths, branch_paths=branch_paths)
-
+    return dict(branches=branches, paths=paths, branch_paths=branch_paths,
+                ahead=origin.ahead(repos.native(repos.repo_path(prog)), prog.get("remote", "origin"),
+                                   prog.get("default_branch", "main"), timeout=30))
 
 class RepoStates:
     def __init__(self, ttl=5, loader=probe):
@@ -152,7 +153,6 @@ class RepoStates:
 
     def close(self):
         self.pool.shutdown(wait=False, cancel_futures=True)
-
 
 def derive(task, prog, disk=None):
     branch = task.get('branch') or f'drover/{task["id"]}'

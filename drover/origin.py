@@ -80,10 +80,10 @@ def observe(repo, remote, main, stopped, moved, tracking, interval):
             return
 
 
-def ahead(repo, remote='origin', main='main'):
+def ahead(repo, remote='origin', main='main', *, timeout=None):
     """Local commits absent from the last fetched remote main; no network during rendering."""
-    r = git(repo, 'rev-list', '--count', f'refs/remotes/{remote}/{main}..refs/heads/{main}', check=False)
-    return int(r.stdout.strip()) if r.returncode == 0 else 0
+    r = git(repo, 'rev-list', '--count', f'refs/remotes/{remote}/{main}..refs/heads/{main}', check=False, timeout=timeout)
+    return int(r.stdout.strip()) if r.returncode == 0 else (None if r.returncode == 124 else 0)
 
 
 def push_main(repo, remote='origin', main='main', *, guard=None):

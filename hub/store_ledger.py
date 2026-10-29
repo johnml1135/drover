@@ -36,7 +36,7 @@ class Store:
             try:
                 c.close()
             except Exception:
-                pass  # opened by another thread
+                pass  # already closed or otherwise unavailable
         self._local = threading.local()
 
     def _changed(self, name, **data):

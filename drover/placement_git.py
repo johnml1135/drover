@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 import json
+import contextvars
+import threading
 from pathlib import Path
 
 from .placement_paths import (
@@ -22,10 +24,13 @@ from .placement_exec import (
 )
 
 
+git_spawns = 0
+git_spawn_lock = threading.Lock()
+request_git = contextvars.ContextVar("request_git", default=None)
+
 def status_args(repo):
     """Tracked status; commit guards separately discover untracked paths with ls-files."""
     return ["status", "--porcelain", "--untracked-files=no"]
-
 
 def _git_location(repo):
     """Override foreign absolute gitdir pointers without editing shared metadata."""
@@ -51,19 +56,15 @@ def _git_location(repo):
         raise ValueError(f"cannot resolve git metadata for {repo}: {exc}") from exc
     return [f"--git-dir={gitdir}", f"--work-tree={repo}"], {"GIT_COMMON_DIR": str(common)}
 
-
 def prepare_worktree(repo):
     """Make a foreign gitfile portable before checks run their own Git commands."""
     if _git_location(native(repo))[0] and not relativize_gitdir(native(repo)):
         raise OSError(f"cannot make gitdir portable for {repo}")
 
-
 # Arguments that follow these are paths; subcommand positionals of `worktree add|repair|remove|move` are too.
 _PATH_OPTS = {"--git-dir", "--work-tree", "-C", "--output", "-o"}
 
-
 _WORKTREE_PATH_SUBS = {"add", "repair", "remove", "move", "lock", "unlock"}
-
 
 def _map_paths(args):
     """Translate only path arguments to WSL form; messages, refs and revisions pass through unchanged."""
@@ -86,7 +87,6 @@ def _map_paths(args):
         out.append(arg)
     return out
 
-
 def _git_command(repo, args, nt=None, distro=None, side=None):
     """`side="wsl"` runs the WSL git against a Windows-spelled repo (via /mnt/<drive>) for work that creates or
     repairs an ext4 worktree: its pointers must be written by the side that will open them."""
@@ -97,23 +97,26 @@ def _git_command(repo, args, nt=None, distro=None, side=None):
     prefix, env = _git_location(repo)
     return Windows().command(["git", "-C", repo, *prefix, *args]), env
 
-
 def git_argv(repo, args, nt=None, distro=None, side=None):
     """The argv that runs `git -C repo *args` from this host."""
     return _git_command(repo, args, nt, distro, side)[0]
 
-
 def git(repo, *args, timeout=None, env=None, runner=None, side=None):
     """subprocess result of git in `repo`; a missing wsl.exe/git is a failed command (rc 127), not an exception."""
+    global git_spawns
     try:
         argv, extra = _git_command(repo, args, side=side)
         if extra:
             env = {**(os.environ if env is None else env), **extra}
+        with git_spawn_lock:
+            git_spawns += 1
+        count = request_git.get()
+        if count is not None:
+            count["spawns"] += 1
         return (runner or subprocess.run)(argv, text=True, capture_output=True, encoding="utf-8", errors="replace",
                                            timeout=timeout, env=env, **NO_WINDOW)
     except FileNotFoundError as e:
         return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {e}")
-
 
 def reachable(path, runner=None):
     """True when `path` is an openable git working directory from this host (a missing one is False, never an error)."""
@@ -123,7 +126,6 @@ def reachable(path, runner=None):
     if routes_through_wsl(path):
         return git(path, "rev-parse", "--git-dir", timeout=30, runner=runner).returncode == 0
     return os.path.exists(native(path))
-
 
 def relativize_gitdir(path):
     dotgit = Path(path) / ".git"
@@ -144,7 +146,6 @@ def relativize_gitdir(path):
     except (OSError, ValueError):
         return False
     return True
-
 
 _METADATA_IO = r'''
 import json, os, sys, tempfile
@@ -172,7 +173,6 @@ else:
         if name is not None:
             os.unlink(name)
 '''
-
 
 def worktree_metadata(worktree: str, filename: str, content: str | None = None) -> str | None:
     """Read/write a linked worktree's admin file on its owning host, replacing atomically."""

@@ -4,8 +4,8 @@
 {% if repos %}
 <h2>Local main</h2>
 {% for repo in repos %}
-<section class="card"><strong>{{ repo.name }}</strong> · {{ repo.ahead }} unpushed commit(s)
-<form method="post" action="/repos/{{ repo.name | urlencode }}/push-main"><button type="submit">Push main</button></form>
+<section class="card"><strong>{{ repo.name }}</strong> · {% if repo.checking %}checking...{% elif repo.ahead is none %}unknown{% else %}{{ repo.ahead }} unpushed commit(s){% endif %}
+<form method="post" action="/repos/{{ repo.name | urlencode }}/push-main"><button type="submit"{% if not repo.ahead %} disabled{% endif %}>Push main</button></form>
 </section>
 {% endfor %}
 {% endif %}

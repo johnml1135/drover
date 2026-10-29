@@ -1,4 +1,5 @@
 import time
+import threading
 
 from drover import contract, dispatch_repos, importer, landing, origin, repos
 from drover.ledger import ops
@@ -6,13 +7,11 @@ from drover.ledger import ops
 from .store_common import BadRequest, NotFound, _run_id
 from .store_ledger import Store
 
-
 class UiView:
     """The sync contract hub.web expects (see hub/web.py), over a Store.
 
     Only reachable through UI-authenticated routes, so mutations here act as the owner.
     """
-
     def __init__(self, store: Store, services=None, watchdog=None, dispatcher=None, runs_dir=None):
         self.s = store
         from .task_views import RepoStates
@@ -21,18 +20,35 @@ class UiView:
         self.watchdog = watchdog
         self.dispatcher = dispatcher  # hub.dispatch.DispatcherService
         self.runs_dir = runs_dir
+        self._repo_lock, self._repo_cache, self._repo_at = threading.Lock(), None, 0
+    def invalidate_repos(self):
+        with self._repo_lock:
+            self._repo_cache = None
+    def ui_repos(self):
+        with self._repo_lock:
+            now = time.monotonic()
+            if self._repo_cache is None or now - self._repo_at >= 30:
+                self._repo_cache = repos.load_all()
+                self._repo_at = time.monotonic()
+            return self._repo_cache
+    def inbox_count(self):
+        counts = self.c.execute("SELECT status, count(*) FROM tasks WHERE archived=0 "
+                                "AND status IN ('needs-owner','proposed','failed','blocked') GROUP BY status").fetchall()
+        tasks = {row[0]: row[1] for row in counts}
+        return (min(tasks.get('needs-owner', 0), 500) + min(tasks.get('proposed', 0), 500)
+                + min(tasks.get('failed', 0) + tasks.get('blocked', 0), 500)
+                + len(self.inbox_questions()) + len(self.notification_attention())
+                + len(self.tuner_proposals()) + len(self.garden_batches()))
 
     @property
     def c(self):
         return self.s.conn
-
     def _reason(self, t):
         for e in reversed(self.s.list_events(task_id=t["id"], kind="status", limit=20)):
             r = e["data"].get("reason")
             if r:
                 return r
         return ""
-
     def last_updated(self):
         return time.strftime("%H:%M:%S")
 
@@ -55,7 +71,7 @@ class UiView:
 
     def _task_view(self, task, configured=None):
         from .task_views import derive
-        configured = repos.load_all() if configured is None else configured
+        configured = self.ui_repos() if configured is None else configured
         prog = configured.get(str(task.get("repo") or "").lower())
         tid = task["id"]
         from drover.ledger.board import waiting_labels
@@ -93,7 +109,7 @@ class UiView:
         return self.s.update_task(tid, actor="owner", **fields)
 
     def needs_owner_items(self):
-        configured = repos.load_all()
+        configured = self.ui_repos()
         return [self._task_view(t, configured) for t in self.s.list_tasks(status="needs-owner")]
 
     def _low_confidence_ids(self):
@@ -107,7 +123,7 @@ class UiView:
     def import_proposals(self):
         epics = {e["id"]: e["title"] for e in self.s.list_epics()}
         low = self._low_confidence_ids()
-        configured = repos.load_all()
+        configured = self.ui_repos()
         return [{**self._task_view(t, configured), "repo": t["repo"] or "",
                  "reason": epics.get(t["epic_id"], ""), "epic_id": t["epic_id"] or "",
                  "epic": epics.get(t["epic_id"], ""), "low_confidence": t["id"] in low}
@@ -129,7 +145,7 @@ class UiView:
 
     def failed_blocked_items(self):
         out = []
-        configured = repos.load_all()
+        configured = self.ui_repos()
         for t in self.s.list_tasks(status="failed,blocked"):
             task = self._task_view(t, configured)
             out.append({**task, "reason": "; ".join(task["waiting_labels"]) or self._reason(t)})
@@ -163,7 +179,7 @@ class UiView:
         tasks = self.s.list_tasks(limit=100000)
         low = self._low_confidence_ids()
         by_epic: dict = {}
-        configured = repos.load_all()
+        configured = self.ui_repos()
         for t in tasks:
             by_epic.setdefault(t["epic_id"], []).append(
                 {**self._task_view(t, configured), "low": "1" if t["id"] in low else None})
@@ -206,10 +222,10 @@ class UiView:
                           for t in self.s.list_tasks(status="gated,reviewed")],
                 "batch": self.s._json_setting("landing_batch"),
                 "gate": self.s._json_setting("gate", {}),
-                "repos": [{"name": repos.repo_name(prog), "ahead": count}
-                          for prog in repos.load_all().values()
-                          if (count := origin.ahead(repos.native(repos.repo_path(prog)), repos.remote_name(prog), repos.default_branch(prog)))]}
-
+                "repos": [{"name": repos.repo_name(prog), "ahead": snapshot.get("ahead") if snapshot else None,
+                           "checking": snapshot is None}
+                          for prog in self.ui_repos().values()
+                          if (snapshot := self.repo_states.get(prog)) is None or snapshot.get("ahead") != 0]}
     def push_main(self, name):
         """Owner action; repo paths and remote names come only from validated configuration."""
         from drover.notifications.controls import admission
@@ -231,7 +247,6 @@ class UiView:
             self.s._changed("repo.push-failed", repo=name)
             raise BadRequest(str(e)) from e
         self.s._changed("repo.pushed", repo=name)
-
     def health(self):
         from drover.notifications import Notifications
         notification_health = Notifications(self.c).health()
@@ -253,10 +268,16 @@ class UiView:
                "dispatch": self.dispatch_state(), "dispatcher": self._dispatcher_state(hb),
                "keepalive": self._keepalive_state(), "tools": self._tools()}
         if self.services is not None:
-            out["ollama"] = self.services.ollama_status()
-            out["disks"] = self.services.disk_free()
+            out["ollama"], out["disks"] = self.services.health_snapshot
+            at = self.services.health_snapshot_at
+            out["snapshot_age"] = max(0, int(self.services.clock() - at)) if at is not None else None
+            try:
+                bench = self.s._json_setting("ollama_bench")
+                if bench is not None:
+                    out["ollama"] = {**out["ollama"], "p95_ms": bench.get("p95_ms")}
+            except (ValueError, AttributeError):
+                out["ollama"] = {**out["ollama"], "p95_ms": None}
         return out
-
     def _dispatcher_state(self, hb):
         on = self.s.dispatch_enabled()
         running = bool(self.dispatcher and self.dispatcher.running)
@@ -264,7 +285,6 @@ class UiView:
         return {"state": "paused" if not on else ("running" if running else "enabled, thread not running"),
                 "thread": running, "heartbeat_age": f"{age:.0f}s" if age is not None else "unknown",
                 "error": getattr(self.dispatcher, "error", None) if self.dispatcher else None}
-
     def _keepalive_state(self):
         w = self.watchdog
         if w is None:
@@ -273,11 +293,9 @@ class UiView:
         alive = w.keepalive_alive()
         return {"state": "holding WSL up" if alive else ("needed, not up" if needed else "idle"),
                 "needed": needed, "alive": alive}
-
     def _tools(self):
         s = self.s.get_settings()
         return {"claude": s.get("wsl_bin_claude", ""), "codex": s.get("wsl_bin_codex", "")}
-
     def _target(self, kind, iid):
         """Resolve a UI item (task/import/owner/epic/question/run) to a comment target."""
         if kind == "epic":
@@ -301,24 +319,19 @@ class UiView:
                 raise NotFound(f"run {iid}")
             return "task", row[0]
         raise BadRequest(f"unknown kind {kind}")
-
     def comments(self, kind, iid):
         tk, tid = self._target(kind, iid)
         return [{"author": c["author"], "at": c["at"][11:16], "body": c["body"],
                  "urgent": bool(c["urgent"]), "replan": bool(c["replan"])}
                 for c in self.s.list_comments(tk, tid)]
-
     def add_comment(self, kind, iid, body, urgent=False, replan=False):
         tk, tid = self._target(kind, iid)
         return self.s.add_comment(tk, tid, "owner", body, urgent, replan)
-
     def answer_question(self, qid, option=None, text=None):
         return self.s.answer_question(int(qid), option, text)
-
     def _drop(self, key, iid):
         left = [i for i in self.s._json_setting(key, []) if str(i.get("id")) != str(iid)]
         self.s._put_json_setting(key, left)
-
     def decide_item(self, kind, iid, decision):
         if decision not in ("approve", "reject"):
             raise BadRequest(decision)
@@ -340,7 +353,6 @@ class UiView:
             self.s.publish("ledger", {"kind": f"{kind}.{decision}"})
         else:
             raise BadRequest(f"unknown kind {kind}")
-
     def approve_garden(self, batch, branches=None):
         """Owner approval of a garden batch (all rows, or the named subset). The exact approved rows are written
         by importer.record_approval; the executor later reads them back and nothing else."""
@@ -359,29 +371,23 @@ class UiView:
         if self.services is not None:
             self.services.submit_garden(batch)
         return rows
-
     def garden_entries(self, batch):
         for e in reversed(ops.events(self.c, kind="import-batch")):
             if e["data"].get("id") == batch:
                 return e["data"]["entries"]
         return []
-
     def garden_batch(self, batch):
         for b in self.s._json_setting("garden_batches", []):
             if str(b.get("id")) == str(batch):
                 return b
         raise NotFound(f"garden batch {batch}")
-
     def approve_imports(self, ids):
         for i in ids:
             self.s.approve(i)
-
     def approve_epic(self, epic_id):
         return self.s.approve_epic(epic_id)
-
     def reorder(self, kind, iid, before=None, after=None):
         self.s.reorder(kind, iid, before, after)
-
     # -- pause toggle ----------------------------------------------------
     def dispatch_state(self):
         on = self.s.dispatch_enabled()
@@ -390,10 +396,8 @@ class UiView:
         except ValueError:
             repos = ["INVALID: all blocked"]
         return {"enabled": on, "label": "RUNNING" if on else "PAUSED", "repos": repos}
-
     def set_dispatch(self, enabled):
         return self.s.set_dispatch_enabled(enabled, actor="owner")
-
     # -- run detail ------------------------------------------------------
     def run_detail(self, run_id):
         rid = _run_id(run_id)
@@ -406,7 +410,6 @@ class UiView:
                 "outcome": r["outcome"] or "running", "live": r["outcome"] is None,
                 "allowance_used": contract.format_allowance(r["allowance_used"]),
                 "wall_time": f"{r['wall_s']:.0f}s" if r["wall_s"] is not None else ""}
-
     def run_tail(self, run_id, max_bytes=65536):
         """The end of <runs>/<id>/out.log as text. Read-only; the template escapes it."""
         from drover import runner

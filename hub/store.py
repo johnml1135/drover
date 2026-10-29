@@ -2,7 +2,7 @@
 
 `Store` gives the API a small, stable surface and publishes a bus event after
 every mutation. `UiView` is the synchronous contract hub.web expects.
-SQLite connections are per thread (the ledger's connect() is thread-bound);
+SQLite connections are per thread and can be closed during store shutdown;
 the ledger's own BEGIN IMMEDIATE transactions make writes and claims atomic.
 """
 import json

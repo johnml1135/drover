@@ -32,8 +32,9 @@ class UiTests(unittest.TestCase):
         fix = Repo()
         self.addCleanup(fix.cleanup)
         prog = repos.normalize({'name': 'acme-lib', 'repo': str(fix.repo)})
-        with patch('hub.store_ui.repos.load_all', return_value={'acme-lib': prog}):
-            self.assertNotIn('Push main', self.c.get('/landing').text)
+        with patch('hub.store_ui.repos.load_all', return_value={'acme-lib': prog}), \
+                patch.object(self.app.state.ui_view.repo_states, 'get', side_effect=[None, {'ahead': 1}, {'ahead': 0}]):
+            self.assertIn('checking...', self.c.get('/landing').text)
             sha = fix.commit('local.txt')
             self.assertIn('Push main', self.c.get('/landing').text)
             path = '/repos/acme-lib/push-main'
@@ -166,7 +167,6 @@ class UiTests(unittest.TestCase):
         t = self.st.create_task("Imp")["id"]
         self.c.post(f"/items/import/{t}/approve", headers=SAME)
         self.assertIsNotNone(self.st.get_task(t)["approved_at"])
-
 
 if __name__ == "__main__":
     unittest.main()

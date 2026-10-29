@@ -53,12 +53,15 @@ def _one(form, key, default=""):
 
 def _render(request, name, store, **ctx):
     ctx.setdefault("updated", _call(store, "last_updated", default=time.strftime("%H:%M:%S")))
-    ctx.setdefault("unread", inbox_count(store))
+    ctx.setdefault("usage_alerts", _call(store, "usage_alerts", default=[]))
+    ctx.setdefault("unread", inbox_count(store, ctx["usage_alerts"]))
     ctx.setdefault("tabs", TABS)
     ctx.setdefault("dispatch", _call(store, "dispatch_state", default={"enabled": False, "label": "PAUSED"}))
-    ctx.setdefault("usage_alerts", _call(store, "usage_alerts", default=[]))
     ctx.setdefault("partial", False)
-    return templates.TemplateResponse(request, name, ctx)
+    started = time.perf_counter()
+    response = templates.TemplateResponse(request, name, ctx)
+    request.state.render_ms = (time.perf_counter() - started) * 1000
+    return response
 
 
 def _tab(request, tab, store, **ctx):
@@ -79,12 +82,14 @@ def inbox_data(store):
     }
 
 
-def inbox_count(store) -> int:
+def inbox_count(store, alerts=None) -> int:
     try:
+        if hasattr(store, "inbox_count"):
+            return store.inbox_count() + len(alerts if alerts is not None else _call(store, "usage_alerts", default=[]))
         d = inbox_data(store)
     except Exception:
         return 0
-    return sum(len(v) for v in d.values()) + len(_call(store, "usage_alerts", default=[]))
+    return sum(len(v) for v in d.values()) + len(alerts if alerts is not None else _call(store, "usage_alerts", default=[]))
 
 
 @router.get("/", include_in_schema=False)
@@ -317,7 +322,6 @@ def _siblings(store, kind, iid):
             return str(e["id"]), ids
     raise HTTPException(404, "unknown task")
 
-
 @router.post("/plan/reorder", response_class=HTMLResponse)
 async def reorder(request: Request, store=Depends(get_store)):
     form = await _form(request)
@@ -344,12 +348,11 @@ async def reorder(request: Request, store=Depends(get_store)):
     store.reorder(kind, iid, before=before or None, after=after or None)
     return _tab(request, "plan", store, **plan_view(store))
 
-
 @router.get("/stats", response_class=HTMLResponse)
 def stats_tab(request: Request, store=Depends(get_store)):
     return _tab(request, "stats", store, seats=_call(store, "seat_order", default=[]),
-                archived=_call(store, "archived_tasks", default=[]))
-
+                archived=_call(store, "archived_tasks", default=[]),
+                perf=request.app.state.perf.snapshot() if hasattr(request.app.state, "perf") else {"routes": [], "slow": []})
 
 @router.post("/usage")
 async def manual_usage(request: Request, store=Depends(get_store)):
@@ -360,18 +363,15 @@ async def manual_usage(request: Request, store=Depends(get_store)):
         raise HTTPException(400, str(e))
     return RedirectResponse("/stats", status_code=303)
 
-
 @router.post("/tasks/{tid}/archive")
 async def archive_task(tid: str, request: Request, store=Depends(get_store)):
     form = await _form(request)
     store.archive_task(tid, _one(form, "archived", "1") == "1")
     return RedirectResponse("/plan", status_code=303)
 
-
 @router.get("/tasks/{tid}/delete", response_class=HTMLResponse)
 def delete_confirmation(tid: str, request: Request, store=Depends(get_store)):
     return _render(request, "delete_task.html", store, tab="plan", task=store.task(tid))
-
 
 @router.post("/tasks/{tid}/delete")
 async def delete_task(tid: str, request: Request, store=Depends(get_store)):

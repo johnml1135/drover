@@ -27,9 +27,7 @@ def parse_discovery(output: str) -> dict:
     """{tool: path} for each tool whose path validates. Login-shell noise, aliases and extra lines are ignored."""
     return parse_discovery_result(output)[0]
 
-
 REPO_NAME = re.compile(r"[A-Za-z0-9._-]+")
-
 
 def repo_path(name):
     """A bare repo name resolved under paths.repos_root (DROVER_REPOS_DIR; default ~/repos). No paths, no traversal."""
@@ -41,11 +39,9 @@ def repo_path(name):
         raise ValueError(f"repo {name!r} resolves outside {root}")
     return str(path)
 
-
 def real_disks():
     from drover import disk
     return {row['path'] or row['name']: row['free_gb'] for row in disk.read()}
-
 
 def real_ollama(url, timeout=1.5):
     """True when the Ollama HTTP API answers."""
@@ -54,7 +50,6 @@ def real_ollama(url, timeout=1.5):
             return r.status == 200
     except (OSError, ValueError):
         return False
-
 
 class Services:
     def __init__(self, store, settings, wsl=None, remove=None, tuner_mod=tuner, disks=real_disks,
@@ -73,12 +68,15 @@ class Services:
         self._wsl_was_up = False
         self._probe_cache = (0.0, None)
         self._tried = 0.0
-
+        self.health_snapshot = ({"reachable": None, "p95_ms": None}, [])
+        self.health_snapshot_at = None
+        if ollama is not real_ollama and disks is not real_disks:
+            self.health_snapshot = (self.ollama_status(), self.disk_free())
+            self.health_snapshot_at = self.clock()
     # -- lifecycle ---------------------------------------------------------
     def start(self):
         self._thread = threading.Thread(target=self._loop, name="services", daemon=True)
         self._thread.start()
-
     def stop(self):
         self._stop.set()
         self._garden.put(None)
@@ -86,6 +84,11 @@ class Services:
             self._thread.join(10)
 
     def _loop(self):
+        try:
+            self.health_snapshot = (self.ollama_status(), self.disk_free())
+            self.health_snapshot_at = self.clock()
+        except Exception:
+            log.exception("health probe failed")
         try:
             self.discover_native_tools()
             self.resume_garden()
@@ -111,6 +114,8 @@ class Services:
             self.store.publish('disk.notice', {'ids': delivered})
         self.check_wsl()
         self.check_tuner()
+        self.health_snapshot = (self.ollama_status(), self.disk_free())
+        self.health_snapshot_at = self.clock()
 
     # -- WSL tool discovery -----------------------------------------------
     def discover_native_tools(self):
@@ -155,7 +160,6 @@ class Services:
             if not self._wsl_was_up or self.clock() - self._tried > 600:
                 self.discover_tools()
         self._wsl_was_up = up
-
 
     # -- tuner -------------------------------------------------------------
     def check_tuner(self, force_check=False):

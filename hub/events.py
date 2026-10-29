@@ -4,10 +4,10 @@ import itertools
 import json
 import threading
 from collections import deque
-
+from fastapi import APIRouter, Request
+from fastapi.sse import EventSourceResponse
 
 QUEUE_MAX = 256  # above the replay history so a replay always fits
-
 
 def _offer(q: asyncio.Queue, ev: dict) -> None:
     """Put without growing unbounded: drop the oldest and tell the client to resync."""
@@ -19,31 +19,29 @@ def _offer(q: asyncio.Queue, ev: dict) -> None:
             q.get_nowait()
     q.put_nowait(ev)
 
-
 class Bus:
     """Thread-safe publish; each subscriber gets its own asyncio queue.
-
     A ring buffer of recent events supports Last-Event-ID replay.
     """
-
     def __init__(self, history: int = 200):
         self._lock = threading.Lock()
         self._subs: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
         self._ids = itertools.count(1)
         self._recent: deque = deque(maxlen=history)
-
+        self.on_publish = None
     def publish(self, kind: str, data: dict | None = None) -> dict:
         with self._lock:
             ev = {"id": next(self._ids), "kind": kind, "data": data or {}}
             self._recent.append(ev)
             subs = list(self._subs)
+        if self.on_publish is not None:
+            self.on_publish(kind, data or {})
         for loop, q in subs:
             try:
                 loop.call_soon_threadsafe(_offer, q, ev)
             except RuntimeError:  # loop closed
                 self.unsubscribe(q)
         return ev
-
     def subscribe(self, after_id: int | None = None) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
         with self._lock:
@@ -53,20 +51,15 @@ class Bus:
                         q.put_nowait(ev)
             self._subs.append((asyncio.get_running_loop(), q))
         return q
-
     def unsubscribe(self, q: asyncio.Queue) -> None:
         with self._lock:
             self._subs = [(lo, s) for lo, s in self._subs if s is not q]
-
     def recent(self) -> list[dict]:
         with self._lock:
             return list(self._recent)
-
-
 async def stream(bus: Bus, after_id: int | None = None, limit: int | None = None):
     """Async generator of ServerSentEvent; ends after `limit` events if set."""
     from fastapi.sse import ServerSentEvent
-
     q = bus.subscribe(after_id)
     sent = 0
     try:
@@ -79,3 +72,10 @@ async def stream(bus: Bus, after_id: int | None = None, limit: int | None = None
             sent += 1
     finally:
         bus.unsubscribe(q)
+router = APIRouter()
+@router.get("/events", response_class=EventSourceResponse)
+async def sse(request: Request, limit: int | None = None):
+    last = request.headers.get("last-event-id")
+    after = int(last) if last and last.isdigit() else None
+    async for ev in stream(request.app.state.bus, after, limit):
+        yield ev

@@ -24,6 +24,11 @@ public = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth.require_api)])
 
 
+@router.get("/perf")
+def perf(request: Request):
+    return request.app.state.perf.snapshot()
+
+
 def _store(request: Request):
     return request.app.state.store
 
@@ -457,27 +462,22 @@ class ArchiveIn(BaseModel):
 class DeleteIn(BaseModel):
     confirm: bool = False
 
-
 @router.get("/stats")
 def get_stats(request: Request, since: str | None = None, task: str | None = None):
     return guard(_store(request).stats, since, task)
-
 
 @router.get("/usage/order")
 def get_seats(request: Request):
     return _store(request).seat_order()
 
-
 @router.post("/usage")
 def manual_usage(body: UsageIn, request: Request):
     return guard(_store(request).set_usage, body.seat, body.window, body.pct, body.resets)
-
 
 @router.post("/tasks/{tid}/archive")
 def archive_task(tid: str, body: ArchiveIn, request: Request, who: str = Depends(auth.require_api)):
     owner_only(who)
     return guard(_store(request).archive_task, tid, body.archived, actor(who))
-
 
 @router.delete("/tasks/{tid}")
 def delete_task(tid: str, body: DeleteIn, request: Request, who: str = Depends(auth.require_api)):
