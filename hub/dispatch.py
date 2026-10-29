@@ -11,6 +11,7 @@ from drover.dispatcher import Dispatcher, DispatchRuntime
 from drover.launch import RunnerLauncher
 from drover.ledger import ops, landing as landing_storage
 from drover.lock import FileLock, LockHeld
+from drover.notifications import Notifications
 from drover.pipeline import Pipeline, truthy
 from drover.port import DirectPort
 
@@ -221,6 +222,15 @@ class DispatcherService:
                         self.store.add_event("hub.dispatcher", "hub", {"message": f"tick failed: {e!r}"})
                     except Exception:
                         pass
+                try:
+                    # Dispatch reconciles stale questions before selecting wakes.
+                    # This also runs on paused/failed ticks, independently of any agent.
+                    notices = Notifications(port.conn).wake_landing_questions()
+                    if notices:
+                        self.store.publish('notification.owner-wake', {'questions': [n['question'] for n in notices]})
+                except Exception as e:
+                    self.error = repr(e)
+                    log.exception('landing question monitor failed')
                 self._stop.wait(self.settings.dispatch_interval_s)
         except Exception as e:
             self.error = repr(e)

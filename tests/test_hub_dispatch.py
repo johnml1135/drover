@@ -7,11 +7,14 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stderr
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from drover import contract, dispatcher
 from drover.ledger import connect, ops
 from drover.lock import FileLock, LockHeld
+from drover.notifications import Notifications
 from hub.dispatch import DispatcherService, HubPort, LandingService
 from hub.events import Bus
 from hub.settings import Settings
@@ -156,6 +159,44 @@ class Service(Base):
         self.assertEqual(d.launcher.distro, "New-choice")
         self.assertEqual(d.pipeline.runs_dir, str(self.settings.runs_dir))
         self.assertEqual(d.usage_poller.conn, self.store.conn)
+
+    def test_owner_wake_runs_without_an_agent_even_when_dispatch_is_paused(self):
+        conn = self.store.conn
+        epic = ops.create_epic(conn, 'p', 'Landing')['id']
+        with patch('drover.ledger.ops_common.clock', return_value=datetime.fromtimestamp(1000, timezone.utc)):
+            qid = ops.ask_question(conn, 'epic', epic, 'Push main failed', actor='landing',
+                                   options=[{'label': 'Acknowledged'}])
+        ops.set_setting(conn, 'dispatch_enabled', 'false')
+        svc = DispatcherService(self.store, self.settings, make_dispatcher=FakeDispatcher)
+        with patch('hub.dispatch.Notifications', side_effect=lambda conn: Notifications(conn, now=lambda: 2800)):
+            svc.start()
+            self.addCleanup(svc.stop)
+            self.wait(lambda: len(Notifications(conn).owner_attention()) == 1)
+        svc.stop()
+        notice, = Notifications(conn).owner_attention()
+        self.assertEqual(notice['question'], qid)
+        self.assertEqual(ops.open_questions(conn)[0]['id'], qid)
+        self.assertEqual(len(ops.open_questions(conn)), 1)
+
+    def test_question_monitor_runs_after_a_tick_reconciles_stale_questions(self):
+        conn = self.store.conn
+        epic = ops.create_epic(conn, 'p', 'Landing')['id']
+        qid = ops.ask_question(conn, 'epic', epic, 'Old landing question', actor='landing')
+        conn.execute("UPDATE questions SET asked='1970-01-01T00:00:00Z' WHERE id=?", (qid,))
+
+        class Reconcile(FakeDispatcher):
+            def tick(self):
+                if ops.get_question(self.port.conn, qid)['status'] == 'open':
+                    ops.answer_question(self.port.conn, qid, text='Superseded by current landing state')
+                super().tick()
+
+        svc = DispatcherService(self.store, self.settings, make_dispatcher=Reconcile)
+        svc.start()
+        self.addCleanup(svc.stop)
+        self.wait(lambda: svc.dispatcher and svc.dispatcher.ticks >= 2)
+        svc.stop()
+        self.assertEqual(Notifications(conn).owner_attention(), [])
+        self.assertEqual(ops.events(conn, kind='notification.landing-owner-wake'), [])
 
 
 @unittest.skipUnless(create_app, "fastapi is not installed")

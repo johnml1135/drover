@@ -2,6 +2,7 @@
 import hashlib
 import json
 import time
+from datetime import datetime
 
 from ..ledger import ops
 from ..ledger.db import tx
@@ -14,6 +15,10 @@ from .core_evidence import (serialized_size, _text_excerpt, _cause_identity, _bo
                             bound_envelope, bound_digest, issue_key, coalesce_issue)
 from .core_ownership import OwnershipMixin
 from .core_replay import ReplayMixin
+
+
+LANDING_OWNER_WAKE_S = 30 * 60
+LANDING_OWNER_WAKES = 'landing_owner_wakes'
 
 
 def _resolve_issue(conn, event, event_class):
@@ -155,6 +160,87 @@ class Notifications(OwnershipMixin, ReplayMixin):
     def __init__(self, conn, now=None):
         self.conn = conn
         self.now = now or time.time
+
+    def _landing_questions(self):
+        """Only current landing decisions with surviving consumers and no owner action.
+
+        Waiting owns reconciliation/supersession. Use its current question view,
+        rather than session state or an old question-asked notification intent.
+        """
+        from ..ledger import states
+        from ..ledger.waiting import Waiting
+        waiting = Waiting(self.conn)
+        landing_ids = {r[0] for r in self.conn.execute(
+            "SELECT json_extract(data,'$.question') FROM task_events WHERE kind='question-asked' AND actor='landing'")}
+        landing_ids.update(r['question_id'] for r in waiting.pending() if r['subject_kind'] == 'merge_queue')
+        out = []
+        for question in waiting.questions():
+            if question['id'] not in landing_ids or not question['visible'] or question['proposal']:
+                continue
+            if not any(kind != 'task' or (
+                    (task := ops.get_task(self.conn, key))['status'] not in states.TERMINAL and not task['archived'])
+                       for kind, key in question['subjects']):
+                continue
+            if question['cause']:
+                cause = self.conn.execute('SELECT state,accepted_event FROM wait_causes WHERE cause=?',
+                                          (question['cause'],)).fetchone()
+                if cause['state'] != 'open' or cause['accepted_event'] is not None:
+                    continue  # Keep holding is an answer even though it reopens the question.
+            if self.conn.execute("SELECT 1 FROM task_events WHERE kind IN ('question-answered','question-superseded') "
+                                 "AND json_extract(data,'$.question')=? LIMIT 1", (question['id'],)).fetchone():
+                continue
+            out.append(question)
+        return out
+
+    def wake_landing_questions(self):
+        """Publish one retractable owner notice per unanswered landing question.
+
+        The deadline is derived from the ledger's asked time, including questions
+        first observed after a Hub outage. Deadline, notice and woken marker commit
+        together; neither a session replacement nor a Hub restart resets them.
+        """
+        with tx(self.conn):
+            saved = ops.get_setting(self.conn, LANDING_OWNER_WAKES, '{}')
+            state = json.loads(saved)
+            for entry in state.values():
+                entry['active'] = False
+            raised, now = [], self.now()
+            for question in self._landing_questions():
+                qid = question['id']
+                if str(qid) not in state:
+                    state[str(qid)] = dict(
+                        deadline=datetime.fromisoformat(question['asked']).timestamp() + LANDING_OWNER_WAKE_S,
+                        woken_at=None)
+                entry = state[str(qid)]
+                entry['active'] = True
+                if entry['woken_at'] is not None or now < entry['deadline']:
+                    continue
+                option = next((o for o in question['options'] if o.get('recommended')), None)
+                option = option or next(iter(question['options']), None)
+                action = (f'Open Needs me and answer question #{qid}' +
+                          (f' by choosing "{option["label"]}".' if option else ' with your decision.'))
+                notice = dict(key=f'landing-question:{qid}', question=qid,
+                              target_kind=question['target_kind'], target_id=question['target_id'],
+                              title='Landing question still needs an answer: ' + question['title'],
+                              body=f'Question #{qid} has waited 30 minutes without owner action. {action}')
+                event_id = ops.event(self.conn, 'notification.landing-owner-wake', 'hub',
+                                     dict(notice=notice, deadline=entry['deadline']))
+                entry.update(woken_at=now, notice=notice, event_id=event_id)
+                raised.append(notice)
+            encoded = ops._j(state)
+            if encoded != saved:
+                ops.set_setting(self.conn, LANDING_OWNER_WAKES, encoded)
+            return raised
+
+    def owner_attention(self):
+        out = super().owner_attention()
+        state = json.loads(ops.get_setting(self.conn, LANDING_OWNER_WAKES, '{}'))
+        # Recheck current truth on reads too: an answer retracts the notice even
+        # before the next monitor tick. Retain the marker to prevent a second wake.
+        current = {str(q['id']) for q in self._landing_questions()} if state else set()
+        out.extend(entry['notice'] for qid, entry in state.items()
+                   if qid in current and entry.get('active') and entry['woken_at'] is not None)
+        return out
 
     def register(self, role_id, **policy):
         if not isinstance(role_id, str) or not role_id.strip() or len(role_id) > 256:
