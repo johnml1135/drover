@@ -36,6 +36,41 @@ from .runner_supervise import (Status, _read_stop_file, read_stop, request_stop,
 PYTHON_RE = re.compile(r"(?i)python(w)?(\d+(\.\d+)?)?(\.exe)?")
 
 
+def worker_session(runs_dir, run_id, backend):
+    """Read only this run's initialization event; never resume an unrelated latest session."""
+    try:
+        with open(run_dir(runs_dir, run_id) / OUT_FILE, encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                session = None
+                if backend == 'codex' and event.get('type') == 'thread.started':
+                    session = event.get('thread_id')
+                elif backend == 'claude' and event.get('type') == 'system' and event.get('subtype') == 'init':
+                    session = event.get('session_id')
+                if isinstance(session, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', session):
+                    return session
+    except OSError:
+        pass
+    return None
+
+
+def resume_argv(argv, backend, session):
+    """Keep the launcher's sandbox, model and environment flags when resuming a specific worker."""
+    if not isinstance(session, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', session):
+        raise ValueError('invalid worker session')
+    argv = list(argv)
+    if backend == 'codex' and len(argv) > 2 and argv[1] == 'exec' and argv[-1] == '-':
+        return [*argv[:-1], 'resume', session, '-']
+    if backend == 'claude' and '-p' in argv:
+        return [*argv, '--resume', session]
+    raise ValueError('unsupported worker resume command')
+
+
 def parse_runner_argv(argv):
     """Recognize only a direct Python runner invocation; worker arguments cannot spoof the marker."""
     argv = list(argv)
@@ -194,6 +229,9 @@ def main(argv=None):
         info = detach(a.run_id, a.runs_dir, [x for x in head if x != "--detach"] + ["--"] + worker, nonce=a.nonce)
         print(json.dumps(info))
         return 1 if "error" in info else 0
+    continuation = a.run_config.get('_drover_continue')
+    if continuation:
+        worker = resume_argv(worker, continuation['backend'], continuation['session'])
     st = supervise(a.run_id, a.runs_dir, worker, a.wall_s, a.idle_s, a.stdin_file, a.cwd, a.kill_after, nonce=a.nonce,
                    scratch_dir=a.scratch_dir, run_config=a.run_config)
     print(json.dumps(st))

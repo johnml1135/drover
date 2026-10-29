@@ -1,17 +1,61 @@
 """Dispatcher finish steps."""
 import json
 
-from . import contract, task_access
+from . import brief, config, contract, repos, route as routing, runner, task_access, task_context
+from .ledger import ops
 from .pipeline import WorktreeRefused
 from .dispatcher_admission import (MAX_FINISH_TRIES, MAX_ROTATIONS, MAX_PROVIDER_ERRORS, BACKOFF_MAX_MIN,
                                    ENV_BLOCK_KINDS, PENDING_KEY, failures, at_top, ladders)
 
 
 class FinishSteps:
-    def _ask(self, name, state, rule_answer, task_id):
+    def _route(self, task, policy, admitted):
+        pending = self._pending_continuation(task)
+        if not pending or not pending.get('session'):
+            return super()._route(task, policy, admitted)
+        route = pending['route']
+        seats = [s for s in config.get()['seats'] if s['name'] == route.get('seat')]
+        key = routing.route_key('worker', task.get('size'))
+        data = {**policy['data'], 'routes': {key: [route]}}
+        return routing.choose(task, data, seats=seats, **self._route_inputs(task, admitted))
+
+    def _pending_continuation(self, task):
+        history = self._continuation_history(task)
+        last = next((r for r in reversed(self.port.list_runs(task['id']))
+                     if r['role'] == 'worker' and r['outcome'] not in ('launch-error', 'control-held')), None)
+        if history and last and history[-1]['run'] == last['id'] and history[-1]['answer'] != 'owner':
+            return history[-1]
+
+    def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
+        """Apply worker policy at the shared launch seam, including resumed and read-only workers."""
+        if role == 'worker':
+            history = self._continuation_history(task)
+            instructions = task_context.worker_instructions()
+            if history:
+                instructions += '\n\n## Recorded decisions\n' + json.dumps(history, ensure_ascii=True)
+            b = {**b, 'user_prompt': b['user_prompt'] + '\n\n' + instructions}
+            if brief.estimate_tokens(b['system_append'] + b['user_prompt']) > b['budget']:
+                return self.port.set_status(task['id'], 'needs-owner', reason='worker decisions exceed brief budget')
+            pending = self._pending_continuation(task)
+            if pending and pending.get('session'):
+                # A continuation keeps its backend, seat, model and placement. Admission still runs normally.
+                if placement != pending['placement']:
+                    self._defer(task, 'worker session placement unavailable')
+                    return None
+                prog = self.pipeline.repo(task)
+                extra = {**(extra or {}), 'run_config': {**repos.run_config(prog),
+                         '_drover_continue': {'backend': route['backend'], 'session': pending['session']}}}
+        return super()._spawn(task, route, policy, placement, cwd, b, role, extra, run_id)
+
+    def _continuation_history(self, task):
+        return [e['data'] for e in self.port.events('worker-decision')
+                if e['task_id'] == task['id'] and e['data']['run'] > task['retry_after_run']]
+
+    def _ask(self, name, state, rule_answer, task_id, criteria_path=None):
         """Call the decider (never raises), record the decision, return the raw result or None."""
         try:
-            r = self.decide_fn(name, json.dumps(state), rule_answer=rule_answer)
+            kw = {'criteria_path': str(criteria_path)} if criteria_path is not None else {}
+            r = self.decide_fn(name, json.dumps(state), rule_answer=rule_answer, **kw)
             answer = r.get("answer") if r.get("acted") else r.get("shadow_answer")
             did = self.port.record_decision(
                 question_name=name, criteria_version=str(r.get("criteria_version") or ""),
@@ -104,8 +148,7 @@ class FinishSteps:
         if result.get("provider_error") and st in ("error", "no-record", "timeout"):
             return self._provider_error(task_id, run_id, result["provider_error"], usage)
         if st == "timeout":
-            p.finish_run(run_id, "timeout", note=f"timeout: {result.get('timeout')}"[:300], **usage)
-            self._failed(task_id, run_id, f"worker timed out ({result.get('timeout')})")
+            self._continue_worker(task_id, run_id, spec, result, usage)
         elif st == "rotate":
             p.set_handoff(task_id, result["handoff"])
             p.finish_run(run_id, "rotated", note="context ceiling; handoff written", **usage)
@@ -117,8 +160,7 @@ class FinishSteps:
         elif st == "blocked" and self._env_block_to_ready(task_id, run_id, rec, usage, result):
             pass
         elif st == "blocked":
-            p.finish_run(run_id, "blocked", note=note, **usage)
-            self.port.waiting.request_replan(task_id, "blocker", {"blocker": rec["blocker"]})
+            self._continue_worker(task_id, run_id, spec, result, usage)
         elif st == "ready_to_commit":
             try:
                 sha = self.pipeline.commit_ready(p.get_task(task_id), run_id, rec["commit_message"])
@@ -133,8 +175,73 @@ class FinishSteps:
         elif st == "done":
             self._after_done(task_id, result, run_id, usage, note)
         else:
-            p.finish_run(run_id, st, note=(result.get("text") or "")[-250:] or None, **usage)
-            self._failed(task_id, run_id, "no action-state record" if st == "no-record" else "worker error")
+            self._continue_worker(task_id, run_id, spec, result, usage)
+
+    def _continue_worker(self, task_id, run_id, spec, result, usage):
+        """Make a durable decision before releasing this slot; normal admission launches the next turn.
+
+        Events carry the budget and session across dispatcher restarts. Applying a decision, finishing
+        the run and asking an owner question are atomic, so a failed reap cannot ask twice.
+        """
+        p, task = self.port, self.port.get_task(task_id)
+        history = self._continuation_history(task)
+        try:
+            budget = max(0, int(p.get_setting(task_context.CONTINUE_SETTING, task_context.CONTINUE_ATTEMPTS)))
+        except (TypeError, ValueError):
+            budget = task_context.CONTINUE_ATTEMPTS
+        rec = result.get('record') or {}
+        blocker = rec.get('blocker') or {'kind': result['status'],
+                  'detail': (result.get('text') or 'Worker stopped before acceptance was verified.')[-2000:]}
+        owner_only = task_context.owner_choice(blocker)
+        exhausted = len(history) >= budget
+        rule = 'owner' if owner_only else 'verify' if result['status'] != 'blocked' else 'minimal_change'
+        prog = self.pipeline.repo(task)
+        state = {'task': task, 'blocker': blocker, 'stop': result['status'], 'history': history,
+                 'repository_rules': task_context.repository_rules(task, spec.get('cwd') or task.get('worktree')),
+                 'pinned_rules': spec.get('system_append') or brief.pinned_text(),
+                 'repo_brief': repos.brief_text(prog) if prog else '', 'owner_notes': p.owner_notes(task_id),
+                 'firm_decisions': task_context.WORKER_DECISIONS}
+        decision = None
+        if not exhausted:
+            directory = runner.run_dir(getattr(self.launcher, 'runs_dir', self.pipeline.runs_dir), run_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            criteria_path = directory / 'worker-continue-criteria.json'
+            runner.write_json_atomic(criteria_path, task_context.continuation_criteria())
+            decision = self._ask('worker_continue', state, rule, task_id, criteria_path=criteria_path)
+        answer = decision.get('answer') if decision and decision.get('acted') else rule
+        if answer not in (*task_context.CONTINUE_DECISIONS, 'owner'):
+            answer = rule
+        if owner_only or exhausted:
+            answer = 'owner'
+        session = runner.worker_session(getattr(self.launcher, 'runs_dir', self.pipeline.runs_dir),
+                                        run_id, spec['backend'])
+        # Fake launchers may supply the same initialization data directly.
+        session = session or result.get('session_id')
+        if session:
+            # Validate direct launcher metadata by the same rules the runner uses.
+            runner.resume_argv(['codex', 'exec', '-'], 'codex', session)
+        data = {'run': run_id, 'attempt': len(history) + 1, 'budget': budget,
+                'answer': answer, 'decision': task_context.CONTINUE_DECISIONS.get(answer, 'Owner decision required.'),
+                'blocker': blocker, 'decision_id': (decision or {}).get('decision_id'),
+                'model': (decision or {}).get('model'), 'fallback': (decision or {}).get('fallback'),
+                'session': session, 'route': {k: spec[k] for k in ('backend', 'model', 'effort', 'seat') if k in spec},
+                'placement': spec.get('placement', 'windows')}
+        question = task_context.owner_question(blocker, exhausted)
+        with ops.tx(p.conn):
+            p.append_event('worker-decision', data, task_id)
+            p.finish_run(run_id, result['status'], note=(rec.get('note') or blocker['detail'])[:300], **usage)
+            if answer == 'owner':
+                p.ask_question('task', task_id, question,
+                               body='Decision history:\n' + json.dumps([*history, data], ensure_ascii=True, indent=2),
+                               needs_owner=True)
+            elif session:
+                p.set_status(task_id, 'ready', reason='recorded worker decision; continue until verified')
+            elif result['status'] == 'blocked':
+                # No initialization event means there is no safe session to resume. Preserve the
+                # existing planner recovery path rather than guessing a seat's most recent session.
+                p.waiting.request_replan(task_id, 'blocker', {'blocker': blocker})
+            else:
+                self._failed(task_id, run_id, 'worker stopped without a resumable session')
 
     def _provider_streak(self, task_id, runs):
         marker = self.port.get_task(task_id)['retry_after_run']
