@@ -12,7 +12,8 @@ from hub.services import Services
 from hub.settings import Settings
 from hub.store import BadRequest, Forbidden, NotFound, Store, UiView
 from hub.watchdog import Watchdog, real_wsl
-def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dispatcher=None, services=None) -> FastAPI:
+def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dispatcher=None,
+               services=None) -> FastAPI:
     settings = settings or Settings()
     bus = events.Bus()
     store = Store(db_path, publish=bus.publish)

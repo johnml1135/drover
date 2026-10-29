@@ -2,7 +2,7 @@
   "use strict";
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var content = $("#content"), pill = $("#new-updates"), sheet = $("#sheet"), toasts = $("#toast");
-  var dragging = false, dirty = false, sortables = [], lastMove = null, closed = {};
+  var dragging = false, dirty = false, sortables = [], lastMove = null, disclosure = {}, treeSearch = null;
   var pending = [];
 
   function sheetOpen() { return !!(sheet && sheet.open); }
@@ -10,6 +10,7 @@
     var f = content.querySelectorAll("textarea,input,select");
     for (var i = 0; i < f.length; i++) {
       var control = f[i];
+      if (control.id === "tree-search") continue;
       if (control.type === "checkbox" || control.type === "radio") {
         if (control.checked !== control.defaultChecked) return true;
       } else if (control.tagName === "SELECT") {
@@ -42,14 +43,20 @@
   document.addEventListener("htmx:beforeSwap", function (e) {
     if (e.detail.target !== content) return;
     if (e.detail.xhr && e.detail.xhr.status >= 400) return;
-    closed = {};
-    content.querySelectorAll("details[data-id]").forEach(function (d) { if (!d.open) closed[d.dataset.id] = 1; });
+    disclosure = Object.create(null);
+    content.querySelectorAll("details[data-id]").forEach(function (d) { disclosure[d.dataset.id] = d.open; });
+    var search = $("#tree-search", content);
+    treeSearch = search ? search.value : null;
     sortables.forEach(function (s) { try { s.destroy(); } catch (x) {} });
     sortables = [];
   });
   document.addEventListener("htmx:afterSettle", function (e) {
     if (e.target !== content) return;
-    content.querySelectorAll("details[data-id]").forEach(function (d) { if (closed[d.dataset.id]) d.open = false; });
+    var search = $("#tree-search", content);
+    if (search && treeSearch !== null) { search.value = treeSearch; search.dispatchEvent(new Event("input", { bubbles: true })); }
+    content.querySelectorAll("details[data-id]").forEach(function (d) {
+      if (Object.prototype.hasOwnProperty.call(disclosure, d.dataset.id)) d.open = disclosure[d.dataset.id];
+    });
     initSortable();
     if (lastMove) {
       var b = $('[data-move="' + lastMove + '"]', content);

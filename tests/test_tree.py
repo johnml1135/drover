@@ -1,12 +1,14 @@
 """Owner tree page, navigation, and batched ledger budget."""
+import re
 import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
-from drover.ledger import ops
+from drover.ledger import ops, states
 from hub.app import create_app
 from hub.settings import Settings
 from hub.tree import tree_data
@@ -57,6 +59,9 @@ class TreeTests(unittest.TestCase):
         parsed.feed(page.text)
         self.assertEqual(len(parsed.rows), 4)
         self.assertEqual(len(parsed.groups), 3)
+        self.assertEqual({r['data-id'] for r in parsed.rows},
+                         {self.parent['id'], self.child['id'], self.loose['id'], self.finished['id']})
+        self.assertEqual([g['data-id'] for g in parsed.groups], [self.epic['id'], self.done['id'], ''])
         self.assertIn('open', parsed.groups[0])
         self.assertNotIn('open', parsed.groups[1])
         self.assertIn('No epic', page.text)
@@ -75,12 +80,25 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(groups[0]['counts']['proposed'], 2)
 
     def test_jump(self):
-        for q in ('T-g8', 't-G8'):
+        task = ops.create_task(self.conn, 'Mixed case id', 'repo')
+        self.conn.execute("UPDATE tasks SET id='T-Xy' WHERE id=?", (task['id'],))
+        for q in ('T-Xy', 't-xY'):
             response = self.client.get('/jump', params={'q': q})
             self.assertEqual(response.status_code, 303)
-            self.assertEqual(response.headers['location'], '/tasks/T-g8')
-        response = self.client.get('/jump', params={'q': 'E-1 words'})
-        self.assertEqual(response.headers['location'], '/tree?q=E-1+words')
+            self.assertEqual(response.headers['location'], '/tasks/T-Xy')
+        for q in ('T-g8', 't-NOTFOUND', 'E-1 words'):
+            response = self.client.get('/jump', params={'q': q})
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.headers['location'], '/tree?' + urlencode({'q': q}))
+
+    def test_every_ledger_status_has_light_and_dark_colours(self):
+        css = (Path(__file__).resolve().parents[1] / 'hub/static/tree.css').read_text()
+        light, dark = css.split('@media(prefers-color-scheme:dark)')
+        for status in states.STATES:
+            with self.subTest(status=status):
+                pattern = r'\.tree-status-' + re.escape(status) + r'(?=[,{])'
+                self.assertRegex(light, pattern)
+                self.assertRegex(dark, pattern)
 
     def test_tree_query_and_request_spawn_budget(self):
         statements = []

@@ -15,8 +15,10 @@ def tree(request: Request, q: str = "", store=Depends(web.get_store)):
 
 
 @router.get("/jump")
-def jump(q: str = ""):
+def jump(q: str = "", store=Depends(web.get_store)):
     q = q.strip()
     if re.fullmatch(r"(?i)T-[a-z0-9]+", q):
-        return RedirectResponse("/tasks/T-" + q[2:].lower(), status_code=303)
+        row = store.c.execute("SELECT id FROM tasks WHERE id = ? COLLATE NOCASE LIMIT 1", (q,)).fetchone()
+        if row:
+            return RedirectResponse("/tasks/" + row["id"], status_code=303)
     return RedirectResponse("/tree?" + urlencode({"q": q}), status_code=303)

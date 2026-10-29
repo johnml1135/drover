@@ -10,7 +10,8 @@
 {% from "_macros.html" import dispatch_ctl %}
 <body data-tab="{{ tab }}">
 <header class="top">
-  <h1>Drover</h1> <div id="dispatch-ctl">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','tree','runs','landing','health','stats') else '/health') }}</div>
+  <h1>Drover</h1>
+  <div id="dispatch-ctl">{{ dispatch_ctl(dispatch, '/' ~ tab if tab in ('inbox','plan','tree','runs','landing','health','stats') else '/health') }}</div>
   <nav class="tabs" aria-label="Sections">
     {% for key, label in tabs %}
     <a href="/{{ key }}" class="tab{% if key == tab %} on{% endif %}"{% if key == tab %} aria-current="page"{% endif %}>

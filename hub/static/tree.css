@@ -10,10 +10,10 @@ details[open]>.tree-epic-row::before,details[open]>.tree-row::before{content:'â–
 .tree-meta{flex:0 1 6rem;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
 .tree-deps{flex:0 1 8rem;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--warn)}
 .tree-age,.tree-counts{flex:none;color:var(--muted);font-size:.8rem}.tree-counts{overflow:hidden;text-overflow:ellipsis;min-width:0}
-.tree-status-ready{background:#dff3e6;color:#17693a}.tree-status-running,.tree-status-claimed{background:#dce9ff;color:#174d9e}
+.tree-status-ready{background:#dff3e6;color:#17693a}.tree-status-running,.tree-status-claimed,.tree-status-gated,.tree-status-reviewed{background:#dce9ff;color:#174d9e}
 .tree-status-needs-owner{background:#fce5cb;color:#804000}.tree-status-blocked{background:#fbe3e5;color:#a4202a}
 .tree-status-proposed,.tree-status-draft{background:#eee3fa;color:#663290}.tree-status-landed,.tree-status-closed{background:#e4ebdf;color:#416032}
 .tree-status-failed,.tree-status-abandoned,.tree-status-cancelled{background:#e9e2e2;color:#674747}
 .tree-dim>.tree-row{opacity:.6}.tree-detail{padding:4px 32px;font-size:.85rem;overflow-wrap:anywhere}.tree-detail p{margin:5px 0}.tree-description{white-space:pre-line}
 .tree-epic[hidden],.tree-task[hidden]{display:none}
-@media(prefers-color-scheme:dark){.tree-status-ready{background:#17301f;color:#7fd9a0}.tree-status-running,.tree-status-claimed{background:#182d50;color:#a8c9ff}.tree-status-needs-owner{background:#402a14;color:#ffc28a}.tree-status-blocked{background:#3a1a1e;color:#ff9aa2}.tree-status-proposed,.tree-status-draft{background:#30203e;color:#d7adfa}.tree-status-landed,.tree-status-closed{background:#283323;color:#b1cf9c}.tree-status-failed,.tree-status-abandoned,.tree-status-cancelled{background:#392e2e;color:#d8b4b4}}
+@media(prefers-color-scheme:dark){.tree-status-ready{background:#17301f;color:#7fd9a0}.tree-status-running,.tree-status-claimed,.tree-status-gated,.tree-status-reviewed{background:#182d50;color:#a8c9ff}.tree-status-needs-owner{background:#402a14;color:#ffc28a}.tree-status-blocked{background:#3a1a1e;color:#ff9aa2}.tree-status-proposed,.tree-status-draft{background:#30203e;color:#d7adfa}.tree-status-landed,.tree-status-closed{background:#283323;color:#b1cf9c}.tree-status-failed,.tree-status-abandoned,.tree-status-cancelled{background:#392e2e;color:#d8b4b4}}

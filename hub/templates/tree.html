@@ -1,6 +1,6 @@
 {% extends "_partial.html" if partial else "base.html" %}
 {% macro task_row(t) %}
-<details class="tree-task{% if t.status in ('landed', 'closed', 'cancelled', 'abandoned') %} tree-dim{% endif %}" data-search="{{ t.id }} {{ t.title }}">
+<details class="tree-task{% if t.status in ('landed', 'closed', 'cancelled', 'abandoned') %} tree-dim{% endif %}" data-id="{{ t.id }}" data-search="{{ t.id }} {{ t.title }}">
   <summary class="tree-row">
     <a class="tree-id" href="/tasks/{{ t.id }}">{{ t.id }}</a>
     <span class="pill status tree-status-{{ t.status }}">{{ t.status }}</span>
@@ -28,7 +28,7 @@
 <input id="tree-search" type="text" value="{{ q }}" placeholder="T-label, E-label, or title" autocomplete="off">
 <div id="tree-groups">
 {% for e in epics %}
-<details class="tree-epic" data-search="{{ e.id }} {{ e.title }}" data-default-open="{{ '1' if e.open else '0' }}" {% if e.open %}open{% endif %}>
+<details class="tree-epic" data-id="{{ e.id }}" data-search="{{ e.id }} {{ e.title }}" data-default-open="{{ '1' if e.open else '0' }}" {% if e.open %}open{% endif %}>
   <summary class="tree-epic-row"><strong>{{ e.id or 'No epic' }}</strong>{% if e.id %}<span class="tree-title" title="{{ e.title }}">{{ e.title }}</span><span class="pill">{{ e.status }}</span>{% endif %}<span class="tree-counts">{% for status, count in e.counts.items() %}{{ count }} {{ status }}{% if not loop.last %} · {% endif %}{% endfor %}</span></summary>
   {% for t in e.tasks %}{{ task_row(t) }}{% endfor %}
 </details>
