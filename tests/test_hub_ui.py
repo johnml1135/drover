@@ -32,7 +32,7 @@ class UiTests(unittest.TestCase):
         fix = Repo()
         self.addCleanup(fix.cleanup)
         prog = repos.normalize({'name': 'acme-lib', 'repo': str(fix.repo)})
-        with patch('hub.store.repos.load_all', return_value={'acme-lib': prog}):
+        with patch('hub.store_ui.repos.load_all', return_value={'acme-lib': prog}):
             self.assertNotIn('Push main', self.c.get('/landing').text)
             sha = fix.commit('local.txt')
             self.assertIn('Push main', self.c.get('/landing').text)
@@ -52,7 +52,7 @@ class UiTests(unittest.TestCase):
         fix = Repo()
         self.addCleanup(fix.cleanup)
         prog = repos.normalize({'name': 'acme-lib', 'repo': str(fix.repo)})
-        with patch('hub.store.repos.load_all', return_value={'acme-lib': prog}):
+        with patch('hub.store_ui.repos.load_all', return_value={'acme-lib': prog}):
             sha = fix.commit('local.txt')
             fix.git('config', 'remote.origin.pushurl', str(fix.root / 'offline.git'))
             r = self.c.post('/repos/acme-lib/push-main', headers=SAME)
@@ -82,7 +82,7 @@ class UiTests(unittest.TestCase):
                         if scenario == 'stop-resume-during-prepare':
                             control.resume('owner', stopped['epoch'], scenario + '-resume')
                     return subprocess.CompletedProcess(args, 0, 'a' * 40, '')
-                with patch('hub.store.repos.load_all', return_value={'acme-lib': prog}), \
+                with patch('hub.store_ui.repos.load_all', return_value={'acme-lib': prog}), \
                         patch('drover.origin.git', side_effect=git):
                     response = self.c.post('/repos/acme-lib/push-main', headers=SAME)
                 self.assertEqual(response.status_code, 400, response.text)

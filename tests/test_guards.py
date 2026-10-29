@@ -35,7 +35,6 @@ OVER = {
     "drover/tuner.py": 586,
     "hub/reload_protocol.py": 571,
     "hub/runtime.py": 612,
-    "hub/store.py": 839,
     "tests/test_decide.py": 638,
     "tests/test_dispatcher.py": 1227,
     "tests/test_hub_api.py": 799,
