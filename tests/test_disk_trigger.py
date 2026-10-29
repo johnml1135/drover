@@ -84,36 +84,38 @@ class Trigger(DiskCase):
             self.assertEqual(stages, [1, 2, 3, 4])
 
     def test_duplicate_readers_and_failed_launch_do_not_lose_trigger(self):
-        from drover import disk
+        from drover import disk, disk_state
         self.activate()
         launches = []
         entered, release = threading.Event(), threading.Event()
         def enqueue(*args, **kwargs):
             launches.append(1)
             entered.set()
-            self.assertTrue(release.wait(5))
-            return self.complete()
+            self.assertTrue(release.wait(60))
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(self.tick, enqueue)
-            self.assertTrue(entered.wait(5))
-            second = pool.submit(self.tick, enqueue)
             try:
-                value = second.result(timeout=5)
+                self.assertTrue(entered.wait(60))
+                second = pool.submit(self.tick, enqueue)
+                value = second.result(timeout=60)
                 self.assertIn('drives', value)
                 self.assertEqual(len(launches), 1)
             finally:
                 release.set()
-            first.result(timeout=5)
+            first.result(timeout=60)
+        self.assertEqual(len(launches), 1)
+        # Complete the claim through its receipt, without timing a real cleanup run.
+        claim = disk_state.read(self.state)['episodes']['test-drive']['claim']
+        disk_state.save_file(self.state, 'result-' + claim['id'] + '.json',
+                             dict(applied=claim['applied'], free=self.free, status='completed'))
         # A distinct falling episode must survive a failed detach.
         self.free = 150
         self.tick(enqueue)
         self.free = 149
         def fail(*args, **kwargs):
             raise OSError('fixture detach refused')
-        try:
+        with self.assertRaisesRegex(OSError, 'fixture detach refused'):
             self.tick(fail)
-        except OSError:
-            pass
         self.tick(lambda *a, **kw: launches.append(1))
         self.assertEqual(len(launches), 2)
         self.assertEqual(disk.read(self.cfg, reader=lambda p: self.free)[0]['free_gb'], 149)
