@@ -20,7 +20,6 @@ INTEGRATION_CEILING = 93  # pinned today; owner target is INTEGRATION_TARGET
 
 # Files over MAX_LINES, pinned at their current line counts (wc -l). Shrink-only: never add a file.
 OVER = {
-    "drover/ledger/ops.py": 941,
     "drover/ledger/waiting_migration.py": 741,
     "drover/notifications/core.py": 984,
     "drover/notifications/roles.py": 557,
