@@ -118,7 +118,8 @@ class CachedIdentity(DiskCase):
             if str(path) == '/proc/sys/kernel/random/boot_id':
                 raise FileNotFoundError(str(path))
             return read(path, *args, **kwargs)
-        with patch.object(Path, 'read_text', unavailable):
+        with patch.object(Path, 'read_text', unavailable), \
+                patch('drover.placement_process._SELF_IDENTITY', None):
             identity = placement.cleanup_identity()
             self.assertIsNone(identity['birth'])
             self.assertIsNone(placement.cleanup_claim_alive(dict(identity, birth='old:10')))

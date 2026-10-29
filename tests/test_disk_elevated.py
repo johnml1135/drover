@@ -41,6 +41,8 @@ class ElevatedProcesses(unittest.TestCase):
         for name, exe in (
                 ('unknown.exe', None), ('unknown.exe', r'C:\Windows\System32\unknown.exe'),
                 ('taskhostw.exe', None), ('dllhost.exe', ''), ('ctfmon.exe', None),
+                ('taskhostw.exe', r'C:\Windows\System32\unknown.exe'),
+                ('dllhost.exe', r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'),
                 ('taskhostw.exe', r'H:\worktrees\candidate\taskhostw.exe'),
                 ('taskhostw.exe', r'C:\Windows-lookalike\taskhostw.exe')):
             with self.subTest(name=name, exe=exe):

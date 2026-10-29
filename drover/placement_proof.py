@@ -186,6 +186,10 @@ class _CleanupProcesses:
         image = re.split(r'[/\\]', name or '')[-1]
         image = _ordinal_case(image) if self.windows else image
         ignored = image in self.ignored and _process_os_location(exe, self.windows)
+        if ignored and self.windows:
+            # A PID may have changed between CIM and the limited image query.
+            # Never apply an ignored CIM name to a different executable image.
+            ignored = _ordinal_case(re.split(r'[/\\]', exe)[-1]) == image
         foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
         if ignored and (same_user is None or not cwd):
             self.out_of_scope += 1
