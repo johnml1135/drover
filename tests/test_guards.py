@@ -20,7 +20,6 @@ INTEGRATION_CEILING = 93  # pinned today; owner target is INTEGRATION_TARGET
 
 # Files over MAX_LINES, pinned at their current line counts (wc -l). Shrink-only: never add a file.
 OVER = {
-    "drover/ledger/waiting_migration.py": 741,
     "drover/notifications/core.py": 984,
     "drover/notifications/roles.py": 557,
     "drover/tasktypes/schema.py": 882,
@@ -42,7 +41,6 @@ OVER = {
     "tests/test_runner.py": 848,
     "tests/test_waiting.py": 688,
     "tests/test_waiting_consumers.py": 657,
-    "tests/test_waiting_migration.py": 534,
     "tests/test_wizard.py": 583,
 }
 

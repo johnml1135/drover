@@ -29,7 +29,7 @@ class Retired(unittest.TestCase):
             if paths is not None and str(path.relative_to(ROOT)) not in paths:
                 continue
             # Migration is the sole permitted reader of legacy payloads/keys.
-            if path.name == 'waiting_migration.py':
+            if path.parent == ROOT / 'drover/ledger' and path.name.startswith('waiting_migration'):
                 continue
             for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
                 name = (node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else
@@ -49,7 +49,7 @@ class Retired(unittest.TestCase):
         self.absent({'_blocker', '_restore', '_holds_of', 'add_hold', 'remove_hold'})
         hits = []
         for path in production():
-            if path.name == 'waiting_migration.py':
+            if path.parent == ROOT / 'drover/ledger' and path.name.startswith('waiting_migration'):
                 continue
             tree = ast.parse(path.read_text(encoding='utf-8'))
             for node in ast.walk(tree):
@@ -112,7 +112,8 @@ class Architecture(unittest.TestCase):
         state_names = set(states.STATES)
         outcome_names = set(contract.OUTCOMES) | {'read-only-done'}
         for path in production():
-            if path.name in {'states.py', 'contract.py', 'schema.py', 'waiting_migration.py'}:
+            if path.name in {'states.py', 'contract.py', 'schema.py'} or (
+                    path.parent == ROOT / 'drover/ledger' and path.name.startswith('waiting_migration')):
                 continue
             tree = ast.parse(path.read_text(encoding='utf-8'))
             for node in ast.walk(tree):
