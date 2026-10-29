@@ -173,9 +173,13 @@ class Notifications(OwnershipMixin, ReplayMixin):
         landing_ids = {r[0] for r in self.conn.execute(
             "SELECT json_extract(data,'$.question') FROM task_events WHERE kind='question-asked' AND actor='landing'")}
         landing_ids.update(r['question_id'] for r in waiting.pending() if r['subject_kind'] == 'merge_queue')
+        # Manual owner pushes ask on this epic without a landing actor or wait.
+        landing_epics = {epic['id'] for epic in ops.list_epics(self.conn) if epic['title'] == 'Landing'}
         out = []
         for question in waiting.questions():
-            if question['id'] not in landing_ids or not question['visible'] or question['proposal']:
+            is_landing = question['id'] in landing_ids or (
+                question['target_kind'] == 'epic' and question['target_id'] in landing_epics)
+            if not is_landing or not question['visible'] or question['proposal']:
                 continue
             if not any(kind != 'task' or (
                     (task := ops.get_task(self.conn, key))['status'] not in states.TERMINAL and not task['archived'])

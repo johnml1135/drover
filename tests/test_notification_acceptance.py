@@ -38,12 +38,12 @@ class LandingOwnerWakeTests(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.service = Notifications(self.conn, now=lambda: self.now)
 
-    def question(self, *, base=False, actor='landing'):
+    def question(self, *, base=False, actor='landing', epic_title='Landing'):
         with patch('drover.ledger.ops_common.clock', return_value=datetime.fromtimestamp(self.now, timezone.utc)):
             if base:
                 landing.base_red(self.conn, {}, f'{int(self.now):040x}', [], 'p')
                 return ops.open_questions(self.conn)[-1]['id']
-            epic = ops.create_epic(self.conn, 'p', 'Landing')['id']
+            epic = ops.create_epic(self.conn, 'p', epic_title)['id']
             return ops.ask_question(self.conn, 'epic', epic, 'Push main failed', actor=actor,
                                     options=[{'label': 'Acknowledged'}])
 
@@ -76,6 +76,41 @@ class LandingOwnerWakeTests(unittest.TestCase):
         qid = self.question(base=True)
         self.now = 2800.
         self.assertEqual([n['question'] for n in self.service.wake_landing_questions()], [qid])
+
+    def test_owner_push_failure_without_a_wait_wakes_once_and_retracts_on_answer(self):
+        from drover.ledger.waiting import Waiting
+        qid = self.question(actor='owner')
+        self.assertEqual(Waiting(self.conn).pending(), [])
+        self.assertEqual([q['id'] for q in self.service._landing_questions()], [qid])
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.conn.close()
+        self.open_ledger()
+        self.now = 2799.
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.assertEqual(self.service.owner_attention(), [])
+        self.now = 2800.
+        notice, = self.service.wake_landing_questions()
+        self.assertEqual(notice['question'], qid)
+        self.assertIn('Push main failed', notice['title'])
+        self.assertIn(f'question #{qid}', notice['body'])
+        self.assertIn('Acknowledged', notice['body'])
+        self.assertEqual(self.service.owner_attention(), [notice])
+        self.assertEqual([q['id'] for q in ops.open_questions(self.conn)], [qid])
+        self.conn.close()
+        self.open_ledger()
+        self.now += 1800
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.assertEqual(self.service.owner_attention(), [notice])
+        ops.answer_question(self.conn, qid, choice='Acknowledged')
+        self.assertEqual(self.service.owner_attention(), [])
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.conn.close()
+        self.open_ledger()
+        self.now += 1800
+        self.assertEqual(self.service.wake_landing_questions(), [])
+        self.assertEqual(self.service.owner_attention(), [])
+        self.assertEqual(len(ops.events(self.conn, kind='notification.landing-owner-wake')), 1)
+        self.assertEqual(ops.open_questions(self.conn), [])
 
     def test_answered_and_superseded_questions_are_retracted_and_never_woken_again(self):
         for wake_first in (False, True):
@@ -151,11 +186,31 @@ class LandingOwnerWakeTests(unittest.TestCase):
         self.assertEqual(len(self.service.wake_landing_questions()), 1)
         self.assertEqual(self.service.wake_landing_questions(), [])
 
+    def test_landing_epic_questions_do_not_require_a_landing_actor(self):
+        qid = self.question(actor='tuner')
+        self.now += 1800
+        self.assertEqual([n['question'] for n in self.service.wake_landing_questions()], [qid])
+
+    def test_landing_actor_questions_on_other_epics_are_still_selected(self):
+        qid = self.question(epic_title='Release planning')
+        self.assertEqual([q['id'] for q in self.service._landing_questions()], [qid])
+
     def test_unrelated_owner_questions_are_not_landing_wakes(self):
-        self.question(actor='tuner')
+        self.question(actor='owner', epic_title='Release planning')
+        epics = ops.list_epics(self.conn)
+        self.assertEqual(self.service._landing_questions(), [])
         self.now += 1800
         self.assertEqual(self.service.wake_landing_questions(), [])
         self.assertEqual(self.service.owner_attention(), [])
+        self.assertEqual(ops.events(self.conn, kind='notification.landing-owner-wake'), [])
+        self.assertEqual(ops.list_epics(self.conn), epics)
+
+    def test_selecting_landing_questions_does_not_create_an_epic(self):
+        self.assertEqual(ops.list_epics(self.conn), [])
+        changes = self.conn.total_changes
+        self.assertEqual(self.service._landing_questions(), [])
+        self.assertEqual(ops.list_epics(self.conn), [])
+        self.assertEqual(self.conn.total_changes, changes)
 
 
 # Credentials and lease tokens travel only on the fixture-owned anonymous pipes.
