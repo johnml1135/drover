@@ -23,7 +23,6 @@ OVER = {
     "hub/reload_protocol.py": 571,
     "hub/runtime.py": 612,
     "tests/test_decide.py": 638,
-    "tests/test_dispatcher.py": 1227,
     "tests/test_hub_api.py": 799,
     "tests/test_hub_ops.py": 559,
     "tests/test_hub_runtime.py": 766,
