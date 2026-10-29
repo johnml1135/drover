@@ -148,5 +148,7 @@ class ImagePathQuery(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'native Windows image query')
     def test_native_query_reads_current_process_image(self):
-        self.assertEqual(os.path.normcase(placement_process._windows_image_path(os.getpid())),
-                         os.path.normcase(sys.executable))
+        # A Windows venv launcher can run the base interpreter as the process image.
+        expected = {os.path.normcase(sys.executable), os.path.normcase(sys._base_executable)}
+        self.assertIn(os.path.normcase(placement_process._windows_image_path(os.getpid())),
+                      expected)
