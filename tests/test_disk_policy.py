@@ -13,6 +13,7 @@ PROCESS_IGNORE = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSess
                   'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
                   'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
                   'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe',
+                  'taskhostw.exe', 'dllhost.exe',
                   'systemd', '(sd-pam)']
 
 

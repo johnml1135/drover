@@ -250,6 +250,29 @@ def _windows_cwd(pid):
         kernel.CloseHandle(handle)
 
 
+def _windows_image_path(pid):
+    """Read the image across integrity levels without requiring process memory access."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype = w.BOOL
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        size = w.DWORD(32768)
+        image = c.create_unicode_buffer(size.value)
+        if kernel.QueryFullProcessImageNameW(handle, 0, image, c.byref(size)):
+            return image.value or None
+        return None
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def _cim_rows(timeout=240, pids=None):
     """One PowerShell pass supplies owner SIDs alongside argv/exe evidence."""
     # Owners come from each process token in this one PowerShell process (no per-process WMI call, no admin).
@@ -291,8 +314,11 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name
     data = json.loads(out.stdout)
     if not data.get('sid') or not isinstance(data.get('processes'), list):
         raise ValueError('CIM ownership unavailable')
+    # CIM hides elevated images even when a limited-query handle can read them.
+    # Keep ownership/command-line uncertainty; only a verified image may qualify
+    # for the owner's non-workspace helper policy.
     return [dict(pid=d['ProcessId'], name=d.get('Name'), session_id=d.get('SessionId'),
-                 exe=d.get('ExecutablePath'),
+                 exe=d.get('ExecutablePath') or _windows_image_path(d['ProcessId']),
                  command_unreadable=d.get('CommandLine') is None,
                  same_user=d.get('OwnerSid') == data['sid'] if d.get('OwnerSid') else None,
                  cmd=' '.join(filter(None, [d.get('ExecutablePath'), d.get('CommandLine')])))

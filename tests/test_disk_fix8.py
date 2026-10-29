@@ -55,10 +55,10 @@ class Processes(DiskCase):
         self.assertNotIn('close ', proof.unreadable[0].get('owner_action', ''))
 
     def test_r13_only_trusted_os_locations_allow_helper_exemption(self):
-        unsafe = [r'H:\repo\csrss.exe', '/mnt/h/repo/csrss.exe', r'\\?\H:\repo\csrss.exe',
+        unsafe = [None, r'H:\repo\csrss.exe', '/mnt/h/repo/csrss.exe', r'\\?\H:\repo\csrss.exe',
                   r'\\server\share\repo\csrss.exe', r'\\?\UNC\server\share\repo\csrss.exe',
                   r'H:\external-git-worktree\csrss.exe', r'C:\Windows-lookalike\csrss.exe']
-        safe = [None, r'C:\Windows\System32\csrss.exe', r'\\?\C:\Windows\System32\csrss.exe',
+        safe = [r'C:\Windows\System32\csrss.exe', r'\\?\C:\Windows\System32\csrss.exe',
                 '/mnt/c/Windows/System32/csrss.exe', r'C:\Program Files\helper\csrss.exe']
         with patch.dict(os.environ, {'SystemRoot': r'C:\Windows', 'ProgramFiles': r'C:\Program Files'}):
             for exe in unsafe + safe:
@@ -203,7 +203,8 @@ class FreshDecisions(DiskCase):
 
     def test_r12_default_list_upgrades_to_include_remote_desktop_without_overwriting_edits(self):
         from drover import config
-        old = [name for name in placement.default_process_ignore() if name != 'remoting_desktop.exe']
+        old = [name for name in placement.default_process_ignore()
+               if name not in ('remoting_desktop.exe', 'taskhostw.exe', 'dllhost.exe')]
         new = config.migrate_disk_config(dict(disk_cleanup=dict(process_ignore=old)))
         self.assertIn('remoting_desktop.exe', new['disk_cleanup']['process_ignore'])
         edited = old + ['custom.exe']

@@ -25,7 +25,7 @@ from .placement_process import (
 
 def _process_os_location(exe, windows):
     if not exe:
-        return True
+        return not windows
     roots = ([os.environ.get('SystemRoot', r'C:\Windows'),
               os.environ.get('ProgramFiles', r'C:\Program Files'),
               os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
@@ -46,14 +46,16 @@ def default_process_ignore():
     """Owner-editable non-workspace helpers; shells are deliberately excluded."""
     return [*_PROCESS_IGNORE_R11_WINDOWS,
             'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
-            'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe', *_PROCESS_IGNORE_WSL]
+            'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe',
+            'taskhostw.exe', 'dllhost.exe', *_PROCESS_IGNORE_WSL]
 
 
 def seed_cleanup_process_policy(policy):
     """Upgrade the exact prior factory list; preserve every owner-modified list."""
-    previous = [name for name in default_process_ignore() if name != 'remoting_desktop.exe']
+    previous = [name for name in default_process_ignore() if name not in ('taskhostw.exe', 'dllhost.exe')]
+    before_remoting = [name for name in previous if name != 'remoting_desktop.exe']
     if 'process_ignore' not in policy or policy['process_ignore'] in (
-            _PROCESS_IGNORE_R11_WINDOWS + _PROCESS_IGNORE_WSL, previous):
+            _PROCESS_IGNORE_R11_WINDOWS + _PROCESS_IGNORE_WSL, before_remoting, previous):
         policy['process_ignore'] = default_process_ignore()
     policy.setdefault('process_query_timeout_s', 240)
 

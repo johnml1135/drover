@@ -160,7 +160,7 @@ class HelperPolicy(DiskCase):
         request = dict(paths=dict(temp_roots=[roots[3]], caches=[dict(path=roots[4])]),
                        repos=[dict(repo=roots[1], worktrees=roots[2])], approved_path=roots[0])
         for owner in (None, True):
-            for exe, conservative in [(None, False), (r'C:\Windows\csrss.exe', False),
+            for exe, conservative in [(None, True), (r'C:\Windows\csrss.exe', False),
                                       *[(root + r'\csrss.exe', True) for root in roots]]:
                 with self.subTest(owner=owner, exe=exe):
                     proof = placement.cleanup_processes(windows=True, request=request, cim=lambda: [dict(
@@ -214,7 +214,7 @@ class HelperPolicy(DiskCase):
                     'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
                     'systemd', '(sd-pam)']
         raw = dict(disk_cleanup=dict(temp_roots=[], process_ignore=previous))
-        expected = set(previous) | R12_HELPERS | {'remoting_desktop.exe'}
+        expected = set(previous) | R12_HELPERS | {'remoting_desktop.exe', 'taskhostw.exe', 'dllhost.exe'}
         migrated = config.migrate_disk_config(raw)
         self.assertEqual(set(migrated['disk_cleanup']['process_ignore']), expected)
         self.assertEqual(config.migrate_disk_config(migrated), migrated)
