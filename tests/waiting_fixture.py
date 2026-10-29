@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import ci, config, landing, origin, ownership
+from drover import landing_batch, landing_control
 from drover.ledger import db, ops
 
 
@@ -148,10 +149,10 @@ class MemoryLandingCase(unittest.TestCase):
         config.use(cfg)
         self.gate = self.r.gate
         for context in (
-            patch.object(landing, 'git', side_effect=self.r.observe),
-            patch.object(landing, 'branch_head', side_effect=self.r.branch_head),
-            patch.object(landing, 'task_files', side_effect=self.r.task_files),
-            patch.object(landing, 'build_tip', side_effect=self.r.replay),
+            patch.object(landing, 'git', side_effect=self.r.observe), patch.object(landing_batch, 'git', side_effect=self.r.observe), patch.object(landing_control, 'git', side_effect=self.r.observe),
+            patch.object(landing, 'branch_head', side_effect=self.r.branch_head), patch.object(landing_batch, 'branch_head', side_effect=self.r.branch_head),
+            patch.object(landing_batch, 'task_files', side_effect=self.r.task_files),
+            patch.object(landing, 'build_tip', side_effect=self.r.replay), patch.object(landing_control, 'build_tip', side_effect=self.r.replay),
             patch.object(origin, 'sync', side_effect=self.r.sync),
             patch.object(origin, 'fast_forward', side_effect=self.r.advance),
             patch.object(origin, 'push_main', side_effect=self.r.push),

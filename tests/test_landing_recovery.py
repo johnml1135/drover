@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from drover import ci, landing, resources
+from drover import ci, landing, landing_control, resources
 from drover.ledger import db, ops
 from drover.ledger.waiting import Waiting, BASE, cause_key
 from tests.fakeci import resources_go
@@ -30,7 +30,7 @@ class RecoveryTests(unittest.TestCase):
             (landing, 'sync_main', None), (landing, '_control_guard', 0),
             (landing, 'git', SimpleNamespace(stdout=SHA, returncode=0)),
             (landing, 'form_batch', [self.task]),
-            (landing, 'build_tip', ('b' * 40, [self.task], [])),
+            (landing, 'build_tip', ('b' * 40, [self.task], [])), (landing_control, 'build_tip', ('b' * 40, [self.task], [])),
         ):
             self.stack.enter_context(patch.object(obj, name, return_value=value))
         self.stack.enter_context(patch('drover.ownership.owned_by', return_value=False))
