@@ -74,7 +74,8 @@ class Retired(unittest.TestCase):
     def test_landing_borrow_tuner_parks_absent(self):
         self.absent({'HOLD_KEY', 'HOLD_QUESTION_KEY', 'held', '_ask_clean', '_director_borrow_approved', '_propose'},
                     ('landing_hold', '_land_dirty_q_'),
-                    paths={'drover/landing.py', 'hub/dispatch.py', 'drover/dispatcher.py', 'drover/tuner.py'})
+                    paths={'drover/landing.py', 'hub/dispatch.py', 'drover/dispatcher.py', 'drover/tuner.py', 'drover/tuner_metrics.py',
+                           'drover/tuner_routing.py'})
 
     def test_backoff_paths_absent(self):
         self.absent({'get_backoffs', 'set_backoff', '_prune_backoffs'}, ('_dispatch_backoff',))
