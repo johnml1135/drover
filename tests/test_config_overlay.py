@@ -31,11 +31,12 @@ class Overlay(unittest.TestCase):
 
     def test_child_exports_absent(self):
         # Reuse the retained-release fixture, without collecting its test methods here.
-        from tests.test_hub_runtime import RuntimeTests, INSTANCE
+        from tests.test_hub_runtime import RuntimeTests, INSTANCE, setUpModule
         from hub.runtime import child_command
+        setUpModule()
         fixture = RuntimeTests()
-        fixture.setUp()
         self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
         release = fixture.baseline()
         argv, env, cwd = child_command(fixture.enrolled, release, 12, INSTANCE, env={
             'DROVER_OVERLAY': 'obsolete', 'drover_overlay': 'obsolete lowercase',
@@ -52,26 +53,3 @@ class Overlay(unittest.TestCase):
         for name, value in fixture.enrolled['paths'].items():
             if name != 'overlay':
                 self.assertEqual(env['DROVER_RELOAD_' + name.upper()], value)
-        # The composed retained child sees package and runner imports in the release.
-        import json
-        import subprocess
-        import sys
-        fixture.write('drover/__init__.py', '')
-        fixture.write('drover/launch.py', 'from pathlib import Path\nROOT=Path(__file__).resolve().parents[1]\n')
-        fixture.write('hub/__main__.py',
-                      'import json, os\nfrom pathlib import Path\nimport drover.launch\n'
-                      'print(json.dumps({"hub":str(Path(__file__).resolve()),'
-                      '"runner":str(drover.launch.ROOT),'
-                      '"obsolete":[k for k in os.environ if k.upper() in '
-                      '("DROVER_OVERLAY","DROVER_RELOAD_OVERLAY")]}))\n')
-        fixture.a = fixture.commit()
-        fixture.enrolled.pop('baseline')
-        release = fixture.baseline()
-        argv, env, cwd = child_command(fixture.enrolled, release, 13, INSTANCE, env=os.environ)
-        result = subprocess.run([sys.executable, *argv[1:]], env=env, cwd=cwd,
-                                capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        data = json.loads(result.stdout)
-        self.assertEqual(Path(data['hub']), Path(cwd) / 'hub/__main__.py')
-        self.assertEqual(Path(data['runner']), Path(cwd))
-        self.assertEqual(data['obsolete'], [])

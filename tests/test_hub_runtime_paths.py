@@ -214,7 +214,7 @@ class RuntimePathTests(_RuntimeBase):
         self.write('hub/__main__.py', 'raise RuntimeError("mutable source imported")\n')
         self.write('drover/launch.py', 'raise RuntimeError("mutable runner imported")\n')
         argv, env, cwd = child_command(self.enrolled, release, 12, INSTANCE,
-                                       env={**os.environ, 'PYTHONPATH': str(self.source)})
+                                       env={**os.environ, 'PYTHONPATH': str(self.source), 'DROVER_OVERLAY': 'obsolete', 'DROVER_RELOAD_OVERLAY': 'obsolete'})
         # The installed-interpreter argv is asserted above. Use the preinstalled
         # test Python to execute the same import flags against this fixture.
         process = subprocess.run([sys.executable, *argv[1:]], env=env, cwd=cwd,
