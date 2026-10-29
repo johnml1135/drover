@@ -23,7 +23,6 @@ OVER = {
     "drover/ledger/waiting_migration.py": 741,
     "drover/notifications/core.py": 984,
     "drover/notifications/roles.py": 557,
-    "drover/repos.py": 557,
     "drover/tasktypes/schema.py": 882,
     "hub/reload_protocol.py": 571,
     "hub/runtime.py": 612,

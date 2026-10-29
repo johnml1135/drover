@@ -112,7 +112,7 @@ class CommittedConfig(unittest.TestCase):
                            for value in (SHA, ENTRY, text)]
                 with patch.object(repos.placement, 'reachable', return_value=True), \
                         patch.object(repos.placement, 'git', side_effect=results), \
-                        patch.object(repos, 'worktrees_for', return_value=machine['worktrees']), \
+                        patch('drover.repos_normalize.worktrees_for', return_value=machine['worktrees']), \
                         self.assertRaises(repos.RepoError) as caught:
                     repos.load(machine, machine_path='/registration.toml')
                 self.assertEqual(str(caught.exception), f'{ENTRY}@{SHA}: {error}')
