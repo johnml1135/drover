@@ -36,6 +36,11 @@ from .runner_supervise import (Status, _read_stop_file, read_stop, request_stop,
 PYTHON_RE = re.compile(r"(?i)python(w)?(\d+(\.\d+)?)?(\.exe)?")
 
 
+def valid_worker_session(session):
+    """Session identifiers are opaque ids, never CLI options or filesystem paths."""
+    return isinstance(session, str) and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', session))
+
+
 def worker_session(runs_dir, run_id, backend):
     """Read only this run's initialization event; never resume an unrelated latest session."""
     try:
@@ -52,7 +57,7 @@ def worker_session(runs_dir, run_id, backend):
                     session = event.get('thread_id')
                 elif backend == 'claude' and event.get('type') == 'system' and event.get('subtype') == 'init':
                     session = event.get('session_id')
-                if isinstance(session, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', session):
+                if valid_worker_session(session):
                     return session
     except OSError:
         pass
@@ -61,7 +66,7 @@ def worker_session(runs_dir, run_id, backend):
 
 def resume_argv(argv, backend, session):
     """Keep the launcher's sandbox, model and environment flags when resuming a specific worker."""
-    if not isinstance(session, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', session):
+    if not valid_worker_session(session):
         raise ValueError('invalid worker session')
     argv = list(argv)
     if backend == 'codex' and len(argv) > 2 and argv[1] == 'exec' and argv[-1] == '-':

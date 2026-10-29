@@ -18,7 +18,8 @@ WORKER_DECISIONS = (
     'The approved task, scope and acceptance criteria are the approved design. '
     'Use existing repository conventions and the smallest reversible implementation that satisfies them. '
     'Choose routine implementation details within that authority and record your choice; '
-    'do not wait for skill approval gates. Never expand scope or override repository safety rules. '
+    'do not wait for skill approval gates. Apply recorded decisions as firm choices and continue '
+    'instead of reporting the same resolved blocker again. Never expand scope or override repository safety rules. '
     'Only the owner can authorize destructive actions, new access, dependencies, publishing, '
     'or a change to the approved goal or acceptance criteria.'
 )

@@ -10,7 +10,7 @@ from .dispatcher_admission import (MAX_FINISH_TRIES, MAX_ROTATIONS, MAX_PROVIDER
 
 class FinishSteps:
     def _route(self, task, policy, admitted):
-        pending = self._pending_continuation(task)
+        pending = self._pending_continuation(task) if task.get('role', 'worker') == 'worker' else None
         if not pending or not pending.get('session'):
             return super()._route(task, policy, admitted)
         route = pending['route']
@@ -22,7 +22,8 @@ class FinishSteps:
     def _pending_continuation(self, task):
         history = self._continuation_history(task)
         last = next((r for r in reversed(self.port.list_runs(task['id']))
-                     if r['role'] == 'worker' and r['outcome'] not in ('launch-error', 'control-held')), None)
+                     if r['role'] == 'worker' and r['outcome'] not in
+                     ('launch-error', 'control-held', contract.PROVIDER_ERROR)), None)
         if history and last and history[-1]['run'] == last['id'] and history[-1]['answer'] != 'owner':
             return history[-1]
 
@@ -216,15 +217,16 @@ class FinishSteps:
         session = runner.worker_session(getattr(self.launcher, 'runs_dir', self.pipeline.runs_dir),
                                         run_id, spec['backend'])
         # Fake launchers may supply the same initialization data directly.
-        session = session or result.get('session_id')
-        if session:
-            # Validate direct launcher metadata by the same rules the runner uses.
-            runner.resume_argv(['codex', 'exec', '-'], 'codex', session)
+        if not session and runner.valid_worker_session(result.get('session_id')):
+            session = result['session_id']
+        # Adopted runs do not carry every launch field. The ledger preserves their model and effort.
+        run = next(r for r in p.list_runs(task_id) if r['id'] == run_id)
+        route = {k: spec.get(k) or run.get(k) for k in ('backend', 'model', 'effort', 'seat')}
         data = {'run': run_id, 'attempt': len(history) + 1, 'budget': budget,
                 'answer': answer, 'decision': task_context.CONTINUE_DECISIONS.get(answer, 'Owner decision required.'),
                 'blocker': blocker, 'decision_id': (decision or {}).get('decision_id'),
                 'model': (decision or {}).get('model'), 'fallback': (decision or {}).get('fallback'),
-                'session': session, 'route': {k: spec[k] for k in ('backend', 'model', 'effort', 'seat') if k in spec},
+                'session': session, 'route': route,
                 'placement': spec.get('placement', 'windows')}
         question = task_context.owner_question(blocker, exhausted)
         with ops.tx(p.conn):
@@ -241,7 +243,9 @@ class FinishSteps:
                 # existing planner recovery path rather than guessing a seat's most recent session.
                 p.waiting.request_replan(task_id, 'blocker', {'blocker': blocker})
             else:
-                self._failed(task_id, run_id, 'worker stopped without a resumable session')
+                # No session was initialized. Keep these stops in the same durable budget;
+                # generic retry/replan handling can reset it or leave unverified runs parked.
+                p.set_status(task_id, 'ready', reason='recorded worker decision; restart until verified')
 
     def _provider_streak(self, task_id, runs):
         marker = self.port.get_task(task_id)['retry_after_run']
