@@ -51,7 +51,6 @@ class Store:
 
     def list_epics(self):
         return ops.list_epics(self.conn)
-
     @_translate
     def create_task(self, title, repo="default", actor="dispatcher", **f):
         if not title or not title.strip():
@@ -59,7 +58,6 @@ class Store:
         t = ops.create_task(self.conn, title.strip(), repo, actor=actor, **f)
         self._changed("task.created", id=t["id"])
         return self.get_task(t["id"])
-
     @_translate
     def get_task(self, tid):
         t = ops.get_task(self.conn, tid)
@@ -77,41 +75,43 @@ class Store:
             ql = q.lower()
             tasks = [t for t in tasks if ql in t["title"].lower() or ql in (t["goal"] or "").lower()]
         return tasks[:limit]
-
     @_translate
     def update_task(self, tid, actor="dispatcher", **fields):
         fields = {k: v for k, v in fields.items() if v is not None}
         t = ops.update_task(self.conn, tid, actor=actor, **fields)
         self._changed("task.updated", id=tid)
         return self.get_task(tid)
-
     @_translate
     def set_status(self, tid, status, actor, reason=None):
         t = ops.set_status(self.conn, tid, status, actor=actor, reason=reason)
         self._changed("task.status", id=tid, status=status)
         return t
-
     @_translate
     def approve(self, tid):
         """Owner approval. The caller must have authenticated the owner."""
         t = ops.approve(self.conn, tid, actor="owner")
         self._changed("task.status", id=tid, status=t["status"])
         return t
-
     @_translate
     def accept_read_only(self, tid):
         """The authenticated owner accepts the latest successful findings."""
         t = ops.accept_read_only(self.conn, tid, actor='owner')
         self._changed('task.status', id=tid, status=t['status'])
         return t
-
+    @_translate
+    def record_external_landing(self, tid, sha, base_ref, gate, review):
+        with tx(self.conn):
+            old = ops.get_task(self.conn, tid)['status']
+            t = ops.record_external_landing(self.conn, tid, sha, base_ref, gate, review, actor='owner')
+        if old != t['status']:
+            self._changed('task.status', id=tid, status=t['status'])
+        return t
     @_translate
     def claim_next(self, worker):
         t = ops.claim_next(self.conn, dict(worker))
         if t:
             self._changed("task.claimed", id=t["id"])
         return t
-
     @_translate
     def reorder(self, kind, item_id, before_id=None, after_id=None, actor="owner"):
         r = ops.reorder(self.conn, kind, item_id, before_id, after_id, actor=actor)

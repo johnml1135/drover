@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse
 
-from hub import api, auth, events, notifications, web
+from hub import api, auth, events, notifications, outside, web
 from hub.dispatch import DispatcherService
 from hub.services import Services
 from hub.settings import Settings
@@ -81,7 +81,7 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
     app.include_router(api.public)
     app.include_router(api.router)
     app.include_router(notifications.router)
-
+    app.include_router(outside.router)
     @app.get("/events", response_class=EventSourceResponse)
     async def sse(request: Request, limit: int | None = None):
         last = request.headers.get("last-event-id")
