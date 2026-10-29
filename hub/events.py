@@ -1,7 +1,6 @@
 """In-process pub/sub that feeds the UI's SSE stream at /events."""
 import asyncio
 import itertools
-import json
 import threading
 from collections import deque
 from fastapi import APIRouter, Request
@@ -66,7 +65,7 @@ async def stream(bus: Bus, after_id: int | None = None, limit: int | None = None
         while limit is None or sent < limit:
             ev = await q.get()
             yield ServerSentEvent(
-                data=json.dumps({"kind": ev["kind"], **ev["data"]}), event="ledger",
+                data={"kind": ev["kind"], **ev["data"]}, event="ledger",
                 id=str(ev["id"])
             )
             sent += 1

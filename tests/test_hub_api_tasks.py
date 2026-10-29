@@ -1,4 +1,5 @@
 """Hub API tests: auth, owner gate, tasks, claim race, import, SSE."""
+import json
 import tempfile
 import threading
 import unittest
@@ -102,13 +103,18 @@ class SseTests(HubCase):
         tmp, app = make(trusted_ui_hosts=("testclient",))
         self.addCleanup(tmp.cleanup)
         self.addCleanup(app.state.store.close)
-        app.state.store.create_task("X")
+        created = app.state.store.create_task("X")
+        replay = app.state.bus.recent()[0]
         c = TestClient(app)
         with c.stream("GET", "/events?limit=1", headers={"Last-Event-ID": "0"}) as r:
             self.assertEqual(r.headers["content-type"].split(";")[0], "text/event-stream")
             body = "".join(r.iter_text())
         self.assertIn("event: ledger", body)
-        self.assertIn("task.created", body)
+        fields = dict(line.split(":", 1) for line in body.splitlines() if ":" in line)
+        payload = json.loads(fields["data"].lstrip())
+        self.assertEqual(payload, {"kind": "task.created", **replay["data"]})
+        self.assertEqual(payload["id"], created["id"])
+        self.assertEqual(int(fields["id"]), replay["id"])
 
     def test_events_endpoint_rejects_outsiders(self):
         self.assertEqual(self.c.get("/events?limit=1").status_code, 403)
