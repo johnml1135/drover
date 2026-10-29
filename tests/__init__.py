@@ -65,7 +65,6 @@ if "integration" not in os.environ.get("DROVER_TESTS", "").replace(",", " ").spl
         "tests.test_notification_acceptance",
         "tests.test_notification_fences",
         "tests.test_origin_sync",
-        "tests.test_pipeline",
         "tests.test_placement",
         "tests.test_proc_scan",
         "tests.test_reload_protocol",

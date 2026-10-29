@@ -34,7 +34,6 @@ OVER = {
     "tests/test_launch_runner.py": 580,
     "tests/test_ledger.py": 754,
     "tests/test_notification_api.py": 637,
-    "tests/test_pipeline.py": 1620,
     "tests/test_replan_batches.py": 1037,
     "tests/test_replans.py": 758,
     "tests/test_runner.py": 848,
@@ -43,7 +42,7 @@ OVER = {
     "tests/test_wizard.py": 583,
 }
 
-IMPURE_CEILING = 57  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
+IMPURE_CEILING = 56  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
 
 
 def sources():
