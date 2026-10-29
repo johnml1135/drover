@@ -22,7 +22,6 @@ INTEGRATION_CEILING = 93  # pinned today; owner target is INTEGRATION_TARGET
 OVER = {
     "drover/ci.py": 579,
     "drover/disk_cleanup.py": 559,
-    "drover/importer.py": 632,
     "drover/landing.py": 766,
     "drover/ledger/ops.py": 941,
     "drover/ledger/waiting.py": 1139,
