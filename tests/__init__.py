@@ -69,6 +69,7 @@ if "integration" not in os.environ.get("DROVER_TESTS", "").replace(",", " ").spl
         "tests.test_landing",
         "tests.test_landing_repository",
         "tests.test_launch_runner",
+        "tests.test_launch_runner_handle",
         "tests.test_notification_acceptance",
         "tests.test_notification_fences",
         "tests.test_origin_sync",
@@ -88,6 +89,7 @@ if "integration" not in os.environ.get("DROVER_TESTS", "").replace(",", " ").spl
         "tests.test_usage",
         "tests.test_waiting_migration",
         "tests.test_wizard",
+        "tests.test_wizard_detection",
         "tests.test_wizard_scopes",
     }  # test modules still allowed to start processes or sleep (filled in below)
     _real_sleep = time.sleep
