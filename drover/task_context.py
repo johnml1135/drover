@@ -107,7 +107,7 @@ def _read_repository_rules(cwd, scopes):
         for name in ('AGENTS.md', 'CLAUDE.md'):
             path = directory / name
             try:
-                rules[str(path.relative_to(root))] = path.read_text(encoding='utf-8')
+                rules[path.relative_to(root).as_posix()] = path.read_text(encoding='utf-8')
             except (FileNotFoundError, NotADirectoryError):
                 pass
     return rules
