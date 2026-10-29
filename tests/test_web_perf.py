@@ -3,6 +3,7 @@ import logging
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 from drover import repos, origin
 from drover import placement_git
+from drover.ledger import ops
 from hub.perf import Perf
 from hub.app import create_app
 from hub.settings import Settings
@@ -46,6 +48,9 @@ class WebPerfTests(unittest.TestCase):
         else:
             output = 'schema_version = 1\n'
         return subprocess.CompletedProcess(argv, 0, output, '')
+    def cold_repos(self):
+        view = self.app.state.ui_view
+        view._repo_cache, view._repo_at = None, 0
     def test_windows_registration_path_is_toml_safe(self):
         import tomllib
         from pathlib import PureWindowsPath
@@ -92,14 +97,13 @@ class WebPerfTests(unittest.TestCase):
         self.app.state.store.create_task('one task', repo='one')
         for path in ('/inbox', '/plan', '/runs', '/stats', '/health', '/landing', '/'):
             with self.subTest(path=path):
-                self.app.state.ui_view.invalidate_repos()
+                self.cold_repos()
                 self.spawns.clear()
                 response = self.client.get(path)
                 self.assertIn(response.status_code, (200, 303))
                 self.assertLessEqual(len(self.spawns), 6)
                 if path == '/inbox':
                     self.assertEqual(len(self.spawns), 6)
-                    self.assertIn('git;desc="6 spawns"', response.headers['server-timing'])
                 self.spawns.clear()
                 response = self.client.get(path)
                 self.assertIn(response.status_code, (200, 303))
@@ -112,20 +116,89 @@ class WebPerfTests(unittest.TestCase):
     def test_cache_ttl_events_and_fresh_operational_load(self):
         view = self.app.state.ui_view
         with patch('hub.store_ui.time.monotonic', side_effect=[0, 0, 29, 30, 30]):
-            view.ui_repos()
-            view.ui_repos()
+            view.ui_repos()      # cold: waits for the one load
+            view.ui_repos()      # fresh
             self.assertEqual(len(self.spawns), 6)
-            view.ui_repos()
+            view.ui_repos()      # 29 s: still fresh
+            self.assertEqual(len(self.spawns), 6)
+            view.ui_repos()      # 30 s: expired, refreshes in the background
+            view._repo_pending.result(5)
             self.assertEqual(len(self.spawns), 12)
         for kind, data in [('repo.changed', {}), ('settings', {}), ('landing.changed', {}),
                            ('ledger', {'kind': 'origin-synced'}), ('event', {'kind': 'config.changed'})]:
             self.app.state.bus.publish('unrelated', {})
             self.app.state.bus.publish(kind, data)
-            self.assertIsNone(view._repo_cache, kind)
+            self.assertIsNone(view._repo_at, kind)
+            self.assertIsNotNone(view._repo_cache, kind)  # the last good copy is kept
             view.ui_repos()
+            view._repo_pending.result(5)
         self.spawns.clear()
         repos.load_all()
         self.assertEqual(len(self.spawns), 6)
+    def test_expired_or_invalidated_repo_cache_serves_old_data_and_refreshes_once(self):
+        view = self.app.state.ui_view
+        old = view.ui_repos()
+        self.spawns.clear()
+        release, started = threading.Event(), threading.Event()
+        def slow_load():
+            started.set()
+            release.wait(5)
+            return {'new': {}}
+        self.addCleanup(release.set)
+        with patch('hub.store_ui.repos.load_all', side_effect=slow_load) as load:
+            view.invalidate_repos()
+            self.assertIs(view.ui_repos(), old)          # stale data, no wait
+            self.assertTrue(started.wait(5))
+            view.invalidate_repos()
+            self.assertIs(view.ui_repos(), old)          # refresh already running: not started twice
+            self.assertIs(view.ui_repos(), old)
+            self.assertEqual(load.call_count, 1)
+            release.set()
+            view._repo_pending.result(5)
+        self.assertEqual(self.spawns, [])
+        self.assertIsNone(view._repo_at)                 # invalidated mid-load: next call refreshes again
+        with patch('hub.store_ui.repos.load_all', return_value={'newer': {}}):
+            view.ui_repos()
+            view._repo_pending.result(5)
+        self.assertEqual(view.ui_repos(), {'newer': {}})
+    def test_failed_background_refresh_keeps_last_good_repos(self):
+        view = self.app.state.ui_view
+        old = view.ui_repos()
+        view.invalidate_repos()
+        with patch('hub.store_ui.repos.load_all', side_effect=OSError('git down')), \
+             self.assertLogs('hub', level=logging.ERROR):
+            self.assertIs(view.ui_repos(), old)
+            with self.assertRaises(OSError):
+                view._repo_pending.result(5)
+        self.assertIs(view.ui_repos(), old)
+    def test_health_and_events_read_only_what_they_return(self):
+        store = self.app.state.store
+        for n in range(30):
+            store.add_event('noise', 'test', {'n': n})
+        store.add_event('watchdog.boot-wsl', 'test', {'message': 'old'})
+        for n in range(600):
+            store.add_event('noise', 'test', {'n': n})
+        conn = store.conn
+        seen = []
+        conn.set_trace_callback(seen.append)
+        self.addCleanup(conn.set_trace_callback, None)
+        rows = store.list_events(limit=5)
+        self.assertEqual([e['data']['n'] for e in rows], [595, 596, 597, 598, 599])
+        self.assertEqual([e['data']['n'] for e in store.list_events(kind='noise', since_id=rows[0]['id'], limit=2)],
+                         [598, 599])
+        self.assertTrue(any('LIMIT' in q for q in seen), seen)
+        # rows decoded by the health page: the newest 500, not the whole ledger
+        with patch.object(ops, 'events', wraps=ops.events) as ev:
+            self.app.state.ui_view.health()
+        self.assertEqual(ev.call_args.kwargs['limit'], 500)
+    def test_stats_page_loads_series_only(self):
+        store = self.app.state.store
+        rows = store.stats(series_only=True)
+        self.assertEqual(sorted(rows), ['daily', 'hourly'])
+        self.assertIn('runs', store.stats())
+        self.assertEqual(self.client.get('/api/v1/stats?series=1', headers={'Authorization': 'Bearer tok'}).json().keys(),
+                         {'daily': 1, 'hourly': 1}.keys())
+        self.assertIn('stats?series=1', Path('hub/static/stats.js').read_text())
     def test_nav_counts_without_building_task_views(self):
         store = self.app.state.store
         view = self.app.state.ui_view
@@ -182,7 +255,7 @@ class WebPerfTests(unittest.TestCase):
              patch.object(view.services, 'disk_free', side_effect=AssertionError('request probe')):
             self.assertTrue(view.health()['ollama']['reachable'])
             self.assertEqual(view.health()['disks'][0]['free_gb'], 4)
-        with patch('hub.app.time', SimpleNamespace(perf_counter=iter([10.0, 11.5]).__next__)), \
+        with patch('hub.app.time', SimpleNamespace(perf_counter=iter([10.0, 11.5, 11.5]).__next__)), \
              self.assertLogs('hub', level=logging.WARNING) as logs:
             response = self.client.get('/')
         self.assertIn('total;dur=1500.00', response.headers['server-timing'])
@@ -191,6 +264,13 @@ class WebPerfTests(unittest.TestCase):
         self.assertEqual(perf['slow'][0]['path'], '/')
         self.assertEqual(perf['routes'][0]['p95_ms'], 1500)
         self.assertIn('Recent slow requests', self.client.get('/stats').text)
+    def test_request_timing_includes_sending_the_body(self):
+        with patch('hub.app.time', SimpleNamespace(perf_counter=iter([10.0, 11.0, 13.0]).__next__)), \
+             self.assertLogs('hub', level=logging.WARNING) as logs:
+            response = self.client.get('/')
+        self.assertIn('total;dur=1000.00', response.headers['server-timing'])  # time to first byte
+        self.assertIn('duration_ms=3000.00', logs.output[0])                   # until the body was sent
+        self.assertEqual(self.app.state.perf.snapshot()['routes'][0]['p95_ms'], 3000)
 
 
 if __name__ == '__main__':

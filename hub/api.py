@@ -463,8 +463,8 @@ class DeleteIn(BaseModel):
     confirm: bool = False
 
 @router.get("/stats")
-def get_stats(request: Request, since: str | None = None, task: str | None = None):
-    return guard(_store(request).stats, since, task)
+def get_stats(request: Request, since: str | None = None, task: str | None = None, series: bool = False):
+    return guard(_store(request).stats, since, task, series)
 
 @router.get("/usage/order")
 def get_seats(request: Request):

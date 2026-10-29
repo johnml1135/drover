@@ -126,7 +126,7 @@ def event(conn, kind, actor, data=None, task_id=None, epic_id=None, at=None):
         return ident
 
 
-def events(conn, task_id=None, epic_id=None, kind=None, after=0, limit=None):
+def events(conn, task_id=None, epic_id=None, kind=None, after=0, limit=None, newest=False):
     if not isinstance(after, int) or after < 0:
         raise ValueError("after must be a nonnegative event position")
     if limit is not None and (not isinstance(limit, int) or limit < 0):
@@ -136,11 +136,12 @@ def events(conn, task_id=None, epic_id=None, kind=None, after=0, limit=None):
         if v is not None:
             q += f" AND {col}=?"
             a.append(v)
-    q += " ORDER BY id"
+    q += " ORDER BY id DESC" if newest else " ORDER BY id"
     if limit is not None:
         q += " LIMIT ?"
         a.append(limit)
-    return [_jrow(r, "data") for r in conn.execute(q, a)]
+    rows = [_jrow(r, "data") for r in conn.execute(q, a)]
+    return rows[::-1] if newest else rows
 
 
 # ---- settings and policy -------------------------------------------------------------------------------

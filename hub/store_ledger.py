@@ -131,8 +131,8 @@ class Store:
         return result
 
     @_translate
-    def stats(self, since=None, task=None):
-        return stats.query(self.conn, since, task)
+    def stats(self, since=None, task=None, series_only=False):
+        return stats.query(self.conn, since, task, series_only)
 
     def seat_order(self):
         return usage.order(self.conn, seat_load=usage.active_load(self.conn))
@@ -185,8 +185,7 @@ class Store:
         return self.list_events(kind=kind, limit=1)[-1]
 
     def list_events(self, task_id=None, epic_id=None, kind=None, since_id=0, limit=200):
-        evs = [e for e in ops.events(self.conn, task_id, epic_id, kind) if e["id"] > since_id]
-        return evs[-limit:]
+        return ops.events(self.conn, task_id, epic_id, kind, after=since_id, limit=limit, newest=True)
 
     # -- comments, questions, decisions ----------------------------------
     @_translate

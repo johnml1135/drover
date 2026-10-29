@@ -13,7 +13,7 @@
       height: 320, legend: { orientation: "h" }, paper_bgcolor: "transparent", plot_bgcolor: "transparent" }, layout),
       { responsive: true, displaylogo: false });
   }
-  fetch("/api/v1/stats", { credentials: "same-origin" }).then(function (r) {
+  fetch("/api/v1/stats?series=1", { credentials: "same-origin" }).then(function (r) {
     if (!r.ok) throw new Error("Stats request failed");
     return r.json();
   }).then(function (data) {

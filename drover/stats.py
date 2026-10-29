@@ -242,13 +242,15 @@ def task_totals(rows):
     return totals
 
 
-def query(conn, since=None, task=None):
+def query(conn, since=None, task=None, series_only=False):
     if since:
         dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
         since = stamp(dt.replace(tzinfo=dt.tzinfo or timezone.utc).timestamp())
     def series(table):
         sql = f'SELECT * FROM {table}' + (' WHERE ts>=?' if since else '') + ' ORDER BY ts'
         return [{'ts': r['ts'], **json.loads(r['data'])} for r in conn.execute(sql, (since,) if since else ())]
+    if series_only:  # the charts need only the time series, not every run
+        return {'hourly': series('stats_hourly'), 'daily': series('stats_daily')}
     rows = run_rows(conn, task, since)
     return {'hourly': series('stats_hourly'), 'daily': series('stats_daily'), 'runs': rows, 'tasks': task_totals(rows)}
 

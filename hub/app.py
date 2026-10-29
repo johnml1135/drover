@@ -41,11 +41,12 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
             dispatch.start()
         if settings.run_services:
             services.start()
+        ui_view.refresh_repos()  # first page load must not wait for the git config reads
     def shutdown():
         services.stop()
         dispatch.stop()
         dog.stop()
-        ui_view.repo_states.close()
+        ui_view.close()
         if previous_placement is not None:
             placement.bind_settings(previous_placement)
         store.close()
@@ -80,10 +81,21 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
             response = PlainTextResponse("Internal Server Error", status_code=500)
         finally:
             duration = (time.perf_counter() - started) * 1000
-            app.state.perf.record(getattr(request.scope.get("route"), "path", path), request.method, duration, counts["spawns"])
             request_git.reset(token)
+        route = getattr(request.scope.get("route"), "path", path)
         render = getattr(request.state, "render_ms", None)
         response.headers["Server-Timing"] = f'total;dur={duration:.2f}, git;desc="{counts["spawns"]} spawns"' + (f", render;dur={render:.2f}" if render is not None else "")
+        body = getattr(response, "body_iterator", None)
+        if body is None or response.media_type == "text/event-stream":
+            app.state.perf.record(route, request.method, duration, counts["spawns"])
+            return response
+        async def timed_body():  # perf covers the time to send the body, not only to build it
+            try:
+                async for chunk in body:
+                    yield chunk
+            finally:
+                app.state.perf.record(route, request.method, (time.perf_counter() - started) * 1000, counts["spawns"])
+        response.body_iterator = timed_body()
         return response
     for exc, code in ((NotFound, 404), (BadRequest, 400), (Forbidden, 403)):  # the website's store errors
         app.add_exception_handler(exc, lambda r, e, code=code: JSONResponse({"detail": str(e)}, status_code=code))

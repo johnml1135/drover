@@ -1,11 +1,15 @@
+import logging
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from drover import contract, dispatch_repos, importer, landing, origin, repos
 from drover.ledger import ops
 
 from .store_common import BadRequest, NotFound, _run_id
 from .store_ledger import Store
+
+REPO_TTL = 30  # seconds before ui_repos() starts a background refresh
 
 class UiView:
     """The sync contract hub.web expects (see hub/web.py), over a Store.
@@ -21,16 +25,40 @@ class UiView:
         self.dispatcher = dispatcher  # hub.dispatch.DispatcherService
         self.runs_dir = runs_dir
         self._repo_lock, self._repo_cache, self._repo_at = threading.Lock(), None, 0
+        self._repo_gen, self._repo_pending = 0, None
+        self._repo_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='repo-config')
+    def close(self):
+        self.repo_states.close()
+        self._repo_pool.shutdown(wait=False, cancel_futures=True)
     def invalidate_repos(self):
+        """Mark the configured repos stale; the last good copy is still served while a refresh runs."""
         with self._repo_lock:
-            self._repo_cache = None
+            self._repo_gen += 1
+            self._repo_at = None
+    def _load_repos(self, gen):
+        try:
+            loaded = repos.load_all()
+        except Exception:
+            logging.getLogger("hub").exception("repo config refresh failed")
+            raise
+        with self._repo_lock:
+            self._repo_cache = loaded
+            self._repo_at = time.monotonic() if gen == self._repo_gen else None
+        return loaded
+    def refresh_repos(self):
+        """Start one background refresh unless one is already running; never blocks."""
+        with self._repo_lock:
+            if self._repo_pending is None or self._repo_pending.done():
+                self._repo_pending = self._repo_pool.submit(self._load_repos, self._repo_gen)
+            return self._repo_pending
     def ui_repos(self):
-        with self._repo_lock:
-            now = time.monotonic()
-            if self._repo_cache is None or now - self._repo_at >= 30:
-                self._repo_cache = repos.load_all()
-                self._repo_at = time.monotonic()
-            return self._repo_cache
+        """Last good repo config. Expiry or invalidation refreshes in the background (one at a time);
+        only the very first call, with nothing to serve yet, waits for the load."""
+        cache, at = self._repo_cache, self._repo_at
+        if cache is not None and at is not None and time.monotonic() - at < REPO_TTL:
+            return cache
+        pending = self.refresh_repos()
+        return cache if cache is not None else pending.result()
     def inbox_count(self):
         counts = self.c.execute("SELECT status, count(*) FROM tasks WHERE archived=0 "
                                 "AND status IN ('needs-owner','proposed','failed','blocked') GROUP BY status").fetchall()
@@ -151,8 +179,8 @@ class UiView:
             out.append({**task, "reason": "; ".join(task["waiting_labels"]) or self._reason(t)})
         return out
 
-    def stats(self, since=None, task=None):
-        return self.s.stats(since, task)
+    def stats(self, since=None, task=None, series_only=False):
+        return self.s.stats(since, task, series_only)
 
     def seat_order(self):
         return self.s.seat_order()
