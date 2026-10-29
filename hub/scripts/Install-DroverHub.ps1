@@ -15,17 +15,17 @@ if (-not $env:TESTINGPLATFORM_TELEMETRY_OPTOUT) { $env:TESTINGPLATFORM_TELEMETRY
 if (-not $env:AVALONIA_TELEMETRY_OPTOUT) { $env:AVALONIA_TELEMETRY_OPTOUT = '1' }
 if (-not $env:DOTNET_NOLOGO) { $env:DOTNET_NOLOGO = '1' }
 $ErrorActionPreference = 'Stop'
-$droverDir = Split-Path -Parent $HubDir   # `hub` and `drover` import from here
-# cmd.exe wraps uv only to append stdout/stderr to <state dir>\hub-out.log / hub-err.log (a task has no console)
-$cmdLine = "/d /c `"`"$Uv`" run --project `"$HubDir`" python -m hub >> `"$Root\hub-out.log`" 2>> `"$Root\hub-err.log`"`""
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $cmdLine -WorkingDirectory $droverDir
+$bootstrap = Join-Path $env:LOCALAPPDATA 'Drover/Start-DroverHub.ps1'
+New-Item -ItemType Directory -Force (Split-Path -Parent $bootstrap) | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-DroverHub.ps1') -Destination $bootstrap -Force
+$cmdLine = "/d /c `"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$bootstrap`" -HubDir `"$HubDir`" -Uv `"$Uv`" >> `"$Root\hub-out.log`" 2>> `"$Root\hub-err.log`"`""
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $cmdLine -WorkingDirectory $env:USERPROFILE
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 New-Item -ItemType Directory -Force $Root | Out-Null
-# Owner-only: the hub token lives here
 icacls $Root /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
 Register-ScheduledTask -TaskName 'DroverHub' -Action $action -Trigger $trigger `
     -Settings $settings -Description 'Drover Hub (ledger, API, website, watchdog)' -Force
