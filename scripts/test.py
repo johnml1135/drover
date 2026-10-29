@@ -37,8 +37,9 @@ HEAVY = {'tests.test_pipeline_basics', 'tests.test_pipeline_worktrees', 'tests.t
          'tests.test_hub_runtime', 'tests.test_waiting_consumers', 'tests.test_platforms',
          'tests.test_waiting_characterization', 'tests.test_replan_batches', 'tests.test_replan_batches_ledger',
          'tests.test_replan_batches_dispatch', 'tests.test_replan_batches_recovery', 'tests.test_ci',
-         'tests.test_repo_entry', 'tests.test_landing_repository', 'tests.test_waiting_consumers_lifecycle'}  # before any timing exists
-SHARD_LIMITS = {'tests.test_hub_runtime': 8, 'tests.test_deploy_hub': 7, 'tests.test_garden_branch': 4,
+         'tests.test_repo_entry', 'tests.test_landing_repository', 'tests.test_waiting_consumers_lifecycle',
+         'tests.test_hub_runtime_integrity', 'tests.test_hub_runtime_paths'}  # before any timing exists
+SHARD_LIMITS = {'tests.test_hub_runtime': 8, 'tests.test_hub_runtime_integrity': 8, 'tests.test_hub_runtime_paths': 8, 'tests.test_deploy_hub': 7, 'tests.test_garden_branch': 4,
                 'tests.test_disk_worktree_add': 2, 'tests.test_garden': 2, 'tests.test_dispatch_repos': 6}
 LIST_IDS = '''
 import sys, unittest

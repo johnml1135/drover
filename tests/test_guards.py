@@ -22,17 +22,13 @@ INTEGRATION_CEILING = 93  # pinned today; owner target is INTEGRATION_TARGET
 OVER = {
     "hub/reload_protocol.py": 571,
     "hub/runtime.py": 612,
-    "tests/test_hub_api.py": 799,
-    "tests/test_hub_ops.py": 559,
-    "tests/test_hub_runtime.py": 766,
     "tests/test_importer.py": 507,
     "tests/test_launch_runner.py": 580,
-    "tests/test_notification_api.py": 637,
     "tests/test_runner.py": 848,
     "tests/test_wizard.py": 583,
 }
 
-IMPURE_CEILING = 58  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
+IMPURE_CEILING = 63  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
 
 
 def sources():

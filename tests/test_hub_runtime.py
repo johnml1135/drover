@@ -57,7 +57,7 @@ def setUpModule():
     _source_sha = git(_source_template, 'rev-parse', 'HEAD').decode().strip()
 
 
-class RuntimeTests(unittest.TestCase):
+class _RuntimeBase(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch('hub.runtime._blob_digests', lru_cache()(_blob_digests)))
         self.temp = tempfile.TemporaryDirectory(prefix='Runtime spaces ')
@@ -88,15 +88,18 @@ class RuntimeTests(unittest.TestCase):
                                               separators=(',', ':')).encode()))
         self.release_root = self.root / 'owner state' / 'hub-runtime' / 'releases'
 
+
     def write(self, name, content):
         path = self.source / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding='utf-8', newline='\n')
 
+
     def commit(self):
         git(self.source, 'add', '.')
         git(self.source, 'commit', '-m', 'fixture')
         return git(self.source, 'rev-parse', 'HEAD').decode().strip()
+
 
     def baseline(self):
         release = prepare_release(
@@ -107,10 +110,20 @@ class RuntimeTests(unittest.TestCase):
                                      ('sha', 'release_path', 'manifest_digest')}
         return release
 
+
     def receipt(self, release):
         return dict(sha=release['sha'], manifest_digest=release['manifest_digest'],
                     instance=INSTANCE, healthy_at='2026-10-17T17:00:00Z')
 
+
+    def reseal(self, release):
+        release['manifest_digest'] = digest(json.dumps(
+            {k: v for k, v in release.items() if k != 'manifest_digest'},
+            sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode())
+        (Path(release['release_path']) / 'manifest.json').write_text(json.dumps(release))
+
+
+class RuntimeTests(_RuntimeBase):
     def test_exact_sha_export_preserves_source_and_reuses_only_identical_release(self):
         release = self.baseline()
         self.write('hub/app.py', 'candidate\n')
@@ -130,12 +143,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(git(self.source, 'status', '--porcelain'), status)
         self.assertEqual((release['ledger_schema'], release['required_schema']), (4, 4))
 
+
     def test_schema_change_is_pending(self):
         self.baseline()
         self.write('drover/ledger/schema.py', '# even a comment is a change\n')
         b = self.commit()
         result = check_eligibility(self.enrolled, self.a, b, ledger_schema=4)
         self.assertEqual(result, {'eligible': False, 'reasons': ['schema-change']})
+
 
     def test_candidate_contract_changes_are_pending(self):
         self.baseline()
@@ -158,6 +173,7 @@ class RuntimeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ReleaseError, reason):
                     prepare_release(self.source, b, self.release_root, self.enrolled)
 
+
     def test_actual_schema_required(self):
         self.baseline()
         for value in (None, True, False, 3, 5, '4', -1):
@@ -167,6 +183,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(check_eligibility(self.enrolled, self.a, self.a)['reasons'],
                          ['actual-schema-mismatch'])
         self.assertTrue(check_eligibility(self.enrolled, self.a, self.a, 4)['eligible'])
+
 
     def test_enrollment_required_schema_cannot_be_guessed(self):
         release = self.baseline()
@@ -188,6 +205,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(check_eligibility(forged, self.a, self.a, 3)['eligible'])
         self.assertFalse(check_recovery(forged, release, self.receipt(release))['eligible'])
 
+
     def test_first_export_needs_independent_matching_probe(self):
         with self.assertRaisesRegex(ReleaseError, 'missing-schema-anchor'):
             prepare_release(self.source, self.a, self.release_root, self.enrolled)
@@ -199,6 +217,7 @@ class RuntimeTests(unittest.TestCase):
                 prepare_release(self.source, self.a, self.release_root, self.enrolled,
                                 first_enrollment=True, baseline_probe=lambda *_: proof)
             self.assertFalse((self.release_root / self.a).exists())
+
 
     def test_probe_cannot_publish_modified_or_added_release_content(self):
         for action in ('modify', 'add'):
@@ -212,10 +231,12 @@ class RuntimeTests(unittest.TestCase):
                                     first_enrollment=True, baseline_probe=probe)
                 self.assertFalse((self.release_root / self.a).exists())
 
+
     def test_first_enrollment_requires_clean_exact_source(self):
         self.write('hub/app.py', 'dirty')
         with self.assertRaisesRegex(ReleaseError, 'source-dirty'):
             self.baseline()
+
 
     def test_retained_a_recovers_with_source_b_c_or_dirty(self):
         release = self.baseline()
@@ -233,6 +254,7 @@ class RuntimeTests(unittest.TestCase):
                 self.assertTrue(check_eligibility(self.enrolled, self.a, target, 4)['eligible'])
         self.assertEqual(list(self.release_root.iterdir()), [Path(release['release_path'])])
 
+
     def test_non_descendant_and_wrong_checkout_or_branch_refused(self):
         self.baseline()
         git(self.source, 'checkout', '--orphan', 'other-history')
@@ -249,6 +271,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(check_eligibility(wrong, self.a, unrelated, 4)['reasons'], ['wrong-source-checkout'])
         git(self.source, 'checkout', 'other-history')
         self.assertEqual(check_eligibility(self.enrolled, self.a, unrelated, 4)['reasons'], ['wrong-default-branch'])
+
 
     def test_archive_hazards_and_insufficient_disk_refused(self):
         self.baseline()
@@ -295,6 +318,7 @@ class RuntimeTests(unittest.TestCase):
         exported = prepare_release(self.source, b, self.release_root, self.enrolled, disk=lambda _: required)
         self.assertTrue(Path(exported['release_path']).is_dir())
 
+
     def test_archive_raw_paths_refused_before_zip_normalization(self):
         self.baseline()
         self.write('hub/app.py', 'B')
@@ -321,6 +345,7 @@ class RuntimeTests(unittest.TestCase):
                         prepare_release(self.source, b, self.release_root, self.enrolled, git=adapter)
                 self.assertFalse((self.release_root / b).exists())
 
+
     def test_archive_is_exact_despite_git_export_attributes(self):
         self.baseline()
         for attribute, reason in (('export-ignore', 'archive-tree-mismatch'),
@@ -331,436 +356,3 @@ class RuntimeTests(unittest.TestCase):
                 b = self.commit()
                 with self.assertRaisesRegex(ReleaseError, reason):
                     prepare_release(self.source, b, self.release_root, self.enrolled)
-
-    def test_retained_required_schema_rejected_even_with_new_digest(self):
-        release = self.baseline()
-        original = (Path(release['release_path']) / 'manifest.json').read_bytes()
-        for value in (None, True, 3, 'missing'):
-            with self.subTest(value=value):
-                forged = copy.deepcopy(release)
-                if value == 'missing':
-                    forged.pop('required_schema')
-                else:
-                    forged['required_schema'] = value
-                self.reseal(forged)
-                result = check_recovery(self.enrolled, forged, self.receipt(forged))
-                self.assertEqual(result['reasons'], ['release-schema-mismatch'])
-                (Path(release['release_path']) / 'manifest.json').write_bytes(original)
-
-    def reseal(self, release):
-        release['manifest_digest'] = digest(json.dumps(
-            {k: v for k, v in release.items() if k != 'manifest_digest'},
-            sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode())
-        (Path(release['release_path']) / 'manifest.json').write_text(json.dumps(release))
-
-    def test_retained_content_and_manifest_corruption_refused_without_repair(self):
-        release = self.baseline()
-        path = Path(release['release_path'])
-        file = path / 'hub/__main__.py'
-        original = file.read_bytes()
-        file.write_bytes(b'corrupt')
-        self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release))['reasons'],
-                         ['retained-content-mismatch'])
-        with self.assertRaisesRegex(ReleaseError, 'retained-content-mismatch'):
-            prepare_release(self.source, self.a, self.release_root, self.enrolled)
-        self.assertEqual(file.read_bytes(), b'corrupt')
-        file.write_bytes(original)
-        manifest = path / 'manifest.json'
-        manifest.write_text('{"broken": true}')
-        self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release))['reasons'], ['manifest-corrupt'])
-        self.assertTrue(path.exists())
-
-    def test_non_object_baseline_manifest_returns_corruption_reason(self):
-        release = self.baseline()
-        path = Path(release['release_path']) / 'manifest.json'
-        for value in ('[]', 'null', '"text"', '4'):
-            with self.subTest(value=value):
-                path.write_text(value)
-                self.assertEqual(check_eligibility(self.enrolled, self.a, self.a, 4)['reasons'],
-                                 ['manifest-corrupt'])
-                self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release))['reasons'],
-                                 ['manifest-corrupt'])
-
-    def test_healthy_b_manifest_numeric_type_corruption_refused_with_baseline_a_intact(self):
-        baseline = self.baseline()
-        baseline_path = Path(baseline['release_path']) / 'manifest.json'
-        baseline_bytes = baseline_path.read_bytes()
-        self.write('hub/app.py', 'B')
-        b = self.commit()
-        release = prepare_release(self.source, b, self.release_root, self.enrolled)
-        # Extension fields are not type-checked by the protocol validator;
-        # their integrity must also be covered by the recomputed digest.
-        release['metadata'] = {'sequence': 1}
-        self.reseal(release)
-        manifest = Path(release['release_path']) / 'manifest.json'
-        receipt = self.receipt(release)
-        self.assertTrue(check_recovery(self.enrolled, release, receipt)['eligible'])
-        for changes in ({'required_schema': 4.0}, {'ledger_schema': 4.0},
-                        {'required_schema': 4.0, 'ledger_schema': 4.0},
-                        {'protocol': True}, {'run_format': True},
-                        {'metadata': {'sequence': True}}, {'metadata': {'sequence': 1.0}}):
-            with self.subTest(changes=changes):
-                changed = {**release, **changes}
-                # Python dict equality masks all these on-disk corruptions.
-                self.assertEqual(changed, release)
-                manifest.write_text(json.dumps(changed), encoding='utf-8')
-                self.assertEqual(check_recovery(self.enrolled, release, receipt),
-                                 {'eligible': False, 'reasons': ['manifest-corrupt']})
-                with self.assertRaisesRegex(ReleaseError, 'manifest-corrupt'):
-                    child_command(self.enrolled, release, 12, INSTANCE)
-                self.assertEqual(baseline_path.read_bytes(), baseline_bytes)
-
-    def test_manifest_special_files_refused_before_open_including_baseline_reads(self):
-        baseline = self.baseline()
-        self.write('hub/app.py', 'B')
-        b = self.commit()
-        release = prepare_release(self.source, b, self.release_root, self.enrolled)
-        original_lstat, original_read = Path.lstat, Path.read_text
-        for selected in (baseline, release):
-            manifest = Path(selected['release_path']) / 'manifest.json'
-            for kind, attributes in ((stat.S_IFIFO, 0), (stat.S_IFDIR, 0),
-                                     (stat.S_IFLNK, 0), (stat.S_IFSOCK, 0),
-                                     (stat.S_IFREG, 0x400)):
-                with self.subTest(sha=selected['sha'], kind=kind, attributes=attributes):
-                    def metadata(path, *args, **kwargs):
-                        value = original_lstat(path, *args, **kwargs)
-                        if path != manifest:
-                            return value
-                        class SpecialFile:
-                            st_mode = stat.S_IMODE(value.st_mode) | kind
-                            st_file_attributes = attributes
-                            def __getattr__(self, name):
-                                return getattr(value, name)
-                        return SpecialFile()
-
-                    def read(path, *args, **kwargs):
-                        if path == manifest:
-                            self.fail('opened a manifest with unsafe file metadata')
-                        return original_read(path, *args, **kwargs)
-
-                    # Inject metadata so FIFO/reparse checks execute on Windows
-                    # too, and a regression cannot hang the test opening a FIFO.
-                    with patch.object(Path, 'lstat', metadata), patch.object(Path, 'read_text', read):
-                        self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release)),
-                                         {'eligible': False, 'reasons': ['manifest-corrupt']})
-                        if selected is baseline:
-                            self.assertEqual(check_eligibility(self.enrolled, self.a, b, 4),
-                                             {'eligible': False, 'reasons': ['manifest-corrupt']})
-
-    def test_broken_compressed_stream_is_an_explicit_archive_refusal(self):
-        self.baseline()
-        self.write('hub/app.py', 'B')
-        b = self.commit()
-        buffer = io.BytesIO()
-        original = git(self.source, 'archive', '--format=zip', b)
-        with zipfile.ZipFile(io.BytesIO(original)) as old, zipfile.ZipFile(buffer, 'w') as new:
-            for entry in old.infolist():
-                new.writestr(entry, old.read(entry), compress_type=zipfile.ZIP_DEFLATED)
-        payload = bytearray(buffer.getvalue())
-        with zipfile.ZipFile(buffer) as archive:
-            offset = archive.getinfo('hub/__main__.py').header_offset
-        name_len, extra_len = struct.unpack_from('<HH', payload, offset + 26)
-        payload[offset + 30 + name_len + extra_len] = 7  # Reserved DEFLATE block type.
-        def adapter(source, *args):
-            return bytes(payload) if args[0] == 'archive' else git(source, *args)
-        with self.assertRaisesRegex(ReleaseError, 'archive-corrupt'):
-            prepare_release(self.source, b, self.release_root, self.enrolled, git=adapter)
-        self.assertFalse((self.release_root / b).exists())
-
-    def test_retained_directory_reparse_points_are_refused(self):
-        release = self.baseline()
-        retained_hub = Path(release['release_path']) / 'hub'
-        original_lstat = Path.lstat
-        def metadata(path, *args, **kwargs):
-            value = original_lstat(path, *args, **kwargs)
-            if path != retained_hub:
-                return value
-            class ReparsePoint:
-                st_file_attributes = 0x400
-                def __getattr__(self, name):
-                    return getattr(value, name)
-            return ReparsePoint()
-        # Simulate Windows junction metadata without requiring junction rights.
-        with patch.object(Path, 'lstat', metadata):
-            self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release))['reasons'],
-                             ['retained-content-type'])
-
-    def test_retained_contract_mismatch_refused(self):
-        release = self.baseline()
-        original = (Path(release['release_path']) / 'manifest.json').read_bytes()
-        for field, value, reason in (
-            ('protocol', 2, 'protocol-mismatch'), ('run_format', 2, 'run-format-mismatch'),
-            ('ledger_schema', 3, 'release-schema-mismatch'),
-            ('schema_digest', 'd' * 64, 'retained-contract-mismatch'),
-            ('dependency_digests', {'hub/uv.lock': 'd' * 64, 'hub/pyproject.toml': 'e' * 64}, 'retained-contract-mismatch'),
-            ('bootstrap_digest', 'd' * 64, 'retained-contract-mismatch'),
-            ('paths', {**release['paths'], 'token': str(self.root / 'other-token')}, 'pinned-path-mismatch'),
-            ('interpreter', {**release['interpreter'], 'identity': 'different'}, 'pinned-path-mismatch'),
-        ):
-            with self.subTest(field=field):
-                forged = copy.deepcopy(release)
-                forged[field] = value
-                self.reseal(forged)
-                self.assertEqual(check_recovery(self.enrolled, forged, self.receipt(forged))['reasons'], [reason])
-                (Path(release['release_path']) / 'manifest.json').write_bytes(original)
-        receipt = self.receipt(release)
-        receipt['sha'] = 'b' * 40
-        self.assertEqual(check_recovery(self.enrolled, release, receipt)['reasons'], ['unapproved-release'])
-        changed = {**release, 'tree_digest': 'd' * 64}
-        self.assertEqual(check_recovery(self.enrolled, changed, self.receipt(release))['reasons'], ['manifest-digest-mismatch'])
-        self.assertTrue(check_recovery(self.enrolled, release, self.enrolled['baseline'])['eligible'])
-
-    def test_retained_consistent_contract_still_must_match_enrollment(self):
-        release = self.baseline()
-        enrolled = copy.deepcopy(self.enrolled)
-        enrolled.pop('baseline')
-        enrolled.update(schema_digest=release['schema_digest'],
-                        dependency_digests=release['dependency_digests'])
-        for name, contract, reason in (
-            ('drover/ledger/schema.py', 'schema_digest', 'schema-change'),
-            ('hub/uv.lock', 'dependency_digests', 'dependency-change'),
-        ):
-            with self.subTest(name=name):
-                path = Path(release['release_path']) / name
-                original = path.read_bytes()
-                path.write_bytes(b'changed retained contract')
-                forged = copy.deepcopy(release)
-                forged['files'][name] = digest(path.read_bytes())
-                forged['content_digest'] = digest(json.dumps(forged['files'], sort_keys=True,
-                                                              separators=(',', ':')).encode())
-                if contract == 'schema_digest':
-                    forged[contract] = forged['files'][name]
-                else:
-                    forged[contract][name] = forged['files'][name]
-                self.reseal(forged)
-                self.assertEqual(check_recovery(enrolled, forged, self.receipt(forged))['reasons'], [reason])
-                path.write_bytes(original)
-                self.reseal(release)
-
-    def test_candidate_and_recovery_support_explicit_verified_contract_anchors(self):
-        release = self.baseline()
-        enrolled = copy.deepcopy(self.enrolled)
-        enrolled.pop('baseline')
-        self.assertEqual(check_eligibility(enrolled, self.a, self.a, 4)['reasons'], ['missing-schema-anchor'])
-        enrolled.update(schema_digest=release['schema_digest'],
-                        dependency_digests=release['dependency_digests'])
-        self.assertTrue(check_eligibility(enrolled, self.a, self.a, 4)['eligible'])
-        self.assertTrue(check_recovery(enrolled, release, self.receipt(release))['eligible'])
-        self.assertEqual(prepare_release(self.source, self.a, self.release_root, enrolled), release)
-
-    def test_interpreter_and_wsl_reachability_required(self):
-        release = self.baseline()
-        self.python.write_bytes(b'changed interpreter')
-        self.assertEqual(check_eligibility(self.enrolled, self.a, self.a, 4)['reasons'], ['interpreter-change'])
-        self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release))['reasons'], ['interpreter-change'])
-        self.python.write_bytes(b'existing interpreter')
-        for probe in (None, lambda _: False, lambda _: True):
-            expected = probe is not None and probe(Path(release['release_path']))
-            self.assertEqual(check_recovery(self.enrolled, release, self.receipt(release),
-                                            wsl_probe=probe, wsl_live_run_ids=[612])['eligible'], expected)
-            self.assertEqual(check_eligibility(self.enrolled, self.a, self.a, 4,
-                                               wsl_probe=probe, wsl_live_run_ids=[612])['eligible'], expected)
-
-    def test_new_candidate_checks_existing_parent_then_exported_wsl_path(self):
-        self.baseline()
-        self.write('hub/app.py', 'candidate\n')
-        b = self.commit()
-        destination = self.release_root / b
-        probes = []
-
-        def reachable(path):
-            probes.append(path)
-            return path.is_dir()
-
-        result = check_eligibility(self.enrolled, self.a, b, 4,
-                                   wsl_probe=reachable, wsl_live_run_ids=[612])
-        self.assertEqual(result, {'eligible': True, 'reasons': []})
-        self.assertEqual(probes, [self.release_root])
-        self.assertFalse(destination.exists())
-        probes.clear()
-        release = prepare_release(self.source, b, self.release_root, self.enrolled,
-                                  wsl_probe=reachable, wsl_live_run_ids=[612])
-        self.assertEqual(probes, [self.release_root, destination])
-        self.assertTrue((destination / 'manifest.json').is_file())
-        probes.clear()
-        self.assertTrue(check_eligibility(self.enrolled, self.a, b, 4,
-                                         wsl_probe=reachable, wsl_live_run_ids=[612])['eligible'])
-        self.assertEqual(probes, [destination])
-        probes.clear()
-        self.assertEqual(prepare_release(self.source, b, self.release_root, self.enrolled,
-                                         wsl_probe=reachable, wsl_live_run_ids=[612]), release)
-        self.assertEqual(probes, [destination, destination])
-
-    def test_first_enrollment_checks_existing_ancestor_then_exported_wsl_path(self):
-        probes = []
-
-        def reachable(path):
-            probes.append(path)
-            return path.is_dir()
-
-        self.assertFalse(self.release_root.exists())
-        release = prepare_release(
-            self.source, self.a, self.release_root, self.enrolled,
-            first_enrollment=True,
-            baseline_probe=lambda *_: {'ledger_schema': 4, 'required_schema': 4},
-            wsl_probe=reachable, wsl_live_run_ids=[612])
-        destination = Path(release['release_path'])
-        self.assertEqual(probes, [self.root, destination])
-        self.assertTrue((destination / 'manifest.json').is_file())
-
-    def test_unreachable_wsl_parent_refuses_before_export(self):
-        self.baseline()
-        self.write('hub/app.py', 'candidate\n')
-        b = self.commit()
-        probes = []
-
-        def unreachable(path):
-            probes.append(path)
-            return False
-
-        self.assertEqual(check_eligibility(self.enrolled, self.a, b, 4,
-                                          wsl_probe=unreachable, wsl_live_run_ids=[612])['reasons'],
-                         ['wsl-release-unreachable'])
-        with self.assertRaisesRegex(ReleaseError, 'wsl-release-unreachable'):
-            prepare_release(self.source, b, self.release_root, self.enrolled,
-                            git=lambda *_: self.fail('unreachable parent must refuse before Git export'),
-                            wsl_probe=unreachable, wsl_live_run_ids=[612])
-        self.assertEqual(probes, [self.release_root, self.release_root])
-        self.assertEqual([path.name for path in self.release_root.iterdir()], [self.a])
-
-    def test_reachable_parent_cannot_authorize_unreachable_exported_wsl_path(self):
-        self.baseline()
-        self.write('hub/app.py', 'candidate\n')
-        b = self.commit()
-        destination = self.release_root / b
-        probes = []
-
-        def parent_only(path):
-            self.assertTrue(path.is_dir())
-            probes.append(path)
-            return path == self.release_root
-
-        for attempt in ('new export', 'retained reuse'):
-            with self.subTest(attempt=attempt):
-                probes.clear()
-                with self.assertRaisesRegex(ReleaseError, 'wsl-release-unreachable'):
-                    prepare_release(self.source, b, self.release_root, self.enrolled,
-                                    wsl_probe=parent_only, wsl_live_run_ids=[612])
-                self.assertEqual(probes, [self.release_root, destination] if attempt == 'new export'
-                                 else [destination])
-                self.assertTrue((destination / 'manifest.json').is_file())
-        self.assertEqual(check_eligibility(self.enrolled, self.a, b, 4,
-                                          wsl_probe=parent_only, wsl_live_run_ids=[612])['reasons'],
-                         ['wsl-release-unreachable'])
-
-    def test_recovery_compares_both_paths_with_native_case_rules(self):
-        release = self.baseline()
-        # Exercise Windows normcase behavior on every platform.
-        with patch('hub.runtime.os.path.normcase', side_effect=str.casefold):
-            self.assertTrue(check_recovery(self.enrolled, release, self.receipt(release))['eligible'])
-
-    def test_child_command_pins_imports_and_paths_with_spaces(self):
-        release = self.baseline()
-        argv, env, cwd = child_command(self.enrolled, release, 12, INSTANCE, env={
-            'PYTHONPATH': str(self.source), 'PythonPath': 'other source',
-            'PYTHONHOME': 'foreign python', 'DROVER_RELOAD_LEDGER': 'foreign ledger',
-            'drover_overlay': 'foreign overlay', 'drover_home': 'foreign home',
-            'drover_repo_configs_dir': 'foreign configs', 'pythonsafepath': '0',
-            'OWNER_SETTING': 'preserved'})
-        self.assertEqual(argv, [str(self.python), '-P', '-m', 'hub'])
-        self.assertEqual(cwd, release['release_path'])
-        self.assertEqual(env['PYTHONPATH'], cwd)
-        self.assertNotIn('PythonPath', env)
-        self.assertNotIn('PYTHONHOME', env)
-        for key in ('drover_overlay', 'drover_home', 'drover_repo_configs_dir', 'pythonsafepath'):
-            self.assertNotIn(key, env)
-        self.assertEqual(env['PYTHONSAFEPATH'], '1')
-        self.assertEqual(env['PYTHONDONTWRITEBYTECODE'], '1')
-        self.assertEqual(env['OWNER_SETTING'], 'preserved')
-        self.assertNotIn('DROVER_OVERLAY', env)
-        self.assertNotIn('DROVER_RELOAD_OVERLAY', env)
-        self.assertEqual(env['DROVER_HOME'], self.enrolled['paths']['config_home'])
-        self.assertEqual(env['DROVER_REPO_CONFIGS_DIR'], self.enrolled['paths']['repo_config'])
-        for name, value in self.enrolled['paths'].items():
-            if name == 'overlay':
-                continue
-            self.assertEqual(env['DROVER_RELOAD_' + name.upper()], value)
-        self.assertEqual(env['DROVER_RELOAD_REQUIRED_SCHEMA'], '4')
-
-    def test_expanded_size_limit_refused_before_extraction(self):
-        self.baseline()
-        self.write('hub/app.py', 'B')
-        b = self.commit()
-        payload = bytearray(git(self.source, 'archive', '--format=zip', b))
-        central = payload.index(b'PK\x01\x02')
-        # Advertise a large expansion without allocating or extracting it.
-        struct.pack_into('<I', payload, central + 24, 128 * 1024 * 1024 + 1)
-        def adapter(source, *args):
-            return bytes(payload) if args[0] == 'archive' else git(source, *args)
-        with self.assertRaisesRegex(ReleaseError, 'archive-too-large'):
-            prepare_release(self.source, b, self.release_root, self.enrolled, git=adapter)
-        self.assertFalse((self.release_root / b).exists())
-
-    def test_tracked_link_and_windows_case_collision_refused(self):
-        self.baseline()
-        # Inject Git tree records so this runs on Windows without symlink rights
-        # or a case-sensitive volume, as well as on POSIX.
-        original = git(self.source, 'ls-tree', '-r', '-z', '--full-tree', self.a)
-        blob = git(self.source, 'rev-parse', self.a + ':hub/__main__.py').strip()
-        for extra, reason in (
-            (b'120000 blob ' + blob + b'\thub/link\0', 'archive-type'),
-            (b'160000 commit ' + self.a.encode() + b'\tsubmodule\0', 'archive-type'),
-            (b'100644 blob ' + blob + b'\tHub/other.py\0', 'archive-path-collision'),
-        ):
-            def adapter(source, *args):
-                return original + extra if args[0] == 'ls-tree' else git(source, *args)
-            with self.subTest(extra=extra), self.assertRaisesRegex(ReleaseError, reason):
-                prepare_release(self.source, self.a, self.release_root, self.enrolled, git=adapter)
-
-    def test_child_package_and_runner_import_roots_are_retained(self):
-        self.write('drover/__init__.py', '')
-        self.write('drover/launch.py', 'from pathlib import Path\nROOT=Path(__file__).resolve().parent.parent\n')
-        self.write('hub/__main__.py',
-                   'import json, os\nfrom pathlib import Path\nimport drover.launch\n'
-                   'print(json.dumps({"hub":str(Path(__file__).resolve()),'
-                   '"runner_root":str(drover.launch.ROOT),"overlay":"DROVER_OVERLAY" in os.environ,"reload_overlay":"DROVER_RELOAD_OVERLAY" in os.environ}))\n')
-        self.a = self.commit()
-        release = self.baseline()
-        self.write('hub/__main__.py', 'raise RuntimeError("mutable source imported")\n')
-        self.write('drover/launch.py', 'raise RuntimeError("mutable runner imported")\n')
-        argv, env, cwd = child_command(self.enrolled, release, 12, INSTANCE,
-                                       env={**os.environ, 'PYTHONPATH': str(self.source)})
-        # The installed-interpreter argv is asserted above. Use the preinstalled
-        # test Python to execute the same import flags against this fixture.
-        process = subprocess.run([sys.executable, *argv[1:]], env=env, cwd=cwd,
-                                 capture_output=True, text=True, check=True)
-        report = json.loads(process.stdout)
-        self.assertEqual(report['hub'], str(Path(cwd) / 'hub/__main__.py'))
-        self.assertEqual(report['runner_root'], cwd)
-        self.assertFalse(report['overlay'])
-        self.assertFalse(report['reload_overlay'])
-
-    def test_frozen_module_supports_package_and_sibling_imports_without_application_or_sqlite(self):
-        bootstrap = self.root / 'frozen bootstrap'
-        bootstrap.mkdir()
-        repo = Path(__file__).resolve().parent.parent
-        for name in ('runtime.py', 'reload_protocol.py'):
-            shutil.copyfile(repo / 'hub' / name, bootstrap / name)
-        guard = '''
-import sys
-class Guard:
-    def find_spec(self, fullname, *args):
-        if fullname.split('.')[0] in ('drover', 'sqlite3', 'fastapi', 'uvicorn'):
-            raise AssertionError('forbidden import: ' + fullname)
-sys.meta_path.insert(0, Guard())
-sys.path.insert(0, sys.argv[1])
-'''
-        for directory, module in ((repo, 'hub.runtime'), (bootstrap, 'runtime')):
-            script = guard + '\nimport importlib\nm = importlib.import_module(sys.argv[2])\nassert callable(m.check_recovery)\n'
-            result = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(directory), module],
-                                    cwd=bootstrap, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-
-
-if __name__ == '__main__':
-    unittest.main()
