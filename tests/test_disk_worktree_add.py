@@ -41,7 +41,7 @@ class Add(DiskCase):
         conn = connect(self.root / 'creation.db')
         self.addCleanup(conn.close)
         prog = repos.normalize({'name': 'fixture', 'repo': str(repo), 'worktrees': str(fixture.root / 'tasks'),
-                                'scripts': {'test': '.drover/scripts/test.ps1'}})
+                                'scripts': {'test': '.drover/scripts/test.ps1'}, 'gate': {'platform': 'wsl'}})
         task = ops.create_task(conn, 'isolated task', 'fixture')
         pipe = pipeline.Pipeline(DirectPort(conn), repos_map={'fixture': prog}, runs_dir=self.root / 'runs')
         before = time.time()

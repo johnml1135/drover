@@ -1,7 +1,6 @@
 """The pipeline: pause switch, repo config, worktrees, gate runs, reviews, decisions and the landing loop."""
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,12 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import config, contract, dispatcher, ci, placement, landing, launch, pipeline, repos, runner
-from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
 from hub.dispatch import DispatcherService, LandingService
-from hub.settings import Settings
-from hub.store import Store
 from tests.tiers import integration
 from tests.fakeci import execute_gate, resources_go
 from tests.gitfix import Repo
@@ -263,6 +259,9 @@ class PolicyBase(Base):
         helper.start()
         self.addCleanup(helper.stop)
         super().setUp()
+        drive = placement.drive
+        shared = patch.object(placement, 'drive', side_effect=lambda p: 'T' if str(p).startswith((self.tmp.name, self.memory_tmp.name)) else drive(p))
+        shared.start(); self.addCleanup(shared.stop)
         for context in (
             patch('drover.task_access.prepare', side_effect=lambda entries, configured=None, root=None:
                   read_checkouts(self.repository, entries, configured or self.pipe.all_repos(),

@@ -56,7 +56,7 @@ class Ownership(unittest.TestCase):
         self.assertIsNone(ownership.read(str(tree)))
         self.assertFalse(ownership.owned_by(str(tree), 'lane:old'))
 
-        fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/test.ps1"\n')
+        fix.commit('.drover/config.toml', 'schema_version=1\n[scripts]\ntest=".drover/scripts/test.ps1"\n[gate]\nplatform="wsl"\n')
         fix.git('push', '-q', 'origin', 'HEAD:main')
         task = {'id': 't-lease', 'title': 'lease acquisition', 'repo': 'alpha'}
         waiting = SimpleNamespace(state=lambda cause: None, answer=lambda cause: None)
@@ -122,7 +122,7 @@ class Ownership(unittest.TestCase):
                                waiting=SimpleNamespace(answer=lambda cause: None),
                                update_task=lambda tid, **values: task.update(values),
                                append_event=lambda *args, **kwargs: None)
-        prog = repos.load({'name': 'alpha', 'repo': str(fix.repo), 'worktrees': str(fix.root / 'task trees')})
+        prog = repos.load({'name': 'alpha', 'repo': str(fix.repo), 'worktrees': str(fix.root / 'task trees'), 'gate': {'platform': 'wsl'}})
         pipe = pipeline.Pipeline(port, repos_map={'alpha': prog}, runs_dir=fix.root / 'state' / 'runs')
         with patch.object(time, 'time', return_value=NOW):
             self.assertEqual(pipe.worktree(task), str(tree))

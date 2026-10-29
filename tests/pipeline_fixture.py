@@ -49,6 +49,7 @@ class MemoryRepo:
         pass  # PolicyBase owns the temporary directory.
 
     def head(self, ref='HEAD', cwd=None):
+        ref = ref.removeprefix('refs/heads/').removeprefix('refs/remotes/')
         if ref == 'HEAD':
             ref = self.checkouts[str(cwd or self.repo)]
         if ref == 'origin/main':
@@ -207,9 +208,22 @@ class MemoryRepository:
         f.branches[default] = f.tracking
         write_tree(f.repo, f.tree(default))
 
-    def add(self, repo, dest, branch, base, remote='origin'):
+    def start_ref(self, repo, branch, base, remote):
         f = self.fixture(repo)
-        f.checkout(dest, branch, None if branch in f.branches else base)
+        if branch in f.branches:
+            return 'refs/heads/' + branch
+        return base
+
+    def add(self, repo, dest, branch, start_ref, remote='origin'):
+        f = self.fixture(repo)
+        f.checkout(dest, branch, None if branch in f.branches else start_ref)
+
+    def remove(self, repo, path):
+        import shutil
+        f = self.fixture(repo)
+        del f.checkouts[str(path)]
+        f.tags.pop(str(path), None)
+        shutil.rmtree(path)
 
     def changes(self, path):
         return [p for p, *_ in self.fixture(path).status(path)]

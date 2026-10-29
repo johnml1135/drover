@@ -27,6 +27,13 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(placement.config_path('/mnt/h/repos/acme.worktrees/T1', r'H:\repos\acme'),
                          r'H:\repos\acme.worktrees\T1')
 
+    def test_windows_gate_maps_a_shared_wsl_mount_to_its_native_checkout_path(self):
+        shared = '/mnt/h/repos/acme.worktrees/drover-T1'
+        with patch('drover.placement_paths.IS_WINDOWS', True):
+            native = placement.ci_path('windows', shared)
+        self.assertEqual(native, r'H:\repos\acme.worktrees\drover-T1')
+        self.assertEqual(placement.to_wsl_path(native), shared)
+
     def test_ledger_distro_changes_reach_git_and_runner_together(self):
         settings = {'wsl_distro': 'UI-choice'}
         previous = placement.bind_settings(lambda: settings)
