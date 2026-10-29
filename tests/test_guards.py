@@ -24,7 +24,6 @@ OVER = {
     "drover/disk_cleanup.py": 559,
     "drover/importer.py": 632,
     "drover/landing.py": 766,
-    "drover/launch.py": 787,
     "drover/ledger/ops.py": 941,
     "drover/ledger/waiting.py": 1139,
     "drover/ledger/waiting_migration.py": 741,
