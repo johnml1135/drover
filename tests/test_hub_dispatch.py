@@ -20,12 +20,6 @@ from hub.events import Bus, CoalescedWake
 from hub.settings import Settings
 from hub.store import Store
 
-try:
-    import fastapi  # noqa: F401
-    from hub.app import create_app
-except ImportError:
-    create_app = None
-
 
 class Base(unittest.TestCase):
     def setUp(self):
@@ -145,8 +139,7 @@ class Service(Base):
         wake.wake()
         wake.wake()
         self.assertTrue(wake.wait(before, timeout=0.1))
-        current = wake.generation()
-        self.assertFalse(wake.wait(current, timeout=0.01))
+        self.assertFalse(wake.wait(wake.generation(), timeout=0.01))
 
     def test_dispatcher_wake_during_tick_is_not_lost_and_stop_interrupts_periodic_wait(self):
         entered, release = threading.Event(), threading.Event()
@@ -248,41 +241,6 @@ class Service(Base):
         svc.stop()
         self.assertEqual(Notifications(conn).owner_attention(), [])
         self.assertEqual(ops.events(conn, kind='notification.landing-owner-wake'), [])
-
-
-@unittest.skipUnless(create_app, "fastapi is not installed")
-class HubApp(Base):
-    def test_start_and_shutdown_run_and_stop_the_dispatcher_thread(self):
-        made = []
-        s = Settings(token="t", dispatcher_lock=Path(self.lock), dispatch_interval_s=0.02, run_watchdog=False,
-                     run_dispatcher=True)
-        app = create_app(Path(self.tmp.name) / "app.db", s,
-                         make_dispatcher=lambda port: made.append(FakeDispatcher(port)) or made[-1])
-        app.state.start_background()
-        end = time.time() + 5
-        while time.time() < end and not (made and made[0].ticks):
-            time.sleep(0.01)
-        self.assertTrue(app.state.dispatcher.running)
-        self.assertTrue(made[0].ticks)
-        app.state.shutdown()
-        self.assertFalse(app.state.dispatcher.running)
-        FileLock(self.lock).acquire().release()
-
-    def test_dispatcher_is_off_unless_asked_for(self):
-        app = create_app(Path(self.tmp.name) / "app2.db", Settings(token="t", dispatcher_lock=Path(self.lock),
-                                                                   run_watchdog=False))
-        app.state.start_background()
-        self.assertFalse(app.state.dispatcher.running)
-        app.state.shutdown()
-
-    def test_wsl_api_listener_is_off_by_default_and_the_ledger_setting_turns_it_on(self):
-        from hub import __main__ as m
-        app = create_app(Path(self.tmp.name) / "app3.db", Settings(token="t", run_watchdog=False))
-        self.assertFalse(m.wsl_listener_enabled(app, app.state.settings))
-        app.state.store.update_settings({"api_listen_wsl": "true"})
-        self.assertTrue(m.wsl_listener_enabled(app, app.state.settings))
-        self.assertTrue(m.wsl_listener_enabled(object(), Settings(api_listen_wsl=True)))
-        app.state.shutdown()
 
 
 class LandingOwnerWakeTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 """Hub API tests: auth, owner gate, tasks, claim race, import, SSE."""
 import tempfile
-import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -63,6 +63,51 @@ class HubCase(unittest.TestCase):
         t = self.task(title, **kw)
         self.app.state.store.approve(t)
         return t
+
+
+class HubLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.lock = Path(self.tmp.name) / "dispatcher.lock"
+
+    def test_start_and_shutdown_run_and_stop_the_dispatcher_thread(self):
+        class Tick:
+            ticks = 0
+
+            def tick(self):
+                self.ticks += 1
+
+        made = []
+        s = Settings(token="tok", dispatcher_lock=self.lock, dispatch_interval_s=0.02, run_watchdog=False,
+                     run_dispatcher=True)
+        app = create_app(Path(self.tmp.name) / "app.db", s, make_dispatcher=lambda port: made.append(Tick()) or made[-1])
+        app.state.start_background()
+        end = time.time() + 5
+        while time.time() < end and not (made and made[0].ticks):
+            time.sleep(0.01)
+        self.assertTrue(app.state.dispatcher.running)
+        self.assertTrue(made[0].ticks)
+        app.state.shutdown()
+        self.assertFalse(app.state.dispatcher.running)
+        from drover.lock import FileLock
+        FileLock(self.lock).acquire().release()
+
+    def test_dispatcher_is_off_unless_asked_for(self):
+        app = create_app(Path(self.tmp.name) / "app2.db", Settings(token="tok", dispatcher_lock=self.lock,
+                                                                   run_watchdog=False))
+        app.state.start_background()
+        self.assertFalse(app.state.dispatcher.running)
+        app.state.shutdown()
+
+    def test_wsl_api_listener_is_off_by_default_and_the_ledger_setting_turns_it_on(self):
+        from hub import __main__ as m
+        app = create_app(Path(self.tmp.name) / "app3.db", Settings(token="tok", run_watchdog=False))
+        self.assertFalse(m.wsl_listener_enabled(app, app.state.settings))
+        app.state.store.update_settings({"api_listen_wsl": "true"})
+        self.assertTrue(m.wsl_listener_enabled(app, app.state.settings))
+        self.assertTrue(m.wsl_listener_enabled(object(), Settings(api_listen_wsl=True)))
+        app.state.shutdown()
 
 
 class AuthTests(HubCase):
