@@ -326,10 +326,22 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     from . import ownership
     from .disk_worktrees import head_at, outputs_at
     path = Path(placement.native(entry['worktree']))
-    if placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo']) or not path.is_dir() or not safe_path(path) or \
-            placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side() or \
-            not placement.cleanup_contains(request, entry['worktree']):
-        raise ValueError('not an eligible owning-side worktree')
+    def reject(condition, detail):
+        raise ValueError(f'not an eligible owning-side worktree: {condition} ({detail})')
+    if placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo']):
+        reject('main_checkout', f'repo={machine["repo"]!r}')
+    if not path.is_dir():
+        reject('not_directory', f'path={str(path)!r}')
+    if not safe_path(path):
+        reject('unsafe_path', f'path={str(path)!r}')
+    side = placement.worktree_side(entry['worktree'], entry.get('locked'))
+    if side != placement.cleanup_side():
+        reject('owner_side', f'owner={side!r}, worker={placement.cleanup_side()!r}, lock={entry.get("locked")!r}')
+    if not placement.cleanup_contains(request, entry['worktree']):
+        reject('physical_drive', f'path_side={placement.cleanup_path_side(entry["worktree"])!r}, '
+               f'host={placement.physical_disk_path(entry["worktree"])!r}, '
+               f'drive={request["drive"]["path"]!r}, '
+               f'drive_host={placement.physical_disk_path(request["drive"]["path"])!r}')
     if (placement.cleanup_processes(request=request) if fresh else request.get('_processes') or placement.cleanup_processes(request=request)).busy(str(path)):
         raise ValueError('process using worktree')
     if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < 3 * 86400:

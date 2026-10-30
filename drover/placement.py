@@ -105,7 +105,20 @@ def cleanup_call(side: str, request: dict) -> dict:
         for cache in request['paths'].get('caches', []):
             key = 'path' if 'path' in cache else 'cwd'
             cache[key] = convert(cache[key])
-        argv = wsl_control(['-d', distro(), '--', 'env', 'DROVER_RUN_ID=' + token, 'python3'])
+        name = distro()
+        # Resolve HKCU on the Windows hub. A non-interactive WSL worker may not
+        # have Windows interop available to run reg.exe, even though Git and its
+        # ext4 worktrees are accessible. Use the existing physical-disk override
+        # for this invocation only; never infer the host from the requested drive.
+        try:
+            host = detect_vhdx_drives().get(name)
+        except (ImportError, OSError):
+            host = None
+        letter = drive(host + '/') if host else None
+        worker_env = ['DROVER_RUN_ID=' + token]
+        if letter:
+            worker_env.append('DROVER_VHDX_DIR=' + to_wsl_path(letter + ':/'))
+        argv = wsl_control(['-d', name, '--', 'env', *worker_env, 'python3'])
         root = convert(root)
     else:
         argv = [sys.executable]

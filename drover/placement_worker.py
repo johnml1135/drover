@@ -80,7 +80,11 @@ def cleanup_worker(request):
                 raise
             # wsl.exe already established this session and group. Its group id
             # is our pid, so the existing termination proof covers descendants.
-    status = dict(pid=os.getpid(), runner_pid=os.getpid(), run_id=request['_worker_id'])
+    status = dict(pid=os.getpid(), runner_pid=os.getpid(), run_id=request['_worker_id'],
+                  request={key: request[key] for key in ('stage', 'side', 'apply', 'drive', 'repos') if key in request},
+                  context=dict(cwd=os.getcwd(), uid=os.getuid() if hasattr(os, 'getuid') else None,
+                               distro=os.environ.get('WSL_DISTRO_NAME'),
+                               vhdx_dir=os.environ.get('DROVER_VHDX_DIR')))
     name = 'worker-' + request['_worker_id'] + '.json'
     disk_state.save_file(request['state_dir'], name, status)
     try:
