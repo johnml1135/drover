@@ -46,6 +46,9 @@ class FakePipeline:
     def head(self, task):
         return self.current_head()
 
+    def status(self, cwd):
+        return ''
+
     def base_ref(self, prog):
         return prog["default_branch"]
 

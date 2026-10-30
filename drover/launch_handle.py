@@ -7,7 +7,7 @@ from collections import deque
 from pathlib import Path
 
 from . import runner
-from .launch_usage import Usage, summarise, rotation_handoff
+from .launch_usage import Usage, infrastructure_error_of, summarise, rotation_handoff
 
 TAIL_LINES = 200
 TAIL_FLUSH_EVERY = 5
@@ -176,7 +176,15 @@ class RunnerHandle:
         else:
             status = "no-record"
         text = usage.text if status not in ("error", "timeout") or not reason else f"{reason}. {usage.text}"
+        try:
+            with (self.dir / runner.OUT_FILE).open('rb') as output:
+                diagnostic = output.read(16384).decode('utf-8', errors='replace')
+        except OSError:
+            diagnostic = ''
+        infrastructure = None if record or self.spec.get('role') == 'gate' else infrastructure_error_of(
+            st, usage.model_started, diagnostic)
         return {"status": status, "record": record, "usage": usage.as_dict(), "text": text,
+                "infrastructure_error": infrastructure,
                 "handoff": rotation_handoff(self.spec["task"], usage, self.ceiling) if rotate else None,
                 "returncode": rc, "timeout": reason if state == "timeout" else None, "tail_error": self.tail.error,
                 "provider_error": None if record else usage.provider_error,

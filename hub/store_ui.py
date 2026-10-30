@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 import threading
@@ -304,6 +305,8 @@ class UiView:
                    for k, v in alw.items()]
         wd = [e for e in self.s.list_events(limit=500) if e["kind"].startswith("watchdog.")]
         out = {"notifications": notification_health, "resources": res, "allowance": alw,
+               "admission_hold": json.loads(self.s.get_settings().get('admission_hold') or '{}'),
+               "seat_health": json.loads(self.s.get_settings().get('seat_health') or '{}'),
                "heartbeat_age": f"{time.time() - hb['ts']:.0f}s" if hb else "unknown",
                "watchdog": [{"at": e["at"][11:19], "action": e["data"].get("message", e["kind"])}
                             for e in reversed(wd[-10:])],

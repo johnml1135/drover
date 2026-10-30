@@ -53,7 +53,35 @@ MANUAL_MAX_AGE_S = 86400
 
 
 def state_dir(state=None):
-    return Path(state or os.environ.get('DROVER_STATE') or Path.home() / '.local/state/drover')
+    from . import config
+    return Path(config.native(state or os.environ.get('DROVER_STATE') or config.state_dir()))
+
+
+def _allowance_dir(state=None):
+    """Copy legacy readings once, without replacing readings in the configured location."""
+    target = state_dir(state) / 'allowance'
+    if state is not None or os.environ.get('DROVER_STATE'):
+        return target
+    legacy = Path.home() / '.local/state/drover/allowance'
+    marker = target / '.legacy-migrated'
+    if legacy == target or marker.exists():
+        return target
+    target.mkdir(parents=True, exist_ok=True)
+    for source in legacy.glob('*.json'):
+        dest = target / source.name
+        if dest.exists():
+            continue
+        try:
+            payload = source.read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            continue  # An obsolete or partial snapshot must not prevent reading the configured state.
+        try:
+            with dest.open('x', encoding='utf-8') as output:
+                output.write(payload)
+        except FileExistsError:
+            pass
+    marker.touch()
+    return target
 
 
 def home_dir(home=None):
@@ -96,7 +124,7 @@ def _live_windows(raw, now):
 def read_claude(state=None, now=None):
     now = time.time() if now is None else now
     best = None
-    for path in sorted((state_dir(state) / 'allowance').glob('claude-*.json')):
+    for path in sorted(_allowance_dir(state).glob('claude-*.json')):
         snap = _load_json(path)
         if not isinstance(snap, dict): continue
         ts = _num(snap.get('ts'))
@@ -174,7 +202,7 @@ def read_codex(home=None, now=None):
 def set_manual(plan, remaining_pct, state=None, now=None):
     rem = _num(remaining_pct, 0, 100)
     if plan not in PLANS or rem is None: raise ValueError('plan claude|codex and remaining_pct 0..100 required')
-    path = state_dir(state) / 'allowance' / f'manual-{plan}.json'
+    path = _allowance_dir(state) / f'manual-{plan}.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix('.tmp')
     tmp.write_text(json.dumps(dict(plan=plan, remaining_pct=rem, set_at=time.time() if now is None else now)), encoding='utf-8')
@@ -184,7 +212,7 @@ def set_manual(plan, remaining_pct, state=None, now=None):
 
 def read_manual(plan, state=None, now=None):
     now = time.time() if now is None else now
-    d = _load_json(state_dir(state) / 'allowance' / f'manual-{plan}.json')
+    d = _load_json(_allowance_dir(state) / f'manual-{plan}.json')
     rem = _num(d.get('remaining_pct'), 0, 100) if isinstance(d, dict) else None
     if rem is None: return None
     at = _num(d.get('set_at'))

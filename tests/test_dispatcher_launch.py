@@ -34,12 +34,15 @@ class LaunchErrors(Base):
         self.allow["codex"] = False
         self.failing(FileNotFoundError("claude"))
         self.d.tick()
+        self.assertEqual(self.port.get_setting('dispatch_enabled'), 'false')
         self.allow["codex"] = True
         self.assertEqual(set(self.d.unavailable), {("claude", "windows")})
         t2 = self.task(size="M", priority="P0")
         self.fl = FakeLauncher()
         self.d.launcher = self.fl
+        ops.set_setting(self.conn, 'dispatch_enabled', 'true')
         self.d.tick()
+        self.assertTrue(self.fl.specs)
         self.assertTrue(all(s["backend"] == "codex" for s in self.fl.specs))
 
     def test_real_launcher_wraps_popen_errors(self):

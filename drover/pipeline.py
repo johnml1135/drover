@@ -87,6 +87,11 @@ class Repository:
     def branch(self, path):
         return git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
+    def status(self, path):
+        """Short status including untracked files, or None when Git cannot report it."""
+        result = git(path, "status", "--short", "--untracked-files=all", timeout=10)
+        return None if result.returncode else result.stdout.strip()
+
     def inventory(self, repo, side=None):
         result = git(repo, "worktree", "list", "--porcelain", **({"side": side} if side else {}))
         if result.returncode:
@@ -453,6 +458,9 @@ class Pipeline:
     def base_ref(self, prog):
         """Task diffs, reviews and new branches use local main, including its unpushed landings."""
         return repos.default_branch(prog)
+
+    def status(self, cwd):
+        return self.repository.status(cwd)
 
     def head(self, task):
         # Gate reads retain CI timeouts and environment; commit recovery uses pipeline Git.

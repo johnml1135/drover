@@ -24,7 +24,8 @@ class GateSteps:
         if any(r["ended"] is None for r in runs):
             return False
         for r in reversed(runs):
-            if r["role"] == "gate" or (r["role"] == "review" and r["outcome"] in ("no-record", "error", "timeout", "provider-error")):
+            if r["role"] == "gate" or (r["role"] == "review" and r["outcome"] in
+                                      ("no-record", "error", "timeout", "provider-error", "launch-error")):
                 continue
             return r["role"] == "worker" and r["outcome"] == "gated"
         return False

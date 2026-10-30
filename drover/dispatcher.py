@@ -197,12 +197,16 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         else:
             from .directors import service_tick
             service_tick(p, self.now)
+        if p.get_setting('admission_hold'):
+            self._admission_report()
         control = p.admission(epoch=self._control_epoch)
         if not control['allowed']:
             self._stop_for_control(control['epoch'])
             out['control'] = control
             return report({}, "control-stopped")
         self._stop_for_control(control['epoch'], changed_only=True)
+        enabled = truthy(p.get_setting('dispatch_enabled', 'false'))
+        out['paused'] = not enabled
         if not enabled:                              # paused: in-flight runs are still reaped, adopted and recovered
             return report({}, "paused")
         out["verdict"] = res["verdict"]
@@ -217,6 +221,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
                                      if not self._backend_down(s["backend"])))
         out["admitted"] = admitted
         if not admitted:
+            self._admission_report()
             return report({}, "no-backend-admitted")
         slots = min(policy["parallel_cap"] - in_use(), res.get("slots", 0) - out.get('directors', {}).get('capacity_used', 0))
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
@@ -227,7 +232,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
         skipped = {}
-        while slots > 0:
+        while slots > 0 and self._launch_allowed():
             task = p.claim_next({}, exclude=skip)
             if task is None:
                 break
@@ -242,6 +247,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1
+        out['paused'] = not truthy(p.get_setting('dispatch_enabled', 'false'))
         return report(skipped, "no-slots" if slots <= 0 else "")
 
 

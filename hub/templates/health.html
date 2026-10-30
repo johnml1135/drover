@@ -14,6 +14,13 @@
 {% if not role.admission.allowed %}<p>Admission held: {{ role.admission.reason }}</p>{% endif %}
 {% for group in role.groups %}<p>Group {{ group.group_id }}: {{ group.readiness_reason or 'ready' }}</p>{% endfor %}</section>{% endfor %}
 {% endif %}
+{% if h.admission_hold and h.admission_hold.held %}
+<h2>Admission held</h2>
+{% for backend, seats in h.admission_hold.backends.items() %}
+<section class="card"><h3>{{ backend }}</h3>{% for seat in seats %}<p>{{ seat.seat }}: {{ seat.reason }}</p>{% endfor %}</section>
+{% endfor %}{% endif %}
+{% if h.seat_health %}<h2>Seat home errors</h2>
+{% for seat, error in h.seat_health.items() %}<section class="card"><p>{{ seat }}: {{ error }}</p></section>{% endfor %}{% endif %}
 <h2>Resources</h2>
 <div class="grid">
 {% for r in h.resources or [] %}

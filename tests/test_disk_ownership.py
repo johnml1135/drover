@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -12,6 +13,62 @@ from drover import config, pipeline, repos
 from tests.gitfix import Repo
 
 NOW = 1_800_000_000.0
+
+
+class NativeMetadata(unittest.TestCase):
+    def setUp(self):
+        from drover import placement_git as placement
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.admin = Path(self.tmp.name) / 'admin with spaces'
+        self.admin.mkdir()
+        self.common = self.admin.parent / 'common'
+        self.responses = []
+
+        def git(worktree, *args, **kwargs):
+            self.responses.append(args)
+            paths = [self.admin if arg == '--absolute-git-dir' else self.common
+                     for arg in args if arg in ('--absolute-git-dir', '--git-common-dir')]
+            return SimpleNamespace(returncode=0, stdout=''.join(str(p) + '\n' for p in paths))
+
+        for context in (patch.object(placement, 'git', side_effect=git),
+                        patch.object(placement, 'routes_through_wsl', return_value=False),
+                        patch.object(placement.subprocess, 'run', side_effect=AssertionError('native metadata spawned a process'))):
+            context.start()
+            self.addCleanup(context.stop)
+
+    def test_native_metadata_uses_one_git_query_and_no_python_children(self):
+        from drover import placement
+        text = 'literal "quotes", $shell, newline\n雪'
+        self.assertIsNone(placement.worktree_metadata('worktree', 'drover-tag.json'))
+        self.assertEqual(placement.worktree_metadata('worktree', 'drover-tag.json', text), text)
+        self.assertEqual(placement.worktree_metadata('worktree', 'drover-tag.json'), text)
+        self.assertEqual((self.admin / 'drover-tag.json').read_text(encoding='utf-8'), text)
+        self.assertEqual(len(self.responses), 3, 'one discovery query per operation; never cache ownership')
+
+    def test_native_failed_replace_preserves_previous_record_and_removes_temp_file(self):
+        from drover import placement
+        target = self.admin / 'drover-tag.json'
+        target.write_text('previous', encoding='utf-8')
+
+        def fail_replace(source, destination):
+            self.assertEqual(Path(source).parent, self.admin)
+            self.assertEqual(Path(source).read_text(encoding='utf-8'), 'replacement')
+            self.assertEqual(Path(destination), target)
+            raise OSError('fixture replace failure')
+
+        with patch.object(os, 'replace', side_effect=fail_replace), self.assertRaisesRegex(OSError, 'replace failure'):
+            placement.worktree_metadata('worktree', target.name, 'replacement')
+        self.assertEqual(target.read_text(encoding='utf-8'), 'previous')
+        self.assertEqual(list(self.admin.iterdir()), [target])
+
+    def test_common_directory_is_never_written(self):
+        from drover import placement
+        self.common = self.admin
+        self.assertIsNone(placement.worktree_metadata('main checkout', 'drover-tag.json'))
+        with self.assertRaisesRegex(OSError, 'linked worktree'):
+            placement.worktree_metadata('main checkout', 'drover-tag.json', 'forbidden')
+        self.assertEqual(list(self.admin.iterdir()), [])
 
 
 class Ownership(unittest.TestCase):

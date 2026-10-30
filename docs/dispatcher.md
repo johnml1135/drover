@@ -91,3 +91,47 @@ Run files live in `<state dir>\runs\<id>\`.
 - The hub's WSL-facing API listener is off unless the `api_listen_wsl` setting is true. The watchdog only boots WSL
   when the dispatcher left a `_wsl_needed` note, and holds it up with a tracked `wsl.exe --exec sleep` keepalive until
   that note expires. The systemd unit is gone.
+
+
+### First dispatch and retries
+
+When all worker seats are refused, `admission-hold` records the reason for each seat grouped by backend.
+The `admission_hold` setting and Health page retain that report until cached readings allow workers again;
+identical reports do not write another event, including after a hub restart or a change in seat ordering.
+Reporting uses the router's five-hour reset-time floor and weekly reserve, plus seat health, backend availability
+and `max_workers`. Reasons name the failed floor or check; release writes `admission-released`.
+Reporting does not probe providers while idle, paused, or at capacity. Provider errors use the existing per-run
+backoff, without a sweep of blocked tasks.
+
+The legacy file-based allowance reader uses `paths.state_dir`, with `DROVER_STATE` as an override. On its first
+read it copies old `~/.local/state/drover/allowance/*.json` readings into the configured directory, without replacing
+existing files, then records `.legacy-migrated`. Unreadable legacy files are skipped so configured readings remain
+usable. `DROVER_STATE` expands `~` just like configured paths. Per-seat dispatch readings come from `drover.usage`: Codex
+rollouts are read from that seat's `codex_home` or `config_dir`, through a WSL-side reader for WSL seats.
+Config keeps explicit `~` paths as written. Home readers expand them on the seat's platform using the effective
+WSL distro (the ledger's `wsl_distro`, falling back to `paths.wsl_distro`). Startup checks every seat home and pauses
+on missing homes, with details in `seat_health`, Health and a `seat-home-error` event. The hub checks for a distro
+change before each dispatch tick and revalidates homes when it changes. A successful revalidation clears health
+and writes `seat-home-cleared` if errors were present; it leaves dispatch paused until the owner enables work.
+After correcting a missing home in the same distro, restart the dispatcher to validate again before enabling work.
+
+Known setup diagnostics from a run that exits within 15 seconds before any model output are infrastructure errors:
+dispatch pauses and the run is recorded as `launch-error`, without using a task retry. Provider capacity, limits,
+overload and authentication errors retain their separate retry/backoff handling.
+Missing worker executables also pause dispatch immediately, including when the launcher reports the missing
+binary before a runner starts. After the owner fixes setup and resumes dispatch, an interrupted review retries
+the same checked commit; its `launch-error` record does not consume a task retry or prevent a new review.
+Local checks retain their separate infrastructure retry handling.
+
+Worker briefs name the repo's existing `openspec/`, `.specify/` or `docs/superpowers/` paths, including framework
+directories containing only files when inspected through WSL. An approved task is already an approved design;
+workers never wait for interactive skill approval. Sandbox-unavailable checks belong
+in the final note; completed work still finishes `ready_to_commit`. A `host-verification` blocker with committable,
+scoped work is sent to checks. Retry briefs list previous worker runs and current modified/untracked files in the
+task's own worktree so the next worker continues them.
+
+Review findings may be `{kind: "blocking" | "follow-up", detail: "file:line, problem and correction"}`; old string
+findings remain blocking. Only blocking defects against the task, including its Out of scope section, request changes.
+Follow-ups become proposed related tasks. A short review (at most two blocking findings) at the strongest model
+may get one extra fix round before replan, once per retry window, with findings as the handoff. When the director
+has no allowance, planners fall back to the strongest model on an admitted backend at high effort.

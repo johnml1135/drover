@@ -5,6 +5,7 @@ import sys
 import json
 import contextvars
 import threading
+import time
 from pathlib import Path
 
 from .placement_paths import (
@@ -113,8 +114,14 @@ def git(repo, *args, timeout=None, env=None, runner=None, side=None):
         count = request_git.get()
         if count is not None:
             count["spawns"] += 1
-        return (runner or subprocess.run)(argv, text=True, capture_output=True, encoding="utf-8", errors="replace",
-                                           timeout=timeout, env=env, **NO_WINDOW)
+        started = time.perf_counter() if timeout is not None else None
+        result = (runner or subprocess.run)(argv, text=True, capture_output=True, encoding="utf-8", errors="replace",
+                                            timeout=timeout, env=env, **NO_WINDOW)
+        # Process creation cannot always be interrupted (notably on Windows). A process
+        # that exits during startup can bypass subprocess.run's timeout check entirely.
+        if timeout is not None and time.perf_counter() - started >= timeout:
+            raise subprocess.TimeoutExpired(argv, timeout, output=result.stdout, stderr=result.stderr)
+        return result
     except FileNotFoundError as e:
         return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {e}")
 
@@ -174,21 +181,42 @@ else:
             os.unlink(name)
 '''
 
+def _native_metadata_io(directory, filename, content):
+    """Avoid a Python startup per native ownership check; match the WSL worker's atomic IO."""
+    import tempfile
+    path = Path(directory) / filename
+    if content is None:
+        return path.read_text(encoding='utf-8') or None
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', delete=False) as stream:
+            name = stream.name
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        name = None
+        return content or None
+    finally:
+        if name is not None:
+            os.unlink(name)
+
+
 def worktree_metadata(worktree: str, filename: str, content: str | None = None) -> str | None:
     """Read/write a linked worktree's admin file on its owning host, replacing atomically."""
     if not filename or filename in ('.', '..') or any(c in filename for c in '/\\\0:'):
         raise ValueError('metadata filename must be a basename')
     try:
-        admin = git(worktree, 'rev-parse', '--absolute-git-dir', timeout=30)
-        common = git(worktree, 'rev-parse', '--path-format=absolute', '--git-common-dir', timeout=30)
-        if admin.returncode or common.returncode or not admin.stdout.strip() or \
-                admin.stdout.strip() == common.stdout.strip():
+        discovered = git(worktree, 'rev-parse', '--path-format=absolute',
+                         '--absolute-git-dir', '--git-common-dir', timeout=30)
+        directories = discovered.stdout.strip().splitlines()
+        if discovered.returncode or len(directories) != 2 or not all(directories) or directories[0] == directories[1]:
             raise OSError('cannot resolve linked worktree admin directory')
-        remote = routes_through_wsl(worktree)
-        directory = admin.stdout.strip() if remote else native(admin.stdout.strip())
-        argv = ['python3' if remote else sys.executable, '-c', _METADATA_IO, directory, filename]
-        if remote:
-            argv = WSL().command(argv)
+        directory = directories[0]
+        if not routes_through_wsl(worktree):
+            return _native_metadata_io(native(directory), filename, content)
+        argv = WSL().command(['python3', '-c', _METADATA_IO, directory, filename])
         result = subprocess.run(argv, input=json.dumps(content), text=True, encoding='utf-8',
                                 capture_output=True, timeout=30, **NO_WINDOW)
         if result.returncode:

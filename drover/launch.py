@@ -21,7 +21,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from . import config, task_access
+from . import config, seat_paths, task_access
 from . import runner
 from .runner import ScanError
 from .placement import NO_WINDOW
@@ -376,6 +376,7 @@ class RunnerLauncher(Launcher):
         return [self.python, "-m", "drover.runner", *self.runner_args(spec, d, argv, cwd)], env
 
     def launch(self, spec):
+        spec = seat_paths.resolve_spec(spec, seat_env(spec), self.distro, windows=self.windows, run=self.run)
         rid = spec["run_id"]
         spec.setdefault("nonce", uuid.uuid4().hex)           # the dispatcher normally picks and records it first
         d = runner.run_dir(self.runs_dir, rid)

@@ -183,6 +183,7 @@ class DispatcherService:
         self._stop, self._thread = threading.Event(), None
         self._wake = CoalescedWake()
         self.dispatcher, self.error = None, None
+        self._seat_home_distro = None
 
     def _distro(self):
         return placement.distro(self.settings.distro, self.store.get_settings())
@@ -196,9 +197,26 @@ class DispatcherService:
         from drover.directors import DirectorRuntime, RunnerDirectorAdapter
         launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins,
                                   on_complete=self.wake_dispatcher)
+        self._validate_seat_homes(port, force=True)
         runtime = DispatchRuntime(launcher, directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)),
                                   completion_wake=self.completion_committed)
         return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), runtime)
+
+    def _validate_seat_homes(self, port, *, force=False):
+        from drover import config, seat_paths
+        distro = self._distro()
+        if not force and distro == self._seat_home_distro:
+            return
+        errors = seat_paths.validate(config.get(), distro=distro)
+        previous = json.loads(port.get_setting('seat_health', '{}'))
+        port.set_setting('seat_health', json.dumps(errors, sort_keys=True))
+        if errors:
+            port.set_setting('dispatch_enabled', 'false')
+            port.append_event('seat-home-error', {'seats': errors, 'paused': True, 'distro': distro})
+        elif previous or self._seat_home_distro is not None:
+            port.append_event('seat-home-cleared', {'seats': {}, 'distro': distro})
+        # Clearing health never changes the owner's dispatch switch.
+        self._seat_home_distro = distro
 
     def wake_dispatcher(self):
         """Request a dispatcher pass after a runner result becomes available."""
@@ -245,6 +263,7 @@ class DispatcherService:
                 if self._stop.is_set():
                     break
                 try:
+                    self._validate_seat_homes(port)
                     self.dispatcher.tick()
                 except Exception as e:                  # a bad tick must not end the dispatcher
                     self.error = repr(e)

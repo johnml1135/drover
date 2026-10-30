@@ -196,6 +196,9 @@ class MemoryRepository:
     def dirty(self, path):
         return '\n'.join(p for p, *_ in self.fixture(path).status(path))
 
+    def status(self, path):
+        return self.dirty(path)
+
     def sync(self, repo, remote, default):
         f = self.fixture(repo)
         if not f.online:

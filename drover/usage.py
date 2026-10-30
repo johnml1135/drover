@@ -273,7 +273,7 @@ class Poller:
                     code = ("import json,os,subprocess,sys; "
                             "os.environ.update({k:os.path.expanduser(v) for k,v in json.loads(sys.argv[1]).items()}); "
                             "sys.exit(subprocess.call(json.loads(sys.argv[2])))")
-                    argv = placement.WSL(self.distro).command(['python3', '-c', code,
+                    argv = placement.WSL(placement.distro(self.distro)).command(['python3', '-c', code,
                             json.dumps(account), json.dumps(argv)])
                 proc = self.run(argv, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30, **placement.NO_WINDOW)
                 raw = proc.stdout or ''
@@ -285,12 +285,13 @@ class Poller:
                 raw = payload['result']
                 rows = parse_claude(raw, now)
             else:
-                home = seat.get('codex_home') or seat.get('config_dir') or '~/.codex'
+                home = config.seat_env(seat)['CODEX_HOME']
                 if self.windows and seat['placement'] == 'wsl':
                     code = ("import json,os,sys; sys.path.insert(0,sys.argv[1]); "
                             "from drover.usage import read_codex_raw; "
                             "print(json.dumps(read_codex_raw(os.path.expanduser(sys.argv[2]))))")
-                    argv = placement.WSL(self.distro).command(['python3', '-c', code,
+                    # Expand ~ inside the effective distro, alongside the rollout reader.
+                    argv = placement.WSL(placement.distro(self.distro)).command(['python3', '-c', code,
                             placement.to_wsl_path(str(Path(__file__).resolve().parents[1])), placement.to_wsl_path(home)])
                     proc = self.run(argv, capture_output=True, text=True, encoding='utf-8', timeout=30)
                     if proc.returncode:

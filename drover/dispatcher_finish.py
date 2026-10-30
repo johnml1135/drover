@@ -33,6 +33,18 @@ class FinishSteps:
         last = self._last_nongate(p.list_runs(task['id']))
         excerpt = contract.receipt_excerpt(last['gate_receipt']) \
             if last and last['outcome'] in ('gate-fail', 'hold') else None
+        cwd = cwd if cwd is not None else self.pipeline.worktree(task)
+        if not cwd:
+            return p.set_status(task['id'], 'needs-owner', reason='task has no worktree')
+        task = {**task, 'worktree': cwd}
+        previous = [r for r in p.list_runs(task['id']) if r['role'] == 'worker']
+        if previous:
+            files = self.pipeline.status(cwd)
+            if files is None:
+                files = '(git status unavailable; inspect this task worktree)'
+            task['retry_work'] = ('Earlier worker runs: ' + ', '.join(str(r['id']) for r in previous) +
+                '. Changes below belong to earlier runs of this same task; continue them, including untracked files. '
+                'Protect owner input and other tasks worktrees.\n' + (files or '(no uncommitted changes)'))
         prog = self.pipeline.repo(task)
         if prog:
             task = {**task, 'repo_brief': repos.brief_text(prog)}
@@ -52,9 +64,6 @@ class FinishSteps:
             b = {**b, 'system_append': pinned, 'user_prompt': b['user_prompt'] + '\n\n' + mandatory}
         except brief.BriefTooLarge as error:
             return p.set_status(task['id'], 'needs-owner', reason=str(error))
-        cwd = cwd if cwd is not None else self.pipeline.worktree(task)
-        if not cwd:
-            return p.set_status(task['id'], 'needs-owner', reason='task has no worktree')
         return self._spawn(task, route, policy, placement, cwd, b, 'worker')
 
     def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
@@ -173,6 +182,16 @@ class FinishSteps:
         if result.get("tail_error"):
             p.append_event("tail-error", {"run": run_id, "error": result["tail_error"]}, task_id)
         role = spec.get("role", "worker")
+        if role != 'gate' and result.get('infrastructure_error') and st in ('error', 'no-record', 'timeout'):
+            message = result['infrastructure_error'][:300]
+            p.set_setting('dispatch_enabled', 'false')
+            p.append_event('infrastructure-error', {'run': run_id, 'message': message, 'paused': True}, task_id)
+            if role == 'planner':
+                return self._finish_planner(run_id, task_id, spec, {**result, 'status': contract.LAUNCH_ERROR})
+            p.finish_run(run_id, contract.LAUNCH_ERROR, note=message, **usage)
+            if role == 'worker':
+                p.set_status(task_id, 'ready', reason='infrastructure error; dispatch paused')
+            return
         if role == "planner":
             return self._finish_planner(run_id, task_id, spec, result)
         if role == "gate":
@@ -370,6 +389,10 @@ class FinishSteps:
         f = failures(runs, task['retry_after_run'])
         if not f:
             return
+        extra = [e for e in p.events('review-fix-round') if e['task_id'] == task_id
+                 and e['data'].get('after_run') == task['retry_after_run']]
+        if extra and run_id > extra[-1]['data']['run']:
+            return p.waiting.request_replan(task_id, 'retries-exhausted', {'failures': f, 'model': run['model']})
         second = f % 2 == 0
         rule = "escalate" if second else "retry"
         state = {"task": task_id, "failures": f, "size": p.get_task(task_id)["size"], "model": run["model"],

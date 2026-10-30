@@ -157,6 +157,7 @@ def load(home_path=None, env=None, *, sources=None):
     except ConfigError as e:
         raise ConfigError(f"configuration error: {e}") from e
 
+    # Account homes remain as written: consumers resolve them with the live placement settings.
     normalized = _source_leaves(cfg, "default")
     for key in normalized:
         if key in origins and not key.startswith("trackers."):

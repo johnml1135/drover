@@ -5,6 +5,7 @@ from . import contract, repos
 from . import brief as brief_mod
 from . import config as config_mod
 from . import launch as launch_mod
+from .launch_usage import SETUP_ERROR
 from .dispatcher_admission import (effort_for, seat_of, MAX_LAUNCH_ERRORS, UNAVAILABLE_S, WALL_MIN, IDLE_MIN)
 
 
@@ -86,7 +87,7 @@ class LaunchSteps:
         p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce,
                                        'control_epoch': self._control_epoch}, task["id"])  # before any start
         try:
-            spec['_admission_check'] = lambda: p.require_admission(spec['control_epoch'], task['id'])
+            spec['_admission_check'] = lambda: self._launch_guard(task)
             spec['_admission_check']()
             handle = self.launcher.launch(spec)
         except launch_mod.AdmissionHeld as error:
@@ -111,6 +112,10 @@ class LaunchSteps:
         was requested for a runner that may still come up, the task is not requeued until a scan shows no runner.
         A gate or review launch error leaves the task where it is (the next tick derives the same work again)."""
         p, tid = self.port, task["id"]
+        if role != 'gate' and (getattr(exc, 'missing', False) or isinstance(exc, FileNotFoundError)
+                               or SETUP_ERROR.search(str(exc))):
+            p.set_setting('dispatch_enabled', 'false')
+            p.append_event('infrastructure-error', {'run': run_id, 'message': str(exc)[:300], 'paused': True}, tid)
         cancelled = getattr(exc, "cancel_requested", False)
         if role == 'planner':
             if cancelled:

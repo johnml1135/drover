@@ -187,7 +187,7 @@ def decision_audit(outcome):
 
 # ---- the reviewer's record -----------------------------------------------------------------------------
 def parse_review_record(text):
-    """{'verdict', 'findings': [str], 'note', 'sha'} from the last JSON object in `text` that has a `verdict`, else None.
+    """{'verdict', 'findings': [str | {kind, detail}], 'note', 'sha'} from the last JSON object in `text` that has a `verdict`, else None.
     The runner's own record parser drops verdict and findings, so a review is read from the worker's final message."""
     text = (text or "")[-16000:]
     dec, end = json.JSONDecoder(), len(text)
@@ -206,7 +206,13 @@ def parse_review_record(text):
                 continue
             if isinstance(obj, dict) and isinstance(obj.get("verdict"), str):
                 f = obj.get("findings")
-                f = [str(x)[:500] for x in f] if isinstance(f, list) else ([str(f)[:500]] if f else [])
+                f = f if isinstance(f, list) else ([f] if f else [])
+                if len(f) > 20 or any(isinstance(x, dict) and
+                        (x.get('kind') not in ('blocking', 'follow-up') or
+                         not isinstance(x.get('detail'), str) or not x['detail'].strip()) for x in f):
+                    return None
+                f = [dict(kind=x.get('kind') if x.get('kind') in ('blocking', 'follow-up') else 'blocking',
+                          detail=str(x.get('detail') or '')[:500]) if isinstance(x, dict) else str(x)[:500] for x in f]
                 return {"verdict": obj["verdict"], "findings": f[:20], "note": str(obj.get("note") or "")[:280],
                         "sha": str(obj.get("sha") or "")}
     return None

@@ -7,7 +7,7 @@ from . import contract, placement, repos, task_access
 from . import config as config_mod
 from . import launch as launch_mod
 from . import route as route_mod
-from .pipeline import WorktreeRefused
+from .pipeline import WorktreeRefused, truthy
 
 DEFAULT_INFRA_RETRIES = 2                 # gate reruns on the same commit before the owner is asked; setting gate_infra_retries
 FAIL_OUTCOMES = contract.FAIL_OUTCOMES   # worker failures; launch-error/orphaned never count
@@ -27,7 +27,7 @@ EXCERPT_LINES = contract.EXCERPT_LINES
 MAX_REVIEW_TRIES = 3         # reviews that produce no usable verdict in a row before the owner is asked
 MAX_GATE_LAUNCH_ERRORS = 3
 PENDING_KEY = "_pending_outcomes"
-ENV_BLOCK_KINDS = ("verification_environment", "missing_windows_worker")
+ENV_BLOCK_KINDS = ("verification_environment", "missing_windows_worker", "host_verification")
 
 
 
@@ -158,6 +158,8 @@ class AdmissionSteps:
         return load
 
     def _launch_guard(self, task=None):
+        if not truthy(self.port.get_setting('dispatch_enabled', 'false')):
+            raise launch_mod.AdmissionHeld('dispatch paused')
         return self.port.require_admission(self._control_epoch, task['id'] if task else None)
 
     def _launch_allowed(self, task=None):
@@ -222,6 +224,7 @@ class AdmissionSteps:
             role_key = route_mod.route_key('worker', task.get('size'))
             routing_data = {**routing_data, 'routes': {**routing_data.get('routes', {}), role_key: [pin]}}
         base = self.route_fn(t, routing_data, **self._route_inputs(task, admitted))
+        self._admission_report()
         if base.get("borrow_seat"):
             seat = base["borrow_seat"]
             from .ledger.waiting import OWNER_ANSWER, cause_key
@@ -253,6 +256,42 @@ class AdmissionSteps:
         data = {**policy["data"], "routes": {**policy["data"].get("routes", {}), role_key: [route]}}
         return route_mod.choose(t, data, seats=config_mod.get()["seats"],
                                 **self._route_inputs(task, admitted))
+
+    def _admission_report(self):
+        from . import usage
+        seats = config_mod.get()['seats']
+        heads = {seat['name']: usage.headroom(self.usage_poller.conn, seat['name'], self.now()) for seat in seats}
+        load = self._seat_load()
+        rows = usage.order(self.usage_poller.conn, seats, now=self.now(), seat_load=load)
+        errors = json.loads(self.port.get_setting('seat_health', '{}'))
+        backends, worker_ok = {}, False
+        for row in rows:
+            seat = config_mod.seat_by_name(row['seat'])
+            down = self._is_unavailable(seat['backend'], seat['placement'])
+            health = errors.get(seat['name'])
+            full = seat['max_workers'] and load.get(seat['name'], 0) >= seat['max_workers']
+            allowance_ok = route_mod._seat_admits(seat, heads[seat['name']], protected=True)
+            worker = allowance_ok and not full and not down and not health
+            worker_ok |= worker
+            if health:
+                reason = f'seat health error: {health}'
+            elif down:
+                reason = 'backend unavailable'
+            elif full:
+                reason = 'max_workers reached'
+            elif not allowance_ok:
+                reason = route_mod._seat_admission_reason(seat, heads[seat['name']], protected=True)
+            else:
+                reason = row['reason']
+            backends.setdefault(seat['backend'], []).append({'seat': seat['name'], 'admitted': bool(worker), 'reason': reason})
+        # Usage priority can change without changing the hold. Keep its durable identity stable.
+        for rows in backends.values():
+            rows.sort(key=lambda row: row['seat'])
+        report = {'held': not worker_ok, 'backends': backends if not worker_ok else {}}
+        encoded = json.dumps(report, sort_keys=True)
+        if self.port.get_setting('admission_hold') != encoded:
+            self.port.set_setting('admission_hold', encoded)
+            self.port.append_event('admission-hold' if report['held'] else 'admission-released', report)
 
     def _seat_tick(self):
         from . import stats

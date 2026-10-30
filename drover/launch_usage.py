@@ -16,6 +16,29 @@ PROVIDER_STATUS = (401, 429, 500, 502, 503, 504, 529)
 PROGRESS_EVENTS = ("assistant", "user", "item.started", "item.completed", "turn.started", "turn.completed")
 
 
+# Restrict launch classification to known setup diagnostics before any model output.
+SETUP_ERROR = re.compile(r"(?:CODEX_HOME|CLAUDE_CONFIG_DIR).*?(?:does not exist|not found|not a directory)|"
+                         r"(?:provided|config|home) path .*?(?:does not exist|not found)|"
+                         r"error:.*?path does not exist|failed to (?:initialize|create) sandbox|"
+                         r"bwrap:.*?(?:Operation not permitted|Permission denied)|"
+                         r"spawn-failed|cannot resolve WSL seat home", re.I | re.S)
+
+
+def infrastructure_error_of(status, model_started, output):
+    if model_started or status.get('exit_code') == 0:
+        return None
+    try:
+        from datetime import datetime
+        elapsed = (datetime.fromisoformat(status['ended']) - datetime.fromisoformat(status['started'])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 0 <= elapsed <= 15:
+        return None
+    diagnostic = (status.get('reason') or '') + '\n' + output
+    match = SETUP_ERROR.search(diagnostic)
+    return match.group(0)[:300] if match else None
+
+
 def provider_error_of(ev):
     """The message of a provider-side error that ended a turn, else None. Qualifies only: an `error` or
     `turn.failed` stream event (codex) or an error `result` (claude) whose text uses provider phrasing, or an
@@ -46,9 +69,12 @@ class Usage:
         self.sessions, self.compactions, self.models = set(), 0, {}
         self._messages = set()
         self.provider_error = None
+        self.model_started = False
 
     def feed(self, ev):
         t = ev.get("type")
+        if t in ('assistant', 'item.started', 'item.completed', 'turn.completed'):
+            self.model_started = True
         perr = provider_error_of(ev)
         if perr:
             self.provider_error = perr

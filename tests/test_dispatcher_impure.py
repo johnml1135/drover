@@ -1,10 +1,14 @@
 import io
 import json
+import subprocess
+import tempfile
 import time
+import unittest
 from unittest import mock
+from unittest.mock import patch
 from pathlib import Path
 
-from drover import dispatcher, launch
+from drover import brief, dispatcher, launch
 from drover.ledger import ops
 
 from tests.test_dispatcher import Base, BLOCKED, DONE, WORKTREE, res
@@ -273,3 +277,33 @@ class ReviewClassification(Base):
         self.assertFalse(any(e['task_id'] == tid for e in self.events('review-done')))
         audit, = [e for e in self.events('replan.stage-finished') if e['task_id'] == tid]
         self.assertEqual(audit['data']['run'], spec['run_id'])
+
+
+class FrameworkDetection(unittest.TestCase):
+    def test_wsl_framework_detection_finds_directories_with_only_files(self):
+        # Exercise real Git pathspec semantics, with a fake WSL transport and no commits.
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args, input=None, **kw):
+                # Text-mode stdin becomes CRLF on Windows; mktree treats the CR as
+                # part of the entry name. Send exact bytes to build the same tree everywhere.
+                result = subprocess.run(['git', '-C', tmp, *args], capture_output=True,
+                                        input=input.encode('utf-8') if input is not None else None,
+                                        check=True, **kw)
+                result.stdout = result.stdout.decode('utf-8')
+                return result
+            git('init', '-q')
+            blob = git('hash-object', '-w', '--stdin', input='framework instructions\n').stdout.strip()
+            leaf = git('mktree', input=f'100644 blob {blob}\tREADME.md\n').stdout.strip()
+            docs = git('mktree', input=f'040000 tree {leaf}\tsuperpowers\n').stdout.strip()
+            tree = git('mktree', input=(f'040000 tree {leaf}\t.specify\n'
+                                       f'040000 tree {docs}\tdocs\n'
+                                       f'040000 tree {leaf}\topenspec\n')).stdout.strip()
+            self.assertEqual(git('ls-tree', '-d', '--name-only', tree).stdout.splitlines(),
+                             ['.specify', 'docs', 'openspec'])
+            def wsl_git(root, *args, **kw):
+                return git(*(tree if arg == 'HEAD' else arg for arg in args), **kw)
+            with patch('drover.placement.routes_through_wsl', return_value=True), \
+                    patch('drover.placement.git', side_effect=wsl_git):
+                text = brief.framework_text('/home/seat/work/task')
+            for path in ('openspec/', '.specify/', 'docs/superpowers/'):
+                self.assertIn(path, text)

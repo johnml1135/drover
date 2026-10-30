@@ -91,6 +91,27 @@ class DirectPort:
         return ops.update_task(self.conn, task_id, self.actor, handoff=text)
 
 
+    def propose_review_followups(self, task_id, run_id, findings):
+        task = self.get_task(task_id)
+        with ops.tx(self.conn):
+            previous = [e for e in ops.events(self.conn, kind='review-followups')
+                        if e['data'].get('run') == run_id]
+            if previous:
+                return previous[0]['data']['tasks']
+            created = []
+            existing = {ops.get_task(self.conn, related)['goal']: related for related in ops.related_of(self.conn, task_id)}
+            for finding in findings:
+                detail = finding['detail']
+                if detail in existing:
+                    created.append(existing[detail])
+                    continue
+                proposed = ops.create_task(self.conn, detail[:120], task['repo'], epic_id=task['epic_id'],
+                                           goal=detail, actor=self.actor, related=[task_id])
+                created.append(proposed['id'])
+                existing[detail] = proposed['id']
+            ops.event(self.conn, 'review-followups', self.actor, {'run': run_id, 'tasks': created}, task_id=task_id)
+            return created
+
     def append_event(self, kind, data=None, task_id=None, actor=None):
         with ops.tx(self.conn):
             return ops.event(self.conn, kind, actor or self.actor, data, task_id=task_id)

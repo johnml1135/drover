@@ -17,7 +17,8 @@ ACTION_RECORD = (
     "commit message. Drover checks scope and makes the commit. Claude workers may commit and report done with the SHA.\n"
     "The Drover gate runs the full WSL and Windows suites at your exact SHA afterwards: run targeted tests only, then "
     "report ready_to_commit (or done) once the work is done. A sandbox limit (hung process check, restore, network, "
-    "writing outside the root, no Windows Python) is not a blocker; note it. The approved task, goal and acceptance are "
+    "writing outside the root, no Windows Python, local sockets, headless browsers) is not a blocker; list it in note. "
+    "The approved task, goal and acceptance are "
     "the approved design: do not wait on skill approval gates. Block only if the design contradicts the acceptance or "
     "needs an owner decision the task does not settle, and write that as a plain question.\n"
     "Use blocked only when the plan, not your code or the sandbox, stops you.")
@@ -43,9 +44,11 @@ REVIEW_RECORD = (
     "Checks you cannot perform are not grounds for HOLD; mention them in note.\n"
     "End your final message with exactly one JSON object and nothing after it:\n"
     '{"status": "done", "sha": "<the reviewed sha>", "verdict": "LAND@<the reviewed sha>" | "HOLD", '
-    '"findings": ["<one concrete problem per entry, with file and line>"], "note": "<=300 chars"}\n'
-    "LAND only when every acceptance item is met and nothing in the diff is wrong or unsafe. Otherwise HOLD, and each "
-    "finding must say what to change.")
+    '"findings": [{"kind":"blocking" | "follow-up", "detail":"<concrete problem, file and line, what to change>"}], '
+    '"note": "<=300 chars"}\n'
+    "Judge against the task text, including its Out of scope section. Blocking findings are defects introduced by "
+    "this diff against this task. Gaps or improvements beyond the task are follow-up findings; they become proposed "
+    "related tasks. Only blocking findings HOLD. With only follow-ups, return LAND@<the reviewed sha>.")
 
 
 class BriefTooLarge(ValueError):
@@ -88,6 +91,26 @@ def _section(title, body):
     return f"## {title}\n{body}" if body else ""
 
 
+def framework_text(root):
+    from . import placement
+    if not root:
+        return ''
+    paths = ('openspec/', '.specify/', 'docs/superpowers/')
+    if placement.routes_through_wsl(root):
+        # A trailing slash lists children; -d then hides directories containing only files.
+        result = placement.git(root, 'ls-tree', '-d', '--name-only', 'HEAD', '--',
+                               *(p.rstrip('/') for p in paths), timeout=10)
+        found = [p for p in paths if any(name == p.rstrip('/') or name.startswith(p)
+                 for name in result.stdout.splitlines())] if not result.returncode else []
+    else:
+        found = [p for p in paths if (Path(placement.native(root)) / p).is_dir()]
+    names = {'openspec/': 'OpenSpec', '.specify/': 'Spec Kit', 'docs/superpowers/': 'superpowers'}
+    return ('Framework paths: ' + ', '.join(f'{names[p]} ({p})' for p in found) + '. Use these existing paths. ' if found else
+            'No spec framework detected. ') + (
+            "Do not create a different framework's artifacts. The task description is the approved design; "
+            "never wait for design or plan approval.")
+
+
 def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pinned=None):
     """-> {'system_append', 'user_prompt', 'tokens', 'budget'}. `scope` entries are 'path' or 'path:a-b'."""
     size = task.get("size", "M")
@@ -96,9 +119,12 @@ def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pin
     scope = scope if scope is not None else task.get("scope_files") or []
     excerpt = _last_lines(retry_excerpt, EXCERPT_LINES) if retry_excerpt else ""
     notes_text = "\n".join(f"- {n}" for n in notes or [])
+    framework = framework_text(task.get('worktree'))
 
     def build(excerpt, notes_text):
         parts = [_task_block(task), _scope_block(scope), _section("Repo instructions", task.get("repo_brief", "")),
+                 _section("Repository spec framework", framework),
+                 _section("Earlier runs of this task", task.get("retry_work", "")),
                  _section("Last gate failure (fix this)", f"```\n{excerpt}\n```" if excerpt else ""),
                  _section("Handoff from the previous worker", handoff or ""),
                  _section("Owner notes", notes_text), READ_ONLY_RECORD if task.get("write") is False else ACTION_RECORD]

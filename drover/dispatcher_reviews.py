@@ -7,7 +7,7 @@ from . import contract, dispatch_repos, repos
 from . import config as config_mod
 from . import route as route_mod
 from .ledger import states
-from .dispatcher_admission import MAX_PROVIDER_ERRORS, MAX_REVIEW_TRIES, effort_for, place, seat_of
+from .dispatcher_admission import MAX_PROVIDER_ERRORS, MAX_REVIEW_TRIES, at_top, effort_for, failures, place, seat_of
 
 
 class ReviewSteps:
@@ -113,15 +113,23 @@ class ReviewSteps:
                      allowance_used=self._allowance_used(spec))
         rec = contract.parse_review_record(result.get("text") or "") if result["status"] in (contract.DONE, contract.BLOCKED, contract.NO_RECORD) else None
         verdict = str((rec or {}).get("verdict") or "").strip()
+        findings = (rec or {}).get('findings') or []
+        blocking = [f for f in findings if not isinstance(f, dict) or f['kind'] == 'blocking']
+        followups = [f for f in findings if isinstance(f, dict) and f['kind'] == 'follow-up']
         landed = re.fullmatch(r"LAND@([0-9a-fA-F]{40})", verdict)  # a prefix is not a licence
-        if landed and sha and sha.lower() == landed.group(1).lower():
+        exact = bool(sha and re.fullmatch(r'[0-9a-fA-F]{40}', sha) and
+                     str((rec or {}).get('sha', '')).lower() == sha.lower())
+        if ((landed and sha and sha.lower() == landed.group(1).lower()) or
+                (verdict == 'HOLD' and exact and followups)) and not blocking:
             outcome = contract.LAND
-        elif verdict == 'HOLD' and rec['findings']:
+        elif (verdict == 'HOLD' or landed) and blocking:
             outcome = contract.HOLD
         elif result.get('provider_error') and result['status'] in (contract.ERROR, contract.NO_RECORD, contract.TIMEOUT):
             outcome = contract.PROVIDER_ERROR
         else:
             outcome = result['status'] if result['status'] in (contract.TIMEOUT, contract.ERROR) else contract.NO_RECORD
+        if outcome in (contract.LAND, contract.HOLD) and followups:
+            p.propose_review_followups(task_id, run_id, followups)
         request = next((r for r in p.waiting.replans() if r['task_id'] == task_id), None)
         if request:
             p.finish_run(run_id, outcome, review_verdict=verdict or None, **usage)
@@ -137,11 +145,23 @@ class ReviewSteps:
             p.append_event("review-done", {"run": run_id, "verdict": f"LAND@{sha}", "findings": rec["findings"]}, task_id)
             return p.set_status(task_id, states.REVIEWED, reason=f"review LAND@{sha[:12]}")
         if outcome == contract.HOLD:
-            findings = "\n".join(f"- {f}" for f in rec["findings"])
+            findings = "\n".join(f"- {f['detail'] if isinstance(f, dict) else f}" for f in blocking)
             excerpt = "Review HOLD. Findings:\n" + findings
             p.finish_run(run_id, contract.HOLD, review_verdict="HOLD", note=(rec.get("note") or None),
                          gate_receipt=contract.gate_receipt(False, excerpt=excerpt, review=True), **usage)
             p.append_event("review-done", {"run": run_id, "verdict": "HOLD", "findings": rec["findings"]}, task_id)
+            # One bounded extra repair round for a short, concrete review, once per retry window.
+            task = p.get_task(task_id)
+            holds = [r for r in p.list_runs(task_id) if r['role'] == 'review' and r['outcome'] == contract.HOLD
+                     and r['id'] > task['retry_after_run']]
+            used = any(e['task_id'] == task_id and e['data'].get('after_run') == task['retry_after_run']
+                       for e in p.events('review-fix-round'))
+            worker = next(r for r in p.list_runs(task_id) if r['id'] == worker_id)
+            count = failures(p.list_runs(task_id), task['retry_after_run'])
+            if len(holds) >= 2 and count % 2 == 0 and at_top(worker) and len(blocking) <= 2 and not used:
+                p.set_handoff(task_id, excerpt)
+                p.append_event('review-fix-round', {'run': run_id, 'after_run': task['retry_after_run']}, task_id)
+                return p.set_status(task_id, 'ready', reason='one more fix round for concrete review findings')
             return self._failed(task_id, worker_id, excerpt)
         if outcome == contract.PROVIDER_ERROR:
             p.finish_run(run_id, contract.PROVIDER_ERROR, note=f"provider error: {result['provider_error']}"[:290], **usage)

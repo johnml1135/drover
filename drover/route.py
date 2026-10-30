@@ -171,8 +171,13 @@ def no_seat_route(seats, platforms=None, privileged=False, seat_load=None):
 def _seat_admits(seat, h, protected):
     """A seat's reading clears its floors: five_hour by the reset-time formula, seven_day (or a plain remaining
     figure) by the seat's reserve when protected."""
-    if not h or h["remaining_pct"] <= 0:
-        return False
+    return _seat_admission_reason(seat, h, protected) is None
+
+
+def _seat_admission_reason(seat, h, protected):
+    """Name the floor that prevents admission, or None when the reading clears it."""
+    if not h:
+        return 'no current allowance reading'
     windows = h.get("windows") or {}
     for name, w in windows.items():
         if name == "five_hour":
@@ -182,8 +187,11 @@ def _seat_admits(seat, h, protected):
         else:
             floor = seat["reserve_pct"] if protected else 0.0
         if w["remaining_pct"] <= floor:
-            return False
-    return bool(windows) or not protected or h["remaining_pct"] > seat["reserve_pct"]
+            label = 'five-hour floor' if name == 'five_hour' else 'weekly/seven-day reserve'
+            return f'below {label}'
+    if h['remaining_pct'] <= 0 or not (windows or not protected or h['remaining_pct'] > seat['reserve_pct']):
+        return f'below allowance reserve {seat["reserve_pct"] if protected else 0:g}%'
+    return None
 
 
 def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering, rng, borrow_approved):
@@ -218,8 +226,9 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
         if not _seat_admits(seat, h, protected):
             continue
         pool = [c for c in candidates if c["backend"] == seat["backend"]]
-        if not pool and privileged:    # last-resort codex seat: the configured worker model for that backend
-            pool = [c for c in default_candidates("worker:M") if c["backend"] == seat["backend"]]
+        if privileged and (not pool or seat['name'] != default and not requested):
+            pool = [{"backend": seat["backend"], "model": cfg["models"]["ladders"][seat["backend"]][-1],
+                     "effort": "high"}]
         if not pool:
             continue
         c = pick_candidate(pool, rng, (policy or {}).get("min_first_pass", MIN_FIRST_PASS))
