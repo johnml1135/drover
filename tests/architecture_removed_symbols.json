@@ -1,0 +1,67 @@
+{
+  "baseline_sha": "1d122416aebba1d9b1e96fcce52179b9ec200297",
+  "global_names": [
+    "DEFAULT_INFRA_RETRIES",
+    "SeatHomeSeam",
+    "_env_block_to_ready",
+    "_commit_ready"
+  ],
+  "qualified_names": [
+    "hub.dispatch.HubPort.set_status",
+    "drover.dispatcher_launch.LaunchSteps._launch",
+    "drover.pipeline.Repository.ahead",
+    "drover.ledger.ops_tasks.read_only_result",
+    "drover.ledger.ops_tasks.accept_read_only"
+  ],
+  "removed_receipt_fields": [
+    "infra"
+  ],
+  "required_parameters": [
+    {
+      "file": "drover/ci.py",
+      "function": "result",
+      "parameter": "spec",
+      "required": false,
+      "keyword_only": false
+    },
+    {
+      "file": "drover/dispatcher_gates.py",
+      "function": "_gate_passed",
+      "parameter": "platforms",
+      "required": true,
+      "keyword_only": false
+    },
+    {
+      "file": "drover/landing.py",
+      "function": "_drive",
+      "parameter": "land_stage",
+      "required": true,
+      "keyword_only": true
+    },
+    {
+      "file": "drover/landing.py",
+      "function": "_land",
+      "parameter": "land_stage",
+      "required": true,
+      "keyword_only": true
+    }
+  ],
+  "scoped_attributes": [
+    {
+      "file": "drover/pipeline.py",
+      "attribute": "ahead"
+    }
+  ],
+  "scoped_bindings": [
+    {
+      "file": "drover/dispatcher_launch.py",
+      "binding": "brief_mod"
+    }
+  ],
+  "scoped_definitions": [
+    {
+      "file": "drover/pipeline.py",
+      "name": "out_of_scope"
+    }
+  ]
+}
