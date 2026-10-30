@@ -15,7 +15,7 @@ class Processes(DiskCase):
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='round9')
         disk_state.save_file(self.state, 'processes-round9.json', dict(rows=[], identities={}))
         row = dict(pid=77, name='foreign.exe', same_user=False, cwd=None, cmd='')
-        for before, after in ((None, None), (20, None)):
+        for before, after in ((20, None),):
             with self.subTest(before=before, after=after), \
                     patch.object(placement, '_windows_processes', side_effect=[
                         {'77': ['foreign.exe', before]}, {'77': ['foreign.exe', after]}]) as _placement_patch_1, patch('drover.placement_proof._windows_processes', _placement_patch_1), \

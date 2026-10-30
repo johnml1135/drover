@@ -117,12 +117,19 @@ class _CleanupProcesses:
                         except OSError as error:
                             after = {}
                             self.query_failure = dict(reason_code='process_visibility_unavailable', error=str(error))
+                        queried = fresh
                         fresh = {pid: row for pid, row in fresh.items()
                                  if pid in refresh and current[pid][1]
                                  and after.get(pid) == current[pid]}
                         rows.extend(fresh.values())
                         for pid in refresh:
-                            if pid not in fresh:
+                            if pid not in fresh and not current[pid][1] \
+                                    and self._same_process_out_of_scope(queried.get(pid), current[pid][0]):
+                                # Birth never readable (not a changed PID) but the CIM row proves it is not the
+                                # invoking user's: keep its cwd/argv as path evidence only.
+                                row = queried[pid]
+                                self._record(**dict(row, cwd=row.get('cwd') if 'cwd' in row else _windows_cwd(row['pid'])))
+                            elif pid not in fresh:
                                 self.unknown = True
                                 self._unreadable(int(pid), current[pid][0], evidence='process_identity_unavailable')
                     rows = [row for row in rows if str(row['pid']) in current]
@@ -172,6 +179,25 @@ class _CleanupProcesses:
             self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd,
                          exe=exe, command_unreadable=command_unreadable)
 
+    def _scope(self, name, exe, same_user, session_id):
+        """The one predicate: (ignored OS helper, foreign owner) for a process."""
+        image = re.split(r'[/\\]', name or '')[-1]
+        image = _ordinal_case(image) if self.windows else image
+        ignored = image in self.ignored and _process_os_location(exe, self.windows)
+        if ignored and self.windows:
+            # A PID may have changed between CIM and the limited image query.
+            # Never apply an ignored CIM name to a different executable image.
+            ignored = _ordinal_case(re.split(r'[/\\]', exe)[-1]) == image
+        foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
+        return ignored, foreign
+
+    def _same_process_out_of_scope(self, row, native_name):
+        """A CIM row for the same image (PID not reused) that is foreign or an ignored helper."""
+        if not row or _ordinal_case(row.get('name') or '') != _ordinal_case(native_name or ''):
+            return False
+        ignored, foreign = self._scope(row.get('name'), row.get('exe'), row.get('same_user'), row.get('session_id'))
+        return foreign or (ignored and row.get('same_user') is None)
+
     def _unreadable(self, pid, name, **extra):
         row = dict(pid=pid, name=name, **extra)
         if extra.get('evidence') in (None, 'owner') and extra.get('cwd_unreadable', True):
@@ -183,14 +209,7 @@ class _CleanupProcesses:
         own_cwd = self._own_cwd(pid) if not cwd or same_user is None or command_unreadable else None
         if own_cwd:
             cwd, same_user = cwd or own_cwd, True
-        image = re.split(r'[/\\]', name or '')[-1]
-        image = _ordinal_case(image) if self.windows else image
-        ignored = image in self.ignored and _process_os_location(exe, self.windows)
-        if ignored and self.windows:
-            # A PID may have changed between CIM and the limited image query.
-            # Never apply an ignored CIM name to a different executable image.
-            ignored = _ordinal_case(re.split(r'[/\\]', exe)[-1]) == image
-        foreign = same_user is False or (self.windows and same_user is None and session_id == 0)
+        ignored, foreign = self._scope(name, exe, same_user, session_id)
         if ignored and (same_user is None or not cwd):
             self.out_of_scope += 1
         elif self.windows and same_user is None and not foreign:
