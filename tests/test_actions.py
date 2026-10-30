@@ -1,12 +1,12 @@
 """The shared outbox and task destination transaction are public ledger seams."""
 import tempfile
 import unittest
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from pathlib import Path
 
 from drover.ledger import actions, ops
 from drover.ledger.db import connect
 from drover.notifications import Conflict, Notifications
-
 
 class ActionsTests(unittest.TestCase):
     def setUp(self):
@@ -18,7 +18,7 @@ class ActionsTests(unittest.TestCase):
         self.service = Notifications(self.conn, now=lambda: self.time)
         ops.set_setting(self.conn, 'dispatch_enabled', 'true')
         self.service.register('director:a', action_allowlist=['task.comment', 'task.retry', 'issue.resolve'])
-        self.task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        self.task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a', scope_files=['fixture-21'])
         ops.approve(self.conn, self.task['id'])
         self.service.issue_session('director:a', 'session:1')
         self.token = self.service.acquire('director:a', 'session:1')['lease_token']
@@ -67,7 +67,7 @@ class ActionsTests(unittest.TestCase):
 
     def test_acceptance_refuses_unapproved_and_unlisted_work(self):
         self.service.register('director:b')
-        task = ops.create_task(self.conn, 'Unapproved', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Unapproved', 'repo', initiating_role='director:a', scope_files=['fixture-70'])
         request = self.comment()
         request['payload'].update(task_id=task['id'], expected_status='proposed',
                                   expected_revision=ops.events(self.conn, task_id=task['id'])[-1]['id'])
@@ -85,7 +85,7 @@ class ActionsTests(unittest.TestCase):
                 # Each fence gets its own role and scope, leaving pending receipts independent.
                 role = f'director:{fence}'
                 self.service.register(role, action_allowlist=['task.comment'])
-                task = ops.create_task(self.conn, 'Work', 'repo', initiating_role=role)
+                task = ops.create_task(self.conn, 'Work', 'repo', initiating_role=role, scope_files=['fixture-88'])
                 ops.approve(self.conn, task['id'])
                 self.service.issue_session(role, f'session:{fence}')
                 token = self.service.acquire(role, f'session:{fence}')['lease_token']
@@ -179,9 +179,9 @@ class ActionsTests(unittest.TestCase):
         for role in ('owner', 'service'):
             with self.subTest(role=role):
                 self.service.register(role, action_allowlist=['task.comment'])
-                task = ops.create_task(self.conn, 'Findings', 'repo', kind='research', initiating_role=role)
+                task = ops.create_task(self.conn, 'Findings', 'repo', kind='research', initiating_role=role, scope_files=['fixture-182'])
                 ops.approve(self.conn, task['id'])
-                ops.set_status(self.conn, task['id'], 'claimed')
+                fixture_claim(self.conn, task['id'])
                 run = ops.start_run(self.conn, task['id'], 'worker', 'local')
                 ops.finish_run(self.conn, run, 'read-only-done', note='Findings for owner')
                 ops.set_status(self.conn, task['id'], 'needs-owner')

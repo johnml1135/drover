@@ -97,11 +97,11 @@ class UiTests(unittest.TestCase):
 
     def test_all_tabs_render_with_data(self):
         e1, e2 = self.epic("Epic One"), self.epic("Epic Two")
-        t = self.st.create_task("Alpha task", epic_id=e1)
-        n = self.st.create_task("Beta", epic_id=e2)["id"]
+        t = self.st.create_task("Alpha task", epic_id=e1, scope_files=['fixture-100'])
+        n = self.st.create_task("Beta", epic_id=e2, scope_files=['fixture-101'])["id"]
         self.st.approve(n)
         self.st.set_status(n, "needs-owner", "dispatcher", "licence")
-        g = self.st.create_task("Gamma")["id"]
+        g = self.st.create_task("Gamma", scope_files=['fixture-104'])["id"]
         self.st.set_status(g, "blocked", "dispatcher", "gate red")
         self.st.ask_question("task", t["id"], "Pick?", options=[{"label": "x"}, {"label": "y"}])
         self.st.put_heartbeat({"resources": {"RAM": {"verdict": "ok", "value": "9GB"}},
@@ -118,7 +118,7 @@ class UiTests(unittest.TestCase):
         self.assertIn(t["id"], plan)
 
     def test_mutations_need_same_origin(self):
-        t = self.st.create_task("Imp")["id"]
+        t = self.st.create_task("Imp", scope_files=['fixture-121'])["id"]
         r = self.c.post("/imports/approve", data={"id": t})
         self.assertEqual(r.status_code, 403)
         self.assertEqual(self.st.get_task(t)["status"], "proposed")
@@ -127,7 +127,7 @@ class UiTests(unittest.TestCase):
         self.assertEqual(self.st.get_task(t)["status"], "ready")
 
     def test_origin_matching_host_accepted_cross_origin_refused(self):
-        t = self.st.create_task("Imp")["id"]
+        t = self.st.create_task("Imp", scope_files=['fixture-130'])["id"]
         bad = self.c.post(f"/items/import/{t}/approve", headers={"Origin": "http://evil.example"})
         self.assertEqual(bad.status_code, 403)
         cross = self.c.post(f"/items/import/{t}/approve",
@@ -149,8 +149,8 @@ class UiTests(unittest.TestCase):
 
     def test_answer_comment_reorder(self):
         e1, e2 = self.epic("E1"), self.epic("E2")
-        a = self.st.create_task("A", epic_id=e1)["id"]
-        a2 = self.st.create_task("A2", epic_id=e1)["id"]
+        a = self.st.create_task("A", epic_id=e1, scope_files=['fixture-152'])["id"]
+        a2 = self.st.create_task("A2", epic_id=e1, scope_files=['fixture-153'])["id"]
         q = self.st.ask_question("task", a, "Pick?", options=[{"label": "x"}, {"label": "y"}])["id"]
         self.c.post(f"/questions/{q}/answer", data={"option": "y"}, headers=SAME)
         self.assertEqual(self.st.list_questions()[0]["answer_choice"], "y")
@@ -164,7 +164,7 @@ class UiTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in self.st.list_epics()], [e2, e1])
 
     def test_owner_approve_in_ui_sets_approval(self):
-        t = self.st.create_task("Imp")["id"]
+        t = self.st.create_task("Imp", scope_files=['fixture-167'])["id"]
         self.c.post(f"/items/import/{t}/approve", headers=SAME)
         self.assertIsNotNone(self.st.get_task(t)["approved_at"])
 

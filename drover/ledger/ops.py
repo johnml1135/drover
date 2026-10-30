@@ -61,13 +61,13 @@ from .ops_tasks import (
     add_dep,
     deps_of,
     dependents_of,
-    NotApproved, read_only_result,
-    accept_read_only,
+    NotApproved,
     set_status,
     approve,
     block,
     unblock,
 )
+from .ops_stages import read_only_result, accept_read_only
 from .ops_outside import record_external_landing
 from .ops_execution import (
     _active_scopes,

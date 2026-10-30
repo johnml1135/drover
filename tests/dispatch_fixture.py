@@ -1,5 +1,6 @@
 """Build dispatchers through the production collaborators, with isolated test state."""
 import time
+from types import SimpleNamespace
 
 from drover import runner, ci, config
 
@@ -9,7 +10,6 @@ from tests.fakeci import resources_go
 WORKTREE = r'R:\repos\wt'
 GO = {'verdict': 'go', 'slots': 10, 'reasons': []}
 
-
 class FixtureCI(ci.CI):
     def prepare(self, prog, checkout, commit, run_id, *, kind='checks', platform=None, base=None, priority='P2'):
         out = runner.run_dir(self.runs_dir, run_id) / 'receipt.json'
@@ -17,7 +17,6 @@ class FixtureCI(ci.CI):
         return {'kind': kind, 'diff_lines': 0, 'scope': None, 'files': [], 'sha': commit, 'receipt': str(out),
                 'spec': {'run_id': run_id, 'role': 'gate', 'backend': 'local', 'model': 'gate',
                          'placement': platform, 'argv': ['fixture-ci', str(out), commit], 'cwd': checkout}}
-
 
 class FakePipeline:
     """A configured repo interface; its test runner supplies check receipts and review capacity is unavailable."""
@@ -27,8 +26,8 @@ class FakePipeline:
                                      'scripts': {'test': '.drover/scripts/test.ps1'}})
         self.prog['review'].update(backend='codex', model='gpt-6.1-sol', high_risk_model='gpt-6.1-sol', seat=None)
         self.ci = FixtureCI(self.runs_dir, resource_check=resources_go)
-        self.current_head = lambda: 'abc1234'
-
+        self.current_head = lambda: 'a' * 40
+        self.repository = SimpleNamespace(resolve=lambda path, ref: 'b' * 40)
     def all_repos(self):
         return {'p': self.prog}
 
@@ -52,9 +51,11 @@ class FakePipeline:
     def base_ref(self, prog):
         return prog["default_branch"]
 
+    def commit_ready(self, task, run_id, message, *, base=None, sha=None):
+        return sha or self.current_head()
+
     def diff_text(self, repo, base, sha):
         return "fixture diff"
-
 
 class Observations:
     """Feed measured readings through the same ledger interface used by production polling."""
@@ -72,7 +73,6 @@ class Observations:
             remaining = window.get('remaining_pct', 90) if self.allow(seat['backend']) else 0
             usage.manual(self.conn, seat['name'], name, 100 - remaining, self.now() + 3600 * 100, now=self.now())
         return usage.headroom(self.conn, seat['name'], self.now())
-
 
 def make_dispatcher(port, *, pipeline=None, launcher, resources=lambda **kw: GO, now=time.time,
                     usage_poller=None, decide=None, route=None, scan=None, wsl_up=None,

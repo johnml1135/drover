@@ -170,7 +170,7 @@ class GateSteps:
                    "kind": info.get("kind"), "path": info.get("receipt"),
                    "steps": [{k: s.get(k) for k in ("exit_code", "status")} for s in (receipt or {}).get("steps", [])]}
         if passed:
-            self._gate_passed(task, worker, sha, wall, info.get("diff_lines"), summary, run_id)
+            self._gate_passed(task, worker, sha, wall, info.get("diff_lines"), summary, run_id, platforms)
         else:
             self._gate_failed(task, worker, excerpt, wall, info.get("diff_lines"), summary, info.get("files") or [])
 
@@ -191,7 +191,7 @@ class GateSteps:
         p.append_event("gate-infra-retry", {"run": worker_id, "sha": sha, "gate_run": gate_run, "reason": line,
                                             "n": used + 1}, task_id)
 
-    def _gate_passed(self, task, worker, sha, wall, diff_lines, summary, gate_run):
+    def _gate_passed(self, task, worker, sha, wall, diff_lines, summary, gate_run, platforms):
         p, tid = self.port, task["id"]
         g = {"ok": True, "receipt": summary, "diff_lines": diff_lines, "duration_s": wall}
         p.append_event(contract.GATE_EVENT, contract.gate_event(wall, False, worker["id"]), tid)
@@ -199,7 +199,7 @@ class GateSteps:
         p.amend_run(worker["id"], outcome="gated", gate_receipt=contract.gate_receipt(True, diff_lines, receipt=summary))
         self._settle(tid, passed=True)
         p.append_event("run-done", {"sha": sha, "run": worker["id"]}, tid)
-        p.set_status(tid, "gated", reason="gate passed")
+        p.advance_stage(tid, "gated", worker["id"], sha, platforms=platforms)
 
     def _gate_failed(self, task, worker, excerpt, wall, diff_lines, summary=None, files=()):
         p, tid = self.port, task["id"]

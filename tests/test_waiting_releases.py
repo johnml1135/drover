@@ -6,6 +6,7 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,7 +14,6 @@ from drover import contract, dispatcher
 from drover.ledger import connect, db, ops, schema
 from drover.port import DirectPort
 from tests.test_waiting import LedgerCase, logical, require
-
 
 class Deadlines(LedgerCase):
     def test_timeout_owner_replacement(self):
@@ -67,7 +67,7 @@ class Deadlines(LedgerCase):
         d.tick()
         self.assertEqual(w.pending(('task', reviewed)), [])
         self.assertEqual(self.status(reviewed), 'gated')
-        ops.set_status(self.conn, tid, 'claimed')
+        fixture_claim(self.conn, tid)
         run = ops.start_run(self.conn, tid, 'worker', 'codex', 'gpt-6-luna')
         ops.finish_run(self.conn, run, 'provider-error')
         ops.set_status(self.conn, tid, 'ready', actor='dispatcher')

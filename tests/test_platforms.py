@@ -7,10 +7,10 @@ from pathlib import Path
 from drover import config, contract, dispatcher, repos, stats
 from hub.dispatch import LandingService
 from drover.ledger import ops
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from tests import test_dispatcher, test_pipeline
 from tests.test_pipeline import prog_dict
 from tests.rcw_fixture import PipelineBase as Base
-
 
 def repo(repo, worktrees, platforms=None, gate_platform="windows", default=None):
     p = prog_dict(repo, worktrees)
@@ -18,7 +18,6 @@ def repo(repo, worktrees, platforms=None, gate_platform="windows", default=None)
            "run": {"platforms": ["windows", "wsl"] if platforms is None else platforms, **({"default": default} if default else {})},
            "scripts": {"test": ".drover/scripts/test.ps1"}, "gate": {"platform": gate_platform}}
     return repos.normalize(raw)
-
 
 class Normalize(unittest.TestCase):
     def test_defaults_are_both_platforms_with_windows_default(self):
@@ -71,9 +70,12 @@ class Normalize(unittest.TestCase):
             self.addCleanup(config.reset)
             self.assertEqual(list(repos.load_all()), ["mine"])
 
-
 class FakeRepoPipeline(Base):
     """A pipeline whose repo is wsl-only or windows-only."""
+
+    def setUp(self):
+        super().setUp()
+        self.pipe.repository.resolve = lambda path, ref: 'b' * 40
 
     def repo(self, platforms, gate_platform="windows"):
         self.prog.update(repo(self.prog["repo"], self.prog["worktrees"], platforms, gate_platform))
@@ -93,7 +95,7 @@ class FakeRepoPipeline(Base):
             config.DEFAULT_SEATS[1]]}))
         self.addCleanup(config.reset)
         tid = self.task()
-        ops.set_status(self.conn, tid, "claimed")
+        fixture_claim(self.conn, tid)
         rid = ops.start_run(self.conn, tid, "worker", "claude", "sonnet-5.5")
         ops.finish_run(self.conn, rid, "error")
         ops.set_status(self.conn, tid, "ready")
@@ -118,7 +120,7 @@ class FakeRepoPipeline(Base):
     def test_retry_without_a_measured_compatible_seat_waits(self):
         self.repo(["windows"])
         tid = self.task()
-        ops.set_status(self.conn, tid, "claimed")
+        fixture_claim(self.conn, tid)
         rid = ops.start_run(self.conn, tid, "worker", "codex", "gpt-6-luna")
         ops.finish_run(self.conn, rid, "error")
         ops.set_status(self.conn, tid, "ready")
@@ -171,7 +173,6 @@ class FakeRepoPipeline(Base):
         self.assertIn("windows", self.reason(tid))
         self.assertEqual(self.fl.of("worker"), [])
 
-
     def test_a_platform_windows_tag_on_a_wsl_claude_seat_also_goes_to_the_owner(self):
         claude = {"backend": "claude", "seat": "claude"}
         config.use(config.validate({"seats": [{**config.DEFAULT_SEATS[0], "placement": "wsl"}]}))
@@ -195,7 +196,6 @@ class FakeRepoPipeline(Base):
         codex = {"backend": "codex", "seat": "codex"}
         self.assertEqual(dispatcher.place(plain, codex, "R:\\wt", wsl_only), ("wsl", None))
         self.assertIsNone(dispatcher.place(plain, codex, "R:\\wt", windows_only)[0])
-
 
 class GateBoth(test_dispatcher.Base):
     def setUp(self):
@@ -232,7 +232,7 @@ class GateBoth(test_dispatcher.Base):
         self.d = self.make(wsl_up=lambda: True)
         tid = self.task()
         self.d.tick()
-        sha = 'abc1234'
+        sha = 'a' * 40
         self.run_worker(tid, sha)
         for _ in range(ticks):
             self.d.tick()
@@ -284,7 +284,7 @@ class GateBoth(test_dispatcher.Base):
         self.d = self.make(wsl_up=lambda: up["v"])
         tid = self.task()
         self.d.tick()
-        self.run_worker(tid, "abc1234")
+        self.run_worker(tid, "a" * 40)
         up["v"] = False
         for _ in range(4):
             self.d.tick()

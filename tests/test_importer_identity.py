@@ -51,8 +51,8 @@ class TestOwnerWins(Base):
         r1, r2 = self.tid("task 1"), self.tid("task 3")
         ops.approve(self.conn, r1, "owner")
         ops.approve(self.conn, r2, "owner")
-        ops.set_status(self.conn, r2, "claimed", "system")
-        ops.set_status(self.conn, r2, "running", "system")
+        from tests.ledger_fixture import stage
+        stage(self.conn, r2, 'running')
         d = copy.deepcopy(self.data)
         for t in d["tasks"]:
             t["goal"] = "changed " + t["id"]

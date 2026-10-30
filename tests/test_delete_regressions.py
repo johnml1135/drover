@@ -11,7 +11,6 @@ from drover.ledger import connect, ops
 from drover.port import DirectPort
 from hub.store import Store, UiView
 
-
 class DeleteRegressions(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -22,6 +21,7 @@ class DeleteRegressions(unittest.TestCase):
             'acme-lib': {'name': 'acme-lib', 'repo': '/nonexistent/acme-lib'}}, runs_dir=self.tmp.name)
 
     def task(self, title, **kw):
+        kw.setdefault('scope_files', [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}"])
         task = ops.create_task(self.conn, title, 'acme-lib', **kw)
         ops.approve(self.conn, task['id'])
         return task['id']
@@ -55,7 +55,7 @@ class DeleteRegressions(unittest.TestCase):
         source = self.task('Source')
         qid = self.gate_question(source)
         ops.archive_task(self.conn, source)
-        ops.create_task(self.conn, 'Other repo', 'acme-app')
+        ops.create_task(self.conn, 'Other repo', 'acme-app', scope_files=['fixture-58'])
         self.assertEqual(self.inbox_questions(), [])
         target = self.task('New work')
         self.assertEqual(self.gate_question(target), qid)

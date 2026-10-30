@@ -200,7 +200,7 @@ class DispatcherSeats(unittest.TestCase):
                     probes.append(kw['env'].get('CLAUDE_CONFIG_DIR'))
                     return subprocess.CompletedProcess(argv, 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
                 d.usage_poller.run = run
-                tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], goal=f'platform: {platform}')['id']
+                tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], goal=f'platform: {platform}', scope_files=['fixture-203'])['id']
                 ops.approve(conn, tid)
                 windows_os = SimpleNamespace(name='nt', path=ntpath, environ=os.environ)
                 with patch.object(config, 'os', windows_os), patch.object(config_paths, 'os', windows_os), patch.object(placement_mod, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.dict(os.environ, {'USERPROFILE': r'R:\Users\acme'}):
@@ -225,7 +225,7 @@ class DispatcherSeats(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 conn, d, _, clock, calls = self.make_dispatcher(slots=0 if scenario == 'no-slots' else 1)
                 if scenario != 'idle':
-                    tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
+                    tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=['fixture-228'])['id']
                     ops.approve(conn, tid)
                     if scenario == 'backoff':
                         from drover.ledger.waiting import Waiting, DEADLINE, cause_key
@@ -244,8 +244,8 @@ class DispatcherSeats(unittest.TestCase):
         from tests.test_dispatcher import res, DONE
         conn, d, launcher, clock, calls = self.make_dispatcher()
         ops.add_policy_version(conn, 'one-worker', {'parallel_cap': 1})
-        for _ in range(2):
-            tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
+        for i in range(2):
+            tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=[f'fixture-{i}'])['id']
             ops.approve(conn, tid)
         d.tick()
         self.assertEqual(calls, [NOW])
@@ -261,7 +261,7 @@ class DispatcherSeats(unittest.TestCase):
         from drover.ledger import ops
         from tests.test_dispatcher import res, DONE
         conn, d, launcher, clock, calls = self.make_dispatcher()
-        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
+        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=['fixture-264'])['id']
         ops.approve(conn, tid)
         d.tick()
         clock[0] += 61
@@ -274,7 +274,7 @@ class DispatcherSeats(unittest.TestCase):
         from drover.ledger import ops
         conn, d, launcher, _, _ = self.make_dispatcher([
             {'name': 'acme-seat', 'backend': 'claude', 'director': True, 'reserve_pct': 25}])
-        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[])['id']
+        tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=['fixture-277'])['id']
         ops.approve(conn, tid)
         d.usage_poller.run = lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT}))
         self.assertEqual(d.tick()['launched'], [])
@@ -292,7 +292,7 @@ class DispatcherSeats(unittest.TestCase):
             config.use(cfg)
             self.addCleanup(config.reset)
             ops.set_setting(conn, 'dispatch_enabled', 'true')
-            tid = ops.create_task(conn, 'Work on acme-lib', 'acme-lib', read_access=[])['id']
+            tid = ops.create_task(conn, 'Work on acme-lib', 'acme-lib', read_access=[], scope_files=['fixture-295'])['id']
             ops.approve(conn, tid)
             launcher = FakeLauncher()
             d = make_dispatcher(DirectPort(conn), launcher=launcher,
@@ -315,7 +315,7 @@ class DispatcherSeats(unittest.TestCase):
                                              {'name': 'alternate', 'backend': 'claude'}]})
             config.use(cfg)
             self.addCleanup(config.reset)
-            tid = ops.create_task(conn, 'Plan acme-lib', 'acme-lib', read_access=[])['id']
+            tid = ops.create_task(conn, 'Plan acme-lib', 'acme-lib', read_access=[], scope_files=['fixture-318'])['id']
             ops.approve(conn, tid)
             usage.manual(conn, 'director', 'seven_day', 100, NOW + 3600, now=NOW)
             usage.manual(conn, 'alternate', 'seven_day', 20, NOW + 3600, now=NOW)

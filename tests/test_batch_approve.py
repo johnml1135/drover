@@ -15,6 +15,7 @@ class BatchApprovalTests(unittest.TestCase):
         self.s = self.app.state.store
 
     def task(self, title="Task", **fields):
+        fields.setdefault("scope_files", ["fixture"])
         return self.s.create_task(title, **fields)["id"]
 
     def approve(self, ids, **fields):

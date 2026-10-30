@@ -76,7 +76,7 @@ class Stats(unittest.TestCase):
         self.path = Path(self.tmp.name) / 'ledger.db'
         self.conn = connect(self.path)
         self.addCleanup(self.conn.close)
-        self.tid = ops.create_task(self.conn, 'Measure acme-lib', 'acme-lib')['id']
+        self.tid = ops.create_task(self.conn, 'Measure acme-lib', 'acme-lib', scope_files=['fixture-79'])['id']
 
     def run_one(self):
         rid = ops.start_run(self.conn, self.tid, 'worker', 'claude', 'sonnet-5.5', 'high')

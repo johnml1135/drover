@@ -40,7 +40,6 @@ class ASGIClient:
     def patch(self, path, **kwargs):
         return self.request('PATCH', path, **kwargs)
 
-
 BASE = '/api/v1/notifications'
 SAME = {'Sec-Fetch-Site': 'same-origin'}
 WORKER = {'Authorization': 'Bearer worker'}
@@ -79,7 +78,7 @@ class _NotificationBase(unittest.TestCase):
 
 
     def submit(self, headers, title='Task', **fields):
-        r = self.post('/tasks', {'title': title, **fields}, headers)
+        r = self.post('/tasks', {'title': title, 'scope_files': [f'fixture/{title}'], **fields}, headers)
         self.assertEqual(r.status_code, 201, r.text)
         return r.json()['id']
 
@@ -239,7 +238,7 @@ class NotificationApiTests(_NotificationBase):
         for kind in ('director.finished', 'notification.broadcast', 'group.ready', 'task.result-accepted', 'result.accepted'):
             r = self.c.post('/api/v1/events', headers=WORKER, json={'kind': kind, 'data': {}})
             self.assertEqual(r.status_code, 403, r.text)
-        task = self.app.state.store.create_task('Accounting')['id']
+        task = self.app.state.store.create_task('Accounting', scope_files=['fixture-195'])['id']
         self.assertEqual(self.c.post('/api/v1/runs', headers=WORKER, json={'task_id': task, 'role': 'director', 'backend': 'fake'}).status_code, 403)
         from drover.directors import DirectorRuntime
         from drover.port import DirectPort
@@ -286,25 +285,26 @@ class NotificationApiTests(_NotificationBase):
             'delivery_versions': {issue['delivery_id']: issue['message_version']},
             'request_key': 'observed-issue', 'release': True}, a)
         self.assertEqual(ack.status_code, 200, ack.text)
-        for status in ('ready', 'claimed', 'running', 'gated', 'reviewed', 'landed'):
+        result = self.c.post(f'/api/v1/tasks/{task}/status', headers=WORKER, json={'status': 'ready'})
+        self.assertEqual(result.status_code, 200, result.text)
+        before = service.conn.execute('SELECT COUNT(*) FROM task_events').fetchone()[0]
+        for status in ('claimed', 'running', 'gated', 'reviewed', 'landed'):
             result = self.c.post(f'/api/v1/tasks/{task}/status', headers=WORKER, json={'status': status})
-            self.assertEqual(result.status_code, 200, result.text)
+            self.assertGreaterEqual(result.status_code, 400, result.text)
+            self.assertEqual(service.conn.execute('SELECT COUNT(*) FROM task_events').fetchone()[0], before)
         self.assertEqual(self.get('/inbox', a).json(), [])
-        health = service.health('alpha')
-        self.assertEqual(health['pending_actionable'], 1)
-        self.assertFalse(health['runtime']['pending_wake'])
-        self.assertTrue(next(s for s in health['subscriptions'] if s['id'] == follow['id'])['preferences']['enabled'])
         self.assertFalse(service.get_group('merged')['ready'])
-        landing.record_merged(service.conn, {'id': task, 'last_sha': 'a' * 40}, 'b' * 40, 'fixture merge receipt')
+        from tests.ledger_fixture import stage
+        stage(service.conn, task, 'landed')
         landed, = self.get('/inbox', a).json()
         self.assertEqual((landed['task_id'], landed['event_class']), (task, 'landed'))
-        self.assertEqual(landed['evidence']['land_sha'], 'a' * 40)
+        self.assertEqual(landed['evidence']['land_sha'], 'b' * 40)
         health = service.health('alpha')
         self.assertEqual(health['pending_actionable'], 0)
         self.assertTrue(health['runtime']['pending_wake'])
         self.assertFalse(next(s for s in health['subscriptions'] if s['id'] == follow['id'])['preferences']['enabled'])
         self.assertTrue(service.get_group('merged')['ready'])
-        landing.record_merged(service.conn, {'id': task, 'last_sha': 'a' * 40}, 'b' * 40, 'fixture merge receipt')
+        landing.record_merged(service.conn, {'id': task, 'last_sha': 'b' * 40}, 'b' * 40, 'fixture')
         self.assertEqual(self.get('/inbox', a).json(), [landed])
 
 
@@ -468,7 +468,7 @@ class NotificationCommentMigrationTests(unittest.TestCase):
             conn = connect(Path(directory) / 'upgrade.db', migrate_db=False)
             self.addCleanup(conn.close)
             migrate(conn, MIGRATIONS[:11])
-            task = ops.create_task(conn, 'Historical task', 'repo')['id']
+            task = ops.create_task(conn, 'Historical task', 'repo', scope_files=['fixture-296'])['id']
             old = ops.add_comment(conn, 'task', task, 'owner', 'retained comment')['id']
             conn.execute("INSERT INTO comments(id,target_kind,target_id,author,body,at) VALUES(41,'task',?,'owner','deleted comment','now')", (task,))
             conn.execute('DELETE FROM comments WHERE id=41')

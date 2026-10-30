@@ -221,7 +221,7 @@ class PlannerPredecessors(PlannerDispatchCase):
     def test_started_gate_and_review_finish_before_planner(self):
         for stage in ('gate', 'review'):
             with self.subTest(stage=stage):
-                tid = self.task()
+                tid = self.task(scope_files=[stage + '.txt'])
                 self.d.tick()
                 sha = self.worker_commits(tid, stage + '.txt')
                 self.run_worker(tid, sha)

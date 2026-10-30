@@ -10,6 +10,7 @@ from pathlib import Path
 
 from drover import brief, dispatcher, launch
 from drover.ledger import ops
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 
 from tests.test_dispatcher import Base, BLOCKED, DONE, WORKTREE, res
 
@@ -96,10 +97,7 @@ class Replan(Base):
         self.d = self.make(decide=lambda n, s, rule_answer=None: {**self.decide(n, s, rule_answer), "acted": True, "answer": True})
         self.verdict = {"verdict": "queue", "slots": 0, "reasons": []}
         self.d.tick()                                   # sets the cursor
-        ops.set_status(self.conn, a, "claimed", "x")
-        ops.set_status(self.conn, a, "running", "x")
-        for s in ("gated", "reviewed", "landed"):
-            ops.set_status(self.conn, a, s, "x")
+        fixture_stage(self.conn, a, 'landed')
         self.d.tick()
         self.assertEqual(self.events("replan-request")[0]["data"]["trigger"], "stale-brief")
         self.assertEqual(self.status(b), "blocked")
@@ -260,11 +258,7 @@ class ReviewClassification(Base):
         self.pipe.current_head = lambda: sha
         tid = self.task()
         ops.update_task(self.conn, tid, worktree=WORKTREE)
-        ops.set_status(self.conn, tid, 'claimed')
-        worker = ops.start_run(self.conn, tid, 'worker', 'claude', 'sonnet-5.5')
-        ops.event(self.conn, 'worker-done', 'dispatcher', {'run': worker, 'sha': sha}, task_id=tid)
-        ops.finish_run(self.conn, worker, contract.GATED)
-        ops.set_status(self.conn, tid, 'gated')
+        fixture_stage(self.conn, tid, 'gated', sha)
         self.d.tick()
         spec, = [s for s in self.fl.specs if s['task']['id'] == tid and s['role'] == 'review']
         self.port.waiting.request_replan(tid, 'owner-request')

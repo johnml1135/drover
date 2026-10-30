@@ -184,9 +184,8 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
         result['error'] = str(e)
         return
     for t in tasks:
-        ops.set_status(conn, t['id'], states.LANDED, actor='system', reason='fast-forwarded',
-                       data={'land_sha': t['last_sha'], 'tip': tip, 'receipt': receipt.get('log')})
-        storage.record_merged(conn, t, tip, receipt.get("log"))
+        from .ledger.ops_stages import land_stage
+        land_stage(conn, t, tip, receipt)
         result['landed'].append(t['id'])
     result['outcome'] = 'landed'
     if push:

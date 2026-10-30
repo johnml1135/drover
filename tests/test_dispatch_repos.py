@@ -131,10 +131,10 @@ class Landing(unittest.TestCase):
         store = Store(Path(tmp.name) / "l.db")
         self.addCleanup(store.close)
         ops.set_setting(store.conn, "dispatch_enabled", "true")
-        t = ops.create_task(store.conn, "t", "q")
+        t = ops.create_task(store.conn, "t", "q", scope_files=['fixture-134'])
         ops.approve(store.conn, t["id"])
-        for s in ("claimed", "running", "gated", "reviewed"):
-            ops.set_status(store.conn, t["id"], s)
+        from tests.ledger_fixture import stage
+        stage(store.conn, t["id"], 'reviewed')
         seen = []
         service = LandingService(store, Settings(runs_dir=Path(tmp.name) / "r"), repos_dir=tmp.name)
         service._land_repo = lambda conn, name, prog: seen.append(name) or {}
@@ -208,7 +208,7 @@ class HubClaim(unittest.TestCase):
         store = app.state.store
         ids = {}
         for repo in ("p", "q"):
-            t = c.post("/api/v1/tasks", json={"title": repo, "repo": repo}, headers=th.AUTH).json()["id"]
+            t = c.post("/api/v1/tasks", json={"title": repo, "repo": repo, "scope_files": [repo]}, headers=th.AUTH).json()["id"]
             store.approve(t)
             ids[repo] = t
         only(store.conn, "q")

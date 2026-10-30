@@ -161,6 +161,7 @@ class Base(unittest.TestCase):
                 "criteria_version": "1", "model": "nimble-v3", "state_hash": "h", "probabilities": None}
 
     def task(self, branch=None, **kw):
+        kw.setdefault("scope_files", [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}/work.txt"])
         t = ops.create_task(self.conn, kw.pop("title", "t"), kw.pop("repo", "p"), **kw)
         ops.approve(self.conn, t["id"])
         if branch:
@@ -173,13 +174,8 @@ class Base(unittest.TestCase):
 
     def reviewed(self, tid, sha):
         """Put a worker run, a LAND review and the reviewed status in the ledger the way the pipeline would."""
-        ops.set_status(self.conn, tid, "claimed")
-        rid = ops.start_run(self.conn, tid, "worker", "claude", "sonnet-5.5")
-        ops.finish_run(self.conn, rid, "gated")
-        rv = ops.start_run(self.conn, tid, "review", "claude", "sonnet-5.5")
-        ops.finish_run(self.conn, rv, "land", review_verdict=f"LAND@{sha}")
-        ops.set_status(self.conn, tid, "gated")
-        ops.set_status(self.conn, tid, "reviewed")
+        from tests.ledger_fixture import stage
+        stage(self.conn, tid, 'reviewed', sha)
 
     def get(self, tid):
         return ops.get_task(self.conn, tid)
@@ -191,6 +187,9 @@ class Base(unittest.TestCase):
         """What the worker did: a commit in the task's worktree. Returns the sha."""
         worktree = self.get(tid)["worktree"]
         self.assertIsNotNone(worktree, f"{tid} has no worktree: it was never launched")
+        scope = self.get(tid)["scope_files"]
+        if name == "work.txt" and scope and scope[0].startswith("fixture-"):
+            name = scope[0]
         return self.fix.commit(name, "x\n", cwd=repos.native(worktree))
 
     def run_worker(self, tid, sha):

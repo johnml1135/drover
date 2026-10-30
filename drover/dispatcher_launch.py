@@ -2,7 +2,6 @@
 import uuid
 
 from . import contract, repos
-from . import brief as brief_mod
 from . import config as config_mod
 from . import launch as launch_mod
 from .launch_usage import SETUP_ERROR
@@ -28,25 +27,6 @@ class LaunchSteps:
                 if r and r.get("acted") and r.get("answer"):
                     self.port.waiting.request_replan(dep, "stale-brief", {"landed": e["task_id"]})
 
-    def _launch(self, task, route, policy, placement, cwd=None):
-        p = self.port
-        runs = p.list_runs(task["id"])
-        last = self._last_nongate(runs)
-        excerpt = contract.receipt_excerpt(last["gate_receipt"]) \
-            if last and last["outcome"] in ("gate-fail", "hold") else None
-        prog = self.pipeline.repo(task)
-        if prog and repos.brief_text(prog):
-            task = {**task, "repo_brief": repos.brief_text(prog)}
-        try:
-            b = brief_mod.assemble(task, retry_excerpt=excerpt, handoff=task.get("handoff") or None,
-                                   notes=p.owner_notes(task["id"]))
-        except brief_mod.BriefTooLarge as e:
-            return p.set_status(task["id"], "needs-owner", reason=str(e))
-        cwd = cwd if cwd is not None else self.pipeline.worktree(task)
-        if not cwd:
-            return p.set_status(task["id"], "needs-owner", reason="task has no worktree")
-        return self._spawn(task, route, policy, placement, cwd, b, "worker")
-
     def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
         """Start one run of `role` (worker or review) for the brief `b`; returns its run id, or None on a launch error."""
         p = self.port
@@ -54,6 +34,17 @@ class LaunchSteps:
             if run_id is not None and role == 'planner':
                 self.replanning.finish(run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=self.now())
             return None
+        output_snapshot = None
+        if role == 'worker' and task.get('write', True):
+            current = p.get_task(task['id'])
+            try:
+                prog = self.pipeline.repo(current)
+                base = self.pipeline.repository.resolve(cwd, self.pipeline.base_ref(prog))
+            except Exception as error:
+                p.set_status(task['id'], 'needs-owner', reason=f'run base cannot be verified: {error}'[:300])
+                return None
+            output_snapshot = {'base': base, 'scope_files': current.get('scope_files') or [],
+                               'worktree': current.get('worktree')}
         effort = route.get("effort") if role == "review" and route.get("effort") else effort_for(
             route["model"], route.get("effort"))
         if run_id is None:
@@ -77,6 +68,8 @@ class LaunchSteps:
                 'control_epoch': self._control_epoch,
                 "idle_s": self._idle_s(policy), "system_append": b["system_append"], "user_prompt": b["user_prompt"],
                 "allowance_before": contract.used_from_headroom(self._reading_for_route(route)), **(extra or {})}
+        if output_snapshot is not None:
+            spec['output_snapshot'] = output_snapshot
         if role == "planner":
             spec.update(write=False, sandbox='read-only', wall_s=600, idle_s=120)
         if role == "review":
@@ -85,7 +78,7 @@ class LaunchSteps:
         p.append_event("dispatch.access", {"run": run_id, "read_checkouts": spec["read_checkouts"],
                                            "write": spec["write"], **({k: spec[k] for k in ("request_ids", "task_ids")} if role == "planner" else {})}, task["id"])
         p.append_event("run-launching", {"run": run_id, "placement": placement, "nonce": nonce,
-                                       'control_epoch': self._control_epoch}, task["id"])  # before any start
+                                       'control_epoch': self._control_epoch, 'output_snapshot': spec.get('output_snapshot')}, task["id"])  # before any start
         try:
             spec['_admission_check'] = lambda: self._launch_guard(task)
             spec['_admission_check']()

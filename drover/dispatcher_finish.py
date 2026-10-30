@@ -225,22 +225,31 @@ class FinishSteps:
                 p.set_status(task_id, "needs-owner", reason=f"rotated {rotations} times without finishing")
             else:
                 p.set_status(task_id, "ready", reason="rotated")
-        elif st == "blocked" and self._env_block_to_ready(task_id, run_id, rec, usage, result):
-            pass
-        elif st == "blocked":
-            self._continue_worker(task_id, run_id, spec, result, usage)
-        elif st == "ready_to_commit":
+        elif st in ("ready_to_commit", "done", "blocked"):
+            kind = str((rec.get('blocker') or {}).get('kind') or '').lower().replace('-', '_')
+            env_block = st == 'blocked' and kind in ENV_BLOCK_KINDS and p.get_task(task_id).get('write', True)
+            if st == 'blocked' and not env_block:
+                return self._continue_worker(task_id, run_id, spec, result, usage)
             try:
-                sha = self.pipeline.commit_ready(p.get_task(task_id), run_id, rec["commit_message"])
+                snapshot = spec.get('output_snapshot')
+                task = p.get_task(task_id)
+                if not snapshot or task.get('worktree') != snapshot.get('worktree'):
+                    raise WorktreeRefused("run output snapshot is unavailable or worktree changed")
+                task = {**task, 'scope_files': snapshot['scope_files']}
+                message = (str(task.get('title') or task_id).strip() or task_id) if env_block else rec.get('commit_message') or ''
+                sha = self.pipeline.commit_ready(task, run_id, message, base=snapshot['base'],
+                                                 sha=rec.get('sha') if st == 'done' else None)
             except (WorktreeRefused, OSError) as e:
+                if env_block and str(e) == 'no changes':
+                    return self._continue_worker(task_id, run_id, spec, result, usage)
                 p.finish_run(run_id, "blocked", note=str(e)[:300], **usage)
                 p.append_event("commit-refused", {"run": run_id, "reason": str(e),
                                                   "paths": getattr(e, "paths", [])}, task_id)
-                p.set_status(task_id, "needs-owner", reason=str(e))
-                return
+                return p.set_status(task_id, "needs-owner", reason=str(e))
+            if env_block:
+                note = f"sandbox limit, sent to gate: {(rec.get('blocker') or {}).get('detail', '')} {rec.get('note') or ''}".strip()[:300]
+                p.append_event('env-block-ready', {'run': run_id, 'kind': kind, 'sha': sha}, task_id)
             result = {**result, "record": {**rec, "status": "done", "sha": sha}}
-            self._after_done(task_id, result, run_id, usage, note)
-        elif st == "done":
             self._after_done(task_id, result, run_id, usage, note)
         else:
             self._continue_worker(task_id, run_id, spec, result, usage)
@@ -353,24 +362,6 @@ class FinishSteps:
         minutes = min(BACKOFF_MAX_MIN, 2 ** (streak - 1))
         p.set_status(task_id, "ready", reason=f"provider error: {message}"[:300])
         p.waiting.delay(task_id, "worker", "provider", self.now(), minutes=minutes)
-
-    def _env_block_to_ready(self, task_id, run_id, rec, usage, result):
-        """A worker blocked only by the sandbox (the Drover gate runs the full suites) with work in its worktree is
-        committed and sent to the gate; no replan. False when it does not apply or the commit is refused."""
-        kind = str((rec.get("blocker") or {}).get("kind") or "").lower().replace("-", "_")
-        if kind not in ENV_BLOCK_KINDS:
-            return False
-        p, task = self.port, self.port.get_task(task_id)
-        if task.get("write", True) is False:
-            return False
-        note = f"sandbox limit, sent to gate: {(rec.get('blocker') or {}).get('detail', '')} {rec.get('note') or ''}".strip()[:300]
-        try:
-            sha = self.pipeline.commit_ready(task, run_id, str(task.get("title") or task_id).strip() or task_id)
-        except (WorktreeRefused, OSError):
-            return False
-        p.append_event("env-block-ready", {"run": run_id, "kind": kind, "sha": sha}, task_id)
-        self._after_done(task_id, {**result, "record": {**rec, "status": "done", "sha": sha}}, run_id, usage, note)
-        return True
 
     def _allowance_used(self, spec):
         """What this run cost per window: the used-% now minus the used-% at launch. None when either is unknown

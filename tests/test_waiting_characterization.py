@@ -6,12 +6,12 @@ from unittest.mock import patch
 
 from drover import config, landing, repos, route
 from drover.ledger import ops
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from tests.test_dispatcher import Base as DispatchBase, BLOCKED, res
 from tests.test_pipeline import prog_dict, result
 from tests.rcw_fixture import PipelineBase
 from tests.test_landing import fake_decider
 from tests.waiting_fixture import LandingCase
-
 
 def fixture(owner, cls):
     case = cls()
@@ -86,8 +86,8 @@ class Holds(DispatchBase):
         archived = self.task(epic_id=epic)
         ops.archive_task(self.conn, archived)
         active = self.task(epic_id=epic)
-        ops.set_status(self.conn, active, 'claimed')
-        ops.set_status(self.conn, active, 'running')
+        fixture_claim(self.conn, active)
+        ops.start_run(self.conn, active, 'worker', 'local')
         ops.add_comment(self.conn, 'task', source, 'owner', 'Pause followers', urgent=True)
         self.assertEqual([self.status(t) for t in (a, b)], ['blocked', 'blocked'])
         self.assertEqual(self.status(active), 'running')

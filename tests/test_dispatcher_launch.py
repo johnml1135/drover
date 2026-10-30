@@ -70,7 +70,7 @@ class ParserAndRotation(Base):
         self.assertIsNone(launch.parse_action_record("{" * 500000))
         self.assertIsNone(launch.parse_action_record('{"status": ' * 50000))
         self.assertLess(time.monotonic() - t0, 2)
-        self.assertEqual(launch.parse_action_record("{" * 100000 + DONE)["sha"], "abc1234")
+        self.assertEqual(launch.parse_action_record("{" * 100000 + DONE)["sha"], "a" * 40)
 
     def test_blocker_before_status_key(self):
         rec = launch.parse_action_record('{"blocker": {"kind": "k", "detail": "d"}, "status": "blocked"}')

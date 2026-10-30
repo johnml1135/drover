@@ -19,7 +19,6 @@ from .ops_common import (
 )
 from .ops_tasks import (
     get_task,
-    set_status,
 )
 
 
@@ -126,8 +125,9 @@ def start_run(conn, task_id, role, backend, model=None, effort=None, policy_vers
              stamp()))
         conn.execute("UPDATE tasks SET attempts=attempts+1, updated=? WHERE id=?", (stamp(), task_id))
         event(conn, "run-started", actor, {"run": cur.lastrowid, "role": role, "backend": backend}, task_id=task_id)
-        if t["status"] == "claimed":
-            set_status(conn, task_id, "running", actor, reason="run started")
+        if t["status"] == "claimed" and role == "worker":
+            from .ops_stages import start_running
+            start_running(conn, task_id, cur.lastrowid, actor)
         from .. import stats
         stats.initial_run(conn, cur.lastrowid)
         return cur.lastrowid

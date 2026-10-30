@@ -388,7 +388,7 @@ class Failures(ConsumerCase):
         store = Store(Path(self.tmp.name) / 'ledger.db')
         self.addCleanup(store.close)
         request = Request({'type': 'http', 'app': SimpleNamespace(state=SimpleNamespace(store=store)), 'headers': []})
-        tid = ops.create_task(store.conn, 'Pinned work', 'p')['id']
+        tid = ops.create_task(store.conn, 'Pinned work', 'p', scope_files=['fixture-391'])['id']
         ops.approve(store.conn, tid)
         pin = {'backend': 'codex', 'model': 'gpt-6-luna'}
         body = TaskPatch(model_pin=pin)

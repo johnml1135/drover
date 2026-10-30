@@ -99,7 +99,7 @@ class Admission(Base):
         self.d.tick()
         record = {'status': 'blocked', 'blocker': {'kind': 'host-verification', 'detail': 'Windows Python unavailable'},
                   'note': 'Implementation complete'}
-        self.pipe.commit_ready = lambda *a: 'abc1234'
+        self.pipe.commit_ready = lambda *a, **k: 'a' * 40
         self.finish(0, res('blocked', json.dumps(record)))
         self.d.tick()
         self.assertFalse(self.port.waiting.replans())
@@ -149,9 +149,8 @@ class Admission(Base):
         self.finish(0, res('done'))
         sha = 'a' * 40
         self.pipe.current_head = lambda: sha
-        self.port.append_event('worker-done', {'run': worker, 'sha': sha}, tid)
-        self.port.finish_run(worker, 'gated')
-        self.port.set_status(tid, 'gated')
+        from tests.ledger_fixture import stage
+        stage(self.conn, tid, 'gated', sha)
         run = self.port.start_run(tid, 'review', 'codex', 'gpt-6.1-sol', 'high')
         result = {**res('error'), 'infrastructure_error': 'CODEX_HOME path does not exist'}
         self.d._finish(run, tid, {'role': 'review', 'backend': 'codex'}, result)

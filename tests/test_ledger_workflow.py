@@ -21,7 +21,7 @@ class ReorderTests(Base):
     def setUp(self):
         super().setUp()
         self.e = ops.create_epic(self.conn, "p", "E")["id"]
-        self.ts = [ops.create_task(self.conn, n, "p", self.e)["id"] for n in "abcd"]
+        self.ts = [ops.create_task(self.conn, n, "p", self.e, scope_files=['fixture-24'])["id"] for n in "abcd"]
 
     def test_before_after(self):
         ops.reorder(self.conn, "task", self.ts[3], before_id=self.ts[0])
@@ -46,7 +46,7 @@ class ReorderTests(Base):
         e3 = ops.create_epic(self.conn, "p", "E3")["id"]
         ops.reorder(self.conn, "epic", e3, before_id=self.e)
         self.assertEqual([e["id"] for e in ops.list_epics(self.conn)], [e3, self.e, e2])
-        other = ops.create_task(self.conn, "x", "p", e2)["id"]
+        other = ops.create_task(self.conn, "x", "p", e2, scope_files=['fixture-49'])["id"]
         with self.assertRaises(ValueError):
             ops.reorder(self.conn, "task", self.ts[0], before_id=other)
         with self.assertRaises(ValueError):
@@ -269,11 +269,11 @@ class BoardAndCliTests(Base):
         n = self.task("owner-one")
         ops.set_status(self.conn, n["id"], "needs-owner", "w", reason="x")
         ops.claim_next(self.conn, self.worker())
-        ops.set_status(self.conn, a["id"], "running", "w")
+        ops.start_run(self.conn, a["id"], "worker", "local")
         done = self.task("done-one")
         ops.claim_next(self.conn, self.worker())
-        for s in ("running", "gated", "reviewed", "landed"):
-            ops.set_status(self.conn, done["id"], s, "w")
+        from tests.ledger_fixture import stage
+        stage(self.conn, done["id"], 'landed')
         ops.ask_question(self.conn, "task", a["id"], "Pick one")
         text = board.render(self.conn)
         for needle in ("| ready | 0 |", "| landed | 1 |", "running-one", "needs a key", "owner-one", "Pick one",

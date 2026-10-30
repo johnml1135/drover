@@ -13,7 +13,6 @@ from drover import contract, dispatcher
 from drover.ledger import connect, db, ops, schema
 from drover.port import DirectPort
 
-
 def require(case, module, symbol):
     try:
         obj = importlib.import_module(module)
@@ -23,13 +22,11 @@ def require(case, module, symbol):
     case.assertTrue(callable(value), f'{module}.{symbol} interface is absent')
     return value
 
-
 def logical(conn):
     """All logical rows, including append-only audit and migration versions."""
     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
     return {name: sorted((tuple(r) for r in conn.execute('SELECT * FROM "' + name + '"')), key=repr)
             for name in tables}
-
 
 class LedgerCase(unittest.TestCase):
     def setUp(self):
@@ -48,16 +45,16 @@ class LedgerCase(unittest.TestCase):
         return require(self, 'drover.ledger.waiting', 'cause_key')(*parts)
 
     def task(self, state='ready', **fields):
+        fields.setdefault('scope_files', [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}"])
         tid = ops.create_task(self.conn, fields.pop('title', 'work'), fields.pop('repo', 'p'),
                               read_access=[], **fields)['id']
         if state not in ('proposed', 'draft'):
             ops.approve(self.conn, tid)
-            for next_state in {'ready': (), 'running': ('claimed', 'running'),
-                               'gated': ('claimed', 'running', 'gated'),
-                               'reviewed': ('claimed', 'running', 'gated', 'reviewed'),
-                               'landed': ('claimed', 'running', 'gated', 'reviewed', 'landed'),
-                               'cancelled': ('cancelled',)}[state]:
-                ops.set_status(self.conn, tid, next_state, actor='owner')
+            if state == 'cancelled':
+                ops.set_status(self.conn, tid, state, actor='owner')
+            elif state != 'ready':
+                from tests.ledger_fixture import stage
+                stage(self.conn, tid, state)
         elif state == 'draft':
             ops.set_status(self.conn, tid, 'draft')
         return tid
@@ -80,7 +77,6 @@ class LedgerCase(unittest.TestCase):
         qid = waiting.ask(cause, 'task', subject[1] if subject[0] == 'task' else self.task(),
                           'Retry?', options=[{'label': choice}], allow_text=False)
         return cause, qid, choice
-
 
 class Schema(LedgerCase):
     def test_atomic_v7(self):
@@ -193,11 +189,15 @@ class Kinds(LedgerCase):
             target = self.task()
             self.terminal_wait(w, target, source)
             with db.tx(self.conn):
-                ops.set_status(self.conn, source, terminal, actor='owner')
+                if terminal == 'landed':
+                    from tests.ledger_fixture import stage
+                    stage(self.conn, source, terminal)
+                else:
+                    ops.set_status(self.conn, source, terminal, actor='owner')
                 self.assertEqual(w.pending(('task', target)), [])
                 self.assertEqual(self.status(target), 'ready')
             release = [e for e in ops.events(self.conn, task_id=target, kind='waiting.released')]
-            self.assertEqual(release[-1]['actor'], 'owner')
+            self.assertEqual(release[-1]['actor'], 'system' if terminal == 'landed' else 'owner')
             self.terminal_wait(w, target, source)
             self.assertEqual(w.pending(('task', target)), [])
         self.assertEqual(self.status(untouched), 'blocked')

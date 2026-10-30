@@ -16,7 +16,6 @@ except ImportError as exc:
 
 from tests.gitfix import Repo
 
-
 class StateTests(unittest.TestCase):
     def test_planned_existing_and_missing(self):
         repo = Repo()
@@ -119,7 +118,7 @@ class ContextUiTests(ui_tests.UiTests):
               patch('drover.repos.registered_names', return_value=set(configured)),
               patch('drover.repos.load_named',
                     side_effect=lambda name: configured.get(str(name).lower()))):
-            task = self.st.create_task('Original title', repo='unconfigured', description='Keep this description')
+            task = self.st.create_task('Original title', repo='unconfigured', description='Keep this description', scope_files=['fixture-114'])
             tid = task['id']
             page = self.c.get('/tasks/' + tid)
             self.assertEqual(page.status_code, 200, page.text)
@@ -142,9 +141,10 @@ class ContextUiTests(ui_tests.UiTests):
             self.assertEqual(self.st.get_task(tid)['read_access'], task['read_access'])
 
     def test_accept_findings_completes_read_work_with_existing_owner_guards(self):
-        tid = self.st.create_task('Findings', kind='research')['id']
+        tid = self.st.create_task('Findings', kind='research', scope_files=['fixture-137'])['id']
         self.st.approve(tid)
-        self.st.set_status(tid, 'claimed', 'dispatcher')
+        from tests.ledger_fixture import claim
+        claim(self.st.conn, tid)
         rid = self.st.start_run(tid, 'worker', 'codex')['id']
         self.st.finish_run(rid, 'read-only-done', note='Findings ready')
         self.st.set_status(tid, 'needs-owner', 'dispatcher', 'Review findings')
@@ -162,7 +162,7 @@ class ContextUiTests(ui_tests.UiTests):
         for status in ('proposed', 'draft', 'needs-owner'):
             for decision, expected in (('approve', 'ready'), ('reject', 'cancelled')):
                 with self.subTest(status=status, decision=decision):
-                    tid = self.st.create_task('Awaiting decision')['id']
+                    tid = self.st.create_task('Awaiting decision', scope_files=['fixture-157'])['id']
                     if status == 'needs-owner':
                         self.st.approve(tid)
                     if status != 'proposed':
@@ -184,7 +184,7 @@ class ContextUiTests(ui_tests.UiTests):
             for headers in ({}, {'Sec-Fetch-Site': 'cross-site'},
                             dict(SAME, Host='untrusted.example')):
                 with self.subTest(decision=decision, headers=headers):
-                    tid = self.st.create_task('Awaiting decision')['id']
+                    tid = self.st.create_task('Awaiting decision', scope_files=['fixture-179'])['id']
                     response = self.c.post(f'/items/task/{tid}/{decision}', headers=headers)
                     self.assertEqual(response.status_code, 403, response.text)
                     self.assertEqual(self.st.get_task(tid)['status'], 'proposed')
@@ -193,7 +193,7 @@ class ContextUiTests(ui_tests.UiTests):
     def test_full_page_card_partial_connections_and_owner_edit(self):
         a = self.st.create_task('Task context', description='# Context\n\nFirst paragraph.\n\n<script>bad</script>',
                                 kind='review', acceptance=['Read it'], scope_files=['docs'])['id']
-        b = self.st.create_task('Dependent', deps=[a], related=[a])['id']
+        b = self.st.create_task('Dependent', deps=[a], related=[a], scope_files=['fixture-188'])['id']
         rid = self.st.start_run(a, 'worker', 'codex')['id']
         self.st.finish_run(rid, 'read-only-done', note='Findings')
         page = self.c.get('/tasks/' + a)
@@ -213,7 +213,7 @@ class ContextUiTests(ui_tests.UiTests):
         self.assertEqual(self.c.post('/tasks/' + a + '/edit', data={'title': 'New'}, headers=SAME).status_code, 200)
         self.assertEqual(self.st.get_task(a)['title'], 'New')
         self.assertEqual(self.c.post('/tasks/' + a + '/edit', data={'kind': 'bad'}, headers=SAME).status_code, 422)
-        self.assertIn('Connected tasks: none', self.c.get('/tasks/' + self.st.create_task('Alone')['id']).text)
+        self.assertIn('Connected tasks: none', self.c.get('/tasks/' + self.st.create_task('Alone', scope_files=['fixture-208'])['id']).text)
 
     def test_unknown_task_is_404(self):
         self.assertEqual(self.c.get('/tasks/T-missing').status_code, 404)

@@ -26,7 +26,7 @@ class Hub(DiskCase):
         cancelled = ops.create_task(store.conn, 'archived terminal task', 'p')
         ops.set_status(store.conn, cancelled['id'], states.CANCELLED, actor='owner')
         ops.archive_task(store.conn, cancelled['id'])
-        active = ops.create_task(store.conn, 'live task', 'p')
+        active = ops.create_task(store.conn, 'live task', 'p', scope_files=['fixture'])
         ops.approve(store.conn, active['id'])
         ops.claim_next(store.conn, {})
         ops.update_task(store.conn, active['id'], worktree=str(self.root / 'offline-live-tree'))
@@ -78,7 +78,7 @@ class Hub(DiskCase):
         resources.tick  # NEW seam must fail naturally before any external work.
         conn, dispatch, reads = self.make_hub()
         ops.set_setting(conn, 'dispatch_enabled', 'false')
-        task = ops.create_task(conn, 'capacity held task', 'p', read_access=[])
+        task = ops.create_task(conn, 'capacity held task', 'p', read_access=[], scope_files=['fixture'])
         ops.approve(conn, task['id'])
         self.free = 49
         out = dispatch.tick()

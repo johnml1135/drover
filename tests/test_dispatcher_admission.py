@@ -2,6 +2,7 @@ import json
 import time
 
 from drover import launch
+from drover.dispatcher_recovery import _epoch
 from drover.ledger import ops
 from drover.port import HttpPort
 
@@ -57,7 +58,6 @@ class Admission(Base):
     def test_heartbeat(self):
         self.d.tick()
         self.assertIsNotNone(ops.get_setting(self.conn, "dispatcher_heartbeat"))
-
 
 
 class Cap(Base):
@@ -157,7 +157,7 @@ class Launching(Base):
         self.assertIn('developer_instructions="SYS"', argv)
 
     def test_action_record_parsing(self):
-        self.assertEqual(launch.parse_action_record("blah\n```json\n" + DONE + "\n```")["sha"], "abc1234")
+        self.assertEqual(launch.parse_action_record("blah\n```json\n" + DONE + "\n```")["sha"], "a" * 40)
         self.assertIsNone(launch.parse_action_record('{"status": "blocked", "blocker": null}'))
         self.assertIsNone(launch.parse_action_record("nothing"))
         self.assertEqual(len(launch.parse_action_record('{"status":"done","note":"' + "n" * 500 + '"}')["note"]), 300)
@@ -169,7 +169,6 @@ class Launching(Base):
             HttpPort().claim_next()
 
 
-
 class StaleClaims(Base):
     def claim(self):
         tid = self.task()
@@ -178,7 +177,8 @@ class StaleClaims(Base):
 
     def test_old_claim_with_no_run_requeued_every_tick(self):
         t = self.claim()
-        self.assertEqual(self.make(now=lambda: time.time() + 299).requeue_stale_claims(), [])
+        claimed_at = _epoch(ops.get_task(self.conn, t)["updated"])
+        self.assertEqual(self.make(now=lambda: claimed_at + 299).requeue_stale_claims(), [])
         d = self.make(now=lambda: time.time() + 301)
         self.assertEqual(d.requeue_stale_claims(), [t])
         self.assertEqual(self.status(t), "ready")

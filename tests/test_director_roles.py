@@ -42,7 +42,7 @@ class DirectorRolesTests(unittest.TestCase):
                 with self.subTest(projected=projected, muted=muted):
                     role = f'recovery-{projected}-{muted}'
                     self.service.register(role, notifications={'mode': 'muted' if muted else 'profile'})
-                    task = ops.create_task(self.conn, 'Unassigned stalled task', 'repo')
+                    task = ops.create_task(self.conn, 'Unassigned stalled task', 'repo', scope_files=['fixture-45'])
                     source = ops.event(self.conn, 'progress.stalled', 'dispatcher',
                         {'cause': 'offline', 'reason': 'worker unavailable'}, task_id=task['id'])
                     ops.event(self.conn, 'comment', 'owner', {'urgent': True, 'text': 'separate decision'},
@@ -95,7 +95,7 @@ class DirectorRolesTests(unittest.TestCase):
 
     def test_processing_acknowledges_only_current_owned_deliveries(self):
         self.service.register('director:b')
-        task = ops.create_task(self.conn, 'Research', 'repo', kind='research', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Research', 'repo', kind='research', initiating_role='director:a', scope_files=['fixture-98'])
         ops.event(self.conn, 'task.result-accepted', 'owner', {'result': 'report'}, task_id=task['id'])
         self.service.project()
         message, = self.service.receive('director:a')
@@ -110,7 +110,7 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertEqual(self.service.health('director:b')['acknowledged'], 1)
 
     def issue(self, cause='incident:1'):
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a', scope_files=['fixture-113'])
         ops.approve(self.conn, task['id'])
         ops.event(self.conn, 'recovery.exhausted', 'system', {'cause': cause}, task_id=task['id'])
         self.service.project()
@@ -132,7 +132,7 @@ class DirectorRolesTests(unittest.TestCase):
             self.service.hold_issue('director:a', message['delivery_id'], token, 'unavailable')
 
     def test_muted_unresolved_issue_is_retained_and_fallback_is_deduplicated(self):
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a', scope_files=['fixture-135'])
         sub, = self.service.health('director:a')['subscriptions']
         self.service.tune(sub['id'], 1, mode='muted')
         ops.event(self.conn, 'recovery.exhausted', 'system', {'cause': 'incident'}, task_id=task['id'])
@@ -147,7 +147,7 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertEqual(self.service.health('director:a')['pending_actionable'], 1)
 
     def test_arrival_during_live_run_and_atomic_release_preserve_pending_wake(self):
-        task = ops.create_task(self.conn, 'Research', 'repo', kind='research', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Research', 'repo', kind='research', initiating_role='director:a', scope_files=['fixture-150'])
         token = self.lease()
         self.assertFalse(self.service.role_state('director:a')['pending_wake'])
         event = ops.event(self.conn, 'task.result-accepted', 'owner', {'result': 'arrived-during-run'}, task_id=task['id'])
@@ -219,7 +219,7 @@ class DirectorRolesTests(unittest.TestCase):
 
     def test_compacted_digest_commit_requires_resync_and_never_acks_successor(self):
         self.service.register('director:offline', max_pending_routine=1)
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:offline')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:offline', scope_files=['fixture-222'])
         self.service.project()
         self.time += 900
         first = self.service.digest('director:offline')
@@ -251,7 +251,7 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertEqual(self.service.reserve_wake('director:budget', 'wake:4', tokens=10, model='other')['reason'], 'model-not-authorized')
 
     def test_replacement_requires_confirmed_death_is_once_and_preserves_child_state(self):
-        task = ops.create_task(self.conn, 'Child', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Child', 'repo', initiating_role='director:a', scope_files=['fixture-254'])
         token = self.lease()
         self.service.commit('director:a', token, {'result': 'saved'}, [], [], 'checkpoint')
         held = self.service.replace('director:a', 1, confirmed_dead=False)
@@ -358,7 +358,7 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertNotIn(secret, str(self.service.health()))
 
     def test_release_preserves_changed_immediate_issue_after_initial_muted_observation(self):
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a', scope_files=['fixture-361'])
         sub, = self.service.health('director:a')['subscriptions']
         self.service.tune(sub['id'], 1, mode='muted')
         ops.event(self.conn, 'recovery.exhausted', 'system', {'cause': 'incident', 'evidence': 'first'}, task_id=task['id'])
@@ -388,7 +388,7 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertEqual(self.service.receive('director:a'), [])
 
     def test_question_episode_identity_and_handler_survive_evidence_truncation(self):
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a', scope_files=['fixture-391'])
         ops.event(self.conn, 'decision-needed', 'system', {'question': 1, 'text': 'Needs decision'}, task_id=task['id'])
         self.service.project()
         first, = self.service.receive('director:a')
@@ -409,7 +409,7 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertEqual(self.service.role_state('director:a')['wake_position'], later)
 
     def test_question_ack_version_and_resolution_use_source_identity_across_truncation(self):
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:a', scope_files=['fixture-412'])
         question = ops.ask_question(self.conn, 'task', task['id'], 'Needs decision')
         self.service.project()
         first, = self.service.receive('director:a')

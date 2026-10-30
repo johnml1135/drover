@@ -106,7 +106,7 @@ class DispatcherContract(PolicyBase):
 class Decisions(PolicyBase):
     def test_every_decision_is_in_the_ledger_and_gets_its_outcome_after_the_next_run(self):
         self.fl.gate_code = 1
-        tid = self.task()
+        tid = self.task(scope_files=['work.txt', 'fix.txt'])
         self.d.tick()
         self.run_worker(tid, self.worker_commits(tid))
         self.d.tick()

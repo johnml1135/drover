@@ -143,7 +143,7 @@ class ReviewSteps:
                 return p.set_status(task_id, states.READY, reason="the worktree moved during the review")
             p.finish_run(run_id, contract.LAND, review_verdict=f"LAND@{sha}", note=(rec.get("note") or None), **usage)
             p.append_event("review-done", {"run": run_id, "verdict": f"LAND@{sha}", "findings": rec["findings"]}, task_id)
-            return p.set_status(task_id, states.REVIEWED, reason=f"review LAND@{sha[:12]}")
+            return p.advance_stage(task_id, states.REVIEWED, run_id, sha)
         if outcome == contract.HOLD:
             findings = "\n".join(f"- {f['detail'] if isinstance(f, dict) else f}" for f in blocking)
             excerpt = "Review HOLD. Findings:\n" + findings

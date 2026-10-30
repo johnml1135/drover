@@ -19,6 +19,7 @@ class NotificationsTests(unittest.TestCase):
         self.service = Notifications(self.conn, now=lambda: self.time)
 
     def task(self, role='director:a', **kw):
+        kw.setdefault('scope_files', [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}"])
         return ops.create_task(self.conn, 'Work', 'repo', initiating_role=role, **kw)
 
     def test_immediate_completion_survives_restart_for_ten_disjoint_owners(self):
@@ -146,9 +147,8 @@ class NotificationsTests(unittest.TestCase):
         from drover.ledger import landing
         for task in (implementation, mechanical):
             ops.approve(self.conn, task['id'])
-            for status in ('claimed', 'running', 'gated', 'reviewed', 'landed'):
-                ops.set_status(self.conn, task['id'], status)
-            landing.record_merged(self.conn, dict(task, last_sha='child-sha'), 'main-tip', 'receipt')
+            from tests.ledger_fixture import stage
+            stage(self.conn, task['id'], 'landed')
         self.service.project()
         self.assertEqual([(m['task_id'], m['event_class']) for m in self.service.receive('director:a')],
                          [(research['id'], 'result-accepted'), (implementation['id'], 'landed')])

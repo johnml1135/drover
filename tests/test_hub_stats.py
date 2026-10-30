@@ -27,7 +27,7 @@ class StatsApi(unittest.TestCase):
         self.owner = {'Sec-Fetch-Site': 'same-origin'}
         self.token = {'Authorization': 'Bearer fictional-token'}
         self.store = self.app.state.store
-        self.tid = self.store.create_task('Stats for acme-app', 'acme-app')['id']
+        self.tid = self.store.create_task('Stats for acme-app', 'acme-app', scope_files=['fixture-30'])['id']
 
     def test_stats_endpoint_auth_filters_and_tab(self):
         rid = ops.start_run(self.store.conn, self.tid, 'worker', 'claude', 'sonnet-5.5')
@@ -115,7 +115,7 @@ class StatsApi(unittest.TestCase):
         from drover.port import DirectPort
         from hub.store import UiView
         from hub.web import inbox_count
-        target = self.store.create_task('More work for acme-app', 'acme-app')['id']
+        target = self.store.create_task('More work for acme-app', 'acme-app', scope_files=['fixture-118'])['id']
         for tid in (self.tid, target):
             self.store.approve(tid)
         private = self.store.ask_question('task', self.tid, 'Task-specific choice?')
@@ -142,8 +142,8 @@ class StatsApi(unittest.TestCase):
         self.assertEqual(inbox_count(view), 0)
 
     def test_owner_delete_removes_related_links_in_both_directions(self):
-        source = self.store.create_task('Related source', 'acme-app')['id']
-        after = self.store.create_task('Related target', 'acme-app')['id']
+        source = self.store.create_task('Related source', 'acme-app', scope_files=['fixture-145'])['id']
+        after = self.store.create_task('Related target', 'acme-app', scope_files=['fixture-146'])['id']
         self.store.update_task(source, related=[self.tid, after])
         self.store.update_task(self.tid, related=[source, after])
         response = self.c.request('DELETE', '/api/v1/tasks/' + source, headers=self.owner,

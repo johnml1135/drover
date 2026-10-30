@@ -184,7 +184,7 @@ class Service(Base):
         self.wait(lambda: made[0].ticks > dispatch_ticks and len(counts) > landing_ticks)
 
     def test_hub_port_publishes_dispatcher_changes_to_the_ui_bus(self):
-        t = self.store.create_task("t", "p")
+        t = self.store.create_task("t", "p", scope_files=['fixture-140'])
         self.store.approve(t["id"])
         port = HubPort(self.store)
         got = port.claim_next({})
@@ -439,6 +439,7 @@ class LedgerExclusion(unittest.TestCase):
         self.addCleanup(self.conn.close)
 
     def ready(self, title, **kw):
+        kw.setdefault("scope_files", [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}"])
         t = ops.create_task(self.conn, title, "p", **kw)
         ops.approve(self.conn, t["id"])
         return t["id"]

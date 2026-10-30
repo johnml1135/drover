@@ -146,7 +146,7 @@ class NotificationControlsTests(unittest.TestCase):
 
     def test_control_admission_fences_actions_budgets_and_replacement_but_allows_saving(self):
         self.service.register('director:acting', action_allowlist=['task.comment'])
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:acting')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:acting', scope_files=['fixture-149'])
         ops.approve(self.conn, task['id'])
         ops.set_setting(self.conn, 'dispatch_enabled', 'true')
         token = self.lease('director:acting')
@@ -227,7 +227,7 @@ class NotificationControlsTests(unittest.TestCase):
     def test_stop_resume_never_revives_an_action_accepted_under_the_old_epoch(self):
         from drover.ledger import actions
         self.service.register('director:acting', action_allowlist=['task.comment'])
-        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:acting')
+        task = ops.create_task(self.conn, 'Work', 'repo', initiating_role='director:acting', scope_files=['fixture-230'])
         ops.approve(self.conn, task['id'])
         ops.set_setting(self.conn, 'dispatch_enabled', 'true')
         token = self.lease('director:acting')
@@ -294,7 +294,7 @@ class NotificationControlsTests(unittest.TestCase):
                         expected_status='ready', text='Scoped work'))
         for role in ('director:affected', 'director:unrelated'):
             self.service.register(role, action_allowlist=['task.comment'])
-            tasks[role] = ops.create_task(self.conn, 'Work', 'repo', initiating_role=role)
+            tasks[role] = ops.create_task(self.conn, 'Work', 'repo', initiating_role=role, scope_files=['fixture-297'])
             ops.approve(self.conn, tasks[role]['id'])
             leases[role] = self.lease(role)
             accepted[role] = self.service.commit(role, leases[role], {}, [], [comment(role)], 'before-skill')['actions'][0]

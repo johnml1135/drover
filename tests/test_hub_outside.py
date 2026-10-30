@@ -15,7 +15,7 @@ class OutsideLandingApiTests(TestCase):
         self.addCleanup(app.state.store.close)
         client = TestClient(app)
         store = app.state.store
-        tid = store.create_task('outside', repo='p')['id']
+        tid = store.create_task('outside', repo='p', scope_files=['fixture-18'])['id']
         store.approve(tid)
         store.set_status(tid, 'needs-owner', 'worker', 'landed elsewhere')
         body = {'sha': SHA, 'base_ref': 'origin/main', 'gate': 'passed', 'review': 'approved'}

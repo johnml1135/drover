@@ -1,5 +1,6 @@
 """Seat routing: priority, headroom, max_workers, the director's protected reserve, platforms, and the seat in the spec."""
 import unittest
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 
 from drover import config, dispatcher, launch, route
 from tests import test_dispatcher
@@ -10,7 +11,6 @@ CODEX = {"name": "codex", "backend": "codex", "priority": 1, "max_workers": 0, "
          "director_reserve_pct": 0.0, "director": False, "placement": "wsl", "binary": "codex", "config_dir": ""}
 WORKER = {"role": "worker", "size": "M"}
 LOTS = {"remaining_pct": 90.0, "hours_to_reset": 100.0}
-
 
 def heads(claude=LOTS, codex=LOTS):
     return {"claude": claude, "codex": codex}
@@ -206,7 +206,7 @@ class Dispatching(test_dispatcher.Base):
         self.assertEqual(self.d.tick()["launched"], [busy])
         tid = self.task()
         ops = test_dispatcher.ops
-        ops.set_status(self.conn, tid, "claimed")
+        fixture_claim(self.conn, tid)
         rid = ops.start_run(self.conn, tid, "worker", "claude", "sonnet-5.5")
         ops.finish_run(self.conn, rid, "error")
         ops.set_status(self.conn, tid, "ready")

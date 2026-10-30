@@ -223,39 +223,27 @@ class NotApproved(PermissionError):
     pass
 
 
-def read_only_result(conn, task):
-    """The latest run's findings, when they are eligible for owner acceptance."""
-    if task['write'] or task['status'] != 'needs-owner':
-        return None
-    run = conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (task['id'],)).fetchone()
-    if run and run['role'] == 'worker' and run['ended'] and run['outcome'] == 'read-only-done':
-        return dict(run)
-    return None
-
-
-def accept_read_only(conn, task_id, actor='owner'):
-    """Complete accepted findings without a commit, gate or landing queue entry."""
-    if actor != 'owner':
-        raise PermissionError('only the owner may accept read-only findings')
-    with tx(conn):
-        task = get_task(conn, task_id)
-        run = read_only_result(conn, task)
-        if run is None:
-            raise ValueError('task has no completed read-only findings to accept')
-        return set_status(conn, task_id, 'landed', actor, reason='Owner accepted read-only findings',
-                          data={'read_only': True, 'run': run['id']})
-
-
 def set_status(conn, task_id, new, actor="system", reason=None, data=None):
     """Move a task along a legal transition and write one event. Illegal moves raise IllegalTransition.
 
     Entering `ready` needs approved_at; only the owner's proposed/draft -> ready sets it.
     """
+    # Self-run attestations will select their execution mode here when that mode exists.
+    if new in (states.CLAIMED, states.RUNNING, states.GATED, states.REVIEWED, states.LANDED):
+        raise IllegalTransition('engine stages require evidence-checked operations')
+    return _set_status(conn, task_id, new, actor, reason, data)
+
+
+def _set_status(conn, task_id, new, actor="system", reason=None, data=None):
     with tx(conn):
         t = get_task(conn, task_id)
         if t.get('internal'):
             raise PermissionError('internal director accounting task is immutable')
         old = t["status"]
+        if new == states.READY and old in states.CREATION_STATES and actor != 'owner':
+            states.check(old, new, actor)
+        if new == states.READY and old in states.CREATION_STATES and t['write'] and not t['scope_files']:
+            raise ValueError('writable tasks require scope_files before approval')
         from .waiting import Waiting
         if new == states.READY:
             if actor not in ('dispatcher', 'system'):
@@ -282,6 +270,7 @@ def set_status(conn, task_id, new, actor="system", reason=None, data=None):
                 raise ValueError('task has outstanding waits')
         states.check(old, new, actor)
         if (old, new) == (states.NEEDS_OWNER, states.LANDED):
+            from .ops_stages import read_only_result
             run = read_only_result(conn, t)
             if run is None:
                 raise IllegalTransition('only completed read-only findings may be accepted without landing')

@@ -11,7 +11,6 @@ try:
 except ImportError as exc:
     raise unittest.SkipTest(f'hub deps missing: {exc}')
 
-
 from tests.test_notification_api import ASGIClient, BASE, SAME, WORKER, json_text, _NotificationBase
 
 
@@ -71,7 +70,7 @@ class NotificationDeliveryTests(_NotificationBase):
         answer = self.c.post(f'/api/v1/questions/{group_question}/answer', headers=SAME, json={'text': 'Noted'})
         self.assertEqual(answer.status_code, 200, answer.text)
         self.assertFalse(service.get_group('join')['ready'])
-        task = self.app.state.store.create_task('Unassigned')['id']
+        task = self.app.state.store.create_task('Unassigned', scope_files=['fixture-74'])['id']
         for _ in range(2):
             self.app.state.store.add_event('recovery.exhausted', 'system', {'cause': 'incident:1'}, task_id=task)
         page = self.c.get('/inbox')
@@ -183,11 +182,12 @@ class NotificationDeliveryTests(_NotificationBase):
             self.assertLess(result.status_code, 300, result.text)
             return result.json()
         legacy('/tasks/' + task + '/approve', {}, SAME)
-        legacy('/tasks/' + task + '/status', {'status': 'claimed'})
+        from tests.ledger_fixture import claim
+        claim(self.app.state.store.conn, task)
         run = legacy('/runs', {'task_id': task, 'role': 'worker', 'backend': 'local'})['id']
         legacy('/runs/' + str(run) + '/finish', {'outcome': 'read-only-done', 'note': 'Accepted evidence'})
         legacy('/tasks/' + task + '/status', {'status': 'needs-owner'})
-        legacy('/tasks/' + task + '/status', {'status': 'landed'}, SAME)
+        self.app.state.store.accept_read_only(task)
         restarted = create_app(self.path, self.app.state.settings)
         self.addCleanup(restarted.state.store.close)
         messages = ASGIClient(restarted).get(BASE + '/inbox', headers=a).json()

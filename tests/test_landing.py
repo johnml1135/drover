@@ -30,7 +30,6 @@ if 'x.txt' in files and 'y.txt' in files:
 sys.exit(1 if bad else 0)
 """
 
-
 def fake_decider(answer=None, acted=False):
     calls = []
 
@@ -44,7 +43,6 @@ def fake_decider(answer=None, acted=False):
         return r
     decide.calls = calls
     return decide
-
 
 class LandingCase(unittest.TestCase):
     def setUp(self):
@@ -85,15 +83,17 @@ class LandingCase(unittest.TestCase):
 
     def task(self, name, files, priority='P2', review='LAND', base='origin/main'):
         self.r.branch(name, files, base=base)
-        t = ops.create_task(self.conn, name, 'p', repo_path=str(self.r.repo), priority=priority)
+        t = ops.create_task(self.conn, name, 'p', repo_path=str(self.r.repo), priority=priority, scope_files=list(files))
         ops.update_task(self.conn, t['id'], branch=name)
         ops.approve(self.conn, t['id'])
-        for s in ('claimed', 'running', 'gated', 'reviewed'):
-            ops.set_status(self.conn, t['id'], s, actor='system')
-        if review:
+        from tests.ledger_fixture import stage
+        sha = self.r.git('rev-parse', name)
+        stage(self.conn, t['id'], 'reviewed', sha)
+        if review != 'LAND':
             run = ops.start_run(self.conn, t['id'], 'reviewer', 'claude')
-            verdict = f'LAND@{self.r.git("rev-parse", name)}' if review == 'LAND' else review
-            ops.finish_run(self.conn, run, 'ok', review_verdict=verdict)
+            ops.finish_run(self.conn, run, 'ok', review_verdict=review)
+            if review is None:
+                self.conn.execute("UPDATE runs SET review_verdict=NULL WHERE task_id=?", (t['id'],))
         return t['id']
 
     def status(self, tid):

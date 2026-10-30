@@ -57,7 +57,7 @@ class HubCase(unittest.TestCase):
         return self.c.get("/api/v1" + path, headers=AUTH, **kw)
 
     def task(self, title="A", **kw):
-        r = self.post("/tasks", {"title": title, **kw})
+        r = self.post("/tasks", {"title": title, "scope_files": [f"fixture/{title}"], **kw})
         self.assertEqual(r.status_code, 201, r.text)
         return r.json()["id"]
 
@@ -319,7 +319,7 @@ class OwnerGateTests(HubCase):
         self.addCleanup(tmp.cleanup)
         self.addCleanup(app.state.store.close)
         c = TestClient(app)
-        t = app.state.store.create_task("T")["id"]
+        t = app.state.store.create_task("T", scope_files=["*"])["id"]
         r = c.post(f"/api/v1/tasks/{t}/approve", headers=SAME)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["status"], "ready")
@@ -337,7 +337,7 @@ class OwnerGateTests(HubCase):
             return c.post("/api/v1" + path, json=body, headers=SAME)
 
         def manual_hold(title):
-            created = owner_post("/tasks", {"title": title})
+            created = owner_post("/tasks", {"title": title, "scope_files": ["*"]})
             self.assertEqual(created.status_code, 201, created.text)
             task_id = created.json()["id"]
             approved = owner_post(f"/tasks/{task_id}/approve", {})

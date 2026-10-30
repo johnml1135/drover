@@ -25,7 +25,6 @@ from tests.pipeline_fixture import MemoryRepo, MemoryRepository, CheckoutGit, fi
 
 from tests.test_pipeline import Base, PolicyBase, PolicyLauncher, FakeHandle, result, policy_prog as prog_dict
 
-
 class CodexReview(PolicyBase):
     def setUp(self):
         super().setUp()
@@ -69,7 +68,7 @@ class CodexReview(PolicyBase):
         self.assertEqual(self.d.tick()["launched"], [tid])
         worker = self.fl.of("worker")[0]
         self.assertEqual((worker["backend"], worker["placement"]), ("codex", "wsl"))
-        self.run_worker(tid, self.worker_commits(tid))
+        self.run_worker(tid, self.worker_commits(tid, "src/source.txt"))
         self.d.tick()
         self.d.tick()
         gates = ops.events(self.conn, task_id=tid, kind="gate-started")
@@ -112,9 +111,9 @@ class CodexReview(PolicyBase):
         tid, sha = self.to_gated()
         first = self.fl.of("review")[0]
         self.assertEqual(first["seat"], "codex-a")
-        tid2 = self.task()
+        tid2 = self.task(scope_files=["other.txt"])
         self.d.tick()
-        self.run_worker(tid2, self.worker_commits(tid2))
+        self.run_worker(tid2, self.worker_commits(tid2, "other.txt"))
         self.d.tick()
         self.d.tick()
         self.assertEqual(self.fl.of("review")[-1]["seat"], "codex-b")
@@ -265,8 +264,9 @@ class GateAndReview(PolicyBase):
         self.run_worker(tid, "a" * 40)
         self.d.tick()
         self.assertEqual(self.fl.of("gate"), [])
-        self.assertIn(("ready", "retry"), self.states(tid))
-        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "gate-fail")
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertIn("reported commit does not match", ops.list_runs(self.conn, tid)[0]["note"])
+        self.assertEqual(ops.list_runs(self.conn, tid)[0]["outcome"], "blocked")
 
 
     def test_land_verdict_goes_to_reviewed_and_landing_reads_it(self):

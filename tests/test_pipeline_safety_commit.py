@@ -287,12 +287,12 @@ class ReadyToCommit(PolicyBase):
         self.assertEqual(refused["paths"], ["base.txt"])
 
     def test_no_file_scope_does_not_authorize_any_change(self):
-        tid = self.task()
+        tid = self.task(scope_files=['work.txt'])
         self.d.tick()
         wt = Path(repos.native(self.get(tid)["worktree"]))
         (wt / "work.txt").write_text("change")
-        self.ready(tid)
-        self.assertEqual(self.status(tid), "needs-owner")
+        with self.assertRaisesRegex(pipeline.CommitRefused, 'out-of-scope'):
+            self.pipe.commit_ready({**self.get(tid), 'scope_files': []}, 1, 'work')
 
     def test_scoped_staged_edit_deletion_and_nested_untracked_file_are_all_committed(self):
         tid = self.task(scope_files=["base.txt", "src/*", "notes.md:1-4"])
@@ -330,26 +330,18 @@ class ReadyToCommit(PolicyBase):
         self.assertEqual(ops.events(self.conn, task_id=tid, kind="worker-done")[-1]["data"]["sha"], sha)
 
     def test_commit_recovery_reads_keep_pipeline_git_semantics(self):
-        task = dict(id='T', worktree=str(self.fix.repo), scope_files=['work.txt'])
         adapter = pipeline.Repository()
-        pipe = pipeline.Pipeline(self.port, runs_dir=self.runs, repository=adapter)
-        for recovered in (True, False):
-            with self.subTest(recovered=recovered):
-                def placed(repo, *args, **kw):
-                    if args == ('rev-parse', 'HEAD'):
-                        return subprocess.CompletedProcess(args, 0, 'commit-sha\n', '')
-                    self.assertEqual(args, ('diff', '--name-only', '--no-renames', '-z', 'main...HEAD'))
-                    return subprocess.CompletedProcess(args, 0, 'work.txt\0', '')
-                with patch.object(adapter, 'changes', return_value=[]), \
-                        patch.object(adapter, 'trailers', return_value=['T', '1'] if recovered else ['', '']), \
-                        patch.object(adapter, 'ahead', return_value=True), \
-                        patch.object(pipe, 'repo', return_value=self.prog), \
-                        patch.object(ci, 'git', side_effect=AssertionError('commit recovery used CI Git')), \
-                        patch.object(placement, 'git', side_effect=placed) as calls, patch('drover.placement_git.git', calls):
-                    self.assertEqual(pipe.commit_ready(task, 1, 'Recover'), 'commit-sha')
-                self.assertEqual(calls.call_count, 1 if recovered else 2)
-                for call in calls.call_args_list:
-                    self.assertEqual(call.kwargs, {'timeout': None})
+        replies = [subprocess.CompletedProcess([], 0, 'base-sha\n', ''),
+                   subprocess.CompletedProcess([], 0, '', ''),
+                   subprocess.CompletedProcess([], 0, 'work.txt\0', '')]
+        with patch.object(placement, 'git', side_effect=replies) as calls:
+            self.assertEqual(adapter.resolve('checkout', 'main'), 'base-sha')
+            self.assertTrue(adapter.ancestor('checkout', 'base-sha', 'commit-sha'))
+            self.assertEqual(adapter.changed_paths('checkout', 'base-sha', 'commit-sha'), ['work.txt'])
+        self.assertEqual([c.args[1:] for c in calls.call_args_list], [
+            ('rev-parse', '--verify', 'main^{commit}'),
+            ('merge-base', '--is-ancestor', 'base-sha', 'commit-sha'),
+            ('diff', '--name-only', '--no-renames', '-z', 'base-sha...commit-sha')])
 
     def test_repository_read_errors_during_commit_are_owner_refusals(self):
         for operation in ('head', 'changed_paths'):

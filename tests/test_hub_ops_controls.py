@@ -112,7 +112,7 @@ class TestWslDiscovery(Base):
 
 class TestRunTail(Base):
     def make_run(self, finish=False):
-        t = self.store.create_task("Tail me")["id"]
+        t = self.store.create_task("Tail me", scope_files=['fixture-115'])["id"]
         rid = self.store.start_run(t, "worker", "claude", "haiku", "high")["id"]
         if finish:
             self.store.finish_run(rid, "landed", allowance_used={"seven_day_pct": 1.5, "five_hour_pct": 4})

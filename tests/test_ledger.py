@@ -12,7 +12,6 @@ from drover.ledger import IllegalTransition, board, connect, migrate, ops, schem
 from drover.ledger import cli, db, scope, states
 from drover.ledger.schema import MIGRATIONS
 
-
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -23,6 +22,7 @@ class Base(unittest.TestCase):
         self.addCleanup(lambda: [c.close() for c in self.conns])
 
     def task(self, title="t", status="ready", **kw):
+        kw.setdefault("scope_files", [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}"])
         t = ops.create_task(self.conn, title, kw.pop("repo", "p"), **kw)
         if status in ("ready", "draft"):
             if status == "ready":
@@ -37,7 +37,6 @@ class Base(unittest.TestCase):
     def worker(self, **kw):
         return {"owner_kind": "claude", "model": "sonnet", **kw}
 
-
 class TransitionTests(Base):
     def test_every_table_row_is_known_and_terminals_are_closed(self):
         for old, news in states.TRANSITIONS.items():
@@ -49,8 +48,8 @@ class TransitionTests(Base):
     def test_happy_path(self):
         t = self.task()
         ops.claim_next(self.conn, self.worker())
-        for s in ("running", "gated", "reviewed", "landed"):
-            ops.set_status(self.conn, t["id"], s, "w")
+        from tests.ledger_fixture import stage
+        stage(self.conn, t["id"], "landed")
         self.assertEqual(self.status(t["id"]), "landed")
 
     def test_illegal_transitions_raise_and_change_nothing(self):
@@ -73,7 +72,7 @@ class TransitionTests(Base):
         before = len(ops.events(self.conn, task_id=t["id"], kind="status"))
         ops.approve(self.conn, t["id"])
         ops.claim_next(self.conn, self.worker())
-        ops.set_status(self.conn, t["id"], "running")
+        ops.start_run(self.conn, t["id"], "worker", "local")
         evs = ops.events(self.conn, task_id=t["id"], kind="status")
         self.assertEqual(len(evs) - before, 3)
         self.assertEqual(evs[-1]["data"]["from"], "claimed")
@@ -123,10 +122,9 @@ class TransitionTests(Base):
             ops.update_task(self.conn, t["id"], title="new", handoff="x" * 1501)
         self.assertEqual(ops.get_task(self.conn, t["id"])["title"], "t")
 
-
 class EntityTests(Base):
     def test_ids_are_base36(self):
-        ids = [ops.create_task(self.conn, "t", "p")["id"] for _ in range(40)]
+        ids = [ops.create_task(self.conn, "t", "p", scope_files=['fixture-130'])["id"] for _ in range(40)]
         self.assertEqual(ids[0], "T-1")
         self.assertEqual(ids[9], "T-a")
         self.assertEqual(ids[34], "T-z")
@@ -139,7 +137,7 @@ class EntityTests(Base):
         self.assertEqual((t["acceptance"], t["scope_files"], t["status"]), (["a", "b"], ["src/**"], "proposed"))
         import sqlite3
         with self.assertRaises(sqlite3.IntegrityError):
-            ops.create_task(self.conn, "t", "p", priority="P9")
+            ops.create_task(self.conn, "t", "p", priority="P9", scope_files=['fixture-143'])
 
     def test_update_limits(self):
         t = self.task()
@@ -154,7 +152,7 @@ class EntityTests(Base):
         ops.update_epic(self.conn, e["id"], title="E2")
         self.assertEqual(ops.get_epic(self.conn, e["id"])["title"], "E2")
         with self.assertRaises(ops.NotFound):
-            ops.create_task(self.conn, "t", "p", epic_id="E-zz")
+            ops.create_task(self.conn, "t", "p", epic_id="E-zz", scope_files=['fixture-158'])
 
     def test_dep_cycle_and_self_rejected(self):
         a, b, c = (self.task(str(i)) for i in range(3))
@@ -202,7 +200,6 @@ class EntityTests(Base):
         with self.assertRaises(ops.NotFound):
             ops.record_outcome(self.conn, 999, {})
 
-
 class ClaimTests(Base):
     def test_priority_epic_task_rank_order(self):
         e1 = ops.create_epic(self.conn, "p", "E1")
@@ -220,10 +217,10 @@ class ClaimTests(Base):
         now = datetime(2026, 10, 17, 12, tzinfo=timezone.utc)
         e = ops.create_epic(self.conn, "p", "E")
         # same rank forced equal so the later keys decide
-        a = ops.create_task(self.conn, "L-old", "p", e["id"], size="L", rank=1.0)
-        b = ops.create_task(self.conn, "S", "p", e["id"], size="S", rank=1.0)
-        c = ops.create_task(self.conn, "M-blocking", "p", e["id"], size="M", rank=1.0)
-        d = ops.create_task(self.conn, "dependent", "p", e["id"], rank=5.0, deps=[c["id"]])
+        a = ops.create_task(self.conn, "L-old", "p", e["id"], size="L", rank=1.0, scope_files=['fixture-224'])
+        b = ops.create_task(self.conn, "S", "p", e["id"], size="S", rank=1.0, scope_files=['fixture-225'])
+        c = ops.create_task(self.conn, "M-blocking", "p", e["id"], size="M", rank=1.0, scope_files=['fixture-226'])
+        d = ops.create_task(self.conn, "dependent", "p", e["id"], rank=5.0, deps=[c["id"]], scope_files=['fixture-227'])
         for t in (a, b, c):
             ops.approve(self.conn, t["id"])
         # pressure: c has a dependent so its age counts double; make all the same age
@@ -251,10 +248,11 @@ class ClaimTests(Base):
         got = ops.claim_next(self.conn, self.worker())
         self.assertEqual(got["title"], "w")
         self.assertIsNone(ops.claim_next(self.conn, self.worker()))
-        for s in ("running", "gated", "reviewed"):
-            ops.set_status(self.conn, a["id"], s, "w")
+        from tests.ledger_fixture import stage
+        stage(self.conn, a["id"], "reviewed")
         self.assertIsNone(ops.claim_next(self.conn, self.worker()))  # reviewed is not landed
-        ops.set_status(self.conn, a["id"], "landed", "w")
+        from tests.ledger_fixture import stage
+        stage(self.conn, a["id"], "landed")
         self.assertEqual(ops.claim_next(self.conn, self.worker())["title"], "b")
 
     def test_unapproved_tasks_never_claimed(self):
@@ -271,12 +269,14 @@ class ClaimTests(Base):
         self.assertEqual(ops.claim_next(self.conn, self.worker())["title"], "c")
         self.assertEqual(ops.claim_next(self.conn, self.worker())["title"], "d")  # other repo is free
         self.assertIsNone(ops.claim_next(self.conn, self.worker()))  # b still conflicts with claimed a
-        ops.set_status(self.conn, a["id"], "running", "w")
+        ops.start_run(self.conn, a["id"], "worker", "local")
         self.assertIsNone(ops.claim_next(self.conn, self.worker()))
         for st in ("gated", "reviewed"):  # unlanded changes still own the scope
-            ops.set_status(self.conn, a["id"], st, "w")
+            from tests.ledger_fixture import stage
+            stage(self.conn, a["id"], st)
             self.assertIsNone(ops.claim_next(self.conn, self.worker()))
-        ops.set_status(self.conn, a["id"], "landed", "w")
+        from tests.ledger_fixture import stage
+        stage(self.conn, a["id"], "landed")
         self.assertEqual(ops.claim_next(self.conn, self.worker())["title"], "b")
 
     def test_glob_overlap_rules(self):

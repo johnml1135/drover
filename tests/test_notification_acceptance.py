@@ -22,7 +22,6 @@ from drover.ledger import ops
 from drover.notifications import Notifications
 from drover.port import DirectPort
 
-
 # Credentials and lease tokens travel only on the fixture-owned anonymous pipes.
 # The consumer deliberately exits after its first checkpoint without acking.
 CONSUMER = r'''
@@ -175,13 +174,14 @@ class NotificationAcceptanceTests(unittest.TestCase):
 
     def accept(self, task):
         self.request('POST', '/api/v1/tasks/' + task + '/approve', SAME, {})
-        self.request('POST', '/api/v1/tasks/' + task + '/status', WORKER, {'status':'claimed'})
+        from tests.ledger_fixture import claim
+        claim(self.app.state.store.conn, task)
         run = self.request('POST', '/api/v1/runs', WORKER,
             {'task_id':task, 'role':'worker', 'backend':'local'}, 201)['id']
         self.request('POST', f'/api/v1/runs/{run}/finish', WORKER,
                      {'outcome':'read-only-done', 'note':'Accepted findings'})
         self.request('POST', '/api/v1/tasks/' + task + '/status', WORKER, {'status':'needs-owner'})
-        self.request('POST', '/api/v1/tasks/' + task + '/status', SAME, {'status':'landed'})
+        self.app.state.store.accept_read_only(task)
 
     def test_completion_offered_before_hub_restart_commits_and_retries_after_restart(self):
         headers = self.role()
@@ -264,7 +264,7 @@ class NotificationAcceptanceTests(unittest.TestCase):
 
     def test_process_disconnect_replacement_restores_checkpoint_and_unread_without_child_restart(self):
         headers = self.role()
-        child = self.request('POST', BASE + '/tasks', headers, {'title':'Running child'}, 201)['id']
+        child = self.request('POST', BASE + '/tasks', headers, {'title':'Running child', 'scope_files':['child/*']}, 201)['id']
         conn = self.app.state.store.conn
         ops.approve(conn, child)
         ops.claim_next(conn)

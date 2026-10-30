@@ -103,7 +103,7 @@ class RecoverySteps:
         spec = {"run_id": run["id"], "role": run["role"], "backend": run["backend"], "model": run["model"], "task": task,
                 "adopted": True, "placement": placement, "wall_s": self._wall_s(task, policy),
                 "idle_s": self._idle_s(policy), 'nonce': launched.get('nonce'),
-                'control_epoch': launched.get('control_epoch') or 0}
+                'control_epoch': launched.get('control_epoch') or 0, 'output_snapshot': launched.get('output_snapshot')}
         saved = next((e["data"] for e in self.port.events("dispatch.access")
                       if e["data"].get("run") == run["id"]), {})
         if "read_checkouts" in saved:

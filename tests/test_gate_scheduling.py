@@ -13,7 +13,6 @@ from drover.ledger import ci as slots, db, ops
 from drover.port import DirectPort
 from tests.fakeci import resources_go
 
-
 def memory_ledger(migrate=True):
     conn = sqlite3.connect(':memory:', isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -21,7 +20,6 @@ def memory_ledger(migrate=True):
     if migrate:
         db.migrate(conn)
     return conn
-
 
 class WindowsCapacity(unittest.TestCase):
     def setUp(self):
@@ -93,7 +91,7 @@ class WindowsCapacity(unittest.TestCase):
         self.assertIsNotNone(self.acquire(full))
 
     def test_dispatcher_restart_restores_live_ticket_until_terminal_release(self):
-        task = ops.create_task(self.conn, 'task', 'p')
+        task = ops.create_task(self.conn, 'task', 'p', scope_files=['fixture-96'])
         run_id = ops.start_run(self.conn, task['id'], 'gate', 'local')
         runners = slots.Runners(self.conn)
         self.assertIsNotNone(runners.reserve(task))
@@ -109,7 +107,7 @@ class WindowsCapacity(unittest.TestCase):
         self.assertIsNotNone(self.acquire(full))
 
     def test_cancelled_dispatcher_launch_keeps_ticket_until_reconciled(self):
-        task = ops.create_task(self.conn, 'task', 'p')
+        task = ops.create_task(self.conn, 'task', 'p', scope_files=['fixture-112'])
         run_id = ops.start_run(self.conn, task['id'], 'gate', 'local')
         runners = slots.Runners(self.conn)
         self.assertIsNotNone(runners.reserve(task))
@@ -145,9 +143,11 @@ class GateLaunchCancellation(unittest.TestCase):
         self.conn = memory_ledger()
         self.addCleanup(self.conn.close)
         self.port = DirectPort(self.conn)
-        self.task = ops.create_task(self.conn, 'task', 'p')
+        self.task = ops.create_task(self.conn, 'task', 'p', scope_files=['fixture-148'])
         ops.approve(self.conn, self.task['id'])
         ops.claim_next(self.conn)
+        worker = ops.start_run(self.conn, self.task['id'], 'worker', 'local')
+        ops.finish_run(self.conn, worker, 'blocked')
         self.launcher = SimpleNamespace(scan=Mock(return_value={}), stop_run=Mock())
         self.d = self.dispatcher()
 

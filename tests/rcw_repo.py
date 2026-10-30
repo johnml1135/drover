@@ -13,12 +13,10 @@ from drover import config, origin, placement, repos
 
 SCRIPT = '.drover/scripts/drover/test.ps1'
 
-
 def key(path):
     """One spelling for a checkout: Windows (H:\\x), WSL (/mnt/h/x), any slashes, drive-mount case-folded."""
     text = placement.to_wsl_path(placement.to_windows_path(str(path))).replace('\\', '/').rstrip('/')
     return text.casefold() if placement.MNT_RE.match(text) else text
-
 
 def fs(path):
     """The spelling this host can open: H:\\x on Windows, /mnt/h/x on WSL, whatever form arrived."""
@@ -176,6 +174,8 @@ class MemoryRepository:
 
     def head(self, path):
         return self.fixture(path).head(cwd=path)
+
+    from tests.rcw_output_fixture import resolve, ancestor, changes, trailers, commit
 
     def branch(self, path):
         return self.fixture(path).checkouts[key(path)]

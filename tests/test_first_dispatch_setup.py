@@ -159,9 +159,9 @@ class Reviews(Base):
     def review(self, findings, verdict='HOLD', record_sha=None):
         tid = self.task()
         self.d.tick()
+        from tests.ledger_fixture import stage
         worker = self.port.list_runs(tid)[0]['id']
-        self.port.finish_run(worker, 'done')
-        self.port.set_status(tid, 'gated')
+        stage(self.conn, tid, 'gated', self.SHA)
         run = self.port.start_run(tid, 'review', 'codex', 'gpt-6.1-sol', 'high')
         self.port.append_event('review-started', {'run': run, 'sha': self.SHA, 'worker_run': worker}, tid)
         self.pipe.current_head = lambda: self.SHA
@@ -198,10 +198,10 @@ class Reviews(Base):
         tid = self.task()
         top = dispatcher.ladders()['codex'][-1]
         for n in range(3):
-            self.port.set_status(tid, 'claimed')
+            from tests.ledger_fixture import claim, stage
+            claim(self.conn, tid)
             worker = self.port.start_run(tid, 'worker', 'codex', top, 'high')
-            self.port.finish_run(worker, 'done')
-            self.port.set_status(tid, 'gated')
+            stage(self.conn, tid, 'gated', self.SHA)
             run = self.port.start_run(tid, 'review', 'codex', top, 'high')
             self.port.append_event('review-started', {'run': run, 'sha': self.SHA, 'worker_run': worker}, tid)
             text = json.dumps({'verdict': 'HOLD', 'findings': [{'kind': 'blocking', 'detail': 'a.py:3 fix return'}]})

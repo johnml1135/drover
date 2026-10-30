@@ -19,20 +19,16 @@ OWNER_PREFIX = "drover:"
 DISPATCH_KEY = "dispatch_enabled"
 TRUE = ("1", "true", "yes", "on")
 
-
 class WorktreeRefused(Exception):
     """The task cannot have a worktree (dirty and not owned, no repo, git failed); the reason goes to the owner."""
-
 
 class CommitRefused(WorktreeRefused):
     def __init__(self, reason, paths=()):
         super().__init__(reason)
         self.paths = list(paths)
 
-
 def truthy(v):
     return str(v).strip().lower() in TRUE
-
 
 FETCH_TIMEOUT_S = 120
 
@@ -83,6 +79,12 @@ class Repository:
 
     def head(self, path):
         return git(path, "rev-parse", "HEAD", check=True).stdout.strip()
+
+    def resolve(self, path, ref):
+        return git(path, "rev-parse", "--verify", f"{ref}^{{commit}}", check=True).stdout.strip()
+
+    def ancestor(self, path, base, tip):
+        return git(path, "merge-base", "--is-ancestor", base, tip).returncode == 0
 
     def branch(self, path):
         return git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
@@ -141,9 +143,6 @@ class Repository:
                    "%(trailers:key=Drover-Run,valueonly)", check=True).stdout
         return [s.strip() for s in text.split("\0")]
 
-    def ahead(self, repo, base):
-        return git(repo, "rev-list", "--count", f"{base}..HEAD").stdout.strip() not in ("", "0")
-
     def commit(self, repo, message):
         git(repo, "add", "-A", check=True)
         git(repo, "commit", "-m", message, check=True)
@@ -166,46 +165,47 @@ class Pipeline:
         self.repository = repository or Repository()
         self.ci = ci.CI(self.runs_dir, source=repository)
 
-    def commit_ready(self, task, run_id, message):
-        """Commit scoped work; repository read failures follow the normal refusal path."""
+    def commit_ready(self, task, run_id, message, *, base=None, sha=None):
+        """Accept one exact scoped output, committing dirty work when requested."""
         try:
-            return self._commit_ready(task, run_id, message)
-        except ci.CIError as error:
-            raise WorktreeRefused(str(error)) from error
-
-    def _commit_ready(self, task, run_id, message):
-        """Refuse before touching the index on a scope violation."""
-        if task.get("write") is False:
-            raise CommitRefused("read-only task cannot commit")
-        if not task.get("worktree"):
-            raise CommitRefused("ready_to_commit has no task worktree")
-        repo = repos.native(task["worktree"])
-        paths = self.repository.changes(repo)
-        trailers = self.repository.trailers(repo)
-        if trailers == [str(task["id"]), str(run_id)]:
-            if paths:
-                raise CommitRefused("worktree changed after Drover committed this run", paths)
-            return self.repository.head(repo)
-        scope = [re.sub(r":\d+(?:-\d+)?$", "", s.replace("\\", "/")).removeprefix("./").rstrip("/")
-                 for s in task.get("scope_files") or []]
-
-        def out_of_scope(ps):
-            return [p for p in ps if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope)]
-        if not paths:
+            if task.get("write") is False:
+                raise CommitRefused("read-only task cannot commit")
+            if not task.get("worktree"):
+                raise CommitRefused("ready_to_commit has no task worktree")
+            repo = repos.native(task["worktree"])
             prog = self.repo(task)
-            base = self.base_ref(prog) if prog else None
-            if base and not any(trailers) and self.repository.ahead(repo, base):
-                ahead = self.repository.changed_paths(repo, base, "HEAD")
-                outside = out_of_scope(sorted(ahead))
+            base = base or (self.repository.resolve(repo, self.base_ref(prog)) if prog else None)
+            if not base: raise CommitRefused("run base cannot be verified")
+            head = self.repository.head(repo)
+            if sha is not None and sha != head: raise CommitRefused("reported commit does not match worktree HEAD")
+            if not self.repository.ancestor(repo, base, head): raise CommitRefused("commit does not descend from run base")
+            paths = self.repository.changes(repo)
+            trailers = self.repository.trailers(repo)
+            if sha is None and trailers == [str(task['id']), str(run_id)] and paths:
+                raise CommitRefused("worktree changed after Drover committed this run", paths)
+            if sha is None and not paths and any(trailers) and trailers != [str(task['id']), str(run_id)]:
+                raise CommitRefused("no changes")
+            if sha is not None and paths: raise CommitRefused("worktree has uncommitted changes", paths)
+            scope = [re.sub(r":\d+(?:-\d+)?$", "", s.replace("\\", "/")).removeprefix("./").rstrip("/")
+                     for s in task.get("scope_files") or []]
+            changed = set(paths) | set(self.repository.changed_paths(repo, base, head))
+            outside = sorted(p for p in changed if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope))
+            if outside:
+                raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
+            if paths:
+                text = f"{message.strip()}\n\nDrover-Task: {task['id']}\nDrover-Run: {run_id}\n"
+                head = self.repository.commit(repo, text)
+                if (self.repository.changes(repo) or self.repository.head(repo) != head
+                        or not self.repository.ancestor(repo, base, head)):
+                    raise CommitRefused("worktree changed after Drover committed this run")
+                outside = sorted(p for p in self.repository.changed_paths(repo, base, head)
+                                 if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope))
                 if outside:
                     raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
-                return self.repository.head(repo)   # committed by the worker: gate HEAD
-            raise CommitRefused("no changes")
-        outside = out_of_scope(paths)
-        if outside:
-            raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
-        text = f"{message.strip()}\n\nDrover-Task: {task['id']}\nDrover-Run: {run_id}\n"
-        return self.repository.commit(repo, text)
+            elif not changed: raise CommitRefused("no changes")
+            return head
+        except ci.CIError as error:
+            raise WorktreeRefused(str(error)) from error
 
     # ---- switch and config ---------------------------------------------------------------------------
     def enabled(self):

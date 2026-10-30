@@ -16,7 +16,6 @@ from drover import ci, config, landing, origin, ownership
 from drover import landing_batch, landing_control
 from drover.ledger import db, ops
 
-
 class CommitGraph:
     def __init__(self, root):
         self.root = root
@@ -136,7 +135,6 @@ class CommitGraph:
                     status='failed' if bad else 'passed', exit_code=int(bool(bad)),
                     tree_unchanged=True, log_tail=log, log='memory gate')
 
-
 class ProcessFreeCase(unittest.TestCase):
     def setUp(self):
         for context in (
@@ -184,14 +182,16 @@ class MemoryLandingCase(ProcessFreeCase):
 
     def task(self, name, files, priority='P2', review='LAND', repo_path=None):
         head = self.r.branch(name, files)
-        task = ops.create_task(self.conn, name, 'p', repo_path=str(repo_path or self.r.repo), priority=priority)
+        task = ops.create_task(self.conn, name, 'p', repo_path=str(repo_path or self.r.repo), priority=priority, scope_files=list(files))
         ops.update_task(self.conn, task['id'], branch=name)
         ops.approve(self.conn, task['id'])
-        for status in ('claimed', 'running', 'gated', 'reviewed'):
-            ops.set_status(self.conn, task['id'], status, actor='system')
-        if review:
+        from tests.ledger_fixture import stage
+        stage(self.conn, task['id'], 'reviewed', head)
+        if review != 'LAND':
             run = ops.start_run(self.conn, task['id'], 'reviewer', 'claude')
-            ops.finish_run(self.conn, run, 'ok', review_verdict=f'LAND@{head}' if review == 'LAND' else review)
+            ops.finish_run(self.conn, run, 'ok', review_verdict=review)
+            if review is None:
+                self.conn.execute("UPDATE runs SET review_verdict=NULL WHERE task_id=?", (task['id'],))
         return task['id']
 
     def status(self, tid):

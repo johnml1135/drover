@@ -227,7 +227,7 @@ class Notices(MemoryWorktreeCase):
         self.addCleanup(conn.close)
         expected = {}
         for state in (states.READY, states.BLOCKED, states.FAILED, states.NEEDS_OWNER, states.CANCELLED):
-            task = ops.create_task(conn, state, 'fixture')
+            task = ops.create_task(conn, state, 'fixture', scope_files=['fixture'])
             ops.approve(conn, task['id'])
             if state != states.READY:
                 if state == states.FAILED:

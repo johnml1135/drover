@@ -4,10 +4,10 @@ import unittest.mock
 
 from drover import dispatcher
 from drover.ledger import ops
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from drover.runner import ScanError
 
 from tests.test_dispatcher import AdoptHandle, AdoptLauncher, Base, DONE, res
-
 
 class Recovery(Base):
     def setUp(self):
@@ -55,8 +55,7 @@ class Recovery(Base):
         runs = []
         for seat in (primary, secondary):
             tid = self.task(size='S')
-            ops.set_status(self.conn, tid, 'claimed')
-            ops.set_status(self.conn, tid, 'running')
+            fixture_claim(self.conn, tid)
             rid = ops.start_run(self.conn, tid, 'worker', 'claude')
             stats.update_run(self.conn, rid, seat=seat['name'])
             runs.append(rid)
@@ -210,7 +209,8 @@ class Recovery(Base):
     def test_running_task_with_no_open_run_is_requeued_with_event(self):
         t = self.task()
         ops.claim_next(self.conn, {})
-        ops.set_status(self.conn, t, "running", "x")
+        rid = ops.start_run(self.conn, t, "worker", "local")
+        ops.finish_run(self.conn, rid, "error")
         self.assertEqual(self.d.recover_orphans(), [t])
         self.assertEqual(self.status(t), "ready")
         self.assertEqual(self.events("running-no-run")[0]["task_id"], t)

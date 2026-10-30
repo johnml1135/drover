@@ -54,7 +54,7 @@ def task(i, **kw):
     t = {"native_id": None, "title": f"task {i}", "repo": "acme-lib", "branch": None, "branches": [],
          "source_refs": [f"f.md:{i}"], "confidence": "high", "merged_from": 1, "sources": ["A"], "date": "2026-10-16",
          "priority": "P3", "goal": f"goal {i}", "acceptance": ["a1", "a2"], "size": "S", "id": f"IMP-{i:04d}",
-         "epic_id": "EP-01"}
+         "epic_id": "EP-01", "scope_files": [f"fixture-{i}"]}
     t.update(kw)
     return t
 

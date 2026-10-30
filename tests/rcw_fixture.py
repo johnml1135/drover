@@ -7,7 +7,6 @@ from drover import ci, config, origin, placement, repos
 from tests import rcw_repo
 from tests.rcw_repo import MemoryRepo, MemoryRepository
 
-
 class PolicyCase:
     """Real pipeline/dispatcher/ledger, memory repository observations and receipts."""
     def setUp(self):
@@ -81,6 +80,8 @@ class PolicyCase:
         # Avoid prog_dict's Git script installation: MemoryRepo already has the script.
         self.prog = prog_dict(self.fix.repo, root / 'wts')
         self.pipe = pipeline.Pipeline(self.port, repos_map={'p': self.prog}, runs_dir=self.runs)
+        for method in ('resolve', 'ancestor', 'changes', 'trailers', 'commit', 'head', 'changed_paths'):
+            setattr(self.pipe.repository, method, getattr(self.source, method))
         self.fl = FakeLauncher(self.runs)
         self.fl.launch = self.launch
         ops.set_setting(self.conn, 'dispatch_enabled', 'true')
@@ -150,7 +151,6 @@ class PolicyCase:
             handle = FakeHandle()
         self.fl.handles[spec['run_id']] = handle
         return handle
-
 
 from tests.test_pipeline import Base as RealPipelineBase
 

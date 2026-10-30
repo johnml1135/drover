@@ -12,9 +12,8 @@ from drover.port import DirectPort
 
 WORKTREE = r"R:\repos\wt"      # a Windows path, so placement does not depend on the host running the tests
 GO = {"verdict": "go", "slots": 10, "reasons": []}
-DONE = '{"status": "done", "sha": "abc1234", "blocker": null, "note": "ok"}'
+DONE = '{"status": "done", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "blocker": null, "note": "ok"}'
 BLOCKED = '{"status": "blocked", "sha": "", "blocker": {"kind": "plan", "detail": "api differs"}, "note": ""}'
-
 
 SPEC = {"run_id": 3, "backend": "claude", "model": "sonnet-5.5", "cwd": ".", "system_append": "SYS",
         "user_prompt": "BRIEF", "task": {"id": "T", "title": "t", "goal": "g"}}
@@ -81,7 +80,7 @@ class Base(unittest.TestCase):
         self.port, self.fl = DirectPort(self.conn), FakeLauncher()
         self.verdict, self.allow, self.gate_ok, self.decisions = GO, {"claude": True, "codex": True}, True, []
         self.pipe = FakePipeline(self.port, Path(self.tmp.name) / "runs")
-        self.pipe.current_head = lambda: "abc1234" if self.gate_ok else "FAIL x"
+        self.pipe.current_head = lambda: "a" * 40 if self.gate_ok else "FAIL x"
         self.d = self.make()
 
     def make(self, **kw):
@@ -99,6 +98,7 @@ class Base(unittest.TestCase):
                 "criteria_version": "1", "model": "nimble-v3", "state_hash": "h", "probabilities": None}
 
     def task(self, ready=True, **kw):
+        kw.setdefault("scope_files", [f"fixture-{ops.get_setting(self.conn, 'seq_T', '0')}"])
         t = ops.create_task(self.conn, kw.pop("title", "t"), "p", read_access=[], repo_path=kw.pop("repo_path", None), **kw)
         if ready:
             ops.approve(self.conn, t["id"])

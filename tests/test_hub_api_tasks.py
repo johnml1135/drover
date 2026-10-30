@@ -30,7 +30,7 @@ class ClaimTests(HubCase):
         store = self.app.state.store
         n = 5
         for i in range(n):
-            store.approve(store.create_task(f"t{i}")["id"])
+            store.approve(store.create_task(f"t{i}", scope_files=[f"fixture-{i}"])["id"])
         got, lock = [], threading.Lock()
 
         def work(name):
@@ -103,7 +103,7 @@ class SseTests(HubCase):
         tmp, app = make(trusted_ui_hosts=("testclient",))
         self.addCleanup(tmp.cleanup)
         self.addCleanup(app.state.store.close)
-        created = app.state.store.create_task("X")
+        created = app.state.store.create_task("X", scope_files=['fixture-106'])
         replay = app.state.bus.recent()[0]
         c = TestClient(app)
         with c.stream("GET", "/events?limit=1", headers={"Last-Event-ID": "0"}) as r:

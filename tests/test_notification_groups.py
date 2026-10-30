@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from drover.ledger import ops
+from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from drover.ledger.db import connect
 from drover.notifications import Conflict, Notifications
 
@@ -24,7 +25,7 @@ class NotificationGroupsTests(unittest.TestCase):
 
     def accept(self, task):
         ops.approve(self.conn, task['id'])
-        ops.set_status(self.conn, task['id'], 'claimed')
+        fixture_claim(self.conn, task['id'])
         run = ops.start_run(self.conn, task['id'], 'worker', 'local')
         ops.finish_run(self.conn, run, 'read-only-done', note='Accepted findings')
         ops.set_status(self.conn, task['id'], 'needs-owner')
@@ -60,7 +61,7 @@ class NotificationGroupsTests(unittest.TestCase):
     def test_parentless_group_cross_director_results_are_scoped_and_acknowledgeable(self):
         self.service.register('director:b')
         group = self.service.create_group('G-independent', 'director:a')
-        child = ops.create_task(self.conn, 'Other findings', 'repo', kind='research', initiating_role='director:b')
+        child = ops.create_task(self.conn, 'Other findings', 'repo', kind='research', initiating_role='director:b', scope_files=['fixture-63'])
         group = self.service.enroll(group['group_id'], child['id'], group['revision'], 'enroll')
         self.service.seal(group['group_id'], group['revision'], 'seal')
         self.accept(child)
@@ -111,7 +112,7 @@ class NotificationGroupsTests(unittest.TestCase):
         self.service.seal('G-bad', group['revision'], 'seal')
         self.assertFalse(self.service.get_group('G-bad')['ready'])
         ops.approve(self.conn, child['id'])
-        ops.set_status(self.conn, child['id'], 'claimed')
+        fixture_claim(self.conn, child['id'])
         ops.set_status(self.conn, child['id'], 'failed')
         self.assertIn('child-failed', self.service.get_group('G-bad')['failure_reason'])
         ops.set_status(self.conn, child['id'], 'cancelled')
@@ -124,19 +125,18 @@ class NotificationGroupsTests(unittest.TestCase):
     def test_merged_child_joins_only_after_actual_receipt_and_restart_keeps_one_completion(self):
         from drover.ledger import landing
         group = self.service.create_group('G-merged', 'director:a')
-        child = ops.create_task(self.conn, 'Change', 'repo', initiating_role='director:a', group_id='G-merged')
+        child = ops.create_task(self.conn, 'Change', 'repo', initiating_role='director:a', group_id='G-merged', scope_files=['fixture-127'])
         group = self.service.get_group('G-merged')
         self.service.seal('G-merged', group['revision'], 'seal')
         ops.approve(self.conn, child['id'])
-        for state in ('claimed', 'running', 'gated', 'reviewed', 'landed'):
-            ops.set_status(self.conn, child['id'], state)
+        fixture_stage(self.conn, child['id'], 'reviewed')
         self.assertFalse(self.service.get_group('G-merged')['ready'])
         ops.event(self.conn, 'task.result-accepted', 'owner', {'commit': 'fake'}, task_id=child['id'])
         self.assertFalse(self.service.get_group('G-merged')['ready'])
-        landing.record_merged(self.conn, dict(child, last_sha='child-sha'), 'main-tip', 'checks.log')
+        fixture_stage(self.conn, child['id'], 'landed')
         ready = self.service.get_group('G-merged')
         self.assertTrue(ready['ready'])
-        self.assertEqual(ready['manifest'][0]['commit'], 'child-sha')
+        self.assertEqual(ready['manifest'][0]['commit'], 'b' * 40)
         self.conn.close()
         self.conn = connect(self.path)
         self.service = Notifications(self.conn, now=lambda: self.now)
@@ -189,7 +189,7 @@ class NotificationGroupsTests(unittest.TestCase):
         self.service.seal('G-concurrent', group['revision'], 'seal')
         for child in children:
             ops.approve(self.conn, child['id'])
-            ops.set_status(self.conn, child['id'], 'claimed')
+            fixture_claim(self.conn, child['id'])
             run = ops.start_run(self.conn, child['id'], 'worker', 'local')
             ops.finish_run(self.conn, run, 'read-only-done', note='Findings')
             ops.set_status(self.conn, child['id'], 'needs-owner')
@@ -232,7 +232,7 @@ class NotificationGroupsTests(unittest.TestCase):
     def test_foreign_group_does_not_suppress_child_directors_ordinary_completion(self):
         self.service.register('director:b')
         group = self.service.create_group('G-foreign', 'director:a')
-        child = ops.create_task(self.conn, 'Findings', 'repo', kind='research', initiating_role='director:b')
+        child = ops.create_task(self.conn, 'Findings', 'repo', kind='research', initiating_role='director:b', scope_files=['fixture-235'])
         self.service.enroll('G-foreign', child['id'], group['revision'], 'enroll')
         self.accept(child)
         self.project()
@@ -245,7 +245,7 @@ class NotificationGroupsTests(unittest.TestCase):
         group = self.service.get_group('G-issue')
         self.service.seal('G-issue', group['revision'], 'seal')
         ops.approve(self.conn, child['id'])
-        ops.set_status(self.conn, child['id'], 'claimed')
+        fixture_claim(self.conn, child['id'])
         ops.set_status(self.conn, child['id'], 'needs-owner')
         self.project()
         issue, = [m for m in self.service.receive('director:a') if m['group_id'] == 'G-issue']
@@ -304,7 +304,7 @@ class NotificationGroupsTests(unittest.TestCase):
         group = self.service.get_group('G-retry')
         self.service.seal('G-retry', group['revision'], 'seal')
         ops.approve(self.conn, child['id'])
-        ops.set_status(self.conn, child['id'], 'claimed')
+        fixture_claim(self.conn, child['id'])
         ops.set_status(self.conn, child['id'], 'failed')
         self.project()
         self.assertEqual(self.service.receive('director:a'), [])
@@ -343,7 +343,7 @@ class NotificationGroupsTests(unittest.TestCase):
     def test_amended_historical_read_only_evidence_fails_closed_with_retained_reason(self):
         child = self.task()
         ops.approve(self.conn, child['id'])
-        ops.set_status(self.conn, child['id'], 'claimed')
+        fixture_claim(self.conn, child['id'])
         run = ops.start_run(self.conn, child['id'], 'worker', 'local')
         ops.finish_run(self.conn, run, 'read-only-done', note='Historical accepted findings')
         ops.set_status(self.conn, child['id'], 'needs-owner')

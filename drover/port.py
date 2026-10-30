@@ -9,7 +9,7 @@ from typing import Protocol
 
 from . import config
 from .ledger import ops
-
+from .ledger.ops_stages import advance_stage
 
 class LedgerPort(Protocol):
     waiting: "Waiting"
@@ -23,6 +23,7 @@ class LedgerPort(Protocol):
     def start_run(self, task_id, role, backend, model=None, effort=None): ...
     def finish_run(self, run_id, outcome, **fields): ...
     def set_status(self, task_id, new, reason=None, data=None): ...
+    def advance_stage(self, task_id, stage, run_id, sha, platforms=None): ...
     def set_handoff(self, task_id, text): ...
     def append_event(self, kind, data=None, task_id=None, actor="dispatcher"): ...
     def events(self, kind=None, after=0): ...
@@ -38,7 +39,6 @@ class LedgerPort(Protocol):
     def update_task(self, task_id, **fields): ...
     def ask_question(self, target_kind, target_id, title, body="", options=(), needs_owner=False): ...
     def get_question(self, qid): ...
-
 
 class DirectPort:
     def __init__(self, conn, actor="dispatcher", now=time.time):
@@ -87,9 +87,11 @@ class DirectPort:
     def set_status(self, task_id, new, reason=None, data=None):
         return ops.set_status(self.conn, task_id, new, self.actor, reason=reason, data=data)
 
+    def advance_stage(self, task_id, stage, run_id, sha, platforms=None):
+        return advance_stage(self.conn, task_id, stage, run_id, sha, actor=self.actor, platforms=platforms)
+
     def set_handoff(self, task_id, text):
         return ops.update_task(self.conn, task_id, self.actor, handoff=text)
-
 
     def propose_review_followups(self, task_id, run_id, findings):
         task = self.get_task(task_id)
@@ -128,7 +130,6 @@ class DirectPort:
     def record_decision(self, **fields):
         return ops.record_decision(self.conn, **fields)
 
-
     def note_wsl_needed(self, task_id):
         """Tell the hub watchdog a WSL-placed task is due and WSL is not up (it boots WSL, nothing else does)."""
         ops.set_setting(self.conn, "_wsl_needed", json.dumps({"ts": self.now(), "task": task_id}))
@@ -162,7 +163,6 @@ class DirectPort:
         data = json.loads(row[0]) if row else {}
         cap = data.get("parallel_cap", ops.get_setting(self.conn, "parallel_cap", config.get()["capacity"]["parallel_cap"]))
         return {"version": version, "data": data, "parallel_cap": int(cap)}
-
 
 class HttpPort:
     """Stub: the hub API client arrives with the hub slice."""

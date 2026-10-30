@@ -14,11 +14,9 @@ from drover import ci, config, origin, placement, repos, runner
 
 SCRIPT = '.drover/scripts/drover/test.ps1'
 
-
 def files(path):
     return {str(p.relative_to(path)).replace('\\', '/'): p.read_text()
             for p in Path(path).rglob('*') if p.is_file() and '.git' not in p.relative_to(path).parts}
-
 
 def write_tree(path, tree):
     path = Path(path)
@@ -29,7 +27,6 @@ def write_tree(path, tree):
         dest = path / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(text)
-
 
 class MemoryRepo:
     def __init__(self, root):
@@ -177,6 +174,12 @@ class MemoryRepository:
     def head(self, path):
         return self.fixture(path).head(cwd=path)
 
+    def resolve(self, path, ref):
+        return self.fixture(path).head(ref)
+
+    def ancestor(self, path, base, tip):
+        return self.fixture(path).ancestor(base, tip)
+
     def branch(self, path):
         return self.fixture(path).checkouts[str(path)]
 
@@ -235,9 +238,6 @@ class MemoryRepository:
         message = self.fixture(path).message(path)
         return [next(iter(re.findall('^' + name + r': (.*)$', message, re.M)), '')
                 for name in ('Drover-Task', 'Drover-Run')]
-
-    def ahead(self, path, base):
-        return self.head(path) != self.fixture(path).head(base)
 
     def commit(self, path, message):
         return self.fixture(path).save(path, message)

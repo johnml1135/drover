@@ -18,9 +18,11 @@ class AcceptanceTests(unittest.TestCase):
         self.ui.s = self.s
 
     def finished_read(self, **fields):
+        if fields.get('write'):
+            fields.setdefault('scope_files', ['findings'])
         t = self.s.create_task('Findings', kind='research', **fields)['id']
         self.s.approve(t)
-        self.s.set_status(t, 'claimed', 'dispatcher')
+        ops.claim_next(self.s.conn, {'actor': 'dispatcher'})
         rid = self.s.start_run(t, 'worker', 'codex')['id']
         self.s.finish_run(rid, 'read-only-done', note='Findings ready')
         self.s.set_status(t, 'needs-owner', 'dispatcher', 'Review findings')
@@ -28,7 +30,7 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_owner_accepts_findings_and_unblocks_dependents_without_landing(self):
         tid, rid = self.finished_read()
-        dependent = self.s.create_task('Use findings', deps=[tid])['id']
+        dependent = self.s.create_task('Use findings', deps=[tid], scope_files=['result'])['id']
         self.s.approve(dependent)
         self.assertEqual(ops.ready_tasks(self.s.conn), [])
         self.ui.decide_item('task', tid, 'approve')
@@ -47,7 +49,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_only_owner_may_complete_successful_read_work(self):
         tid, _ = self.finished_read()
         with self.assertRaises(PermissionError):
-            ops.set_status(self.s.conn, tid, 'landed', actor='dispatcher')
+            ops.accept_read_only(self.s.conn, tid, actor='dispatcher')
         self.assertEqual(self.s.get_task(tid)['status'], 'needs-owner')
 
     def test_failed_or_unfinished_read_work_is_retried_on_approve(self):
@@ -58,22 +60,20 @@ class AcceptanceTests(unittest.TestCase):
                 if outcome:
                     self.s.finish_run(rid, outcome)
                 with self.assertRaises(ValueError):
-                    ops.set_status(self.s.conn, tid, 'landed', actor='owner')
+                    ops.accept_read_only(self.s.conn, tid, actor='owner')
                 self.ui.decide_item('task', tid, 'approve')
                 self.assertEqual(self.s.get_task(tid)['status'], 'ready')
 
     def test_write_task_cannot_take_read_acceptance_shortcut(self):
         tid, _ = self.finished_read(write=True)
         with self.assertRaises(ValueError):
-            ops.set_status(self.s.conn, tid, 'landed', actor='owner')
+            ops.accept_read_only(self.s.conn, tid, actor='owner')
         self.ui.decide_item('task', tid, 'approve')
         self.assertEqual(self.s.get_task(tid)['status'], 'ready')
 
     def test_owner_acceptance_overrides_supplied_run_and_proof_with_frozen_evidence(self):
         tid, rid = self.finished_read()
-        ops.set_status(self.s.conn, tid, 'landed', actor='owner',
-                       data={'read_only': False, 'run': -1,
-                             'read_only_receipt': {'evidence': {'note': 'Forged evidence'}, 'result_hash': 'forged'}})
+        ops.accept_read_only(self.s.conn, tid, actor='owner')
         accepted = self.s.list_events(task_id=tid, kind='status')[-1]['data']
         self.assertTrue(accepted['read_only'])
         self.assertEqual(accepted['run'], rid)
