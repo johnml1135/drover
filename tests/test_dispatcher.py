@@ -53,8 +53,11 @@ class FakeLauncher:
         if spec.get('role') == 'gate':
             from drover import ci
             out, sha = Path(spec['argv'][1]), spec['argv'][2]
-            out.write_text(json.dumps({'version': ci.VERSION, 'sha': sha, 'passed': True, 'status': 'passed',
-                                      'exit_code': 0, 'tree_unchanged': True, 'kind': 'full', 'log_tail': []}))
+            out.write_text(json.dumps({'version': ci.VERSION, 'sha': sha, 'passed': True, 'status': 'passed', 'outcome': 'passed',
+                                      'exit_code': 0, 'tree_unchanged': True, 'kind': 'checks', 'platform': spec['placement'],
+                                      'run_id': spec['run_id'], 'nonce': spec['nonce'], 'log_tail': []}))
+            from drover import runner
+            runner.write_json_atomic(out.parent / runner.STATUS_FILE, dict(state='exited', exit_code=0, nonce=spec['nonce'], run_id=spec['run_id']))
             return FakeHandle({'status': 'done', 'returncode': 0, 'record': None, 'text': '',
                                'usage': {'tokens_in': 0, 'tokens_out': 0, 'tokens_cached': 0, 'context': 0}})
         self.specs.append(spec)

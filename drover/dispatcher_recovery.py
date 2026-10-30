@@ -165,7 +165,10 @@ class RecoverySteps:
         return out
 
     def _orphan(self, run_id, task_id):
-        handle, _, spec = self.live.pop(run_id)
+        handle, _, spec = self.live[run_id]
+        if spec.get('role') == 'gate':
+            return task_id  # Missing terminal evidence cannot release capacity or authorize a new gate.
+        self.live.pop(run_id)
         handle.cancel()
         self.missed.pop(run_id, None)
         p = self.port

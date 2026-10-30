@@ -13,7 +13,7 @@ from drover.ledger.waiting import Waiting, BASE, cause_key
 from tests.fakeci import resources_go
 
 SHA = 'a' * 40
-INFRA = dict(status='infra', passed=False, infra=True, sha='b' * 40,
+INFRA = dict(status='failed', outcome='infrastructure-failed', passed=False, sha='b' * 40,
              platform='wsl', run_id='ci-timeout', reason='timeout', log_tail=['CI timed out (wall)'])
 
 
@@ -72,7 +72,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.run_batch(gate)['outcome'], 'infra-held')
         self.assertEqual(gate.call_count, 2)
         question = ops.events(self.conn, kind='question-asked')[-1]['data']['question']
-        ops.answer_question(self.conn, question, choice='Acknowledged')
+        ops.answer_question(self.conn, question, choice='Retry on a healthy host')
         self.assertEqual(self.recovery_keys() and len(self.recovery_keys()), 1)
         self.assertEqual(self.run_batch(gate)['outcome'], 'infra-retry')
         self.assertEqual(gate.call_count, 3)
@@ -111,12 +111,12 @@ class RecoveryTests(unittest.TestCase):
         spec = dict(run_id='ci-timeout', nonce='nonce', placement='wsl')
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)), \
-                patch.object(service, 'result', return_value=dict(receipt=None, infra=True, excerpt='wall timeout')), \
+                patch.object(service, 'result', return_value=dict(receipt=None, outcome='infrastructure-failed', reason='timeout', nonce='nonce', run_id=spec['run_id'], excerpt='wall timeout')), \
                 patch('drover.disk.read', return_value=[]), \
                 patch.object(ci.runner, 'write_json_atomic'):
             result = service.run({}, '.', SHA, platforms=['wsl'])
         self.assertEqual((result['status'], result['reason'], result['run_id']),
-                         ('infra', 'timeout', 'ci-timeout'))
+                         ('failed', 'timeout', 'ci-timeout'))
 
     def test_budget_survives_batch_membership_and_replayed_tip_changes(self):
         gate = Mock(return_value=INFRA)
@@ -207,8 +207,8 @@ class RecoveryTests(unittest.TestCase):
     def test_designated_repair_alone_passes_base_hold_and_runs_fresh_gate(self):
         self.hold_base()
         self.designate_repair()
-        receipt = dict(status='passed', passed=True, sha='b' * 40, results=[
-            dict(version=1, passed=True, sha='b' * 40, platform=p, kind='full') for p in ('windows', 'wsl')])
+        receipt = dict(version=1, status='passed', outcome='passed', passed=True, exit_code=0, tree_unchanged=True, sha='b' * 40, kind='full', platform='windows+wsl', results=[
+            dict(version=1, status='passed', outcome='passed', passed=True, exit_code=0, tree_unchanged=True, sha='b' * 40, platform=p, kind='full') for p in ('windows', 'wsl')])
         gate = Mock(return_value=receipt)
         with patch.object(landing, 'build_tip', side_effect=lambda repo, work, base, tasks: ('b' * 40, tasks, [])), \
                 patch.object(landing, '_land', side_effect=lambda *args: args[6].update(outcome='landed')):
@@ -255,7 +255,7 @@ class RecoveryTests(unittest.TestCase):
     def test_repair_windows_only_receipt_cannot_land(self):
         self.hold_base()
         self.designate_repair()
-        receipt = dict(version=1, status='passed', passed=True, sha='b' * 40, platform='windows', kind='full')
+        receipt = dict(version=1, status='passed', outcome='passed', passed=True, sha='b' * 40, platform='windows', kind='full')
         with patch.object(landing, '_land') as land:
             result = self.run_batch(Mock(return_value=receipt))
         self.assertEqual(result['outcome'], 'repair-blocked')
@@ -267,7 +267,7 @@ class RecoveryTests(unittest.TestCase):
         spec = dict(run_id='ci-full-repair', nonce='nonce', placement='wsl')
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)) as prepare, \
-                patch.object(service, 'result', return_value=dict(receipt=None, infra=True, excerpt='wall timeout')), \
+                patch.object(service, 'result', return_value=dict(receipt=None, outcome='infrastructure-failed', reason='timeout', nonce='nonce', run_id=spec['run_id'], excerpt='wall timeout')), \
                 patch('drover.disk.read', return_value=[]), patch.object(ci.runner, 'write_json_atomic'):
             service.run({}, '.', SHA, platforms=['wsl'], force_full=True)
         self.assertTrue(prepare.call_args.kwargs['force_full'])
@@ -276,7 +276,7 @@ class RecoveryTests(unittest.TestCase):
         calls = []
         def gate(work, tip, tasks, *, platform=None, signature=None):
             calls.append((platform, signature))
-            return (dict(status='passed', passed=True, platform=platform) if not tasks else
+            return (dict(status='passed', outcome='passed', passed=True, platform=platform) if not tasks else
                     dict(status='failed', passed=False, platform='wsl', failure_signature='runtime-abort'))
         with patch.object(landing, 'requeue'):
             self.assertEqual(self.run_batch(gate)['outcome'], 'red')
@@ -300,7 +300,7 @@ class RecoveryTests(unittest.TestCase):
     def test_targeted_green_does_not_clear_other_platform_base_hold(self):
         waiting, cause = self.hold_base()
         def gate(work, tip, tasks, *, platform=None, signature=None):
-            return dict(status='passed', platform=platform)
+            return dict(status='passed', outcome='passed', platform=platform)
         result = dict(gates=0, red=0, bisect_gates=0, gate_s=[])
         landing.base_status(self.conn, '.', '.', gate, SHA, result, 'p',
                             dict(platform='wsl', failure_signature='suite-a'))

@@ -23,6 +23,8 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 SENTINELS = {'LISTENERS', 'STOP', 'START', 'INSPECT', 'TASK'}
 
 
@@ -58,10 +60,14 @@ def check_commit(source, sha, branch, receipt, force):
         data = json.loads(Path(receipt).read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:
         return found + [f'cannot read receipt {receipt}: {error}']
-    if not isinstance(data, dict) or data.get('sha') != sha:
-        found.append(f'receipt is for {str(data.get("sha") if isinstance(data, dict) else None)[:12]}, not {sha[:12]}')
-    elif not data.get('passed'):
-        found.append('the receipt says the gate did not pass')
+    # The target commit's repository policy supplies the required platforms.
+    from drover import ci_common, repos
+    try:
+        prog = repos.load({'name': 'deployment', 'repo': str(source)}, sha, source)
+        plan = {'sha': sha, 'kind': 'full', 'platforms': repos.gate_platforms(prog)}
+        found.extend(ci_common.validate_receipt(data, plan))
+    except (repos.RepoError, OSError, ValueError, KeyError) as error:
+        found.append(f'cannot load gate plan: {error}')
     return found
 
 

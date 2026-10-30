@@ -134,7 +134,8 @@ class FinishSteps:
             if result is None:
                 continue
             try:
-                self._finish(run_id, task_id, spec, result)
+                if self._finish(run_id, task_id, spec, result) == 'termination-unknown':
+                    continue
             except Exception as e:
                 n = self.finish_tries[run_id] = self.finish_tries.get(run_id, 0) + 1
                 self._safe_event("finish-error", {"run": run_id, "try": n, "error": repr(e)[:300]}, task_id)

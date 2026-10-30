@@ -262,8 +262,8 @@ def requeue(conn, task_id, failures, why):
 def _failure_detail(receipt):
     excerpt = receipt.get('log_excerpt') or '\n'.join(receipt.get('log_tail') or [])
     return {'reason': receipt.get('reason') or ('CI gate ' + receipt.get('status', 'failed')),
-            'run_id': receipt.get('run_id'), 'platform': receipt.get('platform'),
-            'log_excerpt': excerpt[-4096:]}
+            'run_id': receipt.get('run_id'), 'platform': receipt.get('platform'), 'sha': receipt.get('sha'),
+            'kind': receipt.get('kind'), 'nonce': receipt.get('nonce'), 'log_excerpt': excerpt[-4096:]}
 
 
 def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
@@ -271,7 +271,7 @@ def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
     red, attempted = True, True
     try:
         receipt = gate_fn(work, tip, tasks)
-        if receipt.get('infra') or receipt['status'] == 'infra':
+        if receipt.get('outcome') == 'infrastructure-failed':
             raise ci.CIInfrastructure(receipt)
         red = receipt['status'] == 'failed'
         if red:

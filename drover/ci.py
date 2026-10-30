@@ -19,12 +19,12 @@ if __package__ in (None, ""):
     from drover import placement, repos, runner, contract
     from drover.ledger import ci as slots, ops
     from drover.ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
-                                  _glob_hit, docs_only, status_problems, read_result, _tail)
+                                  _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail)
 else:
     from . import placement, repos, runner, contract
     from .ledger import ci as slots, ops
     from .ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
-                            _glob_hit, docs_only, status_problems, read_result, _tail)
+                            _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail)
 GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
 class CIError(RuntimeError):
     pass
@@ -35,6 +35,10 @@ class CIInfrastructure(CIError):
         super().__init__(detail.get('reason') or '\n'.join(detail.get('log_tail', [])))
 class CIInterrupted(CIError):
     """Supervision failed before termination was confirmed; resume before changing the checkout."""
+    def __init__(self, message, detail=None):
+        self.detail = {'outcome': 'deferred' if type(self).__name__ == 'CIDeferred' else 'termination-unknown',
+                       'reason': str(message), 'failures': [], **(detail or {})}
+        super().__init__(message)
 class CIDeferred(CIInterrupted):
     """No execution issued: retain the prepared request until resources recover."""
 def git_environment(base=None):
@@ -113,12 +117,12 @@ class CI:
         paths = (source.changed_paths if source else changed_paths)(checkout, base, commit)
         docs = not (force_full or module) and policy['docs_only'] and (source.changed_docs_only if source else changed_docs_only)(
             checkout, base, commit, policy['docs_only_globs'])
-        effective = 'docs' if docs else kind
+        effective = 'docs' if docs and kind == 'checks' else kind
         commands = []
         if docs:
             commands.append(['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', f'{base}...{commit}'])
-        if not docs or repos.has_script(prog, 'docs'):
-            commands.append(repos.script_argv(prog, 'docs' if docs else 'test', platform))
+        if not docs or kind == 'full' or repos.has_script(prog, 'docs'):
+            commands.append(repos.script_argv(prog, 'docs' if docs and kind == 'checks' else 'test', platform))
         cfg = repos.run_config(prog)
         if module:
             script = Path(placement.native(checkout)) / prog['scripts']['test']
@@ -134,16 +138,17 @@ class CI:
         d = runner.run_dir(self.runs_dir, run_id)
         d.mkdir(parents=True, exist_ok=True)
         result_path = d / 'receipt.json'
-        plan = {'repo': placement.ci_path(platform, checkout), 'sha': commit, 'base': base,
-                'kind': effective, 'platform': platform, 'commands': commands, 'priority': priority,
+        nonce = uuid.uuid4().hex
+        plan = {'run_id': run_id, 'nonce': nonce, 'repo': placement.ci_path(platform, checkout), 'sha': commit, 'base': base,
+                'kind': kind, 'platform': platform, 'commands': commands, 'priority': priority,
                 'out': placement.ci_path(platform, result_path),
                 'log': placement.ci_path(platform, d / runner.OUT_FILE)}
         runner.write_json_atomic(d / 'plan.json', plan)
         spec = {'run_id': run_id, 'role': 'gate', 'backend': 'local', 'model': 'gate', 'effort': None,
                 'argv': placement.ci_invocation(platform, Path(__file__), d / 'plan.json'),
-                'cwd': str(checkout), 'placement': platform, 'nonce': uuid.uuid4().hex,
+                'cwd': str(checkout), 'placement': platform, 'nonce': nonce,
                 'wall_s': policy['timeout_s'], 'idle_s': policy['idle_s'], 'user_prompt': '', 'run_config': cfg}
-        return {'spec': spec, 'receipt': str(result_path), 'kind': effective, 'sha': commit,
+        return {'spec': spec, 'receipt': str(result_path), 'kind': kind, 'sha': commit,
                 'files': paths, 'scope': None, 'diff_lines': (source.diff_lines if source else self._diff_lines)(checkout, base, commit)}
 
     @staticmethod
@@ -151,30 +156,15 @@ class CI:
         rows = git(checkout, 'diff', '--numstat', '--no-renames', f'{base}...{commit}').stdout.splitlines()
         return sum(int(n) for row in rows for n in row.split('\t')[:2] if n.isdigit())
 
-    def result(self, run_id, execution=None):
+    def result(self, run_id, execution=None, spec=None):
         """Return the CI result and failure classification after a runner has finished."""
         d = runner.run_dir(self.runs_dir, run_id)
+        plan = read_result(d / 'plan.json')
         receipt = read_result(d / 'receipt.json')
-        st = runner.read_status(self.runs_dir, run_id) or {}
-        execution = execution or {'status': st.get('state'), 'returncode': st.get('exit_code'),
-                                  'timeout': st.get('reason')}
-        timed_out = execution.get('status') == 'timeout'
-        abnormal = execution.get('status') in ('error', 'timeout') or st.get('state') == 'killed'
-        passed = bool(receipt and receipt.get('passed') and not abnormal
-                      and execution.get('returncode') == 0)
-        code = (receipt or {}).get('exit_code')
-        infra = timed_out or not receipt or receipt.get('status') == contract.CI_REFUSED \
-            or bool(receipt and receipt.get('infra')) or not (isinstance(code, int) and code >= 0) \
-            or bool(receipt and receipt.get('passed') and (abnormal or execution.get('returncode') != 0))
-        lines = []
-        if timed_out:
-            lines.append(f"CI timed out ({execution.get('timeout')})")
-        elif not receipt:
-            lines.append(f"CI refused or crashed (exit {execution.get('returncode')}):")
-        else:
-            lines.append(f"CI command exited {code}")
-        lines += _tail(d / runner.OUT_FILE, contract.EXCERPT_LINES - len(lines))
-        return {'receipt': receipt, 'passed': passed, 'infra': infra, 'excerpt': '\n'.join(lines)}
+        status = runner.read_status(self.runs_dir, run_id) or {}
+        execution = execution or {'status': status.get('state'), 'returncode': status.get('exit_code')}
+        return evaluate_result(receipt, plan, status, execution,
+                               _tail(d / runner.OUT_FILE, contract.EXCERPT_LINES - 1))
 
     def stop_active(self, conn, epoch):
         """Stop saved group CI by nonce, including a hub restart during STOP."""
@@ -212,7 +202,7 @@ class CI:
                                   priority=saved.get('priority', 'P1'), force_full=saved.get('force_full', False),
                                   module=saved.get('module'), tier=saved.get('tier'))
                 self._resumed[str(checkout)] = (key, result)
-                if result.get('infra') and not terminal_outcomes:
+                if result.get('outcome') == 'infrastructure-failed' and not terminal_outcomes:
                     raise CIInfrastructure(result)
 
     def run(self, prog, checkout, commit, *, kind='full', platforms=None, base=None, conn=None, priority='P1', control_epoch=None, force_full=False, module=None, tier=None):
@@ -250,6 +240,7 @@ class CI:
                 port.require_admission(saved['control_epoch'])
         deferred = []
         def defer(error):
+            error.detail.update(sha=commit, kind=kind, platform=spec['placement'], run_id=spec['run_id'], nonce=spec['nonce'])
             deferred.append(error)
             saved.pop('ticket', None)
             runner.write_json_atomic(request, saved)
@@ -293,7 +284,7 @@ class CI:
                             self.stop_active(conn, control['epoch'])
                     raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
                 if not following and disk.admission(disk.read())['verdict'] == 'hold':
-                    defer(CIInterrupted('CI deferred until a healthy disk reading'))
+                    defer(CIDeferred('CI deferred until a healthy disk reading'))
                 if conn is not None and not terminal:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
                     while True:
@@ -318,7 +309,7 @@ class CI:
                     if not status:
                         raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
                 if not following and disk.admission(disk.read())['verdict'] == 'hold':
-                    defer(CIInterrupted('CI deferred until a healthy disk reading'))
+                    defer(CIDeferred('CI deferred until a healthy disk reading'))
                 if not following and kind == 'full':
                     from . import resources
                     resource = (self.resource_check or resources.check)(new_workers=1)
@@ -353,22 +344,26 @@ class CI:
                 if deferred:
                     raise
                 status = runner.read_status(self.runs_dir, spec['run_id']) or {}
-                interrupted = following and not (status.get('nonce') == spec['nonce']
-                    and status.get('state') in ('exited', 'killed', 'timeout'))
+                interrupted = following and (isinstance(error, CIInterrupted) or not (status.get('nonce') == spec['nonce']
+                    and status.get('state') in ('exited', 'killed', 'timeout')))
                 if interrupted:
                     # The runner owns its timeout. Keep its ticket and request so resume
                     # follows this execution before landing can rebuild the checkout.
                     saved['held_reason'] = 'termination-uncertain: ' + str(error)
                     runner.write_json_atomic(request, saved)
-                    raise CIInterrupted(f'CI supervision interrupted; resume saved runner: {error}') from error
+                    raise CIInterrupted(f'CI supervision interrupted; resume saved runner: {error}',
+                        dict(sha=commit, platform=spec['placement'], kind=kind, run_id=spec['run_id'], nonce=spec['nonce'])) from error
                 request.unlink(missing_ok=True)
                 raise
             finally:
                 if not interrupted and conn is not None and ticket is not None:
                     slots.lease_release(conn, ticket)
-        request.unlink(missing_ok=True)
         # The final result certifies every placement; keep each individual result.
-        return {**saved['results'][-1], 'platform': '+'.join(platforms), 'results': saved['results']}
+        result = {**saved['results'][-1], 'platform': '+'.join(platforms), 'results': saved['results']}
+        if validate_receipt(result, {'sha': commit, 'kind': kind, 'platforms': platforms}):
+            raise CIError('saved platform receipts do not match the full CI plan')
+        request.unlink(missing_ok=True)
+        return result
 
     def _supervise(self, handle, spec, conn, port, ticket, saved, was_following, commit):
         next_scan, missed = time.monotonic() + (0 if was_following else 30), 0
@@ -402,23 +397,28 @@ class CI:
                                                  {**current, 'state': 'killed', 'exit_code': None,
                                                   'ended': now(), 'reason': 'runner disappeared'})
                         handle.cancel()
-                        raise CIInfrastructure(dict(status='infra', infra=True, passed=False,
-                            sha=commit, platform=spec['placement'], run_id=spec['run_id'],
-                            reason='runner disappeared', log_tail=['CI runner disappeared before writing its result']))
+                        raise CIInfrastructure(dict(status='failed', passed=False,
+                            sha=commit, platform=spec['placement'], run_id=spec['run_id'], kind=saved['kind'],
+                            nonce=spec['nonce'], outcome='infrastructure-failed', failures=[], reason='runner disappeared', log_tail=['CI runner disappeared before writing its result']))
             time.sleep(self.poll_s)
 
     def _classify(self, spec, execution, saved, request, commit, i):
-        evaluated = self.result(spec['run_id'], execution)
+        evaluated = self.result(spec['run_id'], execution, spec)
         receipt = evaluated['receipt']
         if receipt is not None:
-            receipt = {**receipt, 'run_id': spec['run_id']}
-        if receipt and receipt.get('status') == contract.CI_REFUSED:
-            raise CIError(receipt.get('reason') or evaluated['excerpt'])
-        if receipt is None or evaluated['infra']:
+            receipt = {**receipt, 'outcome': evaluated['outcome'], 'reason': evaluated['reason'], 'run_id': spec['run_id']}
+        if evaluated.get('nonce') != spec.get('nonce') or evaluated.get('run_id') != spec.get('run_id'):
+            raise CIInterrupted('termination-uncertain: saved plan does not match runner association')
+        if evaluated.get('outcome') == 'termination-unknown':
+            raise CIInterrupted(evaluated['reason'], evaluated)
+        if evaluated.get('outcome') == 'deferred':
             request.unlink(missing_ok=True)
-            return {'status': 'infra', 'passed': False, 'infra': True, 'sha': commit,
+            return {**evaluated, 'status': 'refused'}
+        if receipt is None or evaluated['outcome'] == 'infrastructure-failed':
+            request.unlink(missing_ok=True)
+            return {'outcome': 'infrastructure-failed', 'status': 'failed', 'passed': False, 'sha': commit, 'kind': saved['kind'], 'nonce': spec['nonce'], 'failures': [],
                     'platform': spec['placement'], 'run_id': spec['run_id'],
-                    'reason': 'timeout' if execution.get('status') == 'timeout' else (receipt or {}).get('reason', 'infrastructure'),
+                    'reason': 'timeout' if execution.get('status') == 'timeout' else evaluated['reason'],
                     'log_tail': evaluated['excerpt'].splitlines(), 'receipt': receipt}
         saved['results'].append(receipt)
         saved['index'] = i + 1
@@ -437,7 +437,7 @@ def _execute(plan):
     placement.prepare_worktree(checkout)
     def refuse(reason):
         runner.write_json_atomic(Path(plan['out']), dict(version=VERSION, sha=commit, passed=False,
-                                 status=contract.CI_REFUSED, reason=reason, kind=plan['kind'],
+                                 status=contract.CI_REFUSED, outcome='deferred', reason=reason, failures=[], kind=plan['kind'], run_id=plan.get('run_id'), nonce=plan.get('nonce'),
                                  platform=plan['platform'], exit_code=None, log_tail=[reason]))
         raise CIError(reason)
     if head(checkout) != commit:
@@ -460,20 +460,19 @@ def _execute(plan):
                    started=started, finished=now(), steps=steps, command=plan['commands'][0],
                    exit_code=steps[-1]['exit_code'], tree_unchanged=unchanged, passed=passed,
                    status=contract.CI_PASSED if passed else contract.CI_FAILED,
-                   log=plan['log'], log_tail=_tail(plan['log']))
+                   outcome='passed' if passed else 'code-failed',
+                   reason='' if passed else ('CI command failed' if unchanged else 'working tree changed during CI'), failures=[],
+                   run_id=plan.get('run_id'), nonce=plan.get('nonce'), log=plan['log'], log_tail=_tail(plan['log']))
     if not passed:
         try:
-            failures, uncertainty = set(), None
+            failures = set()
             with open(plan['log'], encoding='utf-8', errors='replace') as stream:
                 for line in stream:
                     if m := re.fullmatch(r'DROVER_CI_FAILURE (default|integration) (tests\.test_[A-Za-z0-9_]+)\s*', line):
                         failures.add(m.groups())
-                    if m := re.search(r'\bCIInterrupted: (termination-uncertain: [^\r\n]+)', line):
-                        uncertainty = m.group(1)
+            receipt['failures'] = [{'tier': tier, 'module': module} for tier, module in sorted(failures)]
             if len(failures) == 1:
-                receipt['tier'], receipt['module'] = failures.pop()
-            if uncertainty:
-                receipt.update(status='infra', infra=True, reason=uncertainty)
+                receipt['tier'], receipt['module'] = next(iter(failures))
         except OSError:
             pass
     runner.write_json_atomic(Path(plan['out']), receipt)

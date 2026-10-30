@@ -63,16 +63,29 @@ class DiagnosticCI(unittest.TestCase):
             self.assertEqual(suite.main(['-j', '1', '--tier', 'integration', 'tests.test_ci']), 1)
         self.assertIn('DROVER_CI_FAILURE integration tests.test_ci', output.getvalue())
 
-    def test_runner_termination_uncertainty_inside_failed_module_is_infrastructure(self):
+    def test_runner_termination_uncertainty_inside_failed_module_is_code_failure(self):
         prog = self.configure()
         commit = self.change()
         self.launcher.code = 1
         self.launcher.output = ('drover.ci.CIInterrupted: termination-uncertain: missing nonce-matched runner status\n'
                                 'DROVER_CI_FAILURE integration tests.test_ci\n')
         result = self.service.run(prog, self.repo.repo, commit, platforms=['wsl'])
-        self.assertTrue(result['infra'])
-        self.assertIn('termination-uncertain', result['reason'])
+        self.assertNotEqual(result.get('outcome'), 'infrastructure-failed')
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['module'], 'tests.test_ci')
         self.assertEqual(result['platform'], 'wsl')
+
+    def test_unissued_disk_hold_is_a_deferred_outcome(self):
+        prog = self.configure()
+        commit = self.change()
+        with patch('drover.disk.admission', return_value={'verdict': 'hold'}):
+            with self.assertRaises(ci.CIDeferred) as raised:
+                self.service.run(prog, self.repo.repo, commit, platforms=['wsl'])
+        detail = raised.exception.detail
+        self.assertEqual((detail['outcome'], detail['sha'], detail['platform'], detail['kind']),
+                         ('deferred', commit, 'wsl', 'full'))
+        self.assertTrue(detail['run_id'] and detail['nonce'])
+        self.assertEqual(self.launcher.specs, [])
 
     def test_failed_module_metadata_survives_ci_result(self):
         prog = self.configure()

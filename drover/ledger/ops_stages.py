@@ -38,6 +38,19 @@ def start_running(conn, task_id, run_id, actor):
         return _set_status(conn, task_id, states.RUNNING, actor, reason='run started', data={'run': run_id})
 
 
+def resume_gate(conn, task_id, run_id, actor='dispatcher'):
+    """Owner-approved gate retry: put a ready task back to running on its finished worker run."""
+    with tx(conn):
+        runs = conn.execute("SELECT id, role, outcome, ended FROM runs WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
+        last = next((r for r in reversed(runs) if r['role'] != 'gate'), None)
+        if (get_task(conn, task_id)['status'] != states.READY or not last or last['id'] != run_id
+                or last['role'] != 'worker' or last['outcome'] != contract.DONE
+                or any(r['ended'] is None or (r['role'] == 'gate' and r['id'] > run_id and r['outcome'] == 'passed') for r in runs)):
+            raise ValueError('gate resume requires a ready task whose latest worker run is done, with no passed gate, and idle')
+        _set_status(conn, task_id, states.CLAIMED, actor, reason='owner continued gate recovery')
+        return _set_status(conn, task_id, states.RUNNING, actor, reason='resume gate for accepted worker output', data={'run': run_id})
+
+
 def advance_stage(conn, task_id, stage, run_id, sha, actor='dispatcher', platforms=None):
     if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError('stage requires an exact commit SHA')

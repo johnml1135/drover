@@ -247,15 +247,16 @@ class FullGateOrder(unittest.TestCase):
 
     def prepare(self, prog, checkout, commit, run_id, *, kind, platform, **kw):
         runner.run_dir(self.tmp.name, run_id).mkdir(parents=True, exist_ok=True)
+        runner.write_json_atomic(runner.run_dir(self.tmp.name, run_id) / 'plan.json', dict(sha=commit, kind=kind, platform=platform, run_id=run_id, nonce=run_id))
         return {'spec': {'run_id': run_id, 'nonce': run_id, 'placement': platform}, 'receipt': ''}
 
     def finish(self, spec):
         passed = self.outcomes.get(spec['placement'], True)
         d = runner.run_dir(self.tmp.name, spec['run_id'])
-        runner.write_json_atomic(d / 'receipt.json', {'sha': 'exact-sha', 'platform': spec['placement'],
-                                'kind': self.kind, 'passed': passed, 'exit_code': 0 if passed else 1,
-                                'status': 'passed' if passed else 'failed'})
-        runner.write_json_atomic(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce']})
+        runner.write_json_atomic(d / 'receipt.json', {'version': 1, 'sha': 'exact-sha', 'platform': spec['placement'],
+                                'nonce': spec['nonce'], 'run_id': spec['run_id'], 'tree_unchanged': True, 'kind': self.kind, 'passed': passed, 'exit_code': 0 if passed else 1,
+                                'status': 'passed' if passed else 'failed', 'outcome': 'passed' if passed else 'code-failed'})
+        runner.write_json_atomic(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce'], 'run_id': spec['run_id'], 'exit_code': 0 if passed else 1})
         return SimpleNamespace(poll=lambda: {'returncode': 0 if passed else 1, 'status': 'done'})
 
     def launch(self, spec):
@@ -314,6 +315,31 @@ class FullGateOrder(unittest.TestCase):
         self.assertEqual(slots.lease_queue(self.conn), [])
         self.assertFalse(saved_path.exists())
 
+    def test_missing_or_wrong_nonce_terminal_holds_request_without_relaunch(self):
+        def launched(spec):
+            self.calls.append(('launch', spec['placement'], spec['run_id']))
+            handle = self.finish(spec)
+            (runner.run_dir(self.tmp.name, spec['run_id']) / runner.STATUS_FILE).unlink()
+            return handle
+        self.launcher.launch = launched
+        with self.assertRaises(ci.CIInterrupted):
+            self.run_gate()
+        saved_path, = Path(self.tmp.name).glob('ci-*.json')
+        spec = json.loads(saved_path.read_text())['context']['spec']
+        status_path = runner.run_dir(self.tmp.name, spec['run_id']) / runner.STATUS_FILE
+        row, = slots.lease_queue(self.conn)
+        self.assertEqual(row['pinned'], 1)
+        runner.write_json_atomic(status_path, dict(state='exited', nonce='wrong', exit_code=0))
+        with self.assertRaises(ci.CIInterrupted):
+            self.run_gate()
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(saved_path.exists())
+        self.assertEqual(slots.lease_queue(self.conn)[0]['pinned'], 1)
+        runner.write_json_atomic(status_path, dict(state='exited', nonce=spec['nonce'], run_id=spec['run_id'], exit_code=0))
+        self.launcher.launch = self.launch
+        self.assertTrue(self.run_gate()['passed'])
+        self.assertEqual([call[0] for call in self.calls], ['launch', 'adopt', 'launch'])
+
     def test_stop_after_restart_targets_saved_nonce_and_keeps_capacity(self):
         self.interrupt = 'wsl'
         with self.assertRaises(ci.CIInterrupted):
@@ -336,6 +362,9 @@ class FullGateOrder(unittest.TestCase):
         saved = json.loads(saved_path.read_text())
         saved.pop('order')
         saved['context']['spec']['placement'] = 'windows'  # pre-upgrade first platform
+        plan_path = runner.run_dir(self.tmp.name, saved['context']['spec']['run_id']) / 'plan.json'
+        plan = json.loads(plan_path.read_text())
+        runner.write_json_atomic(plan_path, {**plan, 'platform': 'windows'})
         runner.write_json_atomic(saved_path, saved)
         self.interrupt = None
         result = self.run_gate()

@@ -144,7 +144,11 @@ class DeployTest(unittest.TestCase):
         shutil.copytree(Path(self.template.name) / 'src', self.src)
         self.receipt = root / 'receipt.json'
     def write_receipt(self, sha, passed=True):
-        self.receipt.write_text(json.dumps({'sha': sha, 'passed': passed}))
+        self.receipt.write_text(json.dumps({'version': 1, 'sha': sha, 'passed': passed, 'kind': 'full',
+                                           'status': 'passed' if passed else 'failed',
+                                           'outcome': 'passed' if passed else 'code-failed',
+                                           'exit_code': 0 if passed else 1, 'tree_unchanged': True,
+                                           'platform': 'windows'}))
     def head(self):
         return sh('git', 'rev-parse', 'HEAD', cwd=self.dep).stdout.strip()
     def run_main(self, *argv, fake=None):

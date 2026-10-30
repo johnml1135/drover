@@ -76,6 +76,9 @@ class FakeLauncher:
         if spec.get("role") == "gate" and self.gate_script:        # an infrastructure outcome: (status, returncode, output)
             status, code, text = self.gate_script.pop(0)
             (runner.run_dir(self.runs_dir, spec["run_id"]) / runner.OUT_FILE).write_text(text)
+            runner.write_json_atomic(runner.run_dir(self.runs_dir, spec['run_id']) / runner.STATUS_FILE,
+                dict(state='timeout' if status == 'timeout' else 'exited', exit_code=code,
+                     reason='CI timed out' if status == 'timeout' else None, nonce=spec['nonce'], run_id=spec['run_id']))
             h = FakeHandle({"status": status, "record": None, "text": "", "handoff": None, "returncode": code,
                             "timeout": "no output for 600s" if status == "timeout" else None,
                             "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0}})

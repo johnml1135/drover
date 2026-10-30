@@ -226,26 +226,26 @@ class GateAndReview(PolicyBase):
         self.tick(5)
         runs = ops.list_runs(self.conn, tid)
         self.assertEqual(dispatcher.failures(runs), 0)
-        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="gate-infra-retry")), 2)
-        self.assertEqual(self.status(tid), "gated")
+        self.assertEqual(len(ops.events(self.conn, task_id=tid, kind="gate-infra-retry")), 1)
+        self.assertEqual(self.status(tid), "needs-owner")
 
     def test_infra_failures_past_the_limit_ask_the_owner_without_a_replan(self):
         tid, _ = self.infra_task([("timeout", 1, "")] * 3)
         self.tick(8)
         self.assertEqual(self.status(tid), "needs-owner")
         runs = ops.list_runs(self.conn, tid)
-        self.assertEqual([r["role"] for r in runs], ["worker", "gate", "gate", "gate"])
+        self.assertEqual([r["role"] for r in runs], ["worker", "gate", "gate"])
         self.assertEqual(dispatcher.failures(runs), 0)
-        self.assertIn("timed out", self.states(tid)[-1][1])
+        self.assertIn("timed out", ops.open_questions(self.conn)[0]["body"])
         self.assertEqual(ops.events(self.conn, task_id=tid, kind="replan-request"), [])
         self.assertEqual(ops.events(self.conn, task_id=tid, kind="retry"), [])
 
-    def test_the_infra_retry_limit_is_the_gate_infra_retries_setting(self):
+    def test_the_infra_retry_limit_is_fixed_by_the_outcome_contract(self):
         ops.set_setting(self.conn, "gate_infra_retries", "0")
         tid, _ = self.infra_task([("timeout", 1, "")])
         self.tick(3)
-        self.assertEqual(self.status(tid), "needs-owner")
-        self.assertEqual(len(self.fl.of("gate")), 1)
+        self.assertEqual(self.status(tid), "gated")
+        self.assertEqual(len(self.fl.of("gate")), 2)
 
     def test_an_infra_failure_then_a_real_failure_takes_the_normal_failure_path(self):
         self.fl.gate_code, self.fl.gate_output = 1, 'boom: it broke'

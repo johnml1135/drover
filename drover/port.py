@@ -9,7 +9,7 @@ from typing import Protocol
 
 from . import config
 from .ledger import ops
-from .ledger.ops_stages import advance_stage
+from .ledger.ops_stages import advance_stage, resume_gate
 
 class LedgerPort(Protocol):
     waiting: "Waiting"
@@ -24,6 +24,7 @@ class LedgerPort(Protocol):
     def finish_run(self, run_id, outcome, **fields): ...
     def set_status(self, task_id, new, reason=None, data=None): ...
     def advance_stage(self, task_id, stage, run_id, sha, platforms=None): ...
+    def resume_gate(self, task_id, run_id): ...
     def set_handoff(self, task_id, text): ...
     def append_event(self, kind, data=None, task_id=None, actor="dispatcher"): ...
     def events(self, kind=None, after=0): ...
@@ -37,7 +38,7 @@ class LedgerPort(Protocol):
     def record_outcome(self, decision_id, outcome): ...
     def amend_run(self, run_id, outcome=None, gate_receipt=None, note=None): ...
     def update_task(self, task_id, **fields): ...
-    def ask_question(self, target_kind, target_id, title, body="", options=(), needs_owner=False): ...
+    def ask_question(self, target_kind, target_id, title, body="", options=(), needs_owner=False, allow_text=True): ...
     def get_question(self, qid): ...
 
 class DirectPort:
@@ -89,6 +90,9 @@ class DirectPort:
 
     def advance_stage(self, task_id, stage, run_id, sha, platforms=None):
         return advance_stage(self.conn, task_id, stage, run_id, sha, actor=self.actor, platforms=platforms)
+
+    def resume_gate(self, task_id, run_id):
+        return resume_gate(self.conn, task_id, run_id, actor=self.actor)
 
     def set_handoff(self, task_id, text):
         return ops.update_task(self.conn, task_id, self.actor, handoff=text)
@@ -149,9 +153,9 @@ class DirectPort:
     def update_task(self, task_id, **fields):
         return ops.update_task(self.conn, task_id, self.actor, **fields)
 
-    def ask_question(self, target_kind, target_id, title, body="", options=(), needs_owner=False):
+    def ask_question(self, target_kind, target_id, title, body="", options=(), needs_owner=False, allow_text=True):
         return ops.ask_question(self.conn, target_kind, target_id, title, body, options, actor=self.actor,
-                                needs_owner=needs_owner)
+                                needs_owner=needs_owner, allow_text=allow_text)
 
     def get_question(self, qid):
         return ops.get_question(self.conn, qid)

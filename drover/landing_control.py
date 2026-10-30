@@ -17,10 +17,17 @@ def _controlled_git(conn, epoch):
             _control_guard(conn, epoch)
         return git(repo, *args, **kwargs)
     return run
-def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch=None):
+def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch=None, required_platforms=None):
     """Advance local main and its checkout, with a receipt and an explicit ancestry check."""
     control_epoch = _control_guard(conn, control_epoch)
     found = ci.problems(receipt, worktree, branch)
+    if required_platforms is None:
+        from . import repos
+        try:
+            required_platforms = repos.gate_platforms(repos.load({'name': 'landing', 'repo': str(repo)}, tip, worktree))
+        except (repos.RepoError, OSError, ValueError, KeyError) as error:
+            raise ci.CIError(f'cannot determine required CI platforms: {error}') from error
+    found += ci.validate_receipt(receipt, {'sha': tip, 'kind': 'full', 'platforms': required_platforms})
     sha = ci.head(worktree)
     if sha != tip or receipt.get('sha') != sha or not re.fullmatch(r'[0-9a-f]{40}', sha):
         found.append(f'tip {tip[:12]} is not the gated HEAD {sha[:12]}')
@@ -258,12 +265,14 @@ def _infra_failure(conn, keys, tasks, result, detail):
         count = saved.get('failures', 0) + 1
         saved.update(failures=count, next_after=time.time() + INFRA_BACKOFF_S, detail=detail,
                      tasks=sorted({*saved.get('tasks', []), *(t['id'] for t in tasks)}))
-        result.update(outcome='infra-held' if count >= 2 else 'infra-retry', detail=detail)
-        if count >= 2 and not saved.get('question'):
+        result.update(outcome='infra-held' if count > ci.INFRA_RETRIES else 'infra-retry', detail=detail)
+        if count > ci.INFRA_RETRIES and not saved.get('question'):
             reason = 'Landing infrastructure recovery exhausted: ' + detail.get('reason', 'infrastructure failure')
             qid = ops.ask_question(conn, 'task', tasks[0]['id'], 'Landing needs a healthy host',
-                                   reason + '\nTasks: ' + ', '.join(saved['tasks']) + '\n' + detail.get('log_excerpt', ''),
-                                   options=[{'label': 'Acknowledged'}], actor='landing')
+                                   reason + f"\nCommit: {detail.get('sha')}; run: {detail.get('run_id')}; "
+                                   + f"platform: {detail.get('platform')}; kind: {detail.get('kind')}; nonce: {detail.get('nonce')}"
+                                   + '\nTasks: ' + ', '.join(saved['tasks']) + '\n' + detail.get('log_excerpt', ''),
+                                   options=[{'label': 'Retry on a healthy host'}, {'label': 'Keep holding'}], allow_text=False, actor='landing')
             saved['question'] = qid
             waiting = Waiting(conn, 'landing')
             cause = cause_key('question', qid)
@@ -292,11 +301,18 @@ def _recovery_stop(conn, recovery_keys, result):
     """The infra-held or queued result while saved infrastructure recovery is not yet due, else None."""
     recovery = max((json.loads(ops.get_setting(conn, key, '{}')) for key in recovery_keys),
                    key=lambda r: r.get('failures', 0))
-    if recovery.get('failures', 0) >= 2:
-        if (question := recovery.get('question')) is None or ops.get_question(conn, question)['status'] == 'open':
+    if recovery.get('failures', 0) > ci.INFRA_RETRIES:
+        question = recovery.get('question')
+        answer = ops.get_question(conn, question) if question else {}
+        if answer.get('status') != 'answered' or answer.get('answer_choice') != 'Retry on a healthy host':
             return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
-        _clear_recovery(conn, recovery_keys)  # owner acknowledged: one fresh attempt
-    elif recovery:
+        from . import resources
+        if resources.check(new_workers=1)['verdict'] != 'go':
+            return {**result, 'outcome': 'queued', 'detail': recovery['detail']}
+        generation = recovery.get('generation', 0) + 1
+        for key in recovery_keys:
+            ops.set_setting(conn, key, json.dumps({'generation': generation, 'failures': 0}))
+    elif recovery.get('failures'):
         from . import resources
         if time.time() < recovery['next_after'] or resources.check(new_workers=1)['verdict'] != 'go':
             return {**result, 'outcome': 'queued', 'detail': recovery['detail']}

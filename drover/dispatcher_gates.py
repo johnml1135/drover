@@ -1,10 +1,10 @@
 """Dispatcher gates steps."""
 import uuid
 
-from . import contract, dispatch_repos, repos
+from . import contract, dispatch_repos, repos, ci_common
 from . import repos as repos_mod
 from . import launch as launch_mod
-from .dispatcher_admission import DEFAULT_INFRA_RETRIES, EXCERPT_LINES
+from .dispatcher_admission import EXCERPT_LINES
 
 
 class GateSteps:
@@ -47,6 +47,25 @@ class GateSteps:
         live_tasks = {tid for _, tid, _ in self.live.values()} | {tid for tid, _, _ in self.cancelling.values()}
         self.ci_runners.heartbeat({tid for _, tid, spec in self.live.values() if spec.get("role") == "gate"})
         allow = dispatch_repos.allowed(p.get_setting)
+        # An owner-approved continuation is a new gate episode on the same worker output.
+        answered = {e['data'].get('question') for e in p.events('gate-infra-continue')}
+        for event in p.events('gate-infra-question'):
+            data, tid = event['data'], event['task_id']
+            if data['question'] in answered or tid in live_tasks:
+                continue
+            task = p.get_task(tid)
+            question = p.get_question(data['question'])
+            if (task['status'] != 'ready' or p.waiting.pending(('task', tid))
+                    or question.get('status') != 'answered' or question.get('answer_choice') != 'Retry on a healthy host'
+                    or not dispatch_repos.permits(allow, task['repo'])):
+                continue
+            from .ledger.db import tx
+            try:
+                with tx(p.conn):
+                    p.resume_gate(tid, data['run'])
+                    p.append_event('gate-infra-continue', data, tid)
+            except ValueError:
+                continue                             # the ledger refused: the run is stale or already gated
         for t in p.list_tasks("running"):
             runs = p.list_runs(t["id"])
             if not dispatch_repos.permits(allow, t["repo"]):
@@ -66,7 +85,8 @@ class GateSteps:
     def _begin_gate(self, task, runs):
         if not self._launch_allowed(task):
             return False
-        if self.resources_fn(new_workers=0)['verdict'] == 'hold':
+        health = self.resources_fn(new_workers=0)
+        if health['verdict'] != 'go':
             return False
         p, pl, tid = self.port, self.pipeline, task["id"]
         worker = self._last_nongate(runs)
@@ -81,6 +101,9 @@ class GateSteps:
                                             "commit the work and report that commit", 0, None)
             return False
         platform = self._next_gate_platform(task, prog, worker["id"], sha)
+        if (health.get('ram_sides', {}).get(platform, {}).get('verdict', 'go') != 'go'
+                or (platform == 'wsl' and health.get('wsl', {}).get('verdict', 'go') != 'go')):
+            return False
         if platform == "wsl" and not self.launcher.wsl_up():
             p.note_wsl_needed(tid)
             return False
@@ -89,13 +112,14 @@ class GateSteps:
         if self.ci_runners.reserve(task, platform=platform) is None:
             return False                                     # waiting for a gate slot
         gate_run = p.start_run(tid, "gate", "local", "gate")
+        nonce = None
         if hasattr(p, "set_run_context"):
             p.set_run_context(gate_run, placement=platform)
-        nonce = uuid.uuid4().hex
         try:
             plan = pl.ci.prepare(prog, task["worktree"], sha, gate_run, platform=platform,
                                  priority=task["priority"])
             receipt = plan["receipt"]
+            nonce = plan["spec"].get("nonce") or uuid.uuid4().hex
             spec = {**plan["spec"], "nonce": nonce, "task": task, 'control_epoch': self._control_epoch}
             p.append_event("gate-started", {"run": worker["id"], "gate_run": gate_run, "sha": sha, "kind": plan["kind"],
                                             "platform": platform, "receipt": str(receipt), "diff_lines": plan["diff_lines"],
@@ -140,22 +164,37 @@ class GateSteps:
         worker_id, sha = info.get("run"), info.get("sha")
         task = p.get_task(task_id)
         worker = next(r for r in p.list_runs(task_id) if r["id"] == worker_id)
-        evaluated = self.pipeline.ci.result(run_id, result)
+        evaluated = self.pipeline.ci.result(run_id, result, spec)
         receipt = evaluated["receipt"]
-        passed = evaluated["passed"] and receipt.get("sha") == sha
+        if (evaluated.get('outcome') == 'termination-unknown' or evaluated.get('nonce') != spec.get('nonce')
+                or evaluated.get('run_id') != run_id):
+            return 'termination-unknown'
+        expected = {'sha': sha, 'kind': info.get('kind'), 'platform': info.get('platform')}
+        passed = evaluated["passed"] and not ci_common.validate_receipt(receipt, expected)
         excerpt = None if passed else evaluated["excerpt"]
-        infra = not passed and evaluated["infra"]
-        row = p.finish_run(run_id, contract.CI_PASSED if passed else contract.CI_FAILED,
-                           note=(None if passed else excerpt.splitlines()[0][:280]),
-                           tokens_in=0, tokens_out=0, tokens_cached=0)
-        self.ci_runners.release(task_id)
-        request = next((r for r in p.waiting.replans() if r['task_id'] == task_id), None)
-        if request:
-            p.append_event('replan.stage-finished', {'request': request['id'], 'run': run_id,
-                           'worker': worker_id, 'stage': 'gate', 'receipt': receipt}, task_id)
-            return
-        if not passed and infra:
-            return self._gate_infra_retry(task_id, worker_id, sha, run_id, excerpt)
+        infra = not passed and evaluated["outcome"] == "infrastructure-failed"
+        from .ledger.db import tx
+        ticket = self.ci_runners.tickets.get(task_id)
+        try:
+            with tx(p.conn):
+                row = p.finish_run(run_id, contract.CI_PASSED if passed else contract.CI_FAILED,
+                                   note=(None if passed else excerpt.splitlines()[0][:280]),
+                                   tokens_in=0, tokens_out=0, tokens_cached=0)
+                self.ci_runners.release(task_id)
+                request = next((r for r in p.waiting.replans() if r['task_id'] == task_id), None)
+                if request:
+                    p.append_event('replan.stage-finished', {'request': request['id'], 'run': run_id,
+                                   'worker': worker_id, 'stage': 'gate', 'receipt': receipt}, task_id)
+                    return
+                if not passed and evaluated.get('outcome') == 'deferred':
+                    p.set_status(task_id, 'needs-owner', reason=evaluated['reason'])
+                    return
+                if not passed and infra:
+                    return self._gate_infra_retry(task_id, worker_id, sha, run_id, excerpt)
+        except BaseException:
+            if ticket is not None:
+                self.ci_runners.tickets[task_id] = ticket
+            raise
         prog = self.pipeline.repo(task)
         platforms = repos_mod.gate_platforms(prog) if prog else []
         if passed and len(platforms) > 1 and \
@@ -176,17 +215,23 @@ class GateSteps:
 
     def _gate_infra_retry(self, task_id, worker_id, sha, gate_run, excerpt):
         """An infrastructure failure: the worker run stays `done`, so the next tick re-queues only the gate for the
-        same commit, up to the `gate_infra_retries` setting; after that the owner decides (no retry, no replan)."""
+        same commit once on a healthy host; after that the owner decides (no replan)."""
         p = self.port
-        try:
-            limit = int(str(p.get_setting("gate_infra_retries", None) or DEFAULT_INFRA_RETRIES).strip())
-        except ValueError:
-            limit = DEFAULT_INFRA_RETRIES
-        used = sum(1 for e in p.events("gate-infra-retry")
+        limit = ci_common.INFRA_RETRIES
+        start = max((e['id'] for e in p.events('gate-infra-continue')
+                     if e['data'].get('run') == worker_id and e['data'].get('sha') == sha), default=0)
+        used = sum(1 for e in p.events("gate-infra-retry", after=start)
                    if e["data"].get("run") == worker_id and e["data"].get("sha") == sha)
         line = (excerpt or "gate failed").splitlines()[0][:280]
         if used >= max(limit, 0):
-            p.set_status(task_id, "needs-owner", reason=f"gate infrastructure failed {used + 1} times: {line}"[:300])
+            started = self._event_for('gate-started', 'gate_run', gate_run)
+            launched = self._event_for('run-launching', 'run', gate_run)
+            question = p.ask_question('task', task_id, 'Gate infrastructure recovery exhausted',
+                           f'Commit {sha}, gate run {gate_run}, platform {started.get("platform")}, '
+                           f'kind {started.get("kind")}, nonce {launched.get("nonce")}: {excerpt}',
+                           options=[{'label': 'Retry on a healthy host'}, {'label': 'Keep holding'}], needs_owner=True, allow_text=False)
+            p.append_event('gate-infra-question', {'run': worker_id, 'sha': sha, 'gate_run': gate_run,
+                                                   'question': question, 'reason': line}, task_id)
             return
         p.append_event("gate-infra-retry", {"run": worker_id, "sha": sha, "gate_run": gate_run, "reason": line,
                                             "n": used + 1}, task_id)

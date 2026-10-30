@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from drover import config, contract, dispatcher, repos, stats
+from drover import config, contract, dispatcher, repos, stats, runner
 from hub.dispatch import LandingService
 from drover.ledger import ops
 from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
@@ -211,8 +211,12 @@ class GateBoth(test_dispatcher.Base):
         if spec.get("role") == "gate":
             ev = next(e["data"] for e in ops.events(self.conn, kind="gate-started") if e["data"].get("gate_run") == spec["run_id"])
             ok = self.verdicts.get(ev["platform"], True)
-            Path(ev["receipt"]).write_text(json.dumps({"passed": ok, "sha": ev["sha"], "status": "passed" if ok else "failed",
-                                                       "exit_code": 0 if ok else 1, "steps": []}))
+            Path(ev["receipt"]).write_text(json.dumps({"passed": ok, "sha": ev["sha"], "status": "passed" if ok else "failed", "outcome": "passed" if ok else "code-failed",
+                                                       "exit_code": 0 if ok else 1, "steps": [], "version": 1, "tree_unchanged": True,
+                                                       "kind": ev["kind"], "platform": ev["platform"],
+                                                       "nonce": spec["nonce"], "run_id": spec["run_id"]}))
+            runner.write_json_atomic(Path(ev["receipt"]).parent / runner.STATUS_FILE,
+                                     dict(state="exited", exit_code=0 if ok else 1, nonce=spec["nonce"], run_id=spec["run_id"]))
             h = test_pipeline.FakeHandle({"status": "done" if ok else "error", "record": None, "text": "", "handoff": None,
                                           "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0},
                                           "returncode": 0 if ok else 1, "timeout": None})

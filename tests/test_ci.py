@@ -203,7 +203,7 @@ class CITests(unittest.TestCase):
         conn = db.connect(self.repo.root / 'ledger.db')
         self.addCleanup(conn.close)
         result = self.service.run(self.machine, self.repo.repo, commit, conn=conn)
-        self.assertEqual((result['infra'], result['passed'], result['reason']), (True, False, 'timeout'))
+        self.assertEqual((result['outcome'], result['passed'], result['reason']), ('infrastructure-failed', False, 'timeout'))
         self.assertIn('wall-clock limit', '\n'.join(result['log_tail']))
         status_file = next(self.runs.glob('ci-*/status.json'))
         status = json.loads(status_file.read_text())
@@ -224,9 +224,9 @@ class CITests(unittest.TestCase):
             'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
         self.repo.git('branch', '-f', 'main', 'HEAD')
         commit = self.repo.commit('docs/readme.md', 'line with hard break  \nnext line\n')
-        passed = self.service.run(prog, self.repo.repo, commit)
+        passed = self.service.run(prog, self.repo.repo, commit, kind='checks')
         self.assertTrue(passed['passed'])
-        self.assertEqual(passed['kind'], 'docs')
+        self.assertEqual(passed['kind'], 'checks')
         for content, diagnostic in (('<<<<<<< ours\ntext\n=======\nother\n>>>>>>> theirs\n', 'conflict marker'),
                                     ('text\n\n', 'blank line at EOF')):
             commit = self.repo.commit('docs/readme.md', content)
@@ -323,7 +323,7 @@ class PolicyCITests(unittest.TestCase):
             with self.subTest(returncode=returncode):
                 self.launcher.execution = dict(status='error', returncode=returncode)
                 result = self.service.run(prog, self.repo.repo, commit)
-                self.assertEqual((result['infra'], result['passed']), (True, False))
+                self.assertEqual((result['outcome'], result['passed']), ('infrastructure-failed', False))
 
     def test_docs_classification_is_shared_by_checks_and_full_ci(self):
         prog = self.configure(docs=True)
@@ -331,14 +331,16 @@ class PolicyCITests(unittest.TestCase):
         for kind in ('checks', 'full'):
             result = self.service.run(prog, self.repo.repo, commit, kind=kind)
             self.assertTrue(result['passed'])
-            self.assertEqual(result['kind'], 'docs')
+            self.assertEqual(result['kind'], kind)
+            if kind == 'full':
+                self.assertEqual(result['steps'][-1]['command'][-1], '.drover/scripts/check action.ps1')
         self.repo.commit('.drover/scripts/docs.ps1', '# docs command\n')
         self.repo.commit('.drover/config.toml', self.repo_config(scripts={
             'test': '.drover/scripts/check action.ps1', 'docs': '.drover/scripts/docs.ps1'}))
         self.repo.branches['main'] = self.repo.head()
         commit = self.change('docs/next.md', 'more docs\n')
         self.launcher.output = 'docs script\n'
-        result = self.service.run(prog, self.repo.repo, commit)
+        result = self.service.run(prog, self.repo.repo, commit, kind='checks')
         self.assertIn('--check', result['steps'][0]['command'])
         self.assertEqual(result['steps'][1]['command'][-1], '.drover/scripts/docs.ps1')
         self.assertIn('docs script', result['log_tail'])
@@ -361,7 +363,7 @@ class PolicyCITests(unittest.TestCase):
                 for path, content in files.items():
                     commit = self.change(path, content)
                 context = self.service.prepare(self.machine, self.repo.repo, commit, 'docs-policy')
-                self.assertEqual(context['kind'], expected)
+                self.assertEqual(context['kind'], 'checks')
                 plan = json.loads((self.runs / 'docs-policy' / 'plan.json').read_text())
                 self.assertEqual('--check' in plan['commands'][0], expected == 'docs')
 
@@ -378,9 +380,9 @@ class PolicyCITests(unittest.TestCase):
     def test_docs_markdown_hard_breaks_pass_the_composed_command(self):
         prog = self.configure(docs=True)
         commit = self.change('docs/readme.md', 'line with hard break  \nnext line\n')
-        result = self.service.run(prog, self.repo.repo, commit)
+        result = self.service.run(prog, self.repo.repo, commit, kind='checks')
         self.assertTrue(result['passed'])
-        self.assertEqual(result['kind'], 'docs')
+        self.assertEqual(result['kind'], 'checks')
         self.assertEqual(result['steps'][0]['command'],
                          ['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', 'main...' + commit])
 
@@ -486,7 +488,8 @@ class PolicyCITests(unittest.TestCase):
         commit = self.change()
         (self.repo.repo / 'untracked').write_text('not committed')
         conn = self.conn()
-        with self.assertRaisesRegex(ci.CIError, 'uncommitted'):
-            self.service.run(prog, self.repo.repo, commit, conn=conn)
+        result = self.service.run(prog, self.repo.repo, commit, conn=conn)
+        self.assertEqual(result['outcome'], 'deferred')
+        self.assertIn('uncommitted', result['reason'])
         self.assertEqual(self.launcher.commands, [])
         self.assertEqual(slots.lease_queue(conn), [])

@@ -239,7 +239,7 @@ class LandingFences(LandingCase):
         other = slots.lease_request(self.conn, 'other', 'P1', at=ticket['heartbeat'] + 1000)
         self.assertIsNone(slots.lease_acquire(self.conn, other, slots=1, reserved=0, at=ticket['heartbeat'] + 1000))
         slots.lease_release(self.conn, other)
-        terminal = dict(nonce=spec['nonce'], state='killed')
+        terminal = dict(nonce=spec['nonce'], run_id=spec['run_id'], state='killed')
         handle = Mock()
         handle.poll.return_value = dict(status='error', returncode=1)
         with patch.object(runner, 'read_status', return_value=terminal), \

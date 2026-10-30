@@ -125,7 +125,7 @@ class CommitGraph:
             bad.append('shared')
             log.append('x and y clash')
         return dict(version=ci.VERSION, sha=commit, passed=not bad,
-                    status='failed' if bad else 'passed', exit_code=int(bool(bad)),
+                    status='failed' if bad else 'passed', outcome='code-failed' if bad else 'passed', exit_code=int(bool(bad)), kind='full', platform='wsl',
                     tree_unchanged=True, log_tail=log, log='memory gate')
 
 class MemoryLandingCase(unittest.TestCase):

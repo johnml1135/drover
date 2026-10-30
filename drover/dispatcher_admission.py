@@ -9,7 +9,7 @@ from . import launch as launch_mod
 from . import route as route_mod
 from .pipeline import WorktreeRefused, truthy
 
-DEFAULT_INFRA_RETRIES = 2                 # gate reruns on the same commit before the owner is asked; setting gate_infra_retries
+from .ci_common import INFRA_RETRIES
 FAIL_OUTCOMES = contract.FAIL_OUTCOMES   # worker failures; launch-error/orphaned never count
 WALL_MIN = {"S": 30, "M": 60, "L": 120}
 IDLE_MIN = 10

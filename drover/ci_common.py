@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 VERSION = 1
+INFRA_RETRIES = 1
 
 
 def now():
@@ -71,6 +72,75 @@ def status_problems(receipt):
         found.append(f'gate did not pass (exit {receipt.get("exit_code")}, tree unchanged {receipt.get("tree_unchanged")})')
     return found
 
+
+
+def validate_receipt(receipt, plan):
+    """Check passing platform evidence against independently saved gate requirements."""
+    if not isinstance(receipt, dict) or not isinstance(plan, dict):
+        return ['missing receipt or saved plan']
+    required = plan.get('platforms') or ([plan['platform']] if plan.get('platform') else [])
+    if (not plan.get('sha') or plan.get('kind') not in ('checks', 'full') or not required
+            or not isinstance(required, (list, tuple)) or any(p not in ('wsl', 'windows') for p in required)
+            or len(set(required)) != len(required)):
+        return ['incomplete saved plan']
+    rows = receipt.get('results', [receipt])
+    if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows):
+        return ['missing platform receipts']
+    found = []
+    if (receipt.get('sha') != plan['sha'] or type(receipt.get('version')) is not int or receipt.get('version') != VERSION or receipt.get('kind') != plan['kind']
+            or receipt.get('status') != 'passed' or receipt.get('outcome') != 'passed' or receipt.get('passed') is not True
+            or type(receipt.get('exit_code')) is not int or receipt['exit_code'] != 0
+            or receipt.get('tree_unchanged') is not True):
+        found.append('aggregate receipt identity differs from plan')
+    platforms = [row.get('platform') for row in rows]
+    if (any(not isinstance(p, str) for p in platforms) or len(platforms) != len(required)
+            or set(p for p in platforms if isinstance(p, str)) != set(required)
+            or set(str(receipt.get('platform') or '').split('+')) != set(required)):
+        found.append('required platform evidence differs from plan')
+    for row in rows:
+        if any(plan.get(k) and row.get(k) != plan[k] for k in ('nonce', 'run_id')):
+            found.append('receipt run identity differs from plan')
+        if (type(row.get('version')) is not int or row.get('version') != VERSION or row.get('sha') != plan['sha']
+                or row.get('kind') != plan['kind'] or row.get('platform') not in required):
+            found.append('receipt identity differs from plan')
+        if (row.get('status') != 'passed' or row.get('outcome') != 'passed' or row.get('passed') is not True
+                or type(row.get('exit_code')) is not int or row['exit_code'] != 0 or row.get('tree_unchanged') is not True):
+            found.append('gate did not pass')
+    return found
+
+
+def evaluate_result(receipt, plan, status, execution, lines):
+    """Classify process evidence; command output can never establish infrastructure."""
+    receipt, plan, status, execution = receipt or {}, plan or {}, status or {}, execution or {}
+    terminal = (plan.get('nonce') and status.get('nonce') == plan['nonce']
+                and plan.get('run_id') and status.get('run_id') == plan['run_id']
+                and (not receipt or all(receipt.get(k) == plan[k] for k in ('nonce', 'run_id')))
+                and status.get('state') in ('exited', 'killed', 'timeout'))
+    reason = ''
+    if not terminal:
+        outcome, reason = 'termination-unknown', 'missing nonce-matched terminal runner status'
+    elif status.get('state') in ('killed', 'timeout'):
+        outcome, reason = 'infrastructure-failed', status.get('reason') or status['state']
+    elif receipt.get('passed') and (execution.get('status') in ('error', 'timeout') or execution.get('returncode') != 0):
+        outcome, reason = 'infrastructure-failed', 'runner reported abnormal completion'
+    elif not receipt:
+        outcome, reason = 'infrastructure-failed', 'runner exited without a receipt'
+    elif receipt.get('status') == 'refused':
+        outcome, reason = 'deferred', receipt.get('reason') or 'gate refused'
+    elif receipt.get('status') == 'failed' and receipt.get('passed') is False:
+        outcome, reason = 'code-failed', receipt.get('reason') or 'CI command failed'
+    elif validate_receipt(receipt, plan) or status.get('exit_code') != 0 or execution.get('returncode') != 0:
+        outcome, reason = 'deferred', 'receipt or runner result does not match the saved plan'
+    else:
+        outcome = 'passed'
+    failures = receipt.get('failures') or []
+    names = [str(f.get('module') or f.get('test')) for f in failures
+             if isinstance(f, dict) and (f.get('module') or f.get('test'))]
+    excerpt = '\n'.join([reason or 'CI passed', *lines, *(['Failed tests: ' + ', '.join(names)] if names else [])])
+    return {'outcome': outcome, 'reason': reason, 'receipt': receipt or None, 'passed': outcome == 'passed',
+            'excerpt': excerpt,
+            'failures': failures, 'sha': plan.get('sha'), 'platform': plan.get('platform'),
+            'kind': plan.get('kind'), 'run_id': plan.get('run_id'), 'nonce': plan.get('nonce')}
 
 def read_result(path):
     try:

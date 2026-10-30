@@ -32,7 +32,9 @@ cleanup, runners, gates) start on whatever is on disk at that moment. A stray fi
     python scripts/deploy_hub.py --deploy <deploy> --receipt <gate-receipt.json> [--restart]
 
 - The commit (default: tip of `main`) must be on `main`, and the receipt must be a passing gate receipt for exactly
-  that sha (`{"sha": ..., "passed": true}`, the CI receipt format); `--force` skips both checks.
+  that SHA. The receipt must be version 1, identify a passing full gate and include successful evidence for every
+  platform required by the target commit's repository configuration. For a multi-platform gate, provide the aggregate
+  result with its individual `results` receipts; a single platform receipt is insufficient. `--force` skips both checks.
 - The deploy worktree is moved with `git checkout --detach`; a dirty deploy worktree is refused.
 - Without `--restart` the remaining steps are printed. With `--restart` it runs `uv sync` first (a failure leaves the
   old hub running), kills only the pid(s) listening on `--port` (default 8765) with `taskkill /PID` and no `/T`, then

@@ -117,8 +117,9 @@ class PlacementTests(unittest.TestCase):
         platform = 'windows' if os.name == 'nt' else 'wsl'
         prog = repos.normalize({'name': 'p', 'repo': str(repo.repo), 'scripts': {'test': 'scripts/check.ps1'},
                                 'gate': {'platform': platform, 'docs_only': False}})
-        with self.assertRaisesRegex(ci.CIError, 'uncommitted'):
-            ci.CI(repo.root / 'runs', resource_check=resources_go).run(prog, repo.repo, ci.head(repo.repo))
+        result = ci.CI(repo.root / 'runs', resource_check=resources_go).run(prog, repo.repo, ci.head(repo.repo))
+        self.assertEqual(result['outcome'], 'deferred')
+        self.assertIn('uncommitted', result['reason'])
 
     def test_read_snapshots_preserve_history_and_independent_exact_commits(self):
         repo = Repo()

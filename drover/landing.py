@@ -53,10 +53,16 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
         if len(tasks) != 1 or tasks[0]['head'] != repair['head']:
             return _block_repair(conn, name, repair, result, 'Repair needs a fresh exact-head review')
         tasks = [dict(tasks[0], base_repair=True)]
-        result['required_platforms'] = required_platforms or []
     result['batch'] = [t['id'] for t in tasks]
     if not tasks:
         return result
+    if required_platforms is None:
+        from . import repos
+        try:
+            required_platforms = repos.gate_platforms(repos.load({'name': repo_name or 'landing', 'repo': str(repo)}, sha, repo))
+        except (repos.RepoError, OSError, ValueError, KeyError) as error:
+            return {**result, 'outcome': 'refused', 'error': f'cannot determine required CI platforms: {error}'}
+    result['required_platforms'] = required_platforms
     recovery_keys = [_recovery_key(name, sha, task) for task in tasks]
     if stop := _recovery_stop(conn, recovery_keys, result):
         return stop
@@ -132,12 +138,10 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 result['outcome'] = 'stale-base'
                 return
         if not red:
-            if result.get('required_platforms') is not None:
-                certified = {r.get('platform') for r in receipt.get('results', [receipt])
-                             if not ci.status_problems(r) and r.get('sha') == tip and r.get('kind') == 'full'}
-                if not result['required_platforms'] or not set(result['required_platforms']) <= certified:
-                    result.update(outcome='refused', error='Repair requires fresh exact-SHA full CI on every platform')
-                    return
+            plan = {'sha': tip, 'kind': 'full', 'platforms': result.get('required_platforms') or []}
+            if ci.validate_receipt(receipt, plan):
+                result.update(outcome='refused', error='Landing requires exact-SHA full CI on every required platform')
+                return
             _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name)
             if result['outcome'] == 'stale-base' and stale_retries < 2:
                 stale_retries += 1
@@ -175,7 +179,8 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
         result.update(sync_result)
         return
     try:
-        local_fast_forward(conn, repo, work, branch, tip, receipt, control_epoch=epoch)
+        local_fast_forward(conn, repo, work, branch, tip, receipt, control_epoch=epoch,
+                           required_platforms=result['required_platforms'])
     except origin.DirtyCheckout as e:
         result.update(_dirty_wait(conn, repo, repo_name, e))
         return

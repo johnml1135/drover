@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from drover import runner
 from tests.fakeci import resources_go
 from tests.disk_fixture import DiskCase
 from tests.gitfix import Repo
@@ -38,7 +39,9 @@ class Admission(DiskCase):
             plan = json.loads((d / 'plan.json').read_text())
             (d / 'receipt.json').write_text(json.dumps({'version': 1, 'passed': True, 'status': 'passed',
                     'sha': plan['sha'], 'kind': plan['kind'], 'platform': plan['platform'],
+                    'nonce': spec['nonce'], 'run_id': spec['run_id'], 'outcome': 'passed',
                     'exit_code': 0, 'tree_unchanged': True, 'log_tail': []}))
+            runner.write_json_atomic(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce'], 'run_id': spec['run_id'], 'exit_code': 0})
             return SimpleNamespace(poll=lambda: {'status': 'done', 'returncode': 0})
         def adopt(spec):
             handle = execute(spec)

@@ -266,9 +266,9 @@ def finish_gate(spec, runs_dir, *, code=0, output=''):
     d = runner.run_dir(runs_dir, spec['run_id'])
     plan = json.loads((d / 'plan.json').read_text())
     (d / runner.OUT_FILE).write_text(output)
-    receipt = dict(version=ci.VERSION, sha=plan['sha'], status='passed' if code == 0 else 'failed',
+    receipt = dict(version=ci.VERSION, sha=plan['sha'], status='passed' if code == 0 else 'failed', outcome='passed' if code == 0 else 'code-failed',
                    passed=code == 0, exit_code=code, tree_unchanged=True, kind=plan['kind'],
-                   duration_s=.125, steps=[], platform=spec['placement'], base=plan['base'])
+                   duration_s=.125, steps=[], platform=spec['placement'], base=plan['base'], run_id=spec['run_id'], nonce=spec['nonce'])
     (d / 'receipt.json').write_text(json.dumps(receipt))
     runner.write_json_atomic(d / runner.STATUS_FILE,
                              dict(state='exited', exit_code=code, nonce=spec.get('nonce'), run_id=spec['run_id']))

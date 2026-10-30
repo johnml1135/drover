@@ -257,9 +257,9 @@ class RunTests(MemoryLandingCase):
     def test_default_push_off_supports_consecutive_local_landings(self):
         a = self.task('first', {'first.txt': 'first'})
         before = self.r.remote
-        first = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work)
+        first = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, required_platforms=['wsl'])
         b = self.task('second', {'second.txt': 'second'})
-        second = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work)
+        second = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, required_platforms=['wsl'])
         self.assertEqual(first['landed'], [a])
         self.assertEqual(second['landed'], [b])
         self.assertTrue(self.r.ancestor(first['tip'], second['tip']))
@@ -364,7 +364,7 @@ class RunTests(MemoryLandingCase):
             moved['sha'] = self.r.branch('upstream', {'moved.txt': 'moved'})
             self.r.remote = moved['sha']
             return receipt
-        res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider())
+        res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         self.assertEqual((res['outcome'], res['gates']), ('landed', 2))
         self.assertEqual(self.r.remote, moved['sha'])
         self.assertEqual(self.status(a), 'landed')
@@ -384,7 +384,7 @@ class RunTests(MemoryLandingCase):
             receipt = self.gate(work, tip, tasks)
             self.r.heads['a'] = self.r.commit(self.r.heads['a'], {'late.txt': 'late'})
             return receipt
-        res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider())
+        res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         self.assertEqual(res['outcome'], 'refused')
         self.assertEqual(self.status(a), 'reviewed')
         self.assertEqual(self.r.remote, self.r.tracking)
@@ -424,7 +424,7 @@ class RunTests(MemoryLandingCase):
         def boom(*a):
             raise RuntimeError('gate exploded')
         with self.assertRaises(RuntimeError):
-            landing.run_batch(self.conn, self.r.repo, boom, workdir=self.work, decider=fake_decider())
+            landing.run_batch(self.conn, self.r.repo, boom, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         row = self.conn.execute("SELECT outcome FROM landing_batches").fetchone()
         self.assertEqual(row[0], 'error')
 
@@ -437,9 +437,9 @@ class RunTests(MemoryLandingCase):
             receipt['sha'] = self.r.tracking
             seen['r'] = receipt
             return receipt
-        res = landing.run_batch(self.conn, self.r.repo, lying_gate, workdir=self.work, decider=fake_decider())
+        res = landing.run_batch(self.conn, self.r.repo, lying_gate, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         self.assertEqual(res['outcome'], 'refused')
-        self.assertIn('receipt is for', res['error'])
+        self.assertIn('CI', res['error'])
         self.assertEqual(self.r.remote, self.r.tracking)
 
     def test_lock_release_only_by_owner(self):

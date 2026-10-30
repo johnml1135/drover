@@ -22,6 +22,8 @@ class LandingDiagnosis(unittest.TestCase):
             self.run_batch(Mock(return_value=INFRA))
         question, = ops.open_questions(self.conn)
         self.assertIn('timeout', question['body'])
+        self.assertIn('platform: wsl', question['body'])
+        self.assertIn('run: ci-timeout', question['body'])
         self.assertIn(self.task['id'], question['body'])
         self.assertIn(other['id'], question['body'])
 
@@ -42,7 +44,7 @@ class LandingDiagnosis(unittest.TestCase):
                 patch.object(landing, 'ORIGIN_OBSERVE_INTERVAL_S', .001, create=True), \
                 patch.object(landing, 'base_status') as diagnosis:
             result = landing.run_batch(self.conn, '.', gate, workdir=Path('unused-recovery-work'), repo_name='p',
-                                       observe=landing.origin.observe)
+                                       observe=landing.origin.observe, required_platforms=['wsl'])
         self.assertEqual(result['outcome'], 'stale-base')
         self.assertEqual(calls, [('b' * 40, True)])
         diagnosis.assert_not_called()
@@ -62,7 +64,7 @@ class LandingDiagnosis(unittest.TestCase):
             return ('b' if base == SHA else 'e') * 40, tasks, []
         def gate(work, tip, tasks):
             gated.append(tip)
-            return dict(status='failed' if len(gated) == 1 else 'passed', platform='wsl')
+            return dict(version=1, sha=tip, kind='full', passed=len(gated) != 1, exit_code=0, tree_unchanged=True, status='failed' if len(gated) == 1 else 'passed', outcome='code-failed' if len(gated) == 1 else 'passed', platform='wsl')
         def observe(repo, remote, branch, stopped, moved, tracking, interval):
             if tracking == SHA:
                 moved.set()
@@ -71,9 +73,9 @@ class LandingDiagnosis(unittest.TestCase):
         with patch.object(landing, 'sync_main', side_effect=sync), patch.object(landing, 'git', side_effect=git), \
                 patch.object(landing, 'build_tip', side_effect=build), patch.object(landing, '_land', side_effect=land):
             self.assertEqual(landing.run_batch(self.conn, '.', gate, workdir='unused-recovery-work',
-                                               repo_name='p', observe=observe)['outcome'], 'stale-base')
+                                               repo_name='p', observe=observe, required_platforms=['wsl'])['outcome'], 'stale-base')
             self.assertEqual(landing.run_batch(self.conn, '.', gate, workdir='unused-recovery-work',
-                                               repo_name='p', observe=observe)['outcome'], 'landed')
+                                               repo_name='p', observe=observe, required_platforms=['wsl'])['outcome'], 'landed')
         self.assertEqual(built, [SHA, new_sha])
         self.assertEqual(gated, ['b' * 40, 'e' * 40])
 

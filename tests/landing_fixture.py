@@ -132,7 +132,7 @@ class CommitGraph:
             bad.append('shared')
             log.append('x and y clash')
         return dict(version=ci.VERSION, sha=commit, passed=not bad,
-                    status='failed' if bad else 'passed', exit_code=int(bool(bad)),
+                    status='failed' if bad else 'passed', outcome='code-failed' if bad else 'passed', exit_code=int(bool(bad)), kind='full', platform='wsl',
                     tree_unchanged=True, log_tail=log, log='memory gate')
 
 class ProcessFreeCase(unittest.TestCase):
@@ -200,6 +200,7 @@ class MemoryLandingCase(ProcessFreeCase):
     def land(self, **kwargs):
         # Import lazily to keep this fixture independent of test discovery.
         from tests.test_landing import fake_decider
+        kwargs.setdefault('required_platforms', ['wsl'])
         kwargs.setdefault('push', True)
         kwargs.setdefault('decider', fake_decider())
         return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kwargs)
