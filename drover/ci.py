@@ -283,7 +283,7 @@ class CI:
                         if not control['allowed']:
                             self.stop_active(conn, control['epoch'])
                     raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
-                if not following and disk.admission(disk.read())['verdict'] == 'hold':
+                if not following and disk.held(spec['placement']):
                     defer(CIDeferred('CI deferred until a healthy disk reading'))
                 if conn is not None and not terminal:
                     limits = slots.configured_limits(lambda k, default: ops.get_setting(conn, k, default))
@@ -308,13 +308,13 @@ class CI:
                     status = status_now()
                     if not status:
                         raise CIInterrupted('termination-uncertain: missing nonce-matched runner status')
-                if not following and disk.admission(disk.read())['verdict'] == 'hold':
+                if not following and disk.held(spec['placement']):
                     defer(CIDeferred('CI deferred until a healthy disk reading'))
                 if not following and kind == 'full':
                     from . import resources
                     resource = (self.resource_check or resources.check)(new_workers=1)
                     verdicts = [resource, *([resource.get('wsl', {})] if spec['placement'] == 'wsl' else []),
-                                resource.get('ram_sides', {}).get(spec['placement'], {})]
+                                resource.get('side_admission', {}).get(spec['placement'], {})]
                     blocked = [v for v in verdicts if v.get('verdict', 'go') != 'go']
                     if blocked:
                         reason = '; '.join(r for v in blocked for r in v.get('reasons', [])) or blocked[0]['verdict']

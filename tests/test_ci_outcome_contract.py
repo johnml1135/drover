@@ -121,7 +121,7 @@ class DispatcherOutcomeContract(PolicyBase):
         task, spec, _ = self.start_gate()
         self.d.reap()
         self.d.resources_fn = lambda **_: {'verdict': 'go', 'slots': 10, 'reasons': [],
-            'ram_sides': {spec['placement']: {'verdict': 'hold'}}}
+            'side_admission': {spec['placement']: {'verdict': 'hold'}}}
         self.d.tick()
         self.assertEqual(len(self.fl.of('gate')), 1)
         self.assertEqual(ops.list_runs(self.conn, task)[0]['outcome'], 'done')

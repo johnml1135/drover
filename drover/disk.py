@@ -14,8 +14,26 @@ def _free(path):
         return None
 
 
-def read(cfg: dict | None = None, *, reader=None) -> list[dict]:
-    """Read enabled physical disks once; unavailable or invalid facts stay unknown."""
+def tracker_distro(cfg):
+    """The distro of the wsl tracker (the same one gather measures), else the default."""
+    t = next((t for t in cfg['trackers'] if t['kind'] == 'wsl' and t.get('enabled', True)), None)
+    return placement.distro(t['distro'] or None if t else None)
+
+
+def held(side, cfg=None):
+    """Disk hold for work placed on this side, from the shared WSL measurement; it never spawns a process."""
+    cfg = config.get() if cfg is None else cfg
+    wsl_free = placement.wsl_free_known(tracker_distro(cfg)) if side == 'wsl' else None
+    return admission(read(cfg, side=side, wsl_free=wsl_free))['verdict'] == 'hold'
+
+
+def read(cfg: dict | None = None, *, reader=None, side=None, wsl_free=None) -> list[dict]:
+    """Read enabled physical disks once; unavailable or invalid facts stay unknown.
+
+    side='wsl' judges a wsl_combined tracker on host free + wsl_free (GB inside the distro; None counts as 0, i.e.
+    host alone), because free space inside the VHDX is reused without growing it. That work is held whenever the
+    host alone is below host_floor_gb or unreadable, measured WSL space or not. Every other side/tracker is judged
+    on the host alone. A combined tracker's row carries floor_gb whatever the side."""
     cfg = config.get() if cfg is None else cfg
     reader = _free if reader is None else reader
     rows = []
@@ -32,8 +50,32 @@ def read(cfg: dict | None = None, *, reader=None) -> list[dict]:
         else:
             level = next((name for name in ('critical', 'hold', 'queue', 'warn')
                           if free < tracker[name + '_gb']), 'ok')
-        rows.append(dict(name=tracker['name'], path=path, free_gb=free, level=level))
+        row = dict(name=tracker['name'], path=path, free_gb=free, level=level)
+        if tracker.get('wsl_combined'):
+            row['floor_gb'] = tracker['host_floor_gb']
+            if side == 'wsl':
+                _combine(row, tracker, free, wsl_free)
+        rows.append(row)
     return rows
+
+
+def _combine(row, tracker, host, wsl_free):
+    """Judge WSL-side work on host + WSL free; the host floor holds it whatever the distro has."""
+    floor = tracker['host_floor_gb']
+    if host is None:
+        row['level'] = 'hold'   # an unreadable host is no escape from the floor
+        return
+    wsl = wsl_free if type(wsl_free) in (int, float) and math.isfinite(wsl_free) and wsl_free > 0 else 0.0
+    total = host + wsl
+    level = row['level'] if not wsl else next(
+        (name for name in ('critical', 'hold', 'queue', 'warn') if total < tracker[name + '_gb']), 'ok')
+    if host < floor or level == 'critical':
+        level = 'hold'   # the sticky pause for WSL work is the floor, decided in tick
+    row['level'] = level
+    if wsl:
+        row.update(free_gb=total, host_gb=host, wsl_gb=wsl,
+                   detail=f"{tracker['name'].upper()}: {host:.0f} GB + WSL {wsl:.0f} GB = {total:.0f} GB for WSL work; "
+                          f"floor {floor:g} GB")
 
 
 def admission(readings: list[dict]) -> dict:
@@ -48,7 +90,8 @@ def admission(readings: list[dict]) -> dict:
         pause |= level == 'critical'
         if level in ('queue', 'hold', 'critical'):
             reasons.append(f"{row['name']}: disk {level}" +
-                           (f" ({row['free_gb']:.1f} GB free)" if row.get('free_gb') is not None else ''))
+                           (f" ({row['detail']})" if row.get('detail') else
+                            f" ({row['free_gb']:.1f} GB free)" if row.get('free_gb') is not None else ''))
     return dict(verdict=verdict, pause=pause, reasons=reasons)
 
 
@@ -135,11 +178,18 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     now = time.time() if now is None else now
     rows = read(cfg, reader=reader)
     directory = config.state_dir(cfg)
-    for row in rows:
-        if row['level'] == 'critical':
-            name = uuid.uuid5(uuid.NAMESPACE_URL, row['name']).hex
-            disk_state.save_file(directory, 'critical-' + name + '.json', dict(drive=row['name'], at=now))
-    result = dict(admission(rows), drives=rows)
+    # The sticky pause stops the whole dispatcher, so it needs every seat side to be paused: Windows work at H: below
+    # critical_gb, WSL work at H: below the floor of a wsl_combined drive (critical_gb for any other drive).
+    sides = {s.get('placement') for s in cfg.get('seats', [])} & {'windows', 'wsl'}
+    critical = [row for row in rows if row['level'] == 'critical']
+    paused = {'windows': bool(critical),
+              'wsl': any(row['free_gb'] < row['floor_gb'] if 'floor_gb' in row else row in critical for row in rows
+                         if row['free_gb'] is not None)}
+    pause = bool(critical) and all(paused[side] for side in sides)
+    for row in critical if pause else ():
+        name = uuid.uuid5(uuid.NAMESPACE_URL, row['name']).hex
+        disk_state.save_file(directory, 'critical-' + name + '.json', dict(drive=row['name'], at=now))
+    result = dict(admission(rows), drives=rows, pause=pause)
     result['critical_tokens'] = [p.name for p in (directory / 'disk').glob('critical-*.json')]
     result['pause'] |= bool(result['critical_tokens'])
     from .disk_cleanup import retry_notices

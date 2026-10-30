@@ -358,9 +358,9 @@ class RamWhereWorkRuns(unittest.TestCase):
         self.assertEqual(self.check(1.4, 1.0, 'windows', 'wsl')['verdict'], 'hold')
 
     def test_mixed_seats_report_each_side_verdict(self):
-        sides = self.check(1.4, 25.0, 'windows', 'wsl')['ram_sides']
+        sides = self.check(1.4, 25.0, 'windows', 'wsl')['side_admission']
         self.assertEqual((sides['windows']['verdict'], sides['wsl']['verdict']), ('hold', 'go'))
-        self.assertNotIn('ram_sides', self.check(1.4, 25.0, 'wsl'))
+        self.assertNotIn('side_admission', self.check(1.4, 25.0, 'wsl'))
 
     def test_unreadable_wsl_falls_back_to_windows(self):
         self.assertEqual(self.check(1.4, None, 'wsl')['verdict'], 'hold')

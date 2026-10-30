@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import time
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .placement_paths import (
 )
 from .placement_exec import (
     NO_WINDOW,
+    WSL,
     distro,
     wsl_control,
 )
@@ -131,6 +133,48 @@ def detect_distros():
     return parse_distros(decode_output(r.stdout)) if r and r.returncode == 0 else []
 
 
+def wsl_running(default, run=subprocess.run):
+    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
+    try:
+        r = run(wsl_control(["-l", "--running", "-q"]), capture_output=True, timeout=20, **NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    names = decode_output(r.stdout).splitlines()
+    return r.returncode == 0 and distro(default).lower() in [x.strip().lower() for x in names]
+
+
+WSL_FREE_TTL_S = 60
+_WSL_FREE = {}   # distro -> (monotonic time, GB or None): the one measurement every consumer in a minute shares
+
+
+def wsl_free_gb(distro, up=True, *, run=subprocess.run, ttl=WSL_FREE_TTL_S):
+    """Free GB on the distro's root filesystem, measured at most once per ttl (the free space inside the VHDX is
+    reusable without growing it). On Windows it is one `wsl.exe -d <distro> -- df` with a 5 s timeout, and only when
+    `up` (the distro is already running, so the call cannot start it). None means unknown, which counts as 0."""
+    hit = _WSL_FREE.get(distro)
+    if hit and time.monotonic() - hit[0] < ttl:
+        return hit[1]
+    value = None
+    try:
+        if not IS_WINDOWS:
+            st = os.statvfs('/')
+            value = st.f_bavail * st.f_frsize / (1024 ** 3)
+        elif up:
+            out = run(WSL(distro).command(['df', '-B1', '--output=avail', '/']), text=True,
+                      capture_output=True, timeout=5, **NO_WINDOW)
+            value = int(out.stdout.split()[-1]) / (1024 ** 3) if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        value = None
+    _WSL_FREE[distro] = (time.monotonic(), value)
+    return value
+
+
+def wsl_free_known(distro):
+    """The shared measurement if one was taken within the last minute, else None. Never measures."""
+    hit = _WSL_FREE.get(distro)
+    return hit[1] if hit and time.monotonic() - hit[0] < WSL_FREE_TTL_S else None
+
+
 def physical_disk_path(path: str) -> str | None:
     """Native physical root; Linux contents in WSL are charged to their VHDX host drive."""
     letter = drive(path)
@@ -169,7 +213,9 @@ def default_disk_trackers() -> list[dict]:
     paths = [("h", "H:/"), ("c", "C:/")] if IS_WINDOWS or os.environ.get("WSL_DISTRO_NAME") else [("root", "/")]
     keys = ("warn_gb", "queue_gb", "hold_gb", "critical_gb")
     return [{"kind": "disk", "name": name, "enabled": True, "path": path,
-             **dict(zip(keys, (60.0, 40.0, 25.0, 15.0) if drive(path) == "C" else (150.0, 100.0, 50.0, 25.0)))}
+             **dict(zip(keys, (60.0, 40.0, 25.0, 15.0) if drive(path) == "C" else (150.0, 100.0, 50.0, 25.0))),
+             # H: holds the WSL VHDX, so free space inside WSL counts for work placed there (floor: H alone).
+             "wsl_combined": name == "h" and path != "/", "host_floor_gb": 10.0}
             for name, path in paths]
 
 

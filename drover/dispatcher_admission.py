@@ -195,7 +195,7 @@ class AdmissionSteps:
             return 'seat-placement-incompatible'
         if self.last_resources.get('verdict') != 'go':
             return 'resources-unavailable'
-        if self._ram_blocked(spec['placement']):
+        if self._side_blocked(spec['placement']):
             return 'resources-unavailable'
         if spec['placement'] == 'wsl' and (not self.launcher.wsl_up() or self._wsl_blocked()):
             return 'wsl-unavailable'
@@ -326,9 +326,9 @@ class AdmissionSteps:
         w = (self.last_resources or {}).get("wsl") or {}
         return "; ".join(w.get("reasons") or ["WSL tracker"]) if w.get("verdict", "go") != "go" else ""
 
-    def _ram_blocked(self, placement):
+    def _side_blocked(self, placement):
         """Why work placed on this side must wait: that side's RAM is short while another side's is not, else ''."""
-        w = ((self.last_resources or {}).get("ram_sides") or {}).get(placement) or {}
+        w = ((self.last_resources or {}).get("side_admission") or {}).get(placement) or {}
         return "; ".join(w.get("reasons") or ["RAM"]) if w.get("verdict", "go") != "go" else ""
 
     def _headroom(self, plan):
@@ -405,7 +405,7 @@ class AdmissionSteps:
             p.note_wsl_needed(tid)
             self._defer(task, "WSL is not running", reason_code="wsl-down")
             return "wsl-down"
-        blocked = self._ram_blocked(placement) or (placement == "wsl" and self._wsl_blocked())
+        blocked = self._side_blocked(placement) or (placement == "wsl" and self._wsl_blocked())
         if blocked:
             self._defer(task, blocked)
             return "resources"

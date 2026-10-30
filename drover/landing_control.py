@@ -297,6 +297,14 @@ def _queue_stop(conn, waiting, name, sha, base_cause, repair, result):
                 else {**result, 'outcome': 'held'})
 
 
+def _sides_go(platforms):
+    """Resources admit new work overall and on every side the required CI platforms run on."""
+    from . import resources
+    check = resources.check(new_workers=1)
+    sides = check.get('side_admission', {})
+    return check['verdict'] == 'go' and all(sides.get(p, {}).get('verdict', 'go') == 'go' for p in platforms or ())
+
+
 def _recovery_stop(conn, recovery_keys, result):
     """The infra-held or queued result while saved infrastructure recovery is not yet due, else None."""
     recovery = max((json.loads(ops.get_setting(conn, key, '{}')) for key in recovery_keys),
@@ -306,13 +314,11 @@ def _recovery_stop(conn, recovery_keys, result):
         answer = ops.get_question(conn, question) if question else {}
         if answer.get('status') != 'answered' or answer.get('answer_choice') != 'Retry on a healthy host':
             return {**result, 'outcome': 'infra-held', 'detail': recovery['detail']}
-        from . import resources
-        if resources.check(new_workers=1)['verdict'] != 'go':
+        if not _sides_go(result.get('required_platforms')):
             return {**result, 'outcome': 'queued', 'detail': recovery['detail']}
         generation = recovery.get('generation', 0) + 1
         for key in recovery_keys:
             ops.set_setting(conn, key, json.dumps({'generation': generation, 'failures': 0}))
     elif recovery.get('failures'):
-        from . import resources
-        if time.time() < recovery['next_after'] or resources.check(new_workers=1)['verdict'] != 'go':
+        if time.time() < recovery['next_after'] or not _sides_go(result.get('required_platforms')):
             return {**result, 'outcome': 'queued', 'detail': recovery['detail']}

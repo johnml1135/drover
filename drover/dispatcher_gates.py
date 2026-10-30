@@ -101,7 +101,7 @@ class GateSteps:
                                             "commit the work and report that commit", 0, None)
             return False
         platform = self._next_gate_platform(task, prog, worker["id"], sha)
-        if (health.get('ram_sides', {}).get(platform, {}).get('verdict', 'go') != 'go'
+        if (health.get('side_admission', {}).get(platform, {}).get('verdict', 'go') != 'go'
                 or (platform == 'wsl' and health.get('wsl', {}).get('verdict', 'go') != 'go')):
             return False
         if platform == "wsl" and not self.launcher.wsl_up():

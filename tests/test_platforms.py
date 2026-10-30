@@ -325,7 +325,7 @@ class WslTracker(test_dispatcher.Base):
         win_task = self.task(size="S", priority="P4")
         sides = {"windows": {"verdict": "go", "reasons": []},
                  "wsl": {"verdict": "hold", "reasons": ["wsl RAM available 1.0 GB < 4 GB"]}}
-        self.verdict = {**test_dispatcher.GO, "ram_sides": sides}
+        self.verdict = {**test_dispatcher.GO, "side_admission": sides}
         self.d = self.make(wsl_up=lambda: True)
         out = self.d.tick()
         self.assertIn(win_task, out["launched"])

@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_mod
+from .placement_host import wsl_running
 from . import disk
 
 GB = 1024 ** 3
@@ -202,16 +203,6 @@ def wslconfig_path():
     return users[0] if len(users) == 1 else None
 
 
-def wsl_running(default, run=subprocess.run):
-    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
-    try:
-        r = run(placement.wsl_control(["-l", "--running", "-q"]), capture_output=True, timeout=20, **placement.NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    names = placement.decode_output(r.stdout).splitlines()
-    return r.returncode == 0 and placement.distro(default).lower() in [x.strip().lower() for x in names]
-
-
 def parse_meminfo_available_gb(text):
     for line in (text or '').splitlines():
         if line.startswith('MemAvailable:'):
@@ -292,20 +283,24 @@ def gather(fake=None, trackers=None, with_wsl_memory=False, config=None):
                 'disk_free_gb': {k: (fake.get('disk_free_gb') or {}).get(k) for k in names},
                 'vram': fake.get('vram'), 'read_only': fake.get('read_only'),
                 'wsl_up': fake.get('wsl_up', True), 'wsl_mem': fake.get('wsl_mem'),
-                'wsl_ram_available_gb': fake.get('wsl_ram_available_gb')}
+                'wsl_ram_available_gb': fake.get('wsl_ram_available_gb'),
+                'wsl_disk_free_gb': fake.get('wsl_disk_free_gb')}
     windows = is_windows()
     load = read_load()
     facts = {'platform': 'windows' if windows else 'wsl', 'load5': load[0] if load else None,
              'cores': load[1] if load else os.cpu_count() or 1, 'ram_available_gb': read_ram_gb(),
              'ollama_ram_gb': read_ollama_ram_gb(), 'disk_free_gb': {r['name']: r['free_gb'] for r in disk.read({'trackers': trackers})},
              'vram': read_vram(), 'read_only': None if windows else read_only_mount(),
-             'wsl_up': True, 'wsl_mem': None, 'wsl_ram_available_gb': None}
+             'wsl_up': True, 'wsl_mem': None, 'wsl_ram_available_gb': None, 'wsl_disk_free_gb': None}
     if windows and 'wsl' in seat_sides(config):
         facts['wsl_ram_available_gb'] = read_wsl_ram_gb(placement.distro(wsl_t['distro'] or None) if wsl_t else None)
     if wsl_t:
         distro = placement.distro(wsl_t['distro'] or None)
         facts['wsl_up'], facts['wsl_mem'] = read_wsl(
             distro, windows, with_wsl_memory or bool(wsl_t['queue_mem_pct'] or wsl_t['hold_mem_pct']))
+    if 'wsl' in seat_sides(config) and any(t['kind'] == 'disk' and t.get('wsl_combined') for t in trackers_of(config)):
+        # The one WSL free-space measurement per tick; disk.held and the CI/landing paths reuse it.
+        facts['wsl_disk_free_gb'] = placement.wsl_free_gb(disk.tracker_distro({'trackers': trackers}), facts['wsl_up'])
     return facts
 
 
@@ -375,21 +370,34 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
             levels.append((1, '%sRAM available %.1f GB < %.1f GB needed for %d new worker(s)' % (tag, gb, need, new_workers)))
         else:
             levels.append((0, ''))
-    ram_sides = {side: dict(verdict=('go', 'queue', 'hold')[rank], reasons=[reason] if reason else [])
+    side_admission = {side: dict(verdict=('go', 'queue', 'hold')[rank], reasons=[reason] if reason else [])
                  for side, (rank, reason) in zip(sides, levels)} if len(sides) > 1 and 'ram' in by_kind else None
     if sides and 'ram' in by_kind and all(rank for rank, _ in levels):
         floor = min(rank for rank, _ in levels)
         (hold if floor == 2 else queue).extend(reason for rank, reason in levels if rank == floor)
-    disk_rows = [row for t in by_kind.get('disk', [])
-                 for row in disk.read({'trackers': [t]},
-                                      reader=lambda path, t=t: facts['disk_free_gb'].get(t['name']))]
-    disk_result = disk.admission(disk_rows)
-    facts['disks'] = disk_rows
-    disk_hold = disk_result['verdict'] == 'hold'
-    if disk_hold:
-        hold.extend(disk_result['reasons'])
-    elif disk_result['verdict'] == 'queue':
-        queue.extend(disk_result['reasons'])
+    # Disk is judged per seat side: WSL work counts the free space inside WSL too (disk.read), Windows work does not.
+    seat_set = seat_sides(config) & {'windows', 'wsl'} or {own}
+    disk_sides = {}
+    for side in [s for s in ('windows', 'wsl') if s in seat_set]:
+        rows = [row for t in by_kind.get('disk', [])
+                for row in disk.read({'trackers': [t]}, reader=lambda path, t=t: facts['disk_free_gb'].get(t['name']),
+                                     side=side, wsl_free=facts.get('wsl_disk_free_gb'))]
+        disk_sides[side] = dict(disk.admission(rows), rows=rows)
+    # disks: the first seat side's view (windows when it is a seat); disks_by_side labels each side's own reading.
+    facts['disks'] = next(iter(disk_sides.values()))['rows']
+    facts['disks_by_side'] = {side: d['rows'] for side, d in disk_sides.items()}
+    ranks = {'go': 0, 'queue': 1, 'hold': 2}
+    floor = min(ranks[d['verdict']] for d in disk_sides.values())   # blocked only when every seat side is short
+    disk_hold = any(d['verdict'] == 'hold' for d in disk_sides.values())
+    for d in disk_sides.values():
+        if floor and ranks[d['verdict']] == floor:
+            (hold if floor == 2 else queue).extend(r for r in d['reasons'] if r not in hold + queue)
+    if len(disk_sides) > 1:
+        side_admission = side_admission or {}
+        for side, d in disk_sides.items():
+            r = side_admission.get(side, {'verdict': 'go', 'reasons': []})
+            side_admission[side] = dict(verdict=max(r['verdict'], d['verdict'], key=ranks.get),
+                                   reasons=r['reasons'] + d['reasons'])
     if facts['read_only']:
         hold.append('filesystem is read-only')
     vram_t = (by_kind.get('vram') or [None])[0]
@@ -403,8 +411,8 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     verdict = 'hold' if hold else 'queue' if queue else 'go'
     result = {'verdict': verdict, 'reasons': hold + queue, 'facts': facts, 'slots': 0,
               'wsl': _wsl_state((by_kind.get('wsl') or [None])[0], facts)}
-    if ram_sides:
-        result['ram_sides'] = ram_sides  # the dispatcher claims only for seats whose side is go
+    if side_admission:
+        result['side_admission'] = side_admission  # the dispatcher claims only for seats whose side is go
     if vram_t and vram and vram[1] > 0 and 100.0 * vram[0] / vram[1] > vram_t['fallback_pct']:
         device = (config or {}).get('decider', {}).get('device') or config_mod.get()['decider']['device']
         result['decider'] = {'auto': 'decider-cpu', 'cpu': None}.get(device, 'decider-fallback')
