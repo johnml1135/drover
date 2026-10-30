@@ -108,7 +108,11 @@ class Services:
         from drover.ledger import disk_notices
         from drover.directors import service_tick
         from drover.port import DirectPort
-        service_tick(DirectPort(self.store.conn), now=self.clock)
+        notification_work = service_tick(DirectPort(self.store.conn), now=self.clock)
+        if notification_work['projected'] or notification_work['digests'] or notification_work['actions']:
+            # service_tick commits each durable change before returning. Wake
+            # open receivers only after that durable work is visible.
+            self.store.publish('notification.receive-wake', {})
         delivered = disk_notices.replay(self.store.conn, config.get(), self.clock())
         if delivered:
             self.store.publish('disk.notice', {'ids': delivered})

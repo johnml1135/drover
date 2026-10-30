@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time
+from collections import OrderedDict
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -16,6 +17,7 @@ from hub.api import TaskIn
 
 router = APIRouter(prefix='/api/v1/notifications')
 Identity = Annotated[str, Field(min_length=1, max_length=256)]
+RECEIVE_RECHECK_S = 30.0
 
 
 class Input(BaseModel):
@@ -178,6 +180,7 @@ class Submit(TaskIn, Input):
 def call(request, operation, credential=None, capability=None):
     """Identity, capability and service mutation share one BEGIN IMMEDIATE."""
     service = Notifications(request.app.state.store.conn)
+    before = service.conn.total_changes
     try:
         with tx(service.conn):
             principal = None
@@ -188,7 +191,7 @@ def call(request, operation, credential=None, capability=None):
                     raise HTTPException(401, 'invalid or expired director credential')
                 if capability and capability not in principal['capabilities']:
                     raise HTTPException(403, 'director capability required')
-            return operation(service, principal)
+            result = operation(service, principal)
     except Conflict as error:
         raise HTTPException(409, str(error))
     except ops.NotFound as error:
@@ -197,6 +200,11 @@ def call(request, operation, credential=None, capability=None):
         raise HTTPException(403, 'director scope refused')
     except ValueError as error:
         raise HTTPException(400, str(error))
+    if service.conn.total_changes != before:
+        # Publish only after tx() committed. The receiver treats this as a hint
+        # and reads the durable, role-scoped replay before offering anything.
+        request.app.state.bus.publish('notification.receive-wake', {})
+    return result
 
 
 def scoped(request, credential, capability, operation):
@@ -258,15 +266,21 @@ def submit(body: Submit, request: Request, credential=Depends(auth.require_direc
 async def inbox(request: Request, limit: int = Query(50, ge=1, le=100), wait: float = Query(0, ge=0, le=30),
                 credential=Depends(auth.require_director)):
     deadline = time.monotonic() + wait
-    while True:
-        def read(s, role, p):
-            s.project(1000)
-            return s.receive(role, limit)
-        result = scoped(request, credential, 'notifications.read', read)
-        if result or time.monotonic() >= deadline or await request.is_disconnected():
-            return result
-        # No transaction or connection is held across this await.
-        await asyncio.sleep(min(.25, max(0, deadline - time.monotonic())))
+    bus = request.app.state.bus
+    queue = bus.subscribe()
+    try:
+        while True:
+            def read(s, role, p):
+                s.project(1000)
+                return s.receive(role, limit)
+            result = scoped(request, credential, 'notifications.read', read)
+            if result or time.monotonic() >= deadline or await request.is_disconnected():
+                return result
+            # Every wake and timeout starts a fresh authenticated transaction.
+            # The durable receive is never held open across this await.
+            await bus.wait(queue, min(RECEIVE_RECHECK_S, max(0, deadline - time.monotonic())))
+    finally:
+        bus.unsubscribe(queue)
 
 
 @router.get('/replay')
@@ -276,17 +290,87 @@ def replay(request: Request, after: str | None = None, limit: int = Query(50, ge
 
 
 @router.get('/events', response_class=StreamingResponse)
-async def events(request: Request, after: str | None = None, limit: int = Query(50, ge=1, le=100),
+async def events(request: Request, after: str | None = None, limit: int | None = Query(None, ge=1, le=100),
                  credential=Depends(auth.require_director)):
-    batch = scoped(request, credential, 'notifications.read', lambda s, role, p:
-                   s.replay(role, after if after is not None else request.headers.get('last-event-id'), limit))
+    cursor = after if after is not None else request.headers.get('last-event-id')
+    bus = request.app.state.bus
+
+    def replay(saved_cursor, batch_limit):
+        return scoped(request, credential, 'notifications.read', lambda s, role, p:
+                      s.replay(role, saved_cursor, batch_limit))
+
+    if limit is not None:
+        batch = replay(cursor, limit)
+
+        async def finite():
+            if batch['resync_required']:
+                yield format_sse_event(event='resync', id=batch['cursor'], data_str=json.dumps(batch))
+            else:
+                for item in batch['items']:
+                    yield format_sse_event(event='notification', id=item['cursor'], data_str=json.dumps(item['message']))
+                yield format_sse_event(event='checkpoint', id=batch['cursor'], data_str=json.dumps({'more': batch['more']}))
+
+        return StreamingResponse(finite(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache'})
+
+    # Subscribe before replay so a commit racing the initial read remains a
+    # hint for the next durable pass. Empty receives stay open; reconnects use
+    # the durable cursor and need no in-memory hint history.
+    queue = bus.subscribe()
+    try:
+        first = replay(cursor, 50)
+    except Exception:
+        bus.unsubscribe(queue)
+        raise
+
     async def stream():
-        if batch['resync_required']:
-            yield format_sse_event(event='resync', id=batch['cursor'], data_str=json.dumps(batch))
-        else:
-            for item in batch['items']:
-                yield format_sse_event(event='notification', id=item['cursor'], data_str=json.dumps(item['message']))
-            yield format_sse_event(event='checkpoint', id=batch['cursor'], data_str=json.dumps({'more': batch['more']}))
+        current = first
+        saved_cursor = cursor
+        offered = OrderedDict()
+        try:
+            while True:
+                batch = current
+                current = None
+                if batch['resync_required']:
+                    offered.clear()
+                    saved_cursor = batch['cursor']
+                    yield format_sse_event(event='resync', id=batch['cursor'], data_str=json.dumps(batch))
+                    return  # the client must apply the snapshot before receiving more events
+                else:
+                    sent = False
+                    previous_cursor = saved_cursor
+                    for item in batch['items']:
+                        message = item['message']
+                        key = (message['delivery_id'], message['message_version'], message.get('ownership_revision'))
+                        if key in offered:
+                            offered.move_to_end(key)
+                            continue
+                        offered[key] = None
+                        while len(offered) > 1000:
+                            offered.popitem(last=False)
+                        yield format_sse_event(event='notification', id=item['cursor'], data_str=json.dumps(message))
+                        sent = True
+                    saved_cursor = batch['cursor']
+                    advanced = saved_cursor != previous_cursor
+                    if sent or advanced:
+                        yield format_sse_event(event='checkpoint', id=saved_cursor,
+                                               data_str=json.dumps({'more': batch['more']}))
+
+                # Replay pages are drained while they add new offers. An
+                # unacknowledged page repeats by design, so wait for a commit
+                # hint instead of spinning when the page has already been sent.
+                if batch['more'] and (sent or advanced):
+                    current = replay(saved_cursor, 50)
+                    continue
+                await bus.wait(queue, RECEIVE_RECHECK_S)
+                current = replay(saved_cursor, 50)
+        except HTTPException as error:
+            if error.status_code not in (401, 403):
+                raise
+            # Headers are already sent. Close the stream; the client's next
+            # request receives the normal 401/403 response.
+        finally:
+            bus.unsubscribe(queue)
+
     return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache'})
 
 

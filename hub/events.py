@@ -85,6 +85,19 @@ class Bus:
     def unsubscribe(self, q: asyncio.Queue) -> None:
         with self._lock:
             self._subs = [(lo, s) for lo, s in self._subs if s is not q]
+
+    async def wait(self, q: asyncio.Queue, timeout: float | None = None) -> bool:
+        """Wait for a disposable hint and coalesce any queued hints into one pass."""
+        try:
+            await asyncio.wait_for(q.get(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        while True:
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                return True
+
     def recent(self) -> list[dict]:
         with self._lock:
             return list(self._recent)

@@ -107,6 +107,24 @@ class _NotificationBase(unittest.TestCase):
         return a, task, service, follow, issue
 
 
+    def notification_request(self):
+        from starlette.requests import Request
+        async def receive():
+            return {'type': 'http.request', 'body': b'', 'more_body': False}
+        return Request({'type': 'http', 'asgi': {'version': '3.0', 'spec_version': '2.3'},
+            'http_version': '1.1', 'method': 'GET', 'scheme': 'http',
+            'path': BASE + '/events', 'raw_path': (BASE + '/events').encode(),
+            'query_string': b'', 'headers': [], 'client': ('testclient', 123),
+            'server': ('testserver', 80), 'root_path': '', 'app': self.app, 'receive': receive})
+
+
+    async def open_notification_stream(self, credential, after=None):
+        from hub.notifications import events
+        request = self.notification_request()
+        response = await events(request, after=after, limit=None, credential=credential)
+        return response.body_iterator, request
+
+
 class NotificationApiTests(_NotificationBase):
     def test_owner_ui_alone_can_register_issue_and_transfer(self):
         self.assertEqual(self.c.post(BASE + '/roles', json={'role_id': 'alpha'}).status_code, 403)
@@ -282,6 +300,134 @@ class NotificationApiTests(_NotificationBase):
         self.assertEqual([row['body'] for row in ops.list_comments(conn, 'task', task)], ['bounded effect'])
         self.assertEqual(conn.execute('SELECT state FROM action_outbox').fetchone()[0], 'complete')
         self.assertEqual(conn.execute('SELECT COUNT(*) FROM director_runs').fetchone()[0], 0)
+
+
+    def test_open_receive_waits_for_commits_and_replays_unacknowledged_work_after_disconnect(self):
+        from hub import notifications as notification_api
+        from hub.notifications import Commit, Lease
+        a = self.role()
+        task = self.submit(a)
+        self.post('/follow', {'selectors': {'tasks': [task]}, 'preferences': {'mode': 'immediate'}}, a)
+        credential = a['Authorization'].removeprefix('Bearer ')
+
+        async def scenario():
+            iterator, request = await self.open_notification_stream(credential)
+            pending = asyncio.create_task(anext(iterator))
+            try:
+                await asyncio.sleep(.01)
+                self.assertFalse(self.app.state.store.conn.in_transaction)
+                self.app.state.store.add_event('progress', 'dispatcher', {'message': 'first'}, task_id=task)
+                first_frame = await asyncio.wait_for(pending, 1)
+                first_text = first_frame.decode() if isinstance(first_frame, bytes) else first_frame
+                self.assertIn('event: notification', first_text)
+                first = json.loads(next(line[6:] for line in first_text.splitlines() if line.startswith('data: ')))
+
+                lease = notification_api.acquire(Lease(), request, credential)['lease_token']
+                receipt = notification_api.commit(Commit(lease_token=lease, checkpoint={},
+                    delivery_ids=[first['delivery_id']],
+                    delivery_versions={first['delivery_id']: first['message_version']}, request_key='first'),
+                    request, credential)
+                self.assertEqual(receipt['delivery_ids'], [first['delivery_id']])
+                checkpoint = await asyncio.wait_for(anext(iterator), 1)
+                checkpoint_text = checkpoint.decode() if isinstance(checkpoint, bytes) else checkpoint
+                self.assertIn('event: checkpoint', checkpoint_text)
+
+                pending = asyncio.create_task(anext(iterator))
+                await asyncio.sleep(.02)
+                self.assertFalse(self.app.state.store.conn.in_transaction)
+                self.app.state.store.add_event('progress', 'dispatcher', {'message': 'second'}, task_id=task)
+                second_frame = await asyncio.wait_for(pending, 1)
+                second_text = second_frame.decode() if isinstance(second_frame, bytes) else second_frame
+                self.assertIn('event: notification', second_text)
+                second = json.loads(next(line[6:] for line in second_text.splitlines() if line.startswith('data: ')))
+                cursor = next(line[4:] for line in second_text.splitlines() if line.startswith('id: '))
+                self.assertEqual(second['evidence']['message'], 'second')
+            finally:
+                if not pending.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                await iterator.aclose()
+
+            resumed, _ = await self.open_notification_stream(credential, after=cursor)
+            try:
+                replay_frame = await asyncio.wait_for(anext(resumed), 1)
+                replay_text = replay_frame.decode() if isinstance(replay_frame, bytes) else replay_frame
+                replayed = json.loads(next(line[6:] for line in replay_text.splitlines() if line.startswith('data: ')))
+                self.assertEqual(replayed['delivery_id'], second['delivery_id'])
+            finally:
+                await resumed.aclose()
+
+        asyncio.run(scenario())
+
+
+    def test_open_receive_reauthenticates_on_timeouts_and_replacement_and_bounds_idle_reads(self):
+        from unittest.mock import patch
+        from hub import notifications as notification_api
+        from drover.notifications.core_replay import ReplayMixin
+        a = self.role()
+        credential = a['Authorization'].removeprefix('Bearer ')
+        reads = []
+        replay = ReplayMixin.replay
+
+        def counted(service, role_id, after=None, limit=50):
+            reads.append(1)
+            return replay(service, role_id, after, limit)
+
+        async def scenario():
+            with patch('hub.notifications.RECEIVE_RECHECK_S', .02), patch.object(ReplayMixin, 'replay', counted):
+                iterator, request = await self.open_notification_stream(credential)
+                pending = asyncio.create_task(anext(iterator))
+                try:
+                    await asyncio.sleep(.055)
+                    self.assertGreaterEqual(len(reads), 2)
+                    self.assertLessEqual(len(reads), 5)
+                    self.assertFalse(self.app.state.store.conn.in_transaction)
+
+                    notification_api.session('alpha', notification_api.Session(session_id='replacement'), request)
+                    with self.assertRaises(StopAsyncIteration):
+                        await asyncio.wait_for(pending, 1)
+                finally:
+                    if not pending.done():
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+                    await iterator.aclose()
+
+            short = notification_api.session('alpha', notification_api.Session(session_id='short-lived', ttl=.05), request)
+            short_credential = short['credential']
+            with patch('hub.notifications.RECEIVE_RECHECK_S', .01):
+                expired, _ = await self.open_notification_stream(short_credential)
+                try:
+                    await asyncio.sleep(.07)
+                    with self.assertRaises(StopAsyncIteration):
+                        await asyncio.wait_for(anext(expired), .5)
+                finally:
+                    await expired.aclose()
+
+        asyncio.run(scenario())
+
+
+    def test_long_poll_measures_bounded_idle_durable_receive_reads(self):
+        from unittest.mock import patch
+        from hub import notifications as notification_api
+        from drover.notifications import Notifications
+        a = self.role()
+        credential = a['Authorization'].removeprefix('Bearer ')
+        reads = []
+        receive = Notifications.receive
+
+        def counted(service, role_id, limit=50):
+            reads.append(1)
+            return receive(service, role_id, limit)
+
+        async def scenario():
+            request = self.notification_request()
+            with patch('hub.notifications.RECEIVE_RECHECK_S', 30), patch.object(Notifications, 'receive', counted):
+                result = await notification_api.inbox(request, limit=50, wait=.8, credential=credential)
+            self.assertEqual(result, [])
+
+        asyncio.run(scenario())
+        self.assertGreaterEqual(len(reads), 1)
+        self.assertLessEqual(len(reads), 3)
 
 
 class NotificationCommentMigrationTests(unittest.TestCase):
