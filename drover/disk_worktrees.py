@@ -299,13 +299,13 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
                 return validate(excluded=excluded)
         rescue = 'refs/drover/disk-rescue/' + uuid.uuid4().hex if not row.get('branch') else None
         target = row['branch'].removeprefix('refs/heads/') if row.get('branch') else row['head']
-        args = ['worktree', 'add'] + ([] if row.get('branch') else ['--detach']) + ['--', str(path), target]
+        lock = ['--lock', '--reason', row.get('side_lock') or placement.cleanup_side()]   # restored locked, as created
+        args = ['worktree', 'add'] + lock + ([] if row.get('branch') else ['--detach']) + ['--', str(path), target]
         record = dict(v=1, id=uuid.uuid4().hex, phase='planned', ts=request['now'],
                       side=placement.cleanup_side(), repo=machine['repo'], path=str(path),
                       head=row['head'], branch=row.get('branch'), side_lock=row.get('side_lock'),
                       rescue_ref=rescue, restore_argv=placement.git_argv(machine['repo'], args),
-                      lock_argv=placement.git_argv(machine['repo'], ['worktree', 'lock', '--reason',
-                                                  row['side_lock'], '--', str(path)]) if row.get('side_lock') else None)
+                      lock_argv=None)      # restore_argv locks at creation
         store.append(record)
         if rescue:
             rescue_at(machine['repo'], rescue, row['head'])

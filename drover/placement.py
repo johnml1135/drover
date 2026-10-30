@@ -306,21 +306,18 @@ def add_worktree(repo, dest, *tail, run=None, error=RuntimeError):
     # An ext4 destination is written by the WSL git so its `.git` file and the repository's `gitdir` record are
     # paths WSL can resolve; Windows git would turn the Linux path into a Windows one.
     side = {'side': 'wsl'} if routes_through_wsl(dest) else {}
-    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', '--relative-paths', *tail, check=False, **side)
+    # Locked at birth with the creating side's name so the other OS's `git worktree prune` cannot drop it.
+    lock = ('--lock', '--reason', 'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows')
+    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *lock, '--relative-paths', *tail, check=False, **side)
     rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
                          r.stderr, re.IGNORECASE)
     if r.returncode and rejected:
         if not is_linux_native(dest):
             raise error('this git has no `worktree add --relative-paths`, and a worktree under '
                         f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
-        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *tail, check=False, **side)
+        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *lock, *tail, check=False, **side)
     if r.returncode:
         raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
-
-    lock = run(repo, 'worktree', 'lock', '--reason',
-               'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows', str(dest), check=False, **side)
-    if lock.returncode:
-        raise error(f'created {dest} but could not set placement marker: {lock.stderr.strip()[-300:]}')
 
 
 def disk_schedule_plan(cfg: dict, *, apply: bool = False) -> dict:

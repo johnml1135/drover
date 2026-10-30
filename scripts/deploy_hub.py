@@ -94,19 +94,27 @@ def windows_path(path):
     return f'{found.group(1).upper()}:\\' + (found.group(2) or '').replace('/', '\\') if found else str(path)
 
 
+IS_WINDOWS = os.name == 'nt'
+
+
+def lock_side():
+    """Lock the deploy worktree with the creating git's side so the other OS's `git worktree prune` keeps it."""
+    return ('--lock', '--reason', 'windows' if IS_WINDOWS else 'wsl')
+
+
 def add_deploy_worktree(source, deploy, sha, tool=run_tool):
     """Create the detached deploy worktree so the Windows hub can open it. From WSL, a plain `git worktree add`
     writes /mnt/h pointers that Windows git cannot read: use `--relative-paths` when git is 2.48+ on both sides,
     else let Windows git (git.exe) write the pointers."""
     if not MNT_RE.match(str(Path(source).absolute())):
-        git(source, 'worktree', 'add', '--detach', str(deploy), sha)        # one side opens it
+        git(source, 'worktree', 'add', *lock_side(), '--detach', str(deploy), sha)        # one side opens it
         return
     local, windows = git_version('git', tool), git_version('git.exe', tool)
     if local and windows and min(local, windows) >= RELATIVE_PATHS_GIT:
-        git(source, 'worktree', 'add', '--relative-paths', '--detach', str(deploy), sha)
+        git(source, 'worktree', 'add', *lock_side(), '--relative-paths', '--detach', str(deploy), sha)
     elif windows:
-        r = subprocess.run(['git.exe', '-C', windows_path(Path(source).absolute()), 'worktree', 'add', '--detach',
-                            windows_path(Path(deploy).absolute()), sha],
+        r = subprocess.run(['git.exe', '-C', windows_path(Path(source).absolute()), 'worktree', 'add',
+                            '--lock', '--reason', 'windows', '--detach', windows_path(Path(deploy).absolute()), sha],
                            capture_output=True, text=True, stdin=subprocess.DEVNULL)
         if r.returncode:
             raise DeployError(f'git.exe worktree add failed: {r.stderr.strip()}')

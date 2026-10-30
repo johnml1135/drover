@@ -64,7 +64,7 @@ class CrossSideAdd(unittest.TestCase):
 
     def add(self, local, windows):
         calls, exe = [], []
-        with self.posix_paths(), \
+        with self.posix_paths(), mock.patch.object(deploy_hub, 'IS_WINDOWS', False), \
                 mock.patch.object(deploy_hub, 'git', lambda repo, *a, **k: calls.append((str(repo), a))), \
                 mock.patch.object(deploy_hub.subprocess, 'run',
                                   lambda argv, **k: exe.append(argv) or subprocess.CompletedProcess(argv, 0, '', '')):
@@ -73,7 +73,7 @@ class CrossSideAdd(unittest.TestCase):
 
     def test_new_git_on_both_sides_uses_relative_paths(self):
         calls, exe = self.add('2.53.0', '2.52.0')
-        self.assertEqual(calls, [('/mnt/h/repos/x', ('worktree', 'add', '--relative-paths', '--detach',
+        self.assertEqual(calls, [('/mnt/h/repos/x', ('worktree', 'add', '--lock', '--reason', 'wsl', '--relative-paths', '--detach',
                                                      '/mnt/h/repos/x.deploy', 'abc'))])
         self.assertEqual(exe, [])
 
@@ -81,7 +81,7 @@ class CrossSideAdd(unittest.TestCase):
         for local, windows in (('2.47.1', '2.52.0'), ('2.53.0', '2.45.0')):
             calls, exe = self.add(local, windows)
             self.assertEqual(calls, [])
-            self.assertEqual(exe, [['git.exe', '-C', 'H:\\repos\\x', 'worktree', 'add', '--detach',
+            self.assertEqual(exe, [['git.exe', '-C', 'H:\\repos\\x', 'worktree', 'add', '--lock', '--reason', 'windows', '--detach',
                                     'H:\\repos\\x.deploy', 'abc']])
 
     def test_no_windows_git_and_old_local_git_is_refused(self):
@@ -91,13 +91,14 @@ class CrossSideAdd(unittest.TestCase):
 
     def test_native_windows_source_uses_only_local_git(self):
         from pathlib import PureWindowsPath
-        with mock.patch.object(deploy_hub, 'Path',
+        with mock.patch.object(deploy_hub, 'IS_WINDOWS', True), mock.patch.object(deploy_hub, 'Path',
                                side_effect=lambda value: SimpleNamespace(absolute=lambda: PureWindowsPath(value))), \
                 mock.patch.object(deploy_hub, 'git') as git, \
                 mock.patch.object(deploy_hub.subprocess, 'run') as run:
             versions = mock.Mock(side_effect=AssertionError('native add needs no cross-side version query'))
             deploy_hub.add_deploy_worktree('H:\\repos\\x', 'H:\\repos\\x.deploy', 'abc', versions)
-        git.assert_called_once_with('H:\\repos\\x', 'worktree', 'add', '--detach', 'H:\\repos\\x.deploy', 'abc')
+        git.assert_called_once_with('H:\\repos\\x', 'worktree', 'add', '--lock', '--reason', 'windows',
+                                '--detach', 'H:\\repos\\x.deploy', 'abc')
         run.assert_not_called()
         versions.assert_not_called()
 

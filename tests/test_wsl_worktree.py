@@ -21,15 +21,17 @@ class AddOnExt4(unittest.TestCase):
 
     def test_an_ext4_destination_runs_every_git_call_on_the_wsl_side(self):
         calls = self.run_add(EXT4, True)
-        self.assertEqual([c[1][c[1].index("worktree") + 1] for c in calls], ["add", "lock"])
+        self.assertEqual([c[1][c[1].index("worktree") + 1] for c in calls], ["add"])
         self.assertTrue(all(c[2] == {"side": "wsl"} for c in calls), calls)
         self.assertIn("--relative-paths", calls[0][1])
-        self.assertEqual(calls[1][1][:4], ("worktree", "lock", "--reason", "wsl"))      # the existing lock reason
+        i = calls[0][1].index("--lock")
+        self.assertEqual(calls[0][1][i:i + 3], ("--lock", "--reason", "wsl"))      # locked at birth
 
     def test_a_windows_destination_keeps_windows_git(self):
         calls = self.run_add("H:\\repos\\acme.worktrees\\drover-T1", True)
         self.assertTrue(all(c[2] == {} for c in calls), calls)
-        self.assertEqual(calls[1][1][3], "windows")
+        i = calls[0][1].index("--lock")
+        self.assertEqual(calls[0][1][i + 2], "windows")
 
     def test_wsl_side_argv_reaches_the_repository_through_mnt(self):
         argv = placement.git_argv("H:\\repos\\acme", ["worktree", "add", "-b", "b", EXT4, "main"], nt=True, side="wsl")
