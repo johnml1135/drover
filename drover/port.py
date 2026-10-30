@@ -9,7 +9,7 @@ from typing import Protocol
 
 from . import config
 from .ledger import ops
-from .ledger.ops_stages import advance_stage, resume_gate
+from .ledger.ops_stages import advance_stage, land_stage, resume_gate
 
 class LedgerPort(Protocol):
     waiting: "Waiting"
@@ -25,6 +25,7 @@ class LedgerPort(Protocol):
     def set_status(self, task_id, new, reason=None, data=None): ...
     def advance_stage(self, task_id, stage, run_id, sha, platforms=None): ...
     def resume_gate(self, task_id, run_id): ...
+    def land_stage(self, task, tip, receipt): ...
     def set_handoff(self, task_id, text): ...
     def append_event(self, kind, data=None, task_id=None, actor="dispatcher"): ...
     def events(self, kind=None, after=0): ...
@@ -85,14 +86,21 @@ class DirectPort:
     def finish_run(self, run_id, outcome, **fields):
         return ops.finish_run(self.conn, run_id, outcome, actor=self.actor, **fields)
 
+    def _status_changed(self, task):
+        """The one place every status change passes; HubPort publishes it to the UI bus."""
+        return task
+
     def set_status(self, task_id, new, reason=None, data=None):
-        return ops.set_status(self.conn, task_id, new, self.actor, reason=reason, data=data)
+        return self._status_changed(ops.set_status(self.conn, task_id, new, self.actor, reason=reason, data=data))
 
     def advance_stage(self, task_id, stage, run_id, sha, platforms=None):
-        return advance_stage(self.conn, task_id, stage, run_id, sha, actor=self.actor, platforms=platforms)
+        return self._status_changed(advance_stage(self.conn, task_id, stage, run_id, sha, actor=self.actor, platforms=platforms))
+
+    def land_stage(self, task, tip, receipt):
+        return self._status_changed(land_stage(self.conn, task, tip, receipt))
 
     def resume_gate(self, task_id, run_id):
-        return resume_gate(self.conn, task_id, run_id, actor=self.actor)
+        return self._status_changed(resume_gate(self.conn, task_id, run_id, actor=self.actor))
 
     def set_handoff(self, task_id, text):
         return ops.update_task(self.conn, task_id, self.actor, handoff=text)

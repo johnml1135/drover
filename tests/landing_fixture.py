@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from drover.port import DirectPort
 from drover import ci, config, landing, origin, ownership
 from drover import landing_batch, landing_control
 from drover.ledger import db, ops
@@ -203,4 +204,4 @@ class MemoryLandingCase(ProcessFreeCase):
         kwargs.setdefault('required_platforms', ['wsl'])
         kwargs.setdefault('push', True)
         kwargs.setdefault('decider', fake_decider())
-        return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kwargs)
+        return landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, **kwargs)

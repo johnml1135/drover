@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from drover.port import DirectPort
 from drover import config, landing, repos, route
 from drover.ledger import ops
 from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
@@ -172,7 +173,7 @@ class Consumers(PipelineBase):
         f.r.dirty = True
         before = {n: (root / n).read_bytes() for n in ('base.txt', 'untracked.txt', 'staged.txt')}
         head = f.r.heads['main']
-        out = landing.run_batch(f.conn, root, f.gate, workdir=f.work, required_platforms=['wsl'], decider=fake_decider())
+        out = landing.run_batch(f.conn, root, f.gate, land_stage=DirectPort(f.conn).land_stage, workdir=f.work, required_platforms=['wsl'], decider=fake_decider())
         self.assertEqual(out['outcome'], 'refused')
         self.assertEqual(f.status(tid), 'reviewed')
         self.assertEqual(f.r.heads['main'], head)
@@ -233,7 +234,7 @@ class Consumers(PipelineBase):
                 f.r.remote = f.r.heads['main']
                 f.r.tracking = f.r.remote
                 tid = f.task('feature', {'feature.txt': 'safe'})
-                run = lambda: landing.run_batch(f.conn, f.r.repo, f.gate, workdir=f.work, required_platforms=['wsl'], decider=fake_decider())
+                run = lambda: landing.run_batch(f.conn, f.r.repo, f.gate, land_stage=DirectPort(f.conn).land_stage, workdir=f.work, required_platforms=['wsl'], decider=fake_decider())
                 first = run()
                 self.assertEqual((first['outcome'], first['dropped']), ('base-red', {}))
                 self.assertEqual(f.status(tid), 'reviewed')

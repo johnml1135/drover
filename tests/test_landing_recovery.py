@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from drover.port import DirectPort
 from drover import ci, landing, landing_control, resources
 from drover.ledger import db, ops
 from drover.ledger.waiting import Waiting, BASE, cause_key
@@ -38,7 +39,7 @@ class RecoveryTests(unittest.TestCase):
         self.clock = self.stack.enter_context(patch.object(landing.time, 'time', return_value=1000))
 
     def run_batch(self, gate):
-        return landing.run_batch(self.conn, '.', gate, workdir=Path('unused-recovery-work'), repo_name='p',
+        return landing.run_batch(self.conn, '.', gate, land_stage=DirectPort(self.conn).land_stage, workdir=Path('unused-recovery-work'), repo_name='p',
                                  required_platforms=['windows', 'wsl'])
 
     def base_retry(self):
@@ -81,7 +82,7 @@ class RecoveryTests(unittest.TestCase):
         self.run_batch(Mock(return_value=INFRA))
         self.assertEqual(len(self.recovery_keys()), 1)
         self.clock.return_value = 1100
-        with patch.object(landing, '_drive', side_effect=lambda *a: a[5].update(outcome='landed', landed=[self.task['id']])):
+        with patch.object(landing, '_drive', side_effect=lambda *a, **k: a[5].update(outcome='landed', landed=[self.task['id']])):
             self.assertEqual(self.run_batch(Mock())['outcome'], 'landed')
         self.assertEqual(self.recovery_keys(), [])
 
@@ -211,7 +212,7 @@ class RecoveryTests(unittest.TestCase):
             dict(version=1, status='passed', outcome='passed', passed=True, exit_code=0, tree_unchanged=True, sha='b' * 40, platform=p, kind='full') for p in ('windows', 'wsl')])
         gate = Mock(return_value=receipt)
         with patch.object(landing, 'build_tip', side_effect=lambda repo, work, base, tasks: ('b' * 40, tasks, [])), \
-                patch.object(landing, '_land', side_effect=lambda *args: args[6].update(outcome='landed')):
+                patch.object(landing, '_land', side_effect=lambda *args, **k: args[6].update(outcome='landed')):
             result = self.run_batch(gate)
         self.assertEqual(result['outcome'], 'landed')
         self.assertEqual([t['id'] for t in gate.call_args.args[2]], [self.task['id']])

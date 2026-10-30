@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from drover.port import DirectPort
 from drover import ci, landing, landing_control
 from drover.ledger import ops
 from tests import test_landing_recovery as fixture
@@ -43,7 +44,7 @@ class LandingDiagnosis(unittest.TestCase):
         with patch.object(landing.origin, 'observe', side_effect=observe, create=True), \
                 patch.object(landing, 'ORIGIN_OBSERVE_INTERVAL_S', .001, create=True), \
                 patch.object(landing, 'base_status') as diagnosis:
-            result = landing.run_batch(self.conn, '.', gate, workdir=Path('unused-recovery-work'), repo_name='p',
+            result = landing.run_batch(self.conn, '.', gate, land_stage=DirectPort(self.conn).land_stage, workdir=Path('unused-recovery-work'), repo_name='p',
                                        observe=landing.origin.observe, required_platforms=['wsl'])
         self.assertEqual(result['outcome'], 'stale-base')
         self.assertEqual(calls, [('b' * 40, True)])
@@ -68,13 +69,13 @@ class LandingDiagnosis(unittest.TestCase):
         def observe(repo, remote, branch, stopped, moved, tracking, interval):
             if tracking == SHA:
                 moved.set()
-        def land(conn, repo, work, tasks, tip, receipt, result, *args):
+        def land(conn, repo, work, tasks, tip, receipt, result, *args, **kwargs):
             result.update(outcome='landed', landed=[self.task['id']])
         with patch.object(landing, 'sync_main', side_effect=sync), patch.object(landing, 'git', side_effect=git), \
                 patch.object(landing, 'build_tip', side_effect=build), patch.object(landing, '_land', side_effect=land):
-            self.assertEqual(landing.run_batch(self.conn, '.', gate, workdir='unused-recovery-work',
+            self.assertEqual(landing.run_batch(self.conn, '.', gate, land_stage=DirectPort(self.conn).land_stage, workdir='unused-recovery-work',
                                                repo_name='p', observe=observe, required_platforms=['wsl'])['outcome'], 'stale-base')
-            self.assertEqual(landing.run_batch(self.conn, '.', gate, workdir='unused-recovery-work',
+            self.assertEqual(landing.run_batch(self.conn, '.', gate, land_stage=DirectPort(self.conn).land_stage, workdir='unused-recovery-work',
                                                repo_name='p', observe=observe, required_platforms=['wsl'])['outcome'], 'landed')
         self.assertEqual(built, [SHA, new_sha])
         self.assertEqual(gated, ['b' * 40, 'e' * 40])

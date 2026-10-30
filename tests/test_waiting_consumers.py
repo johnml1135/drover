@@ -88,7 +88,7 @@ class ScriptsOrigin(ConsumerCase):
         q, = ops.open_questions(self.conn)
         # The queue discovers the same offline origin through its own public operation.
         out = landing.run_batch(self.conn, self.fix.repo, self.pipe.ci.run,
-                                workdir=Path(self.tmp.name) / 'batch', repo_name='p')
+                                land_stage=DirectPort(self.conn).land_stage, workdir=Path(self.tmp.name) / 'batch', repo_name='p')
         self.assertFalse(out.get('landed'))
         self.assertTrue(w.pending(('merge_queue', 'p')))
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
@@ -170,7 +170,7 @@ class BaseQueue(LandingCase):
         q = w.ask(cause, 'task', tid, 'Base', options=[{'label': 'Retry landing'}, {'label': 'Keep holding'}], allow_text=False)
         ops.answer_question(self.conn, q, choice='Retry landing')
         self.assertTrue(w.consume_retry(cause))
-        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', required_platforms=['wsl'], decider=fake_decider())
+        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, repo_name='p', required_platforms=['wsl'], decider=fake_decider())
         with patch('drover.ledger.waiting_events.PROCESS_SESSION', 'replacement-process'):
             self.assertEqual(run()['outcome'], 'held')
             self.assertEqual(w.state(cause), 'open')
@@ -188,7 +188,7 @@ class BaseQueue(LandingCase):
         epic = ops.create_epic(self.conn, 'p', 'Landing')['id']
         q = w.ask(cause, 'epic', epic, 'Base', options=[{'label': 'Retry landing'}, {'label': 'Keep holding'}], allow_text=False)
         ops.answer_question(self.conn, q, choice='Retry landing')
-        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', required_platforms=['wsl'], decider=fake_decider())
+        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, repo_name='p', required_platforms=['wsl'], decider=fake_decider())
         self.assertEqual(run()['outcome'], 'empty')
         self.assertEqual(w.state(cause), 'authorized')
         tid = self.task('feature', {'feature.txt': 'safe'})
@@ -203,7 +203,7 @@ class BaseQueue(LandingCase):
         self.r.remote = self.r.heads['main']
         self.r.tracking = self.r.remote
         tid = self.task('feature', {'feature.txt': 'safe'})
-        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', required_platforms=['wsl'], decider=fake_decider())
+        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, repo_name='p', required_platforms=['wsl'], decider=fake_decider())
         first = run()
         self.assertEqual((first['outcome'], first['dropped']), ('base-red', {}))
         q, = ops.open_questions(self.conn)
@@ -275,7 +275,7 @@ class DirtyQueue(LandingCase):
         before = self.r.git('rev-parse', 'main')
         with self.assertRaises(DirtyCheckout):
             origin.fast_forward(self.r.repo, 'main', self.r.git('rev-parse', 'feature'), before)
-        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, repo_name='p', required_platforms=['windows'], decider=fake_decider())
+        run = lambda: landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, repo_name='p', required_platforms=['windows'], decider=fake_decider())
         self.assertEqual(run()['outcome'], 'refused')
         q, = ops.open_questions(self.conn)
         self.assertTrue(w.pending(('merge_queue', 'p')))

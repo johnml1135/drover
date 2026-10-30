@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
+from drover.port import DirectPort
 from drover import ci, landing, landing_batch, landing_control, origin, repos
 from drover.ledger import ci as slots
 from drover.ledger import landing as landing_storage
@@ -102,7 +103,7 @@ class LandingCase(unittest.TestCase):
     def land(self, **kw):
         kw.setdefault('push', True)
         kw.setdefault('decider', fake_decider())
-        return landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, **kw)
+        return landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, **kw)
 
 
 class WorktreeErrorTests(ProcessFreeCase):
@@ -257,9 +258,9 @@ class RunTests(MemoryLandingCase):
     def test_default_push_off_supports_consecutive_local_landings(self):
         a = self.task('first', {'first.txt': 'first'})
         before = self.r.remote
-        first = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, required_platforms=['wsl'])
+        first = landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, required_platforms=['wsl'])
         b = self.task('second', {'second.txt': 'second'})
-        second = landing.run_batch(self.conn, self.r.repo, self.gate, workdir=self.work, required_platforms=['wsl'])
+        second = landing.run_batch(self.conn, self.r.repo, self.gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, required_platforms=['wsl'])
         self.assertEqual(first['landed'], [a])
         self.assertEqual(second['landed'], [b])
         self.assertTrue(self.r.ancestor(first['tip'], second['tip']))
@@ -364,7 +365,7 @@ class RunTests(MemoryLandingCase):
             moved['sha'] = self.r.branch('upstream', {'moved.txt': 'moved'})
             self.r.remote = moved['sha']
             return receipt
-        res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
+        res = landing.run_batch(self.conn, self.r.repo, moving_gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         self.assertEqual((res['outcome'], res['gates']), ('landed', 2))
         self.assertEqual(self.r.remote, moved['sha'])
         self.assertEqual(self.status(a), 'landed')
@@ -384,7 +385,7 @@ class RunTests(MemoryLandingCase):
             receipt = self.gate(work, tip, tasks)
             self.r.heads['a'] = self.r.commit(self.r.heads['a'], {'late.txt': 'late'})
             return receipt
-        res = landing.run_batch(self.conn, self.r.repo, moving_gate, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
+        res = landing.run_batch(self.conn, self.r.repo, moving_gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         self.assertEqual(res['outcome'], 'refused')
         self.assertEqual(self.status(a), 'reviewed')
         self.assertEqual(self.r.remote, self.r.tracking)
@@ -424,7 +425,7 @@ class RunTests(MemoryLandingCase):
         def boom(*a):
             raise RuntimeError('gate exploded')
         with self.assertRaises(RuntimeError):
-            landing.run_batch(self.conn, self.r.repo, boom, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
+            landing.run_batch(self.conn, self.r.repo, boom, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         row = self.conn.execute("SELECT outcome FROM landing_batches").fetchone()
         self.assertEqual(row[0], 'error')
 
@@ -437,7 +438,7 @@ class RunTests(MemoryLandingCase):
             receipt['sha'] = self.r.tracking
             seen['r'] = receipt
             return receipt
-        res = landing.run_batch(self.conn, self.r.repo, lying_gate, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
+        res = landing.run_batch(self.conn, self.r.repo, lying_gate, land_stage=DirectPort(self.conn).land_stage, workdir=self.work, decider=fake_decider(), required_platforms=['wsl'])
         self.assertEqual(res['outcome'], 'refused')
         self.assertIn('CI', res['error'])
         self.assertEqual(self.r.remote, self.r.tracking)

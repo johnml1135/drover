@@ -22,7 +22,7 @@ def __getattr__(name):   # DEFAULT_SIZE stays importable; it follows the active 
     raise AttributeError(name)
 ORIGIN_OBSERVE_INTERVAL_S = 120
 def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', branch='main', size=None, repo_name=None,
-              decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None):
+              decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None, land_stage):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
     The hub supplies a stable per-repo workdir and calls CI.resume before rebuilding it.
     CIInterrupted preserves that checkout and checkpoint for the next service pass.
@@ -73,7 +73,7 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
     interrupted = False
     work = Path(workdir)
     try:
-        _drive(conn, repo, work, gate_fn, tasks, result, branch, remote, branch, decider, push, repo_name, observe)
+        _drive(conn, repo, work, gate_fn, tasks, result, branch, remote, branch, decider, push, repo_name, observe, land_stage=land_stage)
     except ci.CIDeferred as error:
         interrupted = True
         result.update(outcome='queued', reason=str(error))
@@ -101,7 +101,7 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
     _clear_recovery(conn, recovery_keys if result['outcome'] == 'landed' else (), [*result['landed'], *result['dropped']])
     storage.record_batch(conn, result)
     return result
-def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None, observe=None):
+def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None, observe=None, *, land_stage):
     stale_retries = 0
     while tasks:
         _control_guard(conn, result.get('control_epoch'))
@@ -142,7 +142,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             if ci.validate_receipt(receipt, plan):
                 result.update(outcome='refused', error='Landing requires exact-SHA full CI on every required platform')
                 return
-            _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name)
+            _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name, land_stage=land_stage)
             if result['outcome'] == 'stale-base' and stale_retries < 2:
                 stale_retries += 1
                 result.pop('error', None)
@@ -165,7 +165,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         requeue(conn, culprit, failures, how)
         tasks = [t for t in tasks if t['id'] != culprit]
     result['outcome'] = 'red'
-def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=False, repo_name=None):
+def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=False, repo_name=None, *, land_stage):
     result['tip'] = tip
     for t in tasks:
         now_head = branch_head(work, t['branch'])
@@ -189,8 +189,7 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
         result['error'] = str(e)
         return
     for t in tasks:
-        from .ledger.ops_stages import land_stage
-        land_stage(conn, t, tip, receipt)
+        land_stage(t, tip, receipt)
         result['landed'].append(t['id'])
     result['outcome'] = 'landed'
     if push:

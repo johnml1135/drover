@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 from drover import ci
 from tests import test_ci as fixture
@@ -103,11 +103,13 @@ class HubDiagnostic(unittest.TestCase):
         from hub import dispatch
         calls = []
         service = object.__new__(dispatch.LandingService)
+        service.store = Mock()
         service.settings = SimpleNamespace(runs_dir=self.enterContext(tempfile.TemporaryDirectory()))
         service.ci = SimpleNamespace(resume=lambda *a, **k: None,
                                      run=lambda *a, **k: calls.append((a, k)) or {'status': 'passed'})
         prog = {'unused': True}
         def run_batch(conn, repo, gate, **kwargs):
+            self.assertIs(kwargs['land_stage'], hub_port.return_value.land_stage)
             gate('work', 'a' * 40, [], platform='wsl', signature='failure',
                  module='tests.test_ci', tier='integration')
             with self.assertRaises(ci.CIInfrastructure):
@@ -123,11 +125,12 @@ class HubDiagnostic(unittest.TestCase):
                 patch.object(dispatch.repos, 'gate_platforms', return_value=['windows', 'wsl']), \
                 patch.object(dispatch.disk, 'read', return_value=[]), \
                 patch.object(dispatch.disk, 'admission', return_value={'verdict': 'go'}), \
-                patch.object(dispatch.ops, 'set_setting'), patch.object(service, '_write_gate'), \
+                patch.object(dispatch.ops, 'set_setting'), patch.object(service, '_write_gate'), patch.object(dispatch, 'HubPort') as hub_port, \
                 patch.object(dispatch.landing, 'run_batch', side_effect=run_batch):
             service._land_repo(None, 'p', prog)
         self.assertEqual(len(calls), 1)
         args, kwargs = calls[0]
+        hub_port.assert_called_once_with(service.store, actor='landing')
         self.assertEqual(args[2], 'a' * 40)
         self.assertEqual((kwargs['base'], kwargs['platforms'], kwargs['module'], kwargs['tier']),
                          ('a' * 40, ['wsl'], 'tests.test_ci', 'integration'))

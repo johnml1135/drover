@@ -24,3 +24,20 @@ class AuthorityHTTP(unittest.TestCase):
                 self.assertGreaterEqual(response.status_code, 400, response.text)
                 self.assertEqual(store.get_task(tid)['status'], old)
                 self.assertEqual(ops.events(store.conn, task_id=tid), before)
+
+    def test_approving_an_unscoped_writable_task_is_a_400_that_says_how_to_fix_it(self):
+        tmp, app = make(trusted_ui_hosts=('testclient',))
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(app.state.store.close)
+        client = TestClient(app)
+        store = app.state.store
+        tid = store.create_task('Unscoped work')['id']
+        response = client.post(f'/api/v1/tasks/{tid}/approve', headers=SAME)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn('add scope_files or mark the task read-only', response.text)
+        self.assertEqual(store.get_task(tid)['status'], 'proposed')
+        skipped = store.approve_tasks([tid])['results'][0]
+        self.assertEqual(skipped['result'], 'skipped')
+        self.assertIn('add scope_files or mark the task read-only', skipped['reason'])
+        response = client.post(f'/items/task/{tid}/approve', headers=SAME)
+        self.assertEqual(response.status_code, 400, response.text)

@@ -45,10 +45,9 @@ class HubPort(DirectPort):
         self._pub("run.finished", id=run_id, task_id=r["task_id"], outcome=outcome)
         return r
 
-    def set_status(self, task_id, new, reason=None, data=None):
-        r = super().set_status(task_id, new, reason=reason, data=data)
-        self._pub("task.status", id=task_id, status=new)
-        return r
+    def _status_changed(self, task):
+        self._pub("task.status", id=task["id"], status=task["status"])
+        return task
 
     def heartbeat(self, data=None):
         super().heartbeat(data)
@@ -155,12 +154,11 @@ class LandingService:
         try:
             r = landing.run_batch(conn, repo, gate, remote=repos.remote_name(prog),
                                   branch=base_ref, size=size, repo_name=name, workdir=work, push=push, control_epoch=epoch,
-                                  required_platforms=repos.gate_platforms(prog), observe=origin.observe)
+                                  required_platforms=repos.gate_platforms(prog), observe=origin.observe, land_stage=HubPort(self.store, actor="landing").land_stage)
         finally:
             ops.set_setting(conn, "landing_batch", "")
             self._write_gate(conn)
-            if getattr(self, "store", None) is not None:
-                self.store._changed("landing.changed", repo=name)
+            self.store._changed("landing.changed", repo=name)
         return r
 
     @staticmethod

@@ -228,7 +228,6 @@ def set_status(conn, task_id, new, actor="system", reason=None, data=None):
 
     Entering `ready` needs approved_at; only the owner's proposed/draft -> ready sets it.
     """
-    # Self-run attestations will select their execution mode here when that mode exists.
     if new in (states.CLAIMED, states.RUNNING, states.GATED, states.REVIEWED, states.LANDED):
         raise IllegalTransition('engine stages require evidence-checked operations')
     return _set_status(conn, task_id, new, actor, reason, data)
@@ -243,7 +242,7 @@ def _set_status(conn, task_id, new, actor="system", reason=None, data=None):
         if new == states.READY and old in states.CREATION_STATES and actor != 'owner':
             states.check(old, new, actor)
         if new == states.READY and old in states.CREATION_STATES and t['write'] and not t['scope_files']:
-            raise ValueError('writable tasks require scope_files before approval')
+            raise ValueError('writable tasks require scope_files before approval; add scope_files or mark the task read-only')
         from .waiting import Waiting
         if new == states.READY:
             if actor not in ('dispatcher', 'system'):
