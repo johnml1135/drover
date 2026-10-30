@@ -86,6 +86,8 @@ class LandingService:
     def _loop(self):
         while not self._stop.is_set():
             generation = self._wake.generation()
+            if self._stop.is_set():
+                break
             try:
                 self.tick()
             except Exception as e:                     # a bad pass must not end the loop
@@ -240,6 +242,8 @@ class DispatcherService:
             self.dispatcher = self.make_dispatcher(port)
             while not self._stop.is_set():
                 generation = self._wake.generation()
+                if self._stop.is_set():
+                    break
                 try:
                     self.dispatcher.tick()
                 except Exception as e:                  # a bad tick must not end the dispatcher

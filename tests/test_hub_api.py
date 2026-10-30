@@ -1,5 +1,6 @@
 """Hub API tests: auth, owner gate, tasks, claim race, import, SSE."""
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -11,6 +12,8 @@ try:
     from hub.settings import Settings
 except ImportError as exc:  # hub deps are third-party; skip when absent
     raise unittest.SkipTest(f"hub deps missing: {exc}")
+
+from hub.dispatch import DispatcherService, LandingService
 
 AUTH = {"Authorization": "Bearer tok"}
 SAME = {"Sec-Fetch-Site": "same-origin"}
@@ -70,6 +73,68 @@ class HubLifecycleTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.lock = Path(self.tmp.name) / "dispatcher.lock"
+
+    def assert_stop_during_generation_snapshot_exits_promptly(self, service, wake, ticks):
+        snapshot_entered, release_snapshot = threading.Event(), threading.Event()
+        waiting, stopped = threading.Event(), threading.Event()
+        generation = service._wake.generation
+
+        def pause_before_snapshot():
+            snapshot_entered.set()
+            release_snapshot.wait(2)
+            return generation()
+
+        def observe_wait(*_):
+            waiting.set()
+
+        service._wake.generation = pause_before_snapshot
+        service._wake.wait = observe_wait
+
+        def stop_service():
+            service.stop(timeout=1)
+            stopped.set()
+
+        stopper = None
+        try:
+            service.start()
+            self.assertTrue(snapshot_entered.wait(2))
+            stopper = threading.Thread(target=stop_service, daemon=True)
+            stopper.start()
+            self.assertTrue(service._stop.wait(2))
+            release_snapshot.set()  # stop() has already woken the generation being snapshotted
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not (stopped.is_set() or waiting.is_set()):
+                time.sleep(0.005)
+            self.assertTrue(stopped.is_set(), "stop remained blocked after its wake was included in the snapshot")
+            self.assertFalse(waiting.is_set(), "loop waited after shutdown began")
+            self.assertEqual(ticks(), 0)
+        finally:
+            release_snapshot.set()
+            wake()
+            if stopper is not None:
+                stopper.join(2)
+            if getattr(service, "running", False) or getattr(getattr(service, "_thread", None), "is_alive", lambda: False)():
+                service.stop(timeout=2)
+
+    def test_dispatcher_and_landing_stop_races_skip_the_periodic_wait(self):
+        tmp, app = make(dispatcher_lock=self.lock, dispatch_interval_s=3600)
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(app.state.store.close)
+        made, landing_ticks = [], []
+        class Tick:
+            ticks = 0
+
+            def tick(self):
+                self.ticks += 1
+        dispatcher = DispatcherService(app.state.store, app.state.settings,
+                                       make_dispatcher=lambda p: made.append(Tick()) or made[-1])
+        landing = LandingService(app.state.store, app.state.settings, interval_s=3600)
+        landing.tick = lambda: landing_ticks.append(1)
+        self.assert_stop_during_generation_snapshot_exits_promptly(
+            dispatcher, dispatcher.wake_dispatcher, lambda: sum(d.ticks for d in made))
+        self.assert_stop_during_generation_snapshot_exits_promptly(landing, landing.wake, lambda: len(landing_ticks))
+        dispatcher.lock.acquire().release()
+        self.assertFalse(landing._thread.is_alive())
 
     def test_start_and_shutdown_run_and_stop_the_dispatcher_thread(self):
         class Tick:
