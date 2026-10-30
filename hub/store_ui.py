@@ -424,8 +424,9 @@ class UiView:
                 return b
         raise NotFound(f"garden batch {batch}")
     def approve_imports(self, ids):
-        for i in ids:
-            self.s.approve(i)
+        return self.s.approve_tasks(ids)
+    def approve_tasks(self, ids, reason=None, explicit=False, explicit_ids=()):
+        return self.s.approve_tasks(ids, reason, explicit, explicit_ids)
     def approve_epic(self, epic_id):
         return self.s.approve_epic(epic_id)
     def reorder(self, kind, iid, before=None, after=None):

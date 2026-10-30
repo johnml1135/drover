@@ -39,17 +39,18 @@
 <div class="chips" aria-label="Import filters">
   <a class="chip{% if low %} on{% endif %}" href="/inbox{{ '' if low else '?low=1' }}"{% if low %} aria-current="true"{% endif %}>low confidence ({{ low_count }})</a>
 </div>
-<form method="post" action="/imports/approve" hx-post="/imports/approve" hx-target="#content" hx-swap="innerHTML" id="imports">
+<form method="post" action="/tasks/approve/confirm" hx-post="/tasks/approve/confirm" hx-target="#content" hx-swap="innerHTML" id="imports">
+  <label class="check"><input type="checkbox" aria-label="Select all visible" onchange="document.querySelectorAll('#imports input[name=id]').forEach(el => { el.checked = this.checked; });"> Select all visible proposed tasks</label>
   {% for g in import_groups %}
   <section class="epicgroup">
-    <h3>{{ g.epic or '(no epic)' }} <span class="muted">({{ g['items']|length }})</span></h3>
-    {% if g.epic_id %}
+    <h3>{{ g.epic or '(no epic)' }}{% if g.explicit %} — Requires explicit approval{% endif %} <span class="muted">({{ g['items']|length }})</span></h3>
+    {% if g.epic_id and not g.explicit %}
     <button class="btn ok" type="submit" name="epic_id" value="{{ g.epic_id }}" formaction="/imports/approve-epic" hx-post="/imports/approve-epic"
       hx-target="#content" hx-confirm="Approve all {{ g['items']|length }} proposed tasks in this epic?">Approve all in epic</button>
     {% endif %}
   {% for it in g['items'] %}
   <div class="card row">
-    <label class="check big"><input type="checkbox" name="id" value="{{ it.id }}" aria-label="Select {{ it.title }}"> <span>{{ it.title }}</span></label>
+    <label class="check big"><input type="checkbox" name="{{ 'explicit_id' if g.explicit else 'id' }}" value="{{ it.id }}" aria-label="Select {{ it.title }}"> <span>{{ 'Explicitly approve: ' if g.explicit else '' }}{{ it.title }}</span></label>
     {% with t=it %}{% include "_task_card.html" %}{% endwith %}
     {% if it.repo %}{{ badge(it.repo) }}{% endif %}{% if it.low_confidence %} {{ badge('low confidence', 'warn') }}{% endif %}
     <div class="actions">

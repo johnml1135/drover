@@ -1,10 +1,12 @@
-"""python -m drover <init|config> ...: the setup wizard and the config tool. Other modules run as python -m drover.<name>."""
+"""Top-level Drover commands, including setup, configuration and owner approval."""
 import sys
 
 USAGE = """usage: python -m drover init [--defaults] [--answers FILE.toml] [--state-dir DIR]
        python -m drover config [sync [--json]] [--show] [--get KEY] [--check FILE]
        python -m drover config explain KEY [--repo NAME] [--revision REV]
        python -m drover config migrate-registration NAME [--revision REV] [--apply]
+       python -m drover approve [ID ...] [--epic EPIC] [--filter KEY=VALUE] [--from-file FILE]
+                               [--explicit] [--reason REASON]
        python -m drover worktree add PATH REF --repo REPO --owner OWNER --lease-until ISO8601
        python -m drover disk-tracker read|tick|install [--dry-run|--apply]
        python -m drover disk-cleanup [--mode daily|on-demand|triggered] [--dry-run|--apply] [--json]"""
@@ -18,6 +20,9 @@ def main(argv=None):
     if argv[:1] == ["config"]:
         from . import config
         return config.main(argv[1:])
+    if argv[:1] == ["approve"]:
+        from . import cli
+        return cli.main(argv)
     if argv[:1] == ["worktree"]:
         from . import worktree
         return worktree.main(argv[1:])

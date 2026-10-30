@@ -11,6 +11,7 @@
 {% else %}
 <article class="task-page">
 <h2>{{ task.id }} · {{ task.title }}</h2>
+{% if task.requires_explicit_approval %}<p>{{ badge('Requires explicit approval', 'warn') }}</p>{% endif %}
 <p><span class="pill status status-{{ task.status }}">{{ task.status | label }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
 {% if task.reason %}<p class="task-reason">{{ task.reason }}</p>{% endif %}
 {% for label in task.waiting_labels %}<p class="task-reason">{{ label }}</p>{% endfor %}
@@ -35,6 +36,7 @@
   <label>Title<input type="text" name="title" value="{{ task.title }}" required></label>
   <label>Description (Markdown)<textarea name="description" rows="8">{{ task.description }}</textarea></label>
   <label>Kind<select name="kind">{% for kind in ('research','investigation','implementation','fix','review','docs','mechanical') %}<option{% if task.kind == kind %} selected{% endif %}>{{ kind }}</option>{% endfor %}</select></label>
+  <label>Requires explicit approval<select name="requires_explicit_approval"><option value="false"{% if not task.requires_explicit_approval %} selected{% endif %}>No</option><option value="true"{% if task.requires_explicit_approval %} selected{% endif %}>Yes</option></select></label>
   <label>Access<select name="write"><option value="true"{% if task.write %} selected{% endif %}>write</option><option value="false"{% if not task.write %} selected{% endif %}>read-only</option></select></label>
   <label>Repo<input type="text" name="repo" value="{{ task.repo }}"></label>
   <label>Branch<input type="text" name="branch" value="{{ task.branch or '' }}"></label>

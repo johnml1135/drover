@@ -1,10 +1,10 @@
 """JSON API under /api/v1 (bearer token, or an authorised UI request)."""
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, field_validator
 
 from drover import task_context
 
@@ -53,6 +53,7 @@ class AccessInput(BaseModel):
 
 
 class TaskIn(AccessInput):
+    requires_explicit_approval: StrictBool = False
     title: str
     repo: str = "default"
     status: NewTaskStatus = "proposed"  # ready needs owner approval
@@ -73,6 +74,7 @@ class TaskIn(AccessInput):
 
 
 class TaskPatch(AccessInput):
+    requires_explicit_approval: StrictBool | None = None
     title: str | None = None
     description: str | None = Field(default=None, validation_alias=AliasChoices("description", "goal"))
     kind: TaskKind | None = None
@@ -96,6 +98,13 @@ class TaskPatch(AccessInput):
 class StatusIn(BaseModel):
     status: TaskStatus
     reason: str | None = None
+
+
+class BatchApproveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[Annotated[str, StringConstraints(pattern=r"(?s)^\S(.*\S)?$")]] = Field(min_length=1)
+    reason: str | None = None
+    explicit: StrictBool = False
 
 
 class ClaimIn(BaseModel):
@@ -262,6 +271,12 @@ def list_tasks(request: Request, status: str | None = None, epic_id: str | None 
     return _store(request).list_tasks(status, epic_id, repo, q, limit, include_archived)
 
 
+@router.post("/tasks/approve")
+def approve_tasks(body: BatchApproveIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).approve_tasks, body.ids, body.reason, body.explicit)
+
+
 @router.post("/tasks/claim")
 def claim(body: ClaimIn, request: Request):
     worker = {k: v for k, v in body.model_dump().items() if v is not None}
@@ -325,7 +340,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "task.result-accepted", "task.landed", "result.accepted")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)

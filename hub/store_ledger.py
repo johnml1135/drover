@@ -6,8 +6,9 @@ from drover import config, decisions, stats, usage
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
+from drover.ledger.states import IllegalTransition
 
-from .store_common import BadRequest, NotFound, _Rollback, _translate
+from .store_common import BadRequest, Forbidden, NotFound, _Rollback, _translate
 
 
 class Store:
@@ -24,6 +25,10 @@ class Store:
         c = getattr(self._local, "conn", None)
         if c is None:
             c = connect(self.path)
+            # Hub-owned approval policy; older ledgers default to ordinary approval.
+            c.execute("CREATE TABLE IF NOT EXISTS task_approval_policy ("
+                      "task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, "
+                      "requires_explicit_approval INTEGER NOT NULL CHECK(requires_explicit_approval IN (0,1)))")
             self._local.conn = c
             with self._lock:
                 self._conns.append(c)
@@ -52,15 +57,18 @@ class Store:
     def list_epics(self):
         return ops.list_epics(self.conn)
     @_translate
-    def create_task(self, title, repo="default", actor="dispatcher", **f):
+    def create_task(self, title, repo="default", actor="dispatcher", requires_explicit_approval=False, **f):
         if not title or not title.strip():
             raise BadRequest("title required")
-        t = ops.create_task(self.conn, title.strip(), repo, actor=actor, **f)
+        with tx(self.conn):
+            t = ops.create_task(self.conn, title.strip(), repo, actor=actor, **f)
+            self.set_explicit_approval(t["id"], requires_explicit_approval)
         self._changed("task.created", id=t["id"])
         return self.get_task(t["id"])
     @_translate
     def get_task(self, tid):
         t = ops.get_task(self.conn, tid)
+        self._approval_policy([t])
         t["deps"] = ops.deps_of(self.conn, tid)
         t["dependents"] = ops.dependents_of(self.conn, tid)
         t["related"] = ops.related_of(self.conn, tid)
@@ -68,6 +76,7 @@ class Store:
 
     def list_tasks(self, status=None, epic_id=None, repo=None, q=None, limit=500, include_archived=False):
         tasks = ops.list_tasks(self.conn, epic_id=epic_id, repo=repo, include_archived=include_archived)
+        self._approval_policy(tasks)
         if status:
             want = set(status.split(","))
             tasks = [t for t in tasks if t["status"] in want]
@@ -78,9 +87,66 @@ class Store:
     @_translate
     def update_task(self, tid, actor="dispatcher", **fields):
         fields = {k: v for k, v in fields.items() if v is not None}
-        t = ops.update_task(self.conn, tid, actor=actor, **fields)
+        explicit = fields.pop("requires_explicit_approval", None)
+        with tx(self.conn):
+            if explicit is not None:
+                old = self.get_task(tid)["requires_explicit_approval"]
+                if old and not explicit and actor != "owner":
+                    raise Forbidden("only the owner may remove explicit approval")
+            t = ops.update_task(self.conn, tid, actor=actor, **fields)
+            if explicit is not None:
+                self.set_explicit_approval(tid, explicit)
+                ops.event(self.conn, "task-approval-policy", actor,
+                          {"requires_explicit_approval": explicit}, task_id=tid)
         self._changed("task.updated", id=tid)
         return self.get_task(tid)
+    def set_explicit_approval(self, tid, value):
+        if not isinstance(value, bool):
+            raise BadRequest("requires_explicit_approval must be a boolean")
+        self.conn.execute("INSERT INTO task_approval_policy VALUES(?,?) ON CONFLICT(task_id) "
+                          "DO UPDATE SET requires_explicit_approval=excluded.requires_explicit_approval",
+                          (tid, int(value)))
+
+    def _approval_policy(self, tasks):
+        required = {r[0] for r in self.conn.execute(
+            "SELECT task_id FROM task_approval_policy WHERE requires_explicit_approval=1")}
+        for t in tasks:
+            t["requires_explicit_approval"] = t["id"] in required
+
+    def approve_tasks(self, ids, reason=None, explicit=False, explicit_ids=()):
+        """Owner-only batch over named IDs. Never promotes drafts or re-approves ready tasks."""
+        results, approved = [], []
+        conn = self.conn
+        with tx(conn):
+            for tid in dict.fromkeys(ids):
+                conn.execute("SAVEPOINT batch_approval_row")
+                try:
+                    task = self.get_task(tid)
+                    if task["status"] != "proposed":
+                        raise BadRequest(f"not proposed (status: {task['status']})")
+                    if task["requires_explicit_approval"] and not (explicit or tid in explicit_ids):
+                        raise BadRequest("requires explicit approval of this ID")
+                    # Check and transition share the write lock. Single-task approval
+                    # stays unchanged; the batch transition records the supplied reason.
+                    ops.set_status(conn, tid, "ready", "owner", reason=reason or "approved")
+                except (NotFound, BadRequest, LedgerNotFound, IllegalTransition, ValueError, PermissionError) as exc:
+                    conn.execute("ROLLBACK TO batch_approval_row")
+                    result = {"id": tid, "result": "skipped", "reason": str(exc)}
+                    known = conn.execute("SELECT 1 FROM tasks WHERE id=?", (tid,)).fetchone()
+                    ops.event(conn, "task-approval-skipped", "owner", result, task_id=tid if known else None)
+                else:
+                    approved.append(tid)
+                    result = {"id": tid, "result": "approved", "reason": reason or "approved"}
+                finally:
+                    conn.execute("RELEASE batch_approval_row")
+                results.append(result)
+            ops.event(conn, "tasks-approved", "owner", {"results": results, "reason": reason,
+                                                       "explicit": explicit, "explicit_ids": list(explicit_ids)})
+        for tid in approved:
+            self._changed("task.status", id=tid, status="ready")
+        self._changed("tasks.approved", results=results)
+        return {"results": results}
+
     @_translate
     def set_status(self, tid, status, actor, reason=None):
         t = ops.set_status(self.conn, tid, status, actor=actor, reason=reason)
@@ -299,14 +365,12 @@ class Store:
     @_translate
     def approve_epic(self, epic_id):
         """Owner approval of every proposed task in one epic ('' or None: tasks with no epic).
-        Each goes through approve(), so nothing becomes ready without the owner path."""
+        Uses batch policy, so tasks requiring explicit approval remain proposed."""
         if epic_id:
             ops.get_epic(self.conn, epic_id)
         want = epic_id or None
         ids = [t["id"] for t in ops.list_tasks(self.conn) if t["status"] == "proposed" and t["epic_id"] == want]
-        for tid in ids:
-            self.approve(tid)
-        return ids
+        return [r["id"] for r in self.approve_tasks(ids)["results"] if r["result"] == "approved"]
 
     # -- board and import ------------------------------------------------
     def board_text(self):
@@ -360,6 +424,7 @@ class Store:
                                          "size", "risk", "deps", "related", "kind", "write", "read_access", "branch", "description") if k in it}
             t = ops.create_task(conn, title, repo, epic_id=epic_id, status="proposed",
                                 actor=actor, **fields)
+            self.set_explicit_approval(t["id"], it.get("requires_explicit_approval", False))
         except BaseException as e:
             conn.execute("ROLLBACK TO import_row")
             epics.clear()

@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import time
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -24,7 +24,7 @@ router = APIRouter()
 
 TABS = [("inbox", "Inbox"), ("plan", "Plan"), ("tree", "Tree"), ("runs", "Runs"), ("landing", "Merge queue"), ("health", "Health"), ("stats", "Stats")]
 GROUPS = ("epic", "state", "repo", "model")
-FILTERS = ("state", "repo", "model", "low")
+FILTERS = ("state", "repo", "epic_id", "kind", "priority", "model", "low")
 KINDS = {"owner", "import", "tuner", "garden", "task", "epic", "question", "run"}
 
 
@@ -109,8 +109,9 @@ def import_groups(imports):
     """Import proposals grouped by epic, in first-seen order."""
     groups: dict = {}
     for it in imports:
-        g = groups.setdefault(str(it.get("epic_id") or ""), {"epic_id": str(it.get("epic_id") or ""),
-                                                             "epic": it.get("epic") or "", "items": []})
+        key = (str(it.get("epic_id") or ""), bool(it.get("requires_explicit_approval")))
+        g = groups.setdefault(key, {"epic_id": key[0], "explicit": key[1],
+                                    "epic": it.get("epic") or "", "items": []})
         g["items"].append(it)
     return list(groups.values())
 
@@ -141,7 +142,7 @@ def plan_view(store, group="epic", filters=None):
     ctx = {"group": group, "filters": filters, "chips": chips, "groups": GROUPS, "epics": [], "buckets": []}
     if group == "epic":
         for e in epics:
-            keep = [t for t in e.get("tasks", []) if all(str(t.get(k)) == v for k, v in filters.items())]
+            keep = [t for t in shown if t["epic_id"] == e["id"]]
             if keep or not filters:
                 ctx["epics"].append(dict(e, tasks=keep))
     else:
@@ -150,6 +151,16 @@ def plan_view(store, group="epic", filters=None):
         for t in shown:
             buckets.setdefault(str(t.get(key) or "none"), []).append(t)
         ctx["buckets"] = sorted(buckets.items())
+    ctx["explicit_tasks"] = [t for t in shown if t.get("requires_explicit_approval") and
+                             (t.get("status") or t.get("state")) == "proposed"]
+    explicit_ids = {t["id"] for t in ctx["explicit_tasks"]}
+    for e in ctx["epics"]:
+        e["tasks"] = [t for t in e["tasks"] if t["id"] not in explicit_ids]
+    ctx["buckets"] = [(name, [t for t in ts if t["id"] not in explicit_ids]) for name, ts in ctx["buckets"]]
+    ctx["filter_links"] = {f: {v: "/plan?" + urlencode({"group": group, **filters,
+                                                       f: "" if filters.get(f) == v else v}, quote_via=quote)
+                              for v in vals} for f, vals in chips.items()}
+    ctx["group_links"] = {g: "/plan?" + urlencode({"group": g, **filters}, quote_via=quote) for g in GROUPS}
     return ctx
 
 
@@ -158,6 +169,30 @@ def plan(request: Request, group: str = "epic", store=Depends(get_store)):
     group = group if group in GROUPS else "epic"
     filters = {f: request.query_params.get(f, "") for f in FILTERS}
     return _tab(request, "plan", store, **plan_view(store, group, filters))
+
+
+@router.post("/tasks/approve/confirm", response_class=HTMLResponse)
+async def confirm_batch_approval(request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    ids = list(dict.fromkeys(form.get("id", []) + form.get("explicit_id", [])))
+    if not ids:
+        raise HTTPException(422, "select at least one task")
+    return _render(request, "batch_approve.html", store, tab="plan", ids=ids,
+                   partial=request.headers.get("hx-request") == "true",
+                   explicit_ids=form.get("explicit_id", []), results=None)
+
+
+@router.post("/tasks/approve", response_class=HTMLResponse)
+async def batch_approval(request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    ids = list(dict.fromkeys(form.get("id", [])))
+    if not ids or _one(form, "confirm") != "yes":
+        raise HTTPException(422, "select tasks and confirm approval")
+    explicit_ids = [tid for tid in form.get("explicit_id", []) if tid in ids]
+    result = store.approve_tasks(ids, reason=_one(form, "reason") or None, explicit_ids=explicit_ids)
+    return _render(request, "batch_approve.html", store, tab="plan", ids=ids,
+                   partial=request.headers.get("hx-request") == "true",
+                   explicit_ids=explicit_ids, results=result["results"])
 
 
 @router.get("/tasks/{tid}", response_class=HTMLResponse)
@@ -173,6 +208,11 @@ async def edit_task(tid: str, request: Request, store=Depends(get_store)):
               if k in form}
     if "write" in form:
         fields["write"] = _one(form, "write") == "true"
+    if "requires_explicit_approval" in form:
+        value = _one(form, "requires_explicit_approval")
+        if value not in ("true", "false"):
+            raise HTTPException(422, "requires_explicit_approval must be true or false")
+        fields["requires_explicit_approval"] = value == "true"
     for k in ("acceptance", "scope_files", "read_access", "related"):
         if k in form:
             fields[k] = [line.strip() for line in _one(form, k).splitlines() if line.strip()]

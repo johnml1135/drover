@@ -268,9 +268,11 @@ def submit(body: Submit, request: Request, credential=Depends(auth.require_direc
             s.authorize_task(role, body.parent_id)
         if body.group_id:
             s.authorize_group(role, body.group_id)
-        data = body.model_dump(exclude={'title', 'repo', 'description'})
-        return ops.create_task(s.conn, body.title, body.repo, goal=body.description,
+        data = body.model_dump(exclude={'title', 'repo', 'description', 'requires_explicit_approval'})
+        task = ops.create_task(s.conn, body.title, body.repo, goal=body.description,
                                initiating_role=role, actor='director:' + role, **data)
+        request.app.state.store.set_explicit_approval(task['id'], body.requires_explicit_approval)
+        return task
     return scoped(request, credential, 'notifications.process', apply)
 
 

@@ -163,7 +163,7 @@ class WebTests(unittest.TestCase):
 
     def test_recommended_not_prechecked(self):
         html = self.c.get("/inbox").text
-        self.assertNotIn("checked", html)
+        self.assertNotRegex(html, r'<input\b[^>]*\schecked(?:\s|=|>)')
 
     def test_both_option_and_text_sent(self):
         self.c.post("/questions/q1/answer", data={"option": "b", "text": "because"})

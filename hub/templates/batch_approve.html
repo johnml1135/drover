@@ -1,0 +1,20 @@
+{% extends "_partial.html" if partial else "base.html" %}
+{% block content %}
+{% if results is not none %}
+<h2>Approval results</h2>
+<ul>{% for r in results %}<li>{{ r.id }}: {{ r.result }} — {{ r.reason }}</li>{% endfor %}</ul>
+<a class="btn" href="/plan">Return to plan</a>
+{% else %}
+<h2>Approve {{ ids|length }} selected tasks?</h2>
+<p>Only proposed tasks can be approved. Tasks that changed state will be skipped.</p>
+<ul>{% for tid in ids %}<li>{{ tid }}{% if tid in explicit_ids %} — explicit approval requested{% endif %}</li>{% endfor %}</ul>
+<form method="post" action="/tasks/approve" hx-post="/tasks/approve" hx-target="#content">
+  {% for tid in ids %}<input type="hidden" name="id" value="{{ tid }}">{% endfor %}
+  {% for tid in explicit_ids %}<input type="hidden" name="explicit_id" value="{{ tid }}">{% endfor %}
+  <label>Reason (optional)<textarea name="reason" rows="2"></textarea></label>
+  <label class="check big"><input type="checkbox" name="confirm" value="yes" required> Confirm approval of {{ ids|length }} tasks</label>
+  <button class="btn ok">Approve {{ ids|length }} tasks</button>
+  <a class="btn" href="/plan">Cancel</a>
+</form>
+{% endif %}
+{% endblock %}

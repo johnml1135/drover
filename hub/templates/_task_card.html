@@ -1,6 +1,7 @@
 <article class="task-card" data-task-id="{{ t.id }}">
   <h3><a href="/tasks/{{ t.id }}" hx-get="/tasks/{{ t.id }}" hx-target="#content" hx-push-url="true">{{ t.id }} · {{ t.title }}</a></h3>
   <div class="chips compact">
+    {% if t.requires_explicit_approval %}<span class="pill warn">Requires explicit approval</span>{% endif %}
     <span class="pill status status-{{ t.status or t.state }}">{{ (t.status or t.state) | label }}</span>
     <span class="pill">{{ t.kind or 'implementation' }}</span>
     <span class="pill">{{ 'read-only' if t.write is defined and not t.write else 'write' }}</span>

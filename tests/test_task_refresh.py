@@ -1,5 +1,6 @@
 """Exercise the shipped refresh script without a browser or third-party packages."""
 from pathlib import Path
+import shutil
 import subprocess
 import unittest
 
@@ -8,6 +9,7 @@ def javascript(source):
     subprocess.run(['node', '-e', source], check=True, capture_output=True, text=True)
 
 
+@unittest.skipUnless(shutil.which('node'), 'needs Node.js to exercise the refresh script')
 class RefreshTests(unittest.TestCase):
     def test_prefilled_edit_form_refreshes_until_values_are_changed(self):
         app = (Path(__file__).resolve().parents[1] / 'hub/static/app.js').read_text()

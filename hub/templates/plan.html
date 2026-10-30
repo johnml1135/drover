@@ -1,7 +1,11 @@
 {% extends "_partial.html" if partial else "base.html" %}
 {% from "_macros.html" import comment_btn, badge %}
-{% macro task_li(t, draggable) %}
+{% macro task_li(t, draggable, explicit=false) %}
 <li class="task" data-id="{{ t.id }}">
+  {% if (t.status or t.state) == 'proposed' %}
+  <label class="check big"><input type="checkbox" form="batch-approval" name="{{ 'explicit_id' if explicit else 'id' }}" value="{{ t.id }}"> {{ 'Explicitly approve' if explicit else 'Select' }} {{ t.title }}</label>
+  <form method="post" action="/items/task/{{ t.id }}/approve"><button class="btn ok">Approve</button></form>
+  {% endif %}
   {% include "_task_card.html" %}
   <div class="actions">
     {% if draggable %}
@@ -17,13 +21,18 @@
 {% endmacro %}
 {% block content %}
 <h2>Plan</h2>
+<form id="batch-approval" method="post" action="/tasks/approve/confirm" hx-post="/tasks/approve/confirm" hx-target="#content">
+  <label class="check"><input type="checkbox" aria-label="Select all visible" onchange="document.querySelectorAll('input[form=batch-approval][name=id]').forEach(el => { el.checked = this.checked; });"> Select all visible proposed tasks</label>
+  <p class="muted">Tasks requiring explicit approval are listed separately and must be selected individually.</p>
+  <button class="btn ok">Approve selected</button>
+</form>
 <div class="seg" role="group" aria-label="Group by">
-  {% for g in groups %}<a class="chip{% if g == group %} on{% endif %}" href="/plan?group={{ g }}"{% if g == group %} aria-current="true"{% endif %}>{{ g }}</a>{% endfor %}
+  {% for g in groups %}<a class="chip{% if g == group %} on{% endif %}" href="{{ group_links[g] }}"{% if g == group %} aria-current="true"{% endif %}>{{ g }}</a>{% endfor %}
 </div>
 <div class="chips" aria-label="Filters">
   {% for f, vals in chips.items() %}{% for v in vals %}
   {% set on = filters.get(f) == v %}
-  <a class="chip{% if on %} on{% endif %}" href="/plan?group={{ group }}&{{ f }}={{ '' if on else v|urlencode }}">{{ 'low confidence' if f == 'low' else f ~ ': ' ~ v }}</a>
+  <a class="chip{% if on %} on{% endif %}" href="{{ filter_links[f][v] }}">{{ 'low confidence' if f == 'low' else ('epic' if f == 'epic_id' else f) ~ ': ' ~ v }}</a>
   {% endfor %}{% endfor %}
 </div>
 {% if group == 'epic' %}
@@ -46,5 +55,11 @@
 <details class="card" open><summary>{{ name }} <span class="muted">({{ ts|length }})</span></summary>
   <ul class="tasks">{% for t in ts %}{{ task_li(t, false) }}{% endfor %}</ul></details>
 {% else %}<p class="muted empty">No tasks.</p>{% endfor %}
+{% endif %}
+{% if explicit_tasks %}
+<section class="card"><h2>Requires explicit approval</h2>
+<p>Select each task individually to include it in this approval.</p>
+<ul class="tasks">{% for t in explicit_tasks %}{{ task_li(t, false, true) }}{% endfor %}</ul>
+</section>
 {% endif %}
 {% endblock %}
