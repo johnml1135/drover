@@ -115,7 +115,7 @@ class _NotificationBase(unittest.TestCase):
             'http_version': '1.1', 'method': 'GET', 'scheme': 'http',
             'path': BASE + '/events', 'raw_path': (BASE + '/events').encode(),
             'query_string': b'', 'headers': [], 'client': ('testclient', 123),
-            'server': ('testserver', 80), 'root_path': '', 'app': self.app, 'receive': receive})
+            'server': ('testserver', 80), 'root_path': '', 'app': self.app}, receive=receive)
 
 
     async def open_notification_stream(self, credential, after=None):

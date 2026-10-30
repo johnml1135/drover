@@ -350,7 +350,11 @@ async def events(request: Request, after: str | None = None, limit: int | None =
                         yield format_sse_event(event='notification', id=item['cursor'], data_str=json.dumps(message))
                         sent = True
                     saved_cursor = batch['cursor']
-                    advanced = saved_cursor != previous_cursor
+                    # A missing client cursor means the stream starts at the
+                    # durable origin. Do not report v1:0:0 as progress: an
+                    # empty checkpoint would end the client's initial receive
+                    # before it can wait for a notification.
+                    advanced = previous_cursor is not None and saved_cursor != previous_cursor
                     if sent or advanced:
                         yield format_sse_event(event='checkpoint', id=saved_cursor,
                                                data_str=json.dumps({'more': batch['more']}))
