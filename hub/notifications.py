@@ -20,6 +20,18 @@ Identity = Annotated[str, Field(min_length=1, max_length=256)]
 RECEIVE_RECHECK_S = 30.0
 
 
+class _CleanupStreamingResponse(StreamingResponse):
+    def __init__(self, content, *, cleanup, **kwargs):
+        super().__init__(content, **kwargs)
+        self._cleanup = cleanup
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._cleanup()
+
+
 class Input(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -316,10 +328,18 @@ async def events(request: Request, after: str | None = None, limit: int | None =
     # hint for the next durable pass. Empty receives stay open; reconnects use
     # the durable cursor and need no in-memory hint history.
     queue = bus.subscribe()
+    released = False
+
+    def unsubscribe():
+        nonlocal released
+        if not released:
+            released = True
+            bus.unsubscribe(queue)
+
     try:
         first = replay(cursor, 50)
     except Exception:
-        bus.unsubscribe(queue)
+        unsubscribe()
         raise
 
     async def stream():
@@ -373,9 +393,10 @@ async def events(request: Request, after: str | None = None, limit: int | None =
             # Headers are already sent. Close the stream; the client's next
             # request receives the normal 401/403 response.
         finally:
-            bus.unsubscribe(queue)
+            unsubscribe()
 
-    return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache'})
+    return _CleanupStreamingResponse(stream(), cleanup=unsubscribe, media_type='text/event-stream',
+                                     headers={'Cache-Control': 'no-cache'})
 
 
 @router.post('/lease')

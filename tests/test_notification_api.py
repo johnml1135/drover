@@ -127,6 +127,34 @@ class _NotificationBase(unittest.TestCase):
 
 
 class NotificationApiTests(_NotificationBase):
+    def test_open_receive_releases_subscription_if_response_headers_fail(self):
+        from hub.notifications import events
+        a = self.role()
+        credential = a['Authorization'].removeprefix('Bearer ')
+
+        async def scenario():
+            request = self.notification_request()
+            response = await events(request, after=None, limit=None, credential=credential)
+            self.assertEqual(len(self.app.state.bus._subs), 1)
+
+            async def receive():
+                await asyncio.Event().wait()
+
+            sent = []
+
+            async def send(message):
+                if message['type'] == 'http.response.start':
+                    sent.append(message['type'])
+                    raise RuntimeError('response header send failed')
+
+            with self.assertRaises(Exception) as raised:
+                await response(request.scope, receive, send)
+            self.assertTrue(sent, str(raised.exception))
+            self.assertEqual(len(self.app.state.bus._subs), 0)
+
+        asyncio.run(scenario())
+
+
     def test_owner_ui_alone_can_register_issue_and_transfer(self):
         self.assertEqual(self.c.post(BASE + '/roles', json={'role_id': 'alpha'}).status_code, 403)
         self.assertEqual(self.c.post(BASE + '/roles', json={'role_id': 'alpha'}, headers=WORKER).status_code, 403)
