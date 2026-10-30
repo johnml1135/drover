@@ -145,3 +145,27 @@ class HardeningFixtures(Base):
         super().setUp()
         self.allow["codex"] = False
         self.t = 1_700_000_000.0
+
+
+class CompletionWake(Base):
+    def test_post_commit_hint_is_once_per_reaped_run_and_does_not_bypass_stop(self):
+        task = self.task()
+        self.d.tick()
+        run_id = self.fl.specs[0]["run_id"]
+        observed = []
+
+        def committed(run_ids):
+            rows = ops.events(self.conn, kind="worker-done")
+            outcomes = {r["id"]: r["outcome"] for r in ops.list_runs(self.conn, task)}
+            observed.append((run_ids, bool(rows), outcomes.get(run_id)))
+
+        self.d.completion_wake = committed
+        self.finish(0, res("done", DONE))
+        ops.set_setting(self.conn, "dispatch_enabled", "false")
+        out = self.d.tick()
+        self.assertEqual(out["reaped"], [run_id])
+        self.assertEqual(observed, [((run_id,), True, "done")])
+        self.assertEqual(self.status(task), "running")  # wake did not admit a gate while dispatch was stopped
+
+        self.d.tick()
+        self.assertEqual(len(observed), 1)                 # duplicate ticks cannot reapply the completion

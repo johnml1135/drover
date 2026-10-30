@@ -16,7 +16,7 @@ from drover.ledger import connect, ops
 from drover.lock import FileLock, LockHeld
 from drover.notifications import Notifications
 from hub.dispatch import DispatcherService, HubPort, LandingService
-from hub.events import Bus
+from hub.events import Bus, CoalescedWake
 from hub.settings import Settings
 from hub.store import Store
 
@@ -138,6 +138,57 @@ class Service(Base):
         self.addCleanup(svc.stop)
         self.wait(lambda: made and made[0].ticks >= 3)
         self.assertIn("boom", svc.error)
+
+    def test_coalesced_wake_observes_registration_before_wait_and_collapses_duplicates(self):
+        wake = CoalescedWake()
+        before = wake.generation()
+        wake.wake()
+        wake.wake()
+        self.assertTrue(wake.wait(before, timeout=0.1))
+        current = wake.generation()
+        self.assertFalse(wake.wait(current, timeout=0.01))
+
+    def test_dispatcher_wake_during_tick_is_not_lost_and_stop_interrupts_periodic_wait(self):
+        entered, release = threading.Event(), threading.Event()
+
+        class SlowFirst(FakeDispatcher):
+            def tick(self):
+                super().tick()
+                if self.ticks == 1:
+                    entered.set()
+                    release.wait(2)
+
+        settings = Settings(token="t", dispatcher_lock=Path(self.lock), dispatch_interval_s=3600,
+                            runs_dir=Path(self.tmp.name) / "runs")
+        made = []
+        svc = DispatcherService(self.store, settings,
+                                make_dispatcher=lambda port: made.append(SlowFirst(port)) or made[-1])
+        self.assertTrue(svc.start())
+        self.addCleanup(svc.stop)
+        self.wait(entered.is_set)
+        svc.wake_dispatcher()
+        release.set()
+        self.wait(lambda: made and made[0].ticks >= 2)
+        before_stop = time.monotonic()
+        svc.stop()
+        self.assertLess(time.monotonic() - before_stop, 1)
+        self.assertEqual(made[0].ticks, 2)
+
+    def test_committed_completion_hint_wakes_dispatcher_and_landing(self):
+        counts = []
+        landing = LandingService(self.store, self.settings, interval_s=3600)
+        original_tick = landing.tick
+        landing.tick = lambda: counts.append("tick") or original_tick()
+        made = []
+        svc = DispatcherService(self.store, self.settings,
+                                make_dispatcher=lambda port: made.append(FakeDispatcher(port)) or made[-1],
+                                landing_service=landing)
+        self.assertTrue(svc.start())
+        self.addCleanup(svc.stop)
+        self.wait(lambda: made and made[0].ticks >= 1 and len(counts) >= 1)
+        dispatch_ticks, landing_ticks = made[0].ticks, len(counts)
+        svc.completion_committed((17, 18))
+        self.wait(lambda: made[0].ticks > dispatch_ticks and len(counts) > landing_ticks)
 
     def test_hub_port_publishes_dispatcher_changes_to_the_ui_bus(self):
         t = self.store.create_task("t", "p")

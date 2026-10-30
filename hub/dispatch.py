@@ -14,6 +14,7 @@ from drover.lock import FileLock, LockHeld
 from drover.notifications import Notifications
 from drover.pipeline import Pipeline, truthy
 from drover.port import DirectPort
+from .events import CoalescedWake
 
 log = logging.getLogger("hub.dispatcher")
 
@@ -67,6 +68,7 @@ class LandingService:
 
     def __init__(self, store, settings, interval_s=LANDING_INTERVAL_S, repos_dir=None):
         self.store, self.settings, self.interval_s = store, settings, interval_s
+        self._wake = CoalescedWake()
         self.repos_dir = repos_dir
         self.ci = ci.CI(settings.runs_dir, RunnerLauncher(runs_dir=settings.runs_dir, distro=self._distro))
         self._stop, self._thread, self.error = threading.Event(), None, None
@@ -83,15 +85,21 @@ class LandingService:
 
     def _loop(self):
         while not self._stop.is_set():
+            generation = self._wake.generation()
             try:
                 self.tick()
             except Exception as e:                     # a bad pass must not end the loop
                 self.error = repr(e)
                 log.exception("landing pass failed")
-            self._stop.wait(self.interval_s)
+            self._wake.wait(generation, self.interval_s)
+
+    def wake(self):
+        """Request one more ledger-derived landing pass; this hint grants no landing eligibility."""
+        self._wake.wake()
 
     def stop(self, timeout=10):
         self._stop.set()
+        self._wake.wake()
         if self._thread is not None:
             self._thread.join(timeout)
 
@@ -171,6 +179,7 @@ class DispatcherService:
         self.make_dispatcher = make_dispatcher or self._default_dispatcher
         self.lock = FileLock(lock_path or settings.dispatcher_lock)
         self._stop, self._thread = threading.Event(), None
+        self._wake = CoalescedWake()
         self.dispatcher, self.error = None, None
 
     def _distro(self):
@@ -183,9 +192,26 @@ class DispatcherService:
 
     def _default_dispatcher(self, port):
         from drover.directors import DirectorRuntime, RunnerDirectorAdapter
-        launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins)
-        runtime = DispatchRuntime(launcher, directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)))
+        launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins,
+                                  on_complete=self.wake_dispatcher)
+        runtime = DispatchRuntime(launcher, directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)),
+                                  completion_wake=self.completion_committed)
         return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), runtime)
+
+    def wake_dispatcher(self):
+        """Request a dispatcher pass after a runner result becomes available."""
+        self._wake.wake()
+
+    def wake_landing(self):
+        """Request a landing pass; normal reviewed-task selection remains authoritative."""
+        if self.landing is not None:
+            self.landing.wake()
+
+    def completion_committed(self, run_ids):
+        """Wake both ledger consumers only after dispatcher reap has committed its completion effects."""
+        if run_ids:
+            self.wake_dispatcher()
+            self.wake_landing()
 
     @property
     def running(self):
@@ -213,6 +239,7 @@ class DispatcherService:
             port = HubPort(self.store)                  # built here: the ledger connection is per thread
             self.dispatcher = self.make_dispatcher(port)
             while not self._stop.is_set():
+                generation = self._wake.generation()
                 try:
                     self.dispatcher.tick()
                 except Exception as e:                  # a bad tick must not end the dispatcher
@@ -231,13 +258,14 @@ class DispatcherService:
                 except Exception as e:
                     self.error = repr(e)
                     log.exception('landing question monitor failed')
-                self._stop.wait(self.settings.dispatch_interval_s)
+                self._wake.wait(generation, self.settings.dispatch_interval_s)
         except Exception as e:
             self.error = repr(e)
             log.exception("dispatcher thread died")
 
     def stop(self, timeout=10):
         self._stop.set()
+        self._wake.wake()
         if self.landing is not None:
             self.landing.stop(timeout)
         if self._thread is not None:

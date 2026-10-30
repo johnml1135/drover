@@ -255,6 +255,24 @@ class Launcher:
         raise NotImplementedError
 
 
+class _NotifyingRunnerHandle(RunnerHandle):
+    """RunnerHandle that emits a disposable hint after its result is available."""
+    def __init__(self, *args, on_complete, **kw):
+        autostart = kw.pop("autostart", True)
+        super().__init__(*args, autostart=False, **kw)
+        self._on_complete = on_complete
+        if autostart:
+            self._thread.start()
+
+    def _publish(self, result):
+        super()._publish(result)
+        if self.result is not None:
+            try:
+                self._on_complete()
+            except Exception:
+                pass  # a lost hint is recovered by the dispatcher's bounded periodic scan
+
+
 def _fresh_run_dir(d):
     """An empty run directory: a reused run id must not inherit the old output, record, status or stop-request."""
     d.mkdir(parents=True, exist_ok=True)
@@ -282,14 +300,23 @@ class RunnerLauncher(Launcher):
     imports. The brief is the file in.txt (the runner opens it as the worker's stdin)."""
 
     def __init__(self, runs_dir=None, distro=None, drover_dir=None, python=None, run=subprocess.run,
-                 which=shutil.which, ceilings=None, windows=sys.platform == "win32", wsl_bins=None, **handle_kw):
+                 which=shutil.which, ceilings=None, windows=sys.platform == "win32", wsl_bins=None,
+                 on_complete=None, **handle_kw):
         self.windows = windows
         self.wsl_bins = wsl_bins or {}      # {'claude': '/abs/claude', 'codex': ...} or a callable returning it (ledger settings)
         self.runs_dir = str(runs_dir or config.state_path("runs"))
         self._distro, self.run, self.which = distro, run, which
         self.drover_dir = str(drover_dir or Path(__file__).resolve().parents[1])
         self.python, self.handle_kw = python or sys.executable, handle_kw
+        self.on_complete = on_complete
         self.ceilings = {"haiku": HAIKU_CEILING, **(ceilings or {})}
+
+    def _handle(self, spec, pid=None):
+        handle = _NotifyingRunnerHandle if self.on_complete is not None else RunnerHandle
+        options = dict(self.handle_kw)
+        if self.on_complete is not None:
+            options["on_complete"] = self.on_complete
+        return handle(spec, self.runs_dir, self.ceiling(spec["model"]), pid=pid, **options)
 
     @property
     def distro(self):
@@ -392,7 +419,7 @@ class RunnerLauncher(Launcher):
         if err and not started:
             raise LaunchError(err[:300], cancel_requested=self.cancel(rid, spec["nonce"]))
         pid = (info or {}).get("runner_pid") or (st or {}).get("runner_pid")
-        return RunnerHandle(spec, self.runs_dir, self.ceiling(spec["model"]), pid=pid, **self.handle_kw)
+        return self._handle(spec, pid=pid)
 
     def cancel(self, run_id, nonce=None):
         """Write the nonce-checked stop-request for a runner that may yet start. With the launch's nonce it is
@@ -413,7 +440,7 @@ class RunnerLauncher(Launcher):
 
     def adopt(self, spec, started=None):
         """A handle for a run that is already going (or finished) in its run directory, read from the files."""
-        h = RunnerHandle(spec, self.runs_dir, self.ceiling(spec["model"]), **self.handle_kw)
+        h = self._handle(spec)
         if started is not None:
             h.started = started
         return h

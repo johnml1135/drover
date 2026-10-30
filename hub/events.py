@@ -3,10 +3,42 @@ import asyncio
 import itertools
 import threading
 from collections import deque
-from fastapi import APIRouter, Request
-from fastapi.sse import EventSourceResponse
+
+try:
+    from fastapi import APIRouter, Request
+    from fastapi.sse import EventSourceResponse
+except ModuleNotFoundError as exc:  # Bus and CoalescedWake are also useful without hub dependencies.
+    if exc.name not in ("fastapi", "fastapi.sse"):
+        raise
+    APIRouter = EventSourceResponse = None
+    Request = object
 
 QUEUE_MAX = 256  # above the replay history so a replay always fits
+
+
+class CoalescedWake:
+    """A disposable, thread-safe hint with a generation to avoid clear/wait races.
+
+    Callers snapshot before doing work, then wait for a later generation. Any
+    number of wake calls during that work collapse into one immediate pass.
+    """
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._generation = 0
+
+    def generation(self) -> int:
+        with self._condition:
+            return self._generation
+
+    def wake(self) -> None:
+        with self._condition:
+            self._generation += 1
+            self._condition.notify_all()
+
+    def wait(self, after: int, timeout: float | None = None) -> bool:
+        with self._condition:
+            return self._condition.wait_for(lambda: self._generation != after, timeout)
+
 
 def _offer(q: asyncio.Queue, ev: dict) -> None:
     """Put without growing unbounded: drop the oldest and tell the client to resync."""
@@ -71,10 +103,11 @@ async def stream(bus: Bus, after_id: int | None = None, limit: int | None = None
             sent += 1
     finally:
         bus.unsubscribe(q)
-router = APIRouter()
-@router.get("/events", response_class=EventSourceResponse)
-async def sse(request: Request, limit: int | None = None):
-    last = request.headers.get("last-event-id")
-    after = int(last) if last and last.isdigit() else None
-    async for ev in stream(request.app.state.bus, after, limit):
-        yield ev
+router = APIRouter() if APIRouter is not None else None
+if router is not None:
+    @router.get("/events", response_class=EventSourceResponse)
+    async def sse(request: Request, limit: int | None = None):
+        last = request.headers.get("last-event-id")
+        after = int(last) if last and last.isdigit() else None
+        async for ev in stream(request.app.state.bus, after, limit):
+            yield ev

@@ -302,6 +302,25 @@ class Commands(Base):
         self.set_status(state="exited", exit_code=0)
         self.assertEqual(wait_for(h.poll)["status"], "no-record")     # not the old record's "done"
 
+    def test_completion_hint_fires_once_for_launched_and_adopted_handles(self):
+        wakes = []
+        self.rl.on_complete = lambda: wakes.append("wake")
+        h = self.start()
+        self.record()
+        self.set_status(state="exited", exit_code=0)
+        self.assertEqual(wait_for(h.poll)["status"], "done")
+        self.assertEqual(wakes, ["wake"])
+
+        d = self.dir(8)
+        d.mkdir(parents=True)
+        runner.write_json_atomic(d / runner.STATUS_FILE, {
+            "run_id": "8", "state": "exited", "pid": 1, "runner_pid": 2, "nonce": NONCE,
+            "exit_code": 0, "reason": None, "started": "x", "ended": "x", "detached_in_job": False})
+        runner.write_json_atomic(d / runner.RECORD_FILE, runner.parse_action_record(DONE))
+        adopted = self.rl.adopt(spec(run_id=8, adopted=True))
+        self.assertEqual(wait_for(adopted.poll)["status"], "done")
+        self.assertEqual(wakes, ["wake", "wake"])
+
 
 
 

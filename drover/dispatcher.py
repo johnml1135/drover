@@ -77,6 +77,7 @@ class DispatchRuntime:
     resources: object = resources_mod.tick
     now: object = time.time
     directors: object = None
+    completion_wake: object = None  # receives run ids after their completion has been committed by reap()
 
 
 class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps, AdmissionSteps):
@@ -98,6 +99,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         self.finish_tries = {}
         self.live = {}                       # run_id -> (handle, task_id, spec)
         self.directors = runtime.directors
+        self.completion_wake = runtime.completion_wake
         self._control_epoch = None
         self.missed = {}                     # run_id -> consecutive clean scans that did not find its runner
         self.cursor = None                   # last event id seen by the stale-brief check
@@ -154,7 +156,13 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         beat = {"live": len(self.live), "state": "running" if enabled else "paused", "gate_queue": self.ci_runners.snapshot()}
         p.heartbeat(beat)
         planner_tasks = {tid for _, _, sp in self.live.values() if sp.get("role") == "planner" for tid in sp["task_ids"]}
-        out = {"reaped": self.reap(), "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
+        reaped = self.reap()
+        if reaped and self.completion_wake is not None:
+            try:
+                self.completion_wake(tuple(reaped))
+            except Exception:
+                pass  # a lost hint is recovered by the next bounded periodic tick
+        out = {"reaped": reaped, "launched": [], "verdict": None, "admitted": [], "recovered": [], "gated": [],
                "reviewed": [], "paused": not enabled}
         in_use = lambda: p.conn.execute("SELECT COUNT(*) FROM runs WHERE ended IS NULL AND role<>'gate'").fetchone()[0]
         def report(skipped, stop=""):      # heartbeat `not_dispatched` {reason: count}; no event per task
