@@ -51,7 +51,7 @@ class PolicyCase:
         def tag(path, name, owner, expires, **kw):
             self.source.fixture(path).tags[rcw_repo.key(path)] = {'owner': owner, 'repo': name}
         # The fake repository stores both placements on this host's temp filesystem.
-        contexts = [patch.object(placement, 'wsl_worktrees_root', return_value=str(root / 'ext4')),
+        contexts = [patch.object(repos, 'wsl_worktrees_root', return_value=str(root / 'ext4')),
                     patch.object(placement, 'drive', return_value='T'),
                     patch.object(pipeline.Repository, 'start_ref', lambda adapter, repo, branch, base, remote:
                                  'refs/heads/' + branch if branch in self.source.fixture(repo).branches else base),

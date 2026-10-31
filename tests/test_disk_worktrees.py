@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from unittest import mock
 
-from drover import config, placement
+from drover import config, placement, repos
 from drover.ledger import states
 from tests.disk_fixture import DiskCase
 from tests.disk_memory import MemoryWorktreeCase
@@ -16,7 +16,7 @@ class WorktreeCase(DiskCase):
         super().setUp()
         from unittest.mock import patch
         from drover import placement
-        root = patch.object(placement, 'wsl_worktrees_root', return_value=str(self.root / 'ext4'))   # never ~/work
+        root = patch.object(repos, 'wsl_worktrees_root', return_value=str(self.root / 'ext4'))   # never ~/work
         root.start()
         self.addCleanup(root.stop)
         self.r = Repo(ignore='generated/\ndata/\n.venv/\n')

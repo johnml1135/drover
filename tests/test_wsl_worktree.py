@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from drover import placement
+from drover import placement, repos
 
 EXT4 = "/home/dev/work/acme.worktrees/drover-T1"
 
@@ -117,7 +117,7 @@ class CleanupCoversBothRoots(unittest.TestCase):
         machine = {"name": "a", "worktrees": "H:\\repos\\a.worktrees"}
         self.assertEqual(len(disk_paths.worktree_roots(machine)), 2)
         with patch.object(placement, "IS_WINDOWS", False) as _placement_patch_4, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_4), patch('drover.placement_git.IS_WINDOWS', _placement_patch_4), patch('drover.placement_host.IS_WINDOWS', _placement_patch_4), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_4), patch('drover.placement_process.IS_WINDOWS', _placement_patch_4), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_4), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_4), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_4), \
-                patch.object(placement, "wsl_worktrees_root", return_value="/home/dev/work"):
+                patch.object(repos, "wsl_worktrees_root", return_value="/home/dev/work"):
             mine = disk_paths.worktree_roots(machine, this_side=True)
         self.assertEqual(mine[-1], Path("/home/dev/work/a.worktrees"))         # WSL scans ext4 as well
         with patch.object(placement, "IS_WINDOWS", True) as _placement_patch_5, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_5), patch('drover.placement_git.IS_WINDOWS', _placement_patch_5), patch('drover.placement_host.IS_WINDOWS', _placement_patch_5), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_5), patch('drover.placement_process.IS_WINDOWS', _placement_patch_5), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_5), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_5), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_5):
@@ -135,7 +135,7 @@ class CleanupScansWslRoot(WorktreeCase):
         stray = owning_root / 'stray'
         stray.mkdir(parents=True)
         (stray / 'file.txt').write_text('x')
-        with patch.object(placement, 'wsl_worktrees_root', return_value=str(wsl_root)):
+        with patch.object(repos, 'wsl_worktrees_root', return_value=str(wsl_root)):
             result = self.cleanup()
         self.assertTrue(any(i['path'] == str(stray) for i in result['items']), result['items'])
         self.assertTrue(any(side == 'wsl' and request['stage'] == 3 for side, request in self.calls), self.calls)

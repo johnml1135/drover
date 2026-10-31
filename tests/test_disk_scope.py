@@ -3,7 +3,7 @@ import copy
 import os
 from unittest import mock
 
-from drover import placement
+from drover import disk_runtime, placement
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 
 
@@ -53,7 +53,7 @@ class Scope(WorktreeCase):
                 # Simulated owning side and path mapping; Git always uses the real native platform.
                 with mock.patch.object(placement, 'cleanup_side', return_value=side) as _placement_patch_1, mock.patch('drover.placement_process.cleanup_side', _placement_patch_1), \
                      mock.patch.object(placement, 'cleanup_path_side', return_value=side), \
-                     mock.patch.object(placement, 'cleanup_runtime', return_value=runtime), \
+                     mock.patch.object(disk_runtime, 'cleanup_runtime', return_value=runtime), \
                      mock.patch.object(placement, 'cleanup_processes',
                                        return_value=type('Idle', (), {'busy': lambda _, p: False})()), \
                      mock.patch('tempfile.gettempdir', return_value=str(self.temp_root)), \

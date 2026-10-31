@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_preflight, placement
+from drover import config, disk_preflight, disk_runtime, placement
 from drover.disk_side import serve
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
@@ -193,7 +193,7 @@ class WorkerSafety(ProcessFreeDiskCase):
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(terminate=lambda: False, close=lambda: None)):
             with self.assertRaises(placement.CleanupWorkerError):
                 disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
-                    runtime.now, runtime.read, placement.cleanup_call, runtime.toast))
+                    runtime.now, runtime.read, disk_runtime.cleanup_call, runtime.toast))
         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
 
     @integration
@@ -272,7 +272,7 @@ subprocess.run = _bounded_cache_run
                     try:
                         with patch.object(subprocess, 'run', side_effect=bounded), \
                                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-                            result = placement.cleanup_call(self.side, request)
+                            result = disk_runtime.cleanup_call(self.side, request)
                         if observation == 'without-readiness':
                             self.assertFalse(pidfile.exists(), result)
                             self.assertTrue(result['errors'], result)

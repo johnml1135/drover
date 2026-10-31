@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, placement
+from drover import config, placement, repos
 
 REPO = Path(__file__).resolve().parents[1]
 TRACE_EXPECTED = json.loads((REPO / "tests/config_trace.json").read_text(encoding="utf-8"))
@@ -286,10 +286,10 @@ class Validation(unittest.TestCase):
 
     def test_wsl_worktree_root_resolves_for_the_configured_user(self):
         paths = {"wsl_worktrees": "~/work", "wsl_user": "dev"}
-        self.assertEqual(placement.wsl_worktrees_root(paths, nt=True), "/home/dev/work")
-        self.assertEqual(placement.wsl_worktrees_root({**paths, "wsl_worktrees": "/srv/wt/"}, nt=True), "/srv/wt")
+        self.assertEqual(repos.wsl_worktrees_root(paths, nt=True), "/home/dev/work")
+        self.assertEqual(repos.wsl_worktrees_root({**paths, "wsl_worktrees": "/srv/wt/"}, nt=True), "/srv/wt")
         with patch.object(placement.os.path, "expanduser", return_value="/home/linuxdev/work") as expand:
-            self.assertEqual(placement.wsl_worktrees_root(paths, nt=False), "/home/linuxdev/work")
+            self.assertEqual(repos.wsl_worktrees_root(paths, nt=False), "/home/linuxdev/work")
         expand.assert_called_once_with("~/work")
 
     def test_seats(self):

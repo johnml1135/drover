@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import config, disk, disk_state, placement, repos
+from . import config, disk, disk_runtime, disk_state, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, CleanupState, decide, decide_and_store, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
 
@@ -116,7 +116,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
     cfg = config.get() if cfg is None else cfg
     if mode not in ('on-demand', 'triggered', 'daily'):
         raise ValueError('unknown cleanup mode')
-    runtime = placement.cleanup_runtime(cfg) if runtime is None else runtime
+    runtime = disk_runtime.cleanup_runtime(cfg) if runtime is None else runtime
     result = dict(mode=mode, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False, peak_intermediate_bytes=0)
     state_dir = config.state_dir(cfg)
     tasks = _task_snapshot(state_dir)
@@ -260,7 +260,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
 
 def remove_approved(cfg: dict, repo: str, path: str, *, runtime=None) -> dict:
     """Explicit owner authorization replaces settlement, never the safety checks."""
-    runtime = placement.cleanup_runtime(cfg) if runtime is None else runtime
+    runtime = disk_runtime.cleanup_runtime(cfg) if runtime is None else runtime
     out = dict(ok=False, items=[], errors=[])
     try:
         with disk_state.CleanupLock(config.state_dir(cfg)):

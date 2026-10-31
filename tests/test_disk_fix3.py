@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState
 from tests import test_disk_fix2 as fix2
+from drover import disk_runtime
 
 
 @contextmanager
@@ -64,7 +65,7 @@ class CancellationSafety(ProcessFreeDiskCase):
                                 terminate=confirm, close=lambda: None)):
                         try:
                             disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
-                                rt.now, rt.read, placement.cleanup_call, rt.toast))
+                                rt.now, rt.read, disk_runtime.cleanup_call, rt.toast))
                         except BaseException as caught:
                             self.assertIsInstance(caught, type(error) if confirmed else placement.CleanupWorkerError)
                         else:
@@ -95,7 +96,7 @@ class CancellationSafety(ProcessFreeDiskCase):
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
                     terminate=terminate, close=lambda: None)):
             try:
-                placement.cleanup_call('windows', request)
+                disk_runtime.cleanup_call('windows', request)
             except BaseException as error:
                 self.assertIsInstance(error, placement.CleanupWorkerError)
             else:

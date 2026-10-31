@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from drover import ci, placement, repos, task_access, tool_discovery
 from drover.launch import RunnerLauncher
+from tests import placement_trace
 from tests.fakeci import resources_go
 from tests.gitfix import Repo
 
@@ -215,3 +216,33 @@ class NativeCleanupIdentity(unittest.TestCase):
                 identity, alive = self.identity(**kwargs)
                 self.assertIsNone(identity['birth'])
                 self.assertIsNone(alive)
+
+
+class PlacementTrace(unittest.TestCase):
+    def test_existing_cleanup_and_side_decisions(self):
+        """Cleanup worker calls, enqueue, runtime, schedule plans and protected-root refusals keep one frozen trace."""
+        orchestration = ('cleanup_runtime', 'cleanup_call', 'cleanup_enqueue', 'disk_schedule_plan', 'wsl_worktrees_root')
+        self.assertEqual([name for name in orchestration if hasattr(placement, name)], [], 'placement owns no disk orchestration')
+        expected = json.loads((Path(__file__).parent / 'placement_trace.json').read_text(encoding='utf-8'))
+        actual = placement_trace.collect()
+        self.assertEqual(sorted(actual), sorted(expected))
+        for key in expected:
+            with self.subTest(key=key):
+                self.assertEqual(actual[key], expected[key])
+
+
+class ProtectedPathParts(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'known defect, not fixed in a MOVE: cleanup_parts upper-cases on Windows, '
+                     'so the lowercase .git/.venv part check never fires there; only repository_tree protects')
+    def test_cache_folder_inside_dot_git_or_dot_venv_is_refused(self):
+        from drover import config, disk_preflight
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp).resolve() / 'state'
+            state.mkdir()
+            for part in ('.git', '.venv'):
+                folder = Path(tmp).resolve() / 'cache' / part / 'x'
+                cfg = config.validate({'paths': {'state_dir': str(state)}})
+                policy = dict(cfg['disk_cleanup'], caches=[dict(path=str(folder), placement='wsl')])
+                with self.subTest(part=part), patch.object(disk_preflight, 'repository_tree', return_value=False):
+                    with self.assertRaisesRegex(config.ConfigError, 'folder cache overlaps protected path'):
+                        disk_preflight.check_cache_folders(dict(cfg, disk_cleanup=policy))

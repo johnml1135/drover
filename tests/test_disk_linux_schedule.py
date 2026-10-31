@@ -1,5 +1,6 @@
 """Linux services are user timers and contain no elevation or WSL invocation."""
 import os
+from drover import disk_runtime, disk_schedule, disk_schedule_steps
 import subprocess
 from unittest.mock import patch
 
@@ -16,7 +17,7 @@ class Linux(DiskCase):
             return subprocess.CompletedProcess(argv, 0, '', '')
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(xdg), 'WSL_INTEROP': '', 'WSL_DISTRO_NAME': ''}), \
                 patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
-            plan = placement.disk_schedule_plan(self.cfg)
+            plan = disk_schedule_steps.schedule_plan(self.cfg)
             self.assertEqual(calls, [])
             self.assertTrue(plan['files'])
             for path, body in plan['files'].items():
@@ -42,7 +43,7 @@ class Linux(DiskCase):
         from drover import placement, disk_cleanup, disk_schedule
         rt = self.runtime()
         def call(side, request):
-            return placement.cleanup_call(side, request) if side == 'windows' else {
+            return disk_runtime.cleanup_call(side, request) if side == 'windows' else {
                 'items': [], 'errors': [], 'reclaimed_bytes': 0}
         from drover.disk_cleanup import CleanupRuntime
         with patch.dict(os.environ, {'WSL_DISTRO_NAME': '', 'WSL_INTEROP': '',
@@ -59,4 +60,4 @@ class Linux(DiskCase):
         with patch.dict(os.environ, {'WSL_DISTRO_NAME': 'FixtureDistro'}), \
                 patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3):
             with self.assertRaisesRegex(ValueError, 'Windows'):
-                placement.disk_schedule_plan(self.cfg)
+                disk_schedule_steps.schedule_plan(self.cfg)

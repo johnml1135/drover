@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from drover import config, disk, disk_state, placement, resources
+from drover import config, disk, disk_runtime, disk_state, placement, resources
 from tests import test_disk_trigger as base
 from tests.disk_fixture import DiskCase
 
@@ -216,7 +216,7 @@ class SingleProcess(Trigger):
         proc = type('P', (), {'pid': 4242})()
         with patch.object(placement, 'detach', return_value=(proc, False)), \
                 patch.object(placement, 'cleanup_identity', side_effect=__import__('subprocess').TimeoutExpired('ps', 15)) as _placement_patch_1, patch('drover.placement_process.cleanup_identity', _placement_patch_1), patch('drover.placement_proof.cleanup_identity', _placement_patch_1):
-            answer = placement.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
+            answer = disk_runtime.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
         self.assertEqual(answer['identity']['pid'], 4242)
         self.assertIsNone(answer['identity']['birth'])
 
@@ -224,7 +224,7 @@ class SingleProcess(Trigger):
         proc = type('P', (), {'pid': 4242})()
         with patch.object(placement, 'detach', return_value=(proc, False)), \
                 patch.object(placement, 'cleanup_identity', return_value=dict(pid=4242, birth='absent', side=placement.cleanup_side())) as _placement_patch_2, patch('drover.placement_process.cleanup_identity', _placement_patch_2), patch('drover.placement_proof.cleanup_identity', _placement_patch_2):
-            answer = placement.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
+            answer = disk_runtime.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
         self.assertIsNone(answer['identity']['birth'])
 
     def test_running_unknown_birth_claim_blocks_a_second_launch(self):

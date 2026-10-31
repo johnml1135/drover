@@ -4,7 +4,7 @@ import math
 import shutil
 import subprocess
 
-from . import config, placement
+from . import config, disk_runtime, placement
 
 
 def _free(path):
@@ -313,7 +313,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
         return result
     claim = launches[0][1]
     try:
-        answer = enqueue() if enqueue is not None else placement.cleanup_enqueue(cfg, claim)
+        answer = enqueue() if enqueue is not None else disk_runtime.cleanup_enqueue(cfg, claim)
     except BaseException:
         def release(state):
             for name, claim in launches:
@@ -371,7 +371,7 @@ def main(argv=None):
                         from . import disk_state
                         if disk_state.read(config.state_dir(cfg)).get('report_scope') != scope_key(cfg):
                             raise ValueError('complete a dry report for the same cleanup scope before apply')
-                    return placement.cleanup_enqueue(cfg, {'applied': args.apply, 'id': 'scheduled'})
+                    return disk_runtime.cleanup_enqueue(cfg, {'applied': args.apply, 'id': 'scheduled'})
             answer = tick(cfg, enqueue=enqueue)
         print(json.dumps(answer, indent=2))
         return 0

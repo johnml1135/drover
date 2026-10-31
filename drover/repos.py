@@ -29,11 +29,25 @@ def repo_path(prog):
     return prog["repo"]
 
 
+def wsl_worktrees_root(paths=None, nt=None):
+    """The WSL-side root for worktrees (`paths.wsl_worktrees`), as an absolute Linux path. `~` is the home of
+    `paths.wsl_user` (else the Windows user name) when this host is Windows, else this user's own home."""
+    paths = paths or config.get()["paths"]
+    root = str(paths["wsl_worktrees"]).rstrip("/") or "/"
+    if root == "~" or root.startswith("~/"):
+        if placement.IS_WINDOWS if nt is None else nt:
+            user = paths.get("wsl_user") or os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+            root = ("/root" if user == "root" else f"/home/{user}") + root[1:]
+        else:
+            root = os.path.expanduser(root)
+    return root
+
+
 def worktree_root(prog, where="windows"):
     """Where a repo's worktrees go for a placement. Windows keeps the configured root (`worktrees`); WSL gets
     `<paths.wsl_worktrees>/<name>.worktrees` on the distro's own filesystem (ADR 0007)."""
     if where == "wsl":
-        return placement.wsl_worktrees_root().rstrip("/") + f"/{prog['name']}.worktrees"
+        return wsl_worktrees_root().rstrip("/") + f"/{prog['name']}.worktrees"
     return prog["worktrees"]
 
 

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_state, placement
+from drover import config, disk_schedule_steps, disk_state, placement
 from tests.disk_fixture import DiskCase
 
 
@@ -97,7 +97,7 @@ class ProcessPolicy(DiskCase):
         from drover.disk_schedule import install
         path = self.state / 'config.toml'
         path.write_text(config.dumps(dict(disk_cleanup=dict(temp_roots=[]))))
-        with patch.object(placement, 'disk_schedule_plan', return_value=dict(files={}, argv=[])):
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=dict(files={}, argv=[])):
             install(self.cfg)
             saved = path.read_bytes()
             self.assertEqual(set(config._read(path)['disk_cleanup']['process_ignore']), expected)

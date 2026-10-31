@@ -1,5 +1,6 @@
 """Schedule generation is inspected without invoking any operating-system installer."""
 import copy
+from drover import disk_runtime, disk_schedule, disk_schedule_steps
 import json
 import subprocess
 import xml.etree.ElementTree as ET
@@ -12,7 +13,7 @@ class Windows(DiskCase):
     def plan(self, apply=False):
         from drover import placement
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
-            return placement.disk_schedule_plan(self.cfg, apply=apply)
+            return disk_schedule_steps.schedule_plan(self.cfg, apply=apply)
 
     def test_current_user_15min_and_daily_argv(self):
         from drover import placement
@@ -104,7 +105,7 @@ class Windows(DiskCase):
         with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch('drover.disk._free', return_value=180), \
                 patch.object(disk_cleanup, 'scope_key', side_effect=AssertionError('healthy tick inventoried scope')), \
-                patch.object(placement, 'cleanup_enqueue', side_effect=AssertionError('healthy tick launched cleanup')):
+                patch.object(disk_runtime, 'cleanup_enqueue', side_effect=AssertionError('healthy tick launched cleanup')):
             self.assertEqual(disk.main(['tick', '--apply']), 0)
 
     def test_calendar_trigger_base_elements_precede_daily_schedule(self):

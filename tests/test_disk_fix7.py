@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, config_defaults, disk_state, placement, repos
+from drover import config, config_defaults, disk_schedule_steps, disk_state, placement, repos
 from tests.disk_fixture import DiskCase
 from tests.gitfix import Repo
 
@@ -199,7 +199,7 @@ class HelperPolicy(DiskCase):
         self.assertEqual(config.migrate_disk_config(migrated), migrated)
         path = self.state / 'config.toml'
         path.write_text(config.dumps(raw))
-        with patch.object(placement, 'disk_schedule_plan', return_value=dict(files={}, argv=[])):
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=dict(files={}, argv=[])):
             install(self.cfg)
             saved = path.read_bytes()
             self.assertEqual(set(config._read(path)['disk_cleanup']['process_ignore']), expected)
@@ -224,7 +224,7 @@ class HelperPolicy(DiskCase):
                          previous + ['owner-helper'])
         path = self.state / 'config.toml'
         path.write_text(config.dumps(raw))
-        with patch.object(placement, 'disk_schedule_plan', return_value=dict(files={}, argv=[])):
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=dict(files={}, argv=[])):
             install(self.cfg)
             saved = path.read_bytes()
             self.assertEqual(set(config._read(path)['disk_cleanup']['process_ignore']), expected)

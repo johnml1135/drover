@@ -6,7 +6,7 @@ import subprocess
 import sys
 from unittest.mock import patch
 
-from drover import placement
+from drover import disk_runtime, placement
 from tests.disk_fixture import DiskCase, empty_result
 
 
@@ -27,7 +27,7 @@ class PlacementSafety(DiskCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(empty_result()), '')
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(subprocess, 'run', side_effect=execute):
             with patch.object(placement, 'recover_ci_children', return_value=True):
-                placement.cleanup_call('wsl', self.request())
+                disk_runtime.cleanup_call('wsl', self.request())
         self.assertEqual(observed[0]['paths']['temp_roots'], ['/home/user/temp'])
 
     def test_empty_temp_policy_stays_empty(self):
@@ -82,7 +82,7 @@ class PlacementSafety(DiskCase):
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
                     terminate=confirm, close=lambda: None)):
             result = disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
-                rt.now, rt.read, placement.cleanup_call, rt.toast))
+                rt.now, rt.read, disk_runtime.cleanup_call, rt.toast))
         self.assertTrue(confirmed)
         self.assertTrue(any(e.get('reason_code') == 'worker_timeout' for e in result['errors']))
         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
@@ -97,7 +97,7 @@ class PlacementSafety(DiskCase):
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
             with self.assertRaises(placement.CleanupWorkerError):
                 disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
-                    rt.now, rt.read, placement.cleanup_call, rt.toast))
+                    rt.now, rt.read, disk_runtime.cleanup_call, rt.toast))
         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
         self.assertTrue(list((self.state / 'disk').glob('worker-error-*.json')))
         self.assertIn('worker_timeout', (self.state / 'disk' / 'last-report.json').read_text())
@@ -115,7 +115,7 @@ class PlacementSafety(DiskCase):
             return execute(argv, **kwargs)
         with patch.object(subprocess, 'run', side_effect=bounded), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-            result = placement.cleanup_call(self.side, request)
+            result = disk_runtime.cleanup_call(self.side, request)
         self.assertEqual(result['errors'][0]['reason_code'], 'worker_timeout')
         self.assertTrue(result['errors'][0]['termination_confirmed'])
         self.assertTrue(list((self.state / 'disk').glob('worker-error-*.json')))
@@ -143,7 +143,7 @@ class PlacementSafety(DiskCase):
                 patch.object(disk_state, 'save_file', side_effect=no_evidence):
             with self.assertRaises(placement.CleanupWorkerError):
                 disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
-                    rt.now, rt.read, placement.cleanup_call, rt.toast))
+                    rt.now, rt.read, disk_runtime.cleanup_call, rt.toast))
         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
 
     def test_corrupt_worker_identity_cannot_release_lock(self):
@@ -158,7 +158,7 @@ class PlacementSafety(DiskCase):
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
             with self.assertRaises(placement.CleanupWorkerError):
                 disk_cleanup.run(self.cfg, apply=True, runtime=disk_cleanup.CleanupRuntime(
-                    rt.now, rt.read, placement.cleanup_call, rt.toast))
+                    rt.now, rt.read, disk_runtime.cleanup_call, rt.toast))
         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
 
     def test_cleanup_keeps_descendants_on_a_different_mount(self):

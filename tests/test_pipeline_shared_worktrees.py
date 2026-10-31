@@ -36,7 +36,7 @@ class SharedWorktrees(PolicyBase):
     def test_wsl_gate_creates_and_reuses_ext4(self):
         self.set_gate('wsl')
         ext4 = Path(self.tmp.name) / 'ext4'
-        with patch.object(placement, 'wsl_worktrees_root', return_value=str(ext4)):
+        with patch.object(repos, 'wsl_worktrees_root', return_value=str(ext4)):
             tid = self.task()
             wt = self.pipe.worktree(self.get(tid), 'wsl')
             with patch.object(placement, 'drive', return_value=None):

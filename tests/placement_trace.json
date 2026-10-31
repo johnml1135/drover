@@ -1,0 +1,744 @@
+{
+ "enqueue": {
+  "absent": {
+   "answer": {
+    "identity": {
+     "birth": null,
+     "pid": 77,
+     "side": "wsl"
+    }
+   },
+   "argv": [
+    "<PY>",
+    "-c",
+    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_cleanup import run;from drover.placement import lower_priority;lower_priority();run(json.loads(sys.argv[2]),mode=\"triggered\",apply=sys.argv[3]==\"1\")",
+    "<ROOT>",
+    true,
+    "0",
+    "claim-absent"
+   ],
+   "env_has_path": true,
+   "stream": "cleanup.log"
+  },
+  "error": {
+   "answer": {
+    "identity": {
+     "birth": null,
+     "pid": 77,
+     "side": "wsl"
+    }
+   },
+   "argv": [
+    "<PY>",
+    "-c",
+    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_cleanup import run;from drover.placement import lower_priority;lower_priority();run(json.loads(sys.argv[2]),mode=\"triggered\",apply=sys.argv[3]==\"1\")",
+    "<ROOT>",
+    true,
+    "0",
+    "claim-error"
+   ],
+   "env_has_path": true,
+   "stream": "cleanup.log"
+  },
+  "identity": {
+   "answer": {
+    "identity": {
+     "birth": "7:abc",
+     "pid": 77,
+     "side": "wsl"
+    }
+   },
+   "argv": [
+    "<PY>",
+    "-c",
+    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_cleanup import run;from drover.placement import lower_priority;lower_priority();run(json.loads(sys.argv[2]),mode=\"triggered\",apply=sys.argv[3]==\"1\")",
+    "<ROOT>",
+    true,
+    "1",
+    "claim-identity"
+   ],
+   "env_has_path": true,
+   "stream": "cleanup.log"
+  },
+  "log_directory": [
+   "cleanup.log"
+  ],
+  "none": {
+   "answer": {
+    "identity": {
+     "birth": null,
+     "pid": 77,
+     "side": "wsl"
+    }
+   },
+   "argv": [
+    "<PY>",
+    "-c",
+    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_cleanup import run;from drover.placement import lower_priority;lower_priority();run(json.loads(sys.argv[2]),mode=\"triggered\",apply=sys.argv[3]==\"1\")",
+    "<ROOT>",
+    true,
+    "0",
+    "claim-none"
+   ],
+   "env_has_path": true,
+   "stream": "cleanup.log"
+  }
+ },
+ "invalid_side": {
+  "message": "invalid cleanup side",
+  "raised": "ValueError"
+ },
+ "native_bad_json": {
+  "answer": {
+   "errors": [
+    {
+     "error": "Expecting value: line 1 column 1 (char 0)",
+     "output": "not json",
+     "reason_code": "worker_failed",
+     "termination_confirmed": true,
+     "work_started": true
+    }
+   ],
+   "items": [],
+   "reclaimed_bytes": 0
+  },
+  "calls": [
+   {
+    "command": [
+     "<PY>",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "worker_timeout_s": 11
+     },
+     "repos": [],
+     "side": "wsl",
+     "state_dir": "<TMP>/state",
+     "tasks": {}
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 11
+   }
+  ],
+  "persisted": {
+   "error": "Expecting value: line 1 column 1 (char 0)",
+   "output": "not json",
+   "reason_code": "worker_failed",
+   "termination_confirmed": true,
+   "work_started": true
+  },
+  "recovered": [
+   [
+    "wsl",
+    {
+     "pid": 4242,
+     "run_id": "t0k3n"
+    },
+    "<ROOT>"
+   ]
+  ]
+ },
+ "native_ok": {
+  "answer": {
+   "errors": [],
+   "items": [
+    {
+     "path": "x"
+    }
+   ],
+   "reclaimed_bytes": 7
+  },
+  "calls": [
+   {
+    "command": [
+     "<PY>",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "worker_timeout_s": 11
+     },
+     "repos": [],
+     "side": "wsl",
+     "state_dir": "<TMP>/state",
+     "tasks": {}
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 11
+   }
+  ],
+  "persisted": null,
+  "recovered": [
+   [
+    "wsl",
+    {
+     "pid": 4242,
+     "run_id": "t0k3n"
+    },
+    "<ROOT>"
+   ]
+  ]
+ },
+ "native_startup_failure": {
+  "answer": {
+   "errors": [
+    {
+     "error": "boom",
+     "output": "partial",
+     "reason_code": "worker_error",
+     "termination_confirmed": true,
+     "work_started": false
+    }
+   ],
+   "items": [],
+   "reclaimed_bytes": 0
+  },
+  "calls": [
+   {
+    "command": [
+     "<PY>",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "worker_timeout_s": 11
+     },
+     "repos": [],
+     "side": "wsl",
+     "state_dir": "<TMP>/state",
+     "tasks": {}
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 11
+   }
+  ],
+  "persisted": {
+   "error": "boom",
+   "output": "partial",
+   "reason_code": "worker_error",
+   "termination_confirmed": true,
+   "work_started": false
+  },
+  "recovered": []
+ },
+ "native_timeout": {
+  "answer": {
+   "message": {
+    "error": "err",
+    "output": "out",
+    "reason_code": "worker_timeout",
+    "termination_confirmed": false,
+    "work_started": true
+   },
+   "raised": "CleanupWorkerError"
+  },
+  "calls": [
+   {
+    "command": [
+     "<PY>",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "worker_timeout_s": 11
+     },
+     "repos": [],
+     "side": "wsl",
+     "state_dir": "<TMP>/state",
+     "tasks": {}
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 11
+   }
+  ],
+  "persisted": {
+   "error": "err",
+   "output": "out",
+   "reason_code": "worker_timeout",
+   "termination_confirmed": false,
+   "work_started": true
+  },
+  "recovered": []
+ },
+ "protected_roots": {
+  "fine": "accepted",
+  "repository": "folder cache overlaps protected repository",
+  "state": "folder cache overlaps protected repository, worktree or state path"
+ },
+ "request_unmodified": true,
+ "runtime": {
+  "call_is_cleanup_call": true,
+  "evidence": null,
+  "fields": [
+   "call",
+   "evidence",
+   "now",
+   "pressure",
+   "read",
+   "state",
+   "toast"
+  ],
+  "now_is_time": true,
+  "pressure": {
+   "verdict": "go"
+  },
+  "pressure_got_cfg": true,
+  "read_is_free": true,
+  "state": null,
+  "toast_is_disk_toast": true
+ },
+ "schedule": {
+  "linux_apply": {
+   "argv": [
+    [
+     "systemctl",
+     "--user",
+     "daemon-reload"
+    ],
+    [
+     "systemctl",
+     "--user",
+     "enable",
+     "--now",
+     "drover-disk-tracker.timer",
+     "drover-disk-cleanup.timer"
+    ]
+   ],
+   "files": {
+    "<TMP>/xdg/systemd/user/drover-disk-cleanup.service": "[Unit]\nDescription=DroverDiskCleanup\n[Service]\nType=oneshot\nExecStart=\"<PY>\" \"-c\" \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" \"<ROOT>\" \"<TMP>/home\" \"<TMP>/state\" \"disk-cleanup\" \"--mode\" \"daily\" \"--apply\"\n",
+    "<TMP>/xdg/systemd/user/drover-disk-cleanup.timer": "[Unit]\nDescription=DroverDiskCleanup\n[Timer]\nOnCalendar=*-*-* 03:00:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n",
+    "<TMP>/xdg/systemd/user/drover-disk-tracker.service": "[Unit]\nDescription=DroverDiskTracker\n[Service]\nType=oneshot\nExecStart=\"<PY>\" \"-c\" \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" \"<ROOT>\" \"<TMP>/home\" \"<TMP>/state\" \"disk-tracker\" \"tick\" \"--apply\"\n",
+    "<TMP>/xdg/systemd/user/drover-disk-tracker.timer": "[Unit]\nDescription=DroverDiskTracker\n[Timer]\nOnCalendar=*-*-* *:0/15:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n"
+   }
+  },
+  "linux_dry": {
+   "argv": [
+    [
+     "systemctl",
+     "--user",
+     "daemon-reload"
+    ],
+    [
+     "systemctl",
+     "--user",
+     "enable",
+     "--now",
+     "drover-disk-tracker.timer",
+     "drover-disk-cleanup.timer"
+    ]
+   ],
+   "files": {
+    "<TMP>/xdg/systemd/user/drover-disk-cleanup.service": "[Unit]\nDescription=DroverDiskCleanup\n[Service]\nType=oneshot\nExecStart=\"<PY>\" \"-c\" \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" \"<ROOT>\" \"<TMP>/home\" \"<TMP>/state\" \"disk-cleanup\" \"--mode\" \"daily\" \"--dry-run\"\n",
+    "<TMP>/xdg/systemd/user/drover-disk-cleanup.timer": "[Unit]\nDescription=DroverDiskCleanup\n[Timer]\nOnCalendar=*-*-* 03:00:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n",
+    "<TMP>/xdg/systemd/user/drover-disk-tracker.service": "[Unit]\nDescription=DroverDiskTracker\n[Service]\nType=oneshot\nExecStart=\"<PY>\" \"-c\" \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" \"<ROOT>\" \"<TMP>/home\" \"<TMP>/state\" \"disk-tracker\" \"tick\" \"--dry-run\"\n",
+    "<TMP>/xdg/systemd/user/drover-disk-tracker.timer": "[Unit]\nDescription=DroverDiskTracker\n[Timer]\nOnCalendar=*-*-* *:0/15:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n"
+   }
+  },
+  "windows_apply": {
+   "argv": [
+    [
+     "schtasks.exe",
+     "/Create",
+     "/TN",
+     "DroverDiskTracker",
+     "/XML",
+     "<TMP>/state/disk/DroverDiskTracker.xml",
+     "/F"
+    ],
+    [
+     "schtasks.exe",
+     "/Create",
+     "/TN",
+     "DroverDiskCleanup",
+     "/XML",
+     "<TMP>/state/disk/DroverDiskCleanup.xml",
+     "/F"
+    ]
+   ],
+   "files": {
+    "<TMP>/state/disk/DroverDiskCleanup.xml": "<?xml version='1.0' encoding='utf-8'?>\n<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\" version=\"1.4\"><Triggers><CalendarTrigger><StartBoundary><DATE>T03:00:00</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Principals><Principal id=\"CurrentUser\"><UserId>D/U</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings><Actions Context=\"CurrentUser\"><Exec><Command><PY></Command><Arguments>-c \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" <ROOT> <TMP>/home <TMP>/state disk-cleanup --mode daily --apply</Arguments><WorkingDirectory><ROOT></WorkingDirectory></Exec></Actions></Task>",
+    "<TMP>/state/disk/DroverDiskTracker.xml": "<?xml version='1.0' encoding='utf-8'?>\n<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\" version=\"1.4\"><Triggers><TimeTrigger><Repetition><Interval>PT15M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary><DATE>T03:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Principals><Principal id=\"CurrentUser\"><UserId>D/U</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings><Actions Context=\"CurrentUser\"><Exec><Command><PY></Command><Arguments>-c \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" <ROOT> <TMP>/home <TMP>/state disk-tracker tick --apply</Arguments><WorkingDirectory><ROOT></WorkingDirectory></Exec></Actions></Task>"
+   }
+  },
+  "windows_dry": {
+   "argv": [
+    [
+     "schtasks.exe",
+     "/Create",
+     "/TN",
+     "DroverDiskTracker",
+     "/XML",
+     "<TMP>/state/disk/DroverDiskTracker.xml",
+     "/F"
+    ],
+    [
+     "schtasks.exe",
+     "/Create",
+     "/TN",
+     "DroverDiskCleanup",
+     "/XML",
+     "<TMP>/state/disk/DroverDiskCleanup.xml",
+     "/F"
+    ]
+   ],
+   "files": {
+    "<TMP>/state/disk/DroverDiskCleanup.xml": "<?xml version='1.0' encoding='utf-8'?>\n<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\" version=\"1.4\"><Triggers><CalendarTrigger><StartBoundary><DATE>T03:00:00</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Principals><Principal id=\"CurrentUser\"><UserId>D/U</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings><Actions Context=\"CurrentUser\"><Exec><Command><PY></Command><Arguments>-c \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" <ROOT> <TMP>/home <TMP>/state disk-cleanup --mode daily --dry-run</Arguments><WorkingDirectory><ROOT></WorkingDirectory></Exec></Actions></Task>",
+    "<TMP>/state/disk/DroverDiskTracker.xml": "<?xml version='1.0' encoding='utf-8'?>\n<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\" version=\"1.4\"><Triggers><TimeTrigger><Repetition><Interval>PT15M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary><DATE>T03:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Principals><Principal id=\"CurrentUser\"><UserId>D/U</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings><Actions Context=\"CurrentUser\"><Exec><Command><PY></Command><Arguments>-c \"import os,runpy,sys;sys.path.insert(0,sys.argv[1]);os.environ[/\"DROVER_HOME/\"]=sys.argv[2];os.environ[/\"DROVER_PATHS_STATE_DIR/\"]=sys.argv[3];sys.argv=[/\"drover/\",*sys.argv[4:]];runpy.run_module(/\"drover/\",run_name=/\"__main__/\")\" <ROOT> <TMP>/home <TMP>/state disk-tracker tick --dry-run</Arguments><WorkingDirectory><ROOT></WorkingDirectory></Exec></Actions></Task>"
+   }
+  },
+  "wsl_host": "Install disk schedules using native Windows Python so the physical reader survives WSL shutdown"
+ },
+ "windows_side_on_Ubuntu": {
+  "errors": [
+   {
+    "reason_code": "side_unavailable"
+   }
+  ],
+  "items": [],
+  "reclaimed_bytes": 0
+ },
+ "windows_side_on_no_wsl": {
+  "errors": [],
+  "items": [],
+  "reclaimed_bytes": 0
+ },
+ "windows_to_wsl_ok": {
+  "answer": {
+   "errors": [],
+   "items": [
+    {
+     "path": "x"
+    }
+   ],
+   "reclaimed_bytes": 7
+  },
+  "calls": [
+   {
+    "command": [
+     "wsl.exe",
+     "-d",
+     "Dist",
+     "--",
+     "env",
+     "DROVER_RUN_ID=t0k3n",
+     "DROVER_VHDX_DIR=/w/R:/",
+     "python3",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "/w/<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "caches": [
+       {
+        "path": "/w//lin/c",
+        "placement": "wsl"
+       }
+      ],
+      "report_roots": [
+       "/w//lin/r"
+      ],
+      "temp_roots": [
+       "/w//lin/t"
+      ],
+      "worker_timeout_s": 9
+     },
+     "repos": [
+      {
+       "repo": "/w/C:/r",
+       "worktrees": "/w/D:/w"
+      },
+      {
+       "repo": ""
+      }
+     ],
+     "side": "wsl",
+     "state_dir": "/w/<TMP>/state",
+     "tasks": {
+      "active_worktrees": [
+       "/w/E:/a"
+      ],
+      "tasks": [
+       {
+        "worktree": "/w/E:/t"
+       },
+       {
+        "id": "no-worktree"
+       }
+      ]
+     }
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 9
+   }
+  ],
+  "persisted": null,
+  "recovered": [
+   [
+    "wsl",
+    {
+     "pid": 4242,
+     "run_id": "t0k3n"
+    },
+    "<ROOT>"
+   ]
+  ]
+ },
+ "windows_to_wsl_startup_failure": {
+  "answer": {
+   "errors": [
+    {
+     "error": "",
+     "output": "",
+     "reason_code": "worker_error",
+     "termination_confirmed": true,
+     "work_started": false
+    }
+   ],
+   "items": [],
+   "reclaimed_bytes": 0
+  },
+  "calls": [
+   {
+    "command": [
+     "wsl.exe",
+     "-d",
+     "Dist",
+     "--",
+     "env",
+     "DROVER_RUN_ID=t0k3n",
+     "DROVER_VHDX_DIR=/w/R:/",
+     "python3",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "/w/<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "caches": [
+       {
+        "path": "/w//lin/c",
+        "placement": "wsl"
+       }
+      ],
+      "report_roots": [
+       "/w//lin/r"
+      ],
+      "temp_roots": [
+       "/w//lin/t"
+      ],
+      "worker_timeout_s": 9
+     },
+     "repos": [
+      {
+       "repo": "/w/C:/r",
+       "worktrees": "/w/D:/w"
+      },
+      {
+       "repo": ""
+      }
+     ],
+     "side": "wsl",
+     "state_dir": "/w/<TMP>/state",
+     "tasks": {
+      "active_worktrees": [
+       "/w/E:/a"
+      ],
+      "tasks": [
+       {
+        "worktree": "/w/E:/t"
+       },
+       {
+        "id": "no-worktree"
+       }
+      ]
+     }
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 9
+   },
+   {
+    "command": [
+     "wsl.exe",
+     "-d",
+     "Dist",
+     "--exec",
+     "python3",
+     "-c",
+     "import os, sys\nfrom pathlib import Path\ntoken = sys.argv[1].encode()\nme = os.getpid()\ndef marked(pid):\n    # True when this process carries the token in argv or the marker in a readable environ.\n    base = Path('/proc') / str(pid)\n    if token in (base / 'cmdline').read_bytes().split(b'/0'):\n        return True\n    try:\n        return b'DROVER_RUN_ID=' + token in (base / 'environ').read_bytes().split(b'/0')\n    except PermissionError:\n        return False\ndef started_by_drover(stat_text):\n    # Walk ppid to init (bounded); an unreadable or vanished link is unknown and fails closed (OSError).\n    ppid = int(stat_text.rsplit(')', 1)[1].split()[1])\n    for _ in range(64):\n        if ppid <= 1:\n            return False\n        if ppid != me and marked(ppid):\n            return True\n        ppid = int((Path('/proc') / str(ppid) / 'stat').read_text().rsplit(')', 1)[1].split()[1])\n    return False\nfor entry in Path('/proc').iterdir():\n    if not entry.name.isdigit() or int(entry.name) == os.getpid():\n        continue\n    try:\n        if entry.stat().st_uid != os.getuid():\n            continue\n        stat_text = (entry / 'stat').read_text()\n        if stat_text.rsplit(')', 1)[1].split()[0] == 'Z':\n            continue\n        if token in (entry / 'cmdline').read_bytes().split(b'/0'):\n            sys.exit(1)\n        try:\n            if b'DROVER_RUN_ID=' + token in (entry / 'environ').read_bytes().split(b'/0'):\n                sys.exit(1)\n        except PermissionError:\n            # Unreadable environ and no token in argv: Drover's own only if a Drover process started it.\n            if started_by_drover(stat_text):\n                sys.exit(1)\n    except FileNotFoundError:\n        continue\n    except OSError:\n        sys.exit(2)\n",
+     "t0k3n"
+    ],
+    "input": null,
+    "kwargs": [
+     "capture_output"
+    ],
+    "run_id": null,
+    "timeout": 30
+   }
+  ],
+  "persisted": {
+   "error": "",
+   "output": "",
+   "reason_code": "worker_error",
+   "termination_confirmed": true,
+   "work_started": false
+  },
+  "recovered": []
+ },
+ "windows_to_wsl_unproven_startup": {
+  "answer": {
+   "message": {
+    "error": "",
+    "output": "",
+    "reason_code": "worker_error",
+    "termination_confirmed": false,
+    "work_started": false
+   },
+   "raised": "CleanupWorkerError"
+  },
+  "calls": [
+   {
+    "command": [
+     "wsl.exe",
+     "-d",
+     "Dist",
+     "--",
+     "env",
+     "DROVER_RUN_ID=t0k3n",
+     "DROVER_VHDX_DIR=/w/R:/",
+     "python3",
+     "-c",
+     "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))",
+     "/w/<ROOT>",
+     "t0k3n"
+    ],
+    "input": {
+     "_worker_id": "t0k3n",
+     "paths": {
+      "caches": [
+       {
+        "path": "/w//lin/c",
+        "placement": "wsl"
+       }
+      ],
+      "report_roots": [
+       "/w//lin/r"
+      ],
+      "temp_roots": [
+       "/w//lin/t"
+      ],
+      "worker_timeout_s": 9
+     },
+     "repos": [
+      {
+       "repo": "/w/C:/r",
+       "worktrees": "/w/D:/w"
+      },
+      {
+       "repo": ""
+      }
+     ],
+     "side": "wsl",
+     "state_dir": "/w/<TMP>/state",
+     "tasks": {
+      "active_worktrees": [
+       "/w/E:/a"
+      ],
+      "tasks": [
+       {
+        "worktree": "/w/E:/t"
+       },
+       {
+        "id": "no-worktree"
+       }
+      ]
+     }
+    },
+    "kwargs": [
+     "capture_output",
+     "shell",
+     "text"
+    ],
+    "run_id": "t0k3n",
+    "timeout": 9
+   },
+   {
+    "command": [
+     "wsl.exe",
+     "-d",
+     "Dist",
+     "--exec",
+     "python3",
+     "-c",
+     "import os, sys\nfrom pathlib import Path\ntoken = sys.argv[1].encode()\nme = os.getpid()\ndef marked(pid):\n    # True when this process carries the token in argv or the marker in a readable environ.\n    base = Path('/proc') / str(pid)\n    if token in (base / 'cmdline').read_bytes().split(b'/0'):\n        return True\n    try:\n        return b'DROVER_RUN_ID=' + token in (base / 'environ').read_bytes().split(b'/0')\n    except PermissionError:\n        return False\ndef started_by_drover(stat_text):\n    # Walk ppid to init (bounded); an unreadable or vanished link is unknown and fails closed (OSError).\n    ppid = int(stat_text.rsplit(')', 1)[1].split()[1])\n    for _ in range(64):\n        if ppid <= 1:\n            return False\n        if ppid != me and marked(ppid):\n            return True\n        ppid = int((Path('/proc') / str(ppid) / 'stat').read_text().rsplit(')', 1)[1].split()[1])\n    return False\nfor entry in Path('/proc').iterdir():\n    if not entry.name.isdigit() or int(entry.name) == os.getpid():\n        continue\n    try:\n        if entry.stat().st_uid != os.getuid():\n            continue\n        stat_text = (entry / 'stat').read_text()\n        if stat_text.rsplit(')', 1)[1].split()[0] == 'Z':\n            continue\n        if token in (entry / 'cmdline').read_bytes().split(b'/0'):\n            sys.exit(1)\n        try:\n            if b'DROVER_RUN_ID=' + token in (entry / 'environ').read_bytes().split(b'/0'):\n                sys.exit(1)\n        except PermissionError:\n            # Unreadable environ and no token in argv: Drover's own only if a Drover process started it.\n            if started_by_drover(stat_text):\n                sys.exit(1)\n    except FileNotFoundError:\n        continue\n    except OSError:\n        sys.exit(2)\n",
+     "t0k3n"
+    ],
+    "input": null,
+    "kwargs": [
+     "capture_output"
+    ],
+    "run_id": null,
+    "timeout": 30
+   }
+  ],
+  "persisted": {
+   "error": "",
+   "output": "",
+   "reason_code": "worker_error",
+   "termination_confirmed": false,
+   "work_started": false
+  },
+  "recovered": []
+ }
+}

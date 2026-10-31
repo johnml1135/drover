@@ -84,6 +84,28 @@ def alias_map(path, tree):
     return result
 
 
+def under(symbol, module):
+    return symbol == module or symbol.startswith(module + '.')
+
+
+# Platform leaves take resolved facts: config, disk orchestration and resource policy sit above placement.
+# disk_state and disk_side are the cleanup worker's own state files, and config_defaults is data.
+LEAF_FORBIDDEN = tuple(f'drover.{name}' for name in ('config', 'config_paths', 'config_validation', 'resources'))
+LEAF_ALLOWED = ('drover.disk_state', 'drover.disk_side')
+
+
+def layer_debt(mod, symbol):
+    if mod.startswith('drover.placement'):
+        return (any(under(symbol, name) for name in LEAF_FORBIDDEN)
+                or under(symbol, 'drover.disk') or symbol.startswith('drover.disk_')) and \
+            not any(under(symbol, name) for name in LEAF_ALLOWED)
+    # Configuration is the source of resolved settings; it must not reach into the layers it feeds.
+    if mod == 'drover.config' or mod.startswith('drover.config_') and mod != 'drover.config_defaults':
+        return under(symbol, 'drover.placement') or symbol.startswith('drover.placement_') or \
+            under(symbol, 'drover.disk') or symbol.startswith('drover.disk_')
+    return False
+
+
 def is_debt(path, symbol):
     # ledger is storage-only; its CLI is an upper-layer entry point.
     ledger = path.startswith('drover/ledger/') and path != 'drover/ledger/cli.py'
@@ -95,6 +117,8 @@ def is_debt(path, symbol):
         return True
     # Rules also apply as the new contract modules are introduced.
     mod = module(path)
+    if layer_debt(mod, symbol):
+        return True
     if mod.startswith('drover.lifecycle'):
         return symbol == 'hub' or symbol.startswith(('hub.', 'drover.dispatcher', 'drover.notifications', 'drover.stages_view'))
     if mod.startswith('drover.recovery'):
@@ -144,6 +168,8 @@ def debt():
 def owner_for(path, symbol):
     if old_module(symbol):
         return 'B-2b'
+    if layer_debt(module(path), symbol):
+        return 'B-4b'
     if '/waiting_migration' in path:
         return 'B-4a'
     if path.endswith('/db.py'):

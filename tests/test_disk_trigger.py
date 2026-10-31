@@ -6,6 +6,7 @@ import subprocess
 from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
+from drover import disk_runtime
 
 
 class Trigger(DiskCase):
@@ -149,7 +150,7 @@ class Trigger(DiskCase):
             self.assertEqual(done.returncode, 0, done.stderr)
             return SimpleNamespace(pid=os.getpid()), False
         with patch.object(placement, 'detach', side_effect=detach):
-            placement.cleanup_enqueue(cfg, {'id': 'literal-token', 'applied': True})
+            disk_runtime.cleanup_enqueue(cfg, {'id': 'literal-token', 'applied': True})
         saved, kwargs = json.loads(target.read_text())
         self.assertEqual(saved, cfg)
         self.assertEqual(kwargs, {'mode': 'triggered', 'apply': True})

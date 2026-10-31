@@ -175,7 +175,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
                     (disk_worktrees, 'rescue_at', lambda repo, ref, head: None),
                     (disk_worktrees, 'snapshot', snapshot),
                     (placement, 'worktree_metadata', metadata),
-                    (placement, 'wsl_worktrees_root', lambda: str(self.root / 'ext4'))]
+                    (repos, 'wsl_worktrees_root', lambda: str(self.root / 'ext4'))]
         for module, name, value in bindings:
             context = patch.object(module, name, side_effect=value)
             context.start()

@@ -3,7 +3,7 @@ import hashlib
 import json
 import uuid
 
-from . import config, disk_state, placement
+from . import config, disk_runtime, disk_state
 
 
 def _report_notices(state_dir, result):
@@ -91,7 +91,7 @@ def retry_notices(cfg):
             pending = json.loads(path.read_text(encoding='utf-8'))
             _report_notices(config.state_dir(cfg), pending['result'])
             if pending['result']['applied']:
-                _notices(cfg, pending['result'], placement.cleanup_runtime(cfg), pending['machines'])
+                _notices(cfg, pending['result'], disk_runtime.cleanup_runtime(cfg), pending['machines'])
         except BlockingIOError:
             return
         path.unlink(missing_ok=True)

@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_paths, disk_side, placement
+from drover import config, disk_paths, disk_runtime, disk_side, placement
 from drover import placement_host, placement_paths, placement_worker
 from tests.disk_fixture import DiskCase
 from tests.disk_memory import MemoryWorktreeCase
@@ -101,12 +101,12 @@ class WindowsHubOutputs(MemoryWorktreeCase):
             stack.enter_context(patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)))
             stack.enter_context(patch.object(placement, 'recover_ci_children', return_value=True))
             stack.enter_context(patch.object(subprocess, 'run', side_effect=launch))
-            answer = placement.cleanup_call('wsl', request)
+            answer = disk_runtime.cleanup_call('wsl', request)
             # A different physical drive must still retain the output.
-            other = placement.cleanup_call('wsl', dict(request, drive=dict(path='C:/', level='warn')))
+            other = disk_runtime.cleanup_call('wsl', dict(request, drive=dict(path='C:/', level='warn')))
             # A different distro's mapping cannot stand in for unknown evidence.
             registry.return_value = {'Other': 'H:'}
-            unknown = placement.cleanup_call('wsl', request)
+            unknown = disk_runtime.cleanup_call('wsl', request)
         candidates = [i for i in answer['items'] if i['action'] == 'candidate']
         self.assertTrue(candidates, answer)
         self.assertIn(str(output), [i['path'] for i in candidates])

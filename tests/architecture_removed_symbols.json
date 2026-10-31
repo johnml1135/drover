@@ -19,7 +19,13 @@
     "drover.placement.default_disk_trackers",
     "drover.placement_host.default_disk_trackers",
     "drover.placement.default_process_ignore",
-    "drover.placement_proof.default_process_ignore"
+    "drover.placement_proof.default_process_ignore",
+    "drover.placement.cleanup_runtime",
+    "drover.placement.cleanup_call",
+    "drover.placement.cleanup_enqueue",
+    "drover.placement.disk_schedule_plan",
+    "drover.placement.wsl_worktrees_root",
+    "drover.placement_paths.wsl_worktrees_root"
   ],
   "removed_receipt_fields": [
     "infra"

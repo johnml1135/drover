@@ -10,7 +10,7 @@ cleanup, runners, gates) start on whatever is on disk at that moment. A stray fi
 - The hub has no editable install and no `.pth`: the scheduled task runs `uv run --project <HubDir> python -m hub`
   with the working directory set to `<HubDir>`'s parent, so `hub` and `drover` import from the current directory.
   Only the venv (`<HubDir>/.venv`, dependencies only) is per `--project`.
-- Children take their code root from the loaded package: `runner.detach`, `placement.cleanup_enqueue`, the cleanup
+- Children take their code root from the loaded package: `runner.detach`, `disk_runtime.cleanup_enqueue`, the cleanup
   worker and the CI/launch paths use `sys.executable` plus `Path(__file__).parents[1]` (as `sys.path[0]` or
   `PYTHONPATH`). A hub started from the deployment therefore spawns only deployment code. No hard-coded repo path
   exists in code.

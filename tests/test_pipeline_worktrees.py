@@ -46,7 +46,7 @@ class Worktrees(PolicyBase):
     def test_a_wsl_placement_creates_its_worktree_under_the_wsl_root_and_windows_keeps_the_h_root(self):
         ext4 = Path(self.tmp.name) / "ext4"
         self.pipe._repos["p"] = prog_dict(self.fix.repo, Path(self.tmp.name) / "wts", gate={"platform": "wsl"})
-        with patch.object(placement, "wsl_worktrees_root", return_value=str(ext4)):
+        with patch.object(repos, "wsl_worktrees_root", return_value=str(ext4)):
             wsl_tid, win_tid = self.task(), self.task()
             wsl = self.pipe.worktree(self.get(wsl_tid), "wsl")
             win = self.pipe.worktree(self.get(win_tid), "windows")
@@ -243,7 +243,7 @@ class Worktrees(PolicyBase):
                                                                          "default": "windows"}, gate={"platform": "wsl"})
         ext4 = Path(self.tmp.name) / "ext4"
         tid = self.task(goal="Port it. platform: linux")
-        with patch.object(self.pipe, "worktree", spy), patch.object(placement, "wsl_worktrees_root", return_value=str(ext4)):
+        with patch.object(self.pipe, "worktree", spy), patch.object(repos, "wsl_worktrees_root", return_value=str(ext4)):
             self.pipe._repos = {"p": both}
             self.d.tick()
             self.assertEqual(seen, ["wsl"])

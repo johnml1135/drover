@@ -4,6 +4,7 @@ import subprocess
 import sys
 from unittest.mock import patch
 from tests.disk_fixture import DiskCase, GIB, empty_result
+from drover import disk_runtime
 
 
 class Trim(DiskCase):
@@ -53,7 +54,7 @@ class Trim(DiskCase):
             return original(argv, *args, **kwargs)
         with patch.object(subprocess, 'run', side_effect=execute), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-            result = placement.cleanup_call(self.side, request)
+            result = disk_runtime.cleanup_call(self.side, request)
         self.assertTrue(seen)
         self.assertEqual(json.loads(marker.read_text()), [literal, str(self.temp_root)])
         self.assertEqual(result['errors'], [])

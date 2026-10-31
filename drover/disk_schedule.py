@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from . import config, disk_preflight, disk_state, placement
+from . import config, disk_preflight, disk_schedule_steps, disk_state, placement
 
 
 def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None) -> dict:
@@ -22,7 +22,7 @@ def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None)
         seeded = raw != original
         disk_preflight.check_cache_folders(config.validate(raw))
         cfg['disk_cleanup'] = raw['disk_cleanup']
-    plan = placement.disk_schedule_plan(cfg, apply=apply)
+    plan = disk_schedule_steps.schedule_plan(cfg, apply=apply)
     plan['disk_cleanup'] = cfg['disk_cleanup']
     if dry_run:
         return plan
