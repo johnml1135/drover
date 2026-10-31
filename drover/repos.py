@@ -14,7 +14,7 @@ from pathlib import Path
 from . import config, placement
 from .placement import native
 from .repos_normalize import (DEFAULTS, DOCS_ONLY_GLOBS, GATE_PLATFORMS, PLATFORMS, RepoError,
-                              _ResolvedRepo, cleanup_config, machine_config, normalize, worktrees_for)
+                              _ResolvedRepo, cleanup_config, local_disposable, machine_config, normalize, worktrees_for)
 
 REPOS_DIR = Path(__file__).resolve().parents[1] / "repos"   # the shipped examples
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -89,8 +89,9 @@ def machine_overrides(name, repo, trees, *, base=None, push=None, adopted=False)
         raise RepoError(f"{name}: push belongs in .drover/config.toml after adoption")
     raw = {"name": name, "repo": repo, "worktrees": saved.get("worktrees", trees),
            "default_branch": canonical["default_branch"], "remote": canonical["remote"]}
-    if "budget_gb" in saved:
-        raw["budget_gb"] = saved["budget_gb"]
+    for key in ("budget_gb", "local_disposable"):
+        if key in saved:
+            raw[key] = saved[key]
     if adopted:
         if "env" in saved.get("run", {}):
             raw["run"] = {"env": dict(saved["run"]["env"])}
@@ -268,7 +269,7 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
         raise RepoError(f"cannot read repo config commit {revision}: checkout {repo} is unreachable")
     if versioned:
         for key, value in machine.items():
-            if key in ("name", "repo", "worktrees", "remote", "default_branch", "budget_gb"):
+            if key in ("name", "repo", "worktrees", "remote", "default_branch", "budget_gb", "local_disposable"):
                 continue
             if key == "run" and isinstance(value, dict):
                 forbidden = [f"run.{k}" for k in value if k != "env"]

@@ -73,7 +73,10 @@ def outputs_at(machine, path):
         raise ValueError('default_branch must be a non-empty git branch name')
     revision = 'refs/heads/' + branch.removeprefix('refs/heads/')
     committed = repos.load(machine, revision=revision, checkout=str(path))
-    return repos.cleanup_config(committed)['disposable'] if committed['_adopted'] else []
+    declared = repos.cleanup_config(committed)['disposable'] if committed['_adopted'] else []
+    # The owner's local list is a second source, read from the machine registration alone.
+    local = repos.local_disposable(machine)
+    return declared + [p for p in local if p not in declared]
 
 
 def status(path, *, expand=True):

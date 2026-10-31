@@ -32,17 +32,28 @@ def machine_config(prog):
     return {**prog['_machine'], **{key: prog[key] for key in
                                   ('name', 'repo', 'worktrees', 'remote', 'default_branch')}}
 
+def _disposable_paths(outputs, label):
+    """The one validator for disposable declarations, committed or local."""
+    if not isinstance(outputs, list) or not all(
+            isinstance(path, str) and path and not any(c in path for c in "\\:\x00")
+            and not path.startswith("/") and all(part.casefold() not in ("", ".", "..", ".git")
+                                                  for part in path.split("/")) for path in outputs):
+        raise RepoError(f"{label} must contain canonical relative paths or globs outside .git")
+    return outputs
+
+
+def local_disposable(machine):
+    """The owner's local list from a machine registration, validated like the committed one."""
+    return list(_disposable_paths(machine.get("local_disposable", []), "local_disposable"))
+
+
 def cleanup_config(prog):
     """Validated committed output declarations and an optional machine budget."""
     policy = prog.get("cleanup", {})
     if not isinstance(policy, dict) or set(policy) - {"disposable"}:
         raise RepoError("cleanup must contain only disposable")
-    outputs = policy.get("disposable", [])
-    if not isinstance(outputs, list) or not all(
-            isinstance(path, str) and path and not any(c in path for c in "\\:\x00")
-            and not path.startswith("/") and all(part.casefold() not in ("", ".", "..", ".git")
-                                                  for part in path.split("/")) for path in outputs):
-        raise RepoError("cleanup.disposable must contain canonical relative paths or globs outside .git")
+    outputs = _disposable_paths(policy.get("disposable", []), "cleanup.disposable")
+    local_disposable(prog)
     budget = prog.get("budget_gb")
     if budget is not None and (type(budget) not in (int, float) or not math.isfinite(budget) or budget <= 0):
         raise RepoError("budget_gb must be finite and positive")

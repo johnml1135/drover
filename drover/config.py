@@ -363,7 +363,7 @@ def main(argv=None):
             raw = tomllib.loads(original.decode("utf-8"))
             # The loader remains the sole reader/validator of committed policy.
             facts = {k: v for k, v in raw.items()
-                     if k in ("name", "repo", "worktrees", "remote", "default_branch", "budget_gb")}
+                     if k in ("name", "repo", "worktrees", "remote", "default_branch", "budget_gb", "local_disposable")}
             if "run" in raw and not isinstance(raw["run"], dict):
                 raise ConfigError(f"{path}: run must be a table")
             if "env" in raw.get("run", {}):

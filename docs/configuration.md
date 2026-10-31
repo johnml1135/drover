@@ -13,7 +13,7 @@ provide their tooling. Future workflows use YAML under `.drover/workflows/*.yaml
 in this phase.
 
 After adoption, `<state>/repos/<name>.toml` contains only `name`, `repo`, `worktrees`, `remote`,
-`default_branch`, optional `budget_gb`, and `[run.env]`. Machine env overrides repository env by variable name, including equal values.
+`default_branch`, optional `budget_gb`, optional `local_disposable`, and `[run.env]`. Machine env overrides repository env by variable name, including equal values.
 Unknown keys and machine policy are errors naming the file and key. Missing committed entries preserve complete
 machine fallback, including older script paths. An unreachable checkout permits startup fallback at HEAD;
 exact revisions require a reachable checkout. A present invalid entry always fails.
@@ -117,6 +117,12 @@ Levels apply strictly below each threshold; equal thresholds are permitted.
 Unknown readings do not block. Warning triggers cleanup, queue stops new
 workers, hold also stops new CI starts, and critical latches the pause switch.
 Recovery releases queue/hold; only the owner clears a critical pause.
+
+A repo that cannot carry Drover config (for example one owned by another organisation) may declare disposable paths
+locally instead: `local_disposable = ["obj", "bin/**"]` in `<state>/repos/<name>.toml`. It takes the same relative paths or globs as
+`cleanup.disposable` and is validated by the same code, so a bad entry is a configuration error. Cleanup removes the committed
+list plus this one, without duplicates. It is read only from that owner-written registration; a committed `.drover/config.toml`
+cannot set it, and no repo or worker writes it. Drover preserves it when it re-saves the registration.
 
 Run `python -m drover config migrate-machine` to print the proposed global
 config migration without writing. Add `--apply` for a byte-exact backup and
