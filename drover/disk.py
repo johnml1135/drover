@@ -50,11 +50,27 @@ def _wsl_used(cfg):
     return placement.wsl_used_gb(distro, up)
 
 
+def wsl_stop_row(cfg, used):
+    """A hold row for new WSL work once GB used inside WSL reaches wsl_stop_gb, else None (an unknown reading holds
+    nothing). Running work is never touched: only admission reads this."""
+    budget = wsl_budget(cfg, used=used)
+    if budget['level'] != 'stop':
+        return None
+    from .config_defaults import DEFAULTS
+    limit = {**DEFAULTS['disk_cleanup'], **cfg.get('disk_cleanup', {})}['wsl_stop_gb']
+    return dict(name='wsl', level='hold', free_gb=None,
+                detail=f"WSL: {budget['used_gb']:.0f} GB used, at or above the {limit:g} GB limit")
+
+
 def held(side, cfg=None):
-    """Disk hold for work placed on this side, from the shared WSL measurement; it never spawns a process."""
+    """Disk hold for work placed on this side, from the shared WSL measurement; it never spawns a process.
+    WSL work is also held while WSL used space is at wsl_stop_gb; Windows work is not."""
     cfg = config.get() if cfg is None else cfg
     wsl_free = placement.wsl_free_known(tracker_distro(cfg)) if side == 'wsl' else None
-    return admission(read(cfg, side=side, wsl_free=wsl_free))['verdict'] == 'hold'
+    rows = read(cfg, side=side, wsl_free=wsl_free)
+    if side == 'wsl' and (stop := wsl_stop_row(cfg, placement.wsl_used_known(tracker_distro(cfg)))):
+        rows.append(stop)
+    return admission(rows)['verdict'] == 'hold'
 
 
 def read(cfg: dict | None = None, *, reader=None, side=None, wsl_free=None) -> list[dict]:
@@ -317,6 +333,8 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 continue
             last = episode.get('last_cleanup', -math.inf)
             wait = min(cooldown, PARTIAL_RETRY_S) if episode.get('partial') else cooldown
+            if row.get('wsl') and row['level'] == 'stop':
+                wait = PARTIAL_RETRY_S if episode.get('partial') else 0   # stop bypasses the cooldown like critical
             if row['level'] != 'critical' and now - last < wait:
                 deferrals.append(('cooldown', ['%s: last cleanup ended %d min ago; waiting %d min' % (
                     row['name'], (now - last) // 60, wait // 60)]))

@@ -45,7 +45,7 @@ from .placement_proof import (
     cleanup_processes, cleanup_windows_proof, seed_cleanup_process_policy,
 )
 from .placement_host import (
-    wsl_free_gb, wsl_free_known, wsl_used_gb, wsl_running, _WSL_FREE, _WSL_USED,
+    wsl_free_gb, wsl_free_known, wsl_used_gb, wsl_used_known, wsl_running, _WSL_FREE, _WSL_USED,
     CLEANUP_CACHE_COMMANDS, CLEANUP_CACHE_FOLDERS, CLEANUP_SCRATCH_ROOTS, LXSS, REG, _VHDX_CACHE,
     _vhdx_dir, _vhdx_reading, _wsl_vhdx_paths, cleanup_vhdx_report, decode_output,
     detect_distros, detect_vhdx_drives, detected_cleanup_policy, is_drvfs, linux_mount, parse_distros,

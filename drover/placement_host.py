@@ -187,6 +187,12 @@ def wsl_free_known(distro):
     return hit[1] if hit and time.monotonic() - hit[0] < WSL_FREE_TTL_S else None
 
 
+def wsl_used_known(distro):
+    """The shared used-space measurement if one was taken within the last minute, else None. Never measures."""
+    hit = _WSL_USED.get(distro)
+    return hit[1] if hit and time.monotonic() - hit[0] < WSL_FREE_TTL_S else None
+
+
 def physical_disk_path(path: str) -> str | None:
     """Native physical root; Linux contents in WSL are charged to their VHDX host drive."""
     letter = drive(path)

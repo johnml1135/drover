@@ -134,6 +134,90 @@ class Triggers(DiskCase):
             disk.tick(self.cfg, now=self.now, reader=lambda path: 200, enqueue=lambda: None)
         self.assertEqual(used.call_args.args[1], False)
 
+class StopHoldsNewWork(DiskCase):
+    def setUp(self):
+        super().setUp()
+        self.cfg['disk_cleanup'].update(wsl_purge_gb=300, wsl_target_gb=225, wsl_stop_gb=500)
+        self.cfg['trackers'][0].update(wsl_combined=True, host_floor_gb=10.0)
+        for target in ('drover.placement.physical_disk_path',):
+            m = patch(target, return_value=str(self.root))
+            m.start()
+            self.addCleanup(m.stop)
+        free = patch.object(disk, '_free', return_value=200)
+        free.start()
+        self.addCleanup(free.stop)
+        wf = patch.object(placement, 'wsl_free_known', return_value=100.0)
+        wf.start()
+        self.addCleanup(wf.stop)
+
+    def held(self, side, used):
+        with patch.object(placement, 'wsl_used_known', return_value=used), \
+                patch.object(disk, '_wsl_used', side_effect=AssertionError('held must not measure')):
+            return disk.held(side, self.cfg)
+
+    def test_stop_level_holds_new_wsl_work(self):
+        self.assertTrue(self.held('wsl', 500))
+        self.assertFalse(self.held('wsl', 499))
+        reason = disk.wsl_stop_row(self.cfg, 512)['detail']
+        self.assertIn('512', reason)
+        self.assertIn('500', reason)
+
+    def test_stop_level_leaves_running_work(self):
+        # Only admission consults the budget: a stop reading never produces a pause token or kills anything.
+        result = disk.tick(self.cfg, now=self.now, reader=lambda p: 200, wsl_used=lambda: 600,
+                           enqueue=lambda: None)
+        self.assertFalse(result['pause'])
+        self.assertEqual(result['critical_tokens'], [])
+
+    def test_windows_work_still_admitted_at_stop(self):
+        self.assertFalse(self.held('windows', 900))
+
+    def test_unknown_used_holds_nothing(self):
+        self.assertFalse(self.held('wsl', None))
+        self.assertIsNone(disk.wsl_stop_row(self.cfg, None))
+
+    def test_dispatcher_wsl_side_verdict_holds_at_stop(self):
+        rows = disk.read(self.cfg, reader=lambda p: 200, side='wsl', wsl_free=100.0)
+        self.assertEqual(disk.admission(rows)['verdict'], 'go')
+        stop = disk.wsl_stop_row(self.cfg, 520)
+        verdict = disk.admission(rows + [stop])
+        self.assertEqual(verdict['verdict'], 'hold')
+        self.assertIn('520', verdict['reasons'][0])
+
+
+class StopBypassesCooldown(Triggers):
+    def test_stop_bypasses_normal_cooldown(self):
+        self.tick(500)
+        self.assertEqual(len(self.launches), 1)
+        self.finish_claim()
+        self.now += 60
+        self.tick(500)
+        self.assertEqual(len(self.launches), 2)
+
+    def test_purge_still_waits_for_cooldown(self):
+        self.tick(310)
+        self.finish_claim()
+        self.now += 60
+        self.tick(310)
+        self.assertEqual(len(self.launches), 1)
+
+    def test_stop_respects_partial_retry_spacing(self):
+        self.tick(500)
+        self.finish_claim(partial=True)
+        self.now += 60
+        self.tick(500)
+        self.assertEqual(len(self.launches), 1)
+        self.now += 31 * 60
+        self.tick(500)
+        self.assertEqual(len(self.launches), 2)
+
+    def finish_claim(self, partial=False):
+        from drover import disk_state
+
+        def change(state):
+            state['episodes']['wsl'].update(claim=None, last_cleanup=self.now, partial=partial)
+        disk_state.update(config.state_dir(self.cfg), change)
+
 
 if __name__ == '__main__':
     unittest.main()
