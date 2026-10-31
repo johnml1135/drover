@@ -184,3 +184,89 @@ class Repair(Registry):
         for d in (self.dup, self.bad, self.nameless):
             self.assertTrue(d.is_dir())
         self.assert_untouched(self.dup, self.bad, self.nameless)
+
+
+@integration
+class Nested(Registry):
+    """Real worktrees live below the root: `hx/api-names`, `land/gui-perf-20261027`, and herdr's `feat/x`."""
+    def setUp(self):
+        super().setUp()
+        self.slash = self.add('hx/api-names', 'hx/api-names')
+        self.feat = self.add('feat/x', 'feat/x')
+        (self.feat / 'new.txt').write_text('wip')
+        self.dash = self.add('land/gui-perf-20261027', 'land/gui-perf-20261027')
+        self.flat = self.add('plain', 'plain')
+        self.files = {p: p.read_bytes() for d in (self.slash, self.feat, self.dash, self.flat)
+                      for p in d.rglob('*') if p.is_file() and p.parts[len(d.parts)] != '.git'}
+        shutil.rmtree(self.common / 'worktrees')
+        self.decoy = self.trees / 'node_modules' / 'pkg'      # a .git file inside disposable output is not a worktree
+        self.decoy.mkdir(parents=True)
+        (self.decoy / '.git').write_text('gitdir: ' + str(self.common / 'worktrees' / 'pkg') + '\n')
+
+    def test_nested_directories_are_found_and_matched_by_relative_path(self):
+        before = self.listing()
+        result = self.cleanup(mode='daily')
+        found = {Path(r['path']).relative_to(self.trees).as_posix(): r for r in result['items']
+                 if r['reason_code'].startswith('lost_registration')}
+        self.assertEqual(set(found), {'hx/api-names', 'feat/x', 'land/gui-perf-20261027', 'plain'})
+        self.assertEqual({k: v['branch'] for k, v in found.items()},
+                         {k: k for k in found})
+        self.assertEqual({v['action'] for v in found.values()}, {'report'})
+        self.assertEqual(self.listing(), before)
+
+    def test_apply_registers_nested_directories_and_keeps_files(self):
+        self.apply()
+        listing = self.listing()
+        for branch in ('hx/api-names', 'feat/x', 'land/gui-perf-20261027', 'plain'):
+            self.assertIn('branch refs/heads/' + branch, listing)
+        self.assertIn('?? new.txt', self.r.git('status', '--short', cwd=self.feat))
+        for p, data in self.files.items():
+            self.assertEqual(p.read_bytes(), data)
+        locks = sorted(p.read_text().strip() for p in (self.common / 'worktrees').glob('*/locked'))
+        self.assertEqual(locks, [self.side] * 4)
+
+
+@integration
+class Suggest(Registry):
+    def test_unnamed_directory_gets_a_report_only_branch_suggestion(self):
+        path = self.add('mystery', 'work/real-name')
+        (path / 'src/own.txt').write_text('committed on the branch\n')
+        self.r.git('add', 'src/own.txt', cwd=path)
+        self.r.git('commit', '-qm', 'own', cwd=path)
+        self.lose('mystery')
+        before = self.listing()
+        for apply in (False, True):
+            result = self.apply() if apply else self.cleanup(mode='daily')
+            row = next(r for r in result['items'] if Path(r['path']).name == 'mystery')
+            self.assertEqual((row['reason_code'], row['action']), ('lost_registration_unproven', 'keep'))
+            self.assertEqual(row['suggestion'], 'work/real-name')
+            self.assertIn('suggestion', row['detail'])
+        self.assertEqual(self.listing(), before)
+        self.assertTrue((path / 'src/own.txt').exists())
+
+    def test_no_suggestion_when_the_newest_file_is_on_many_branches(self):
+        path = self.add('mystery', 'other')
+        self.lose('mystery')
+        result = self.cleanup(mode='daily')
+        row = next(r for r in result['items'] if Path(r['path']).name == 'mystery')
+        self.assertIsNone(row.get('suggestion'))
+
+
+@integration
+class Interrupted(Registry):
+    def test_a_registration_pointing_at_a_vanished_place_is_finished(self):
+        path = self.add('drover-half', 'drover/half')
+        (path / 'wip.txt').write_text('keep me')
+        admin = self.admin('drover-half')
+        (admin / 'gitdir').write_text(str(self.r.root / 'gone' / 'drover-half' / '.git') + '\n')   # temp parent vanished
+        before = {p: p.read_bytes() for p in path.rglob('*') if p.is_file() and p.name != '.git'}
+        dry = self.cleanup(mode='daily')
+        row = next(r for r in dry['items'] if r['reason_code'] == 'lost_registration')
+        self.assertEqual(Path(row['path']), path)
+        self.apply()
+        self.assertEqual((admin / 'gitdir').read_text().strip().replace('\\', '/').rstrip('/').lower(),
+                         str(path / '.git').replace('\\', '/').lower())
+        self.assertEqual(self.r.git('status', '--short', cwd=path), '?? wip.txt')
+        self.assertEqual(before, {p: p.read_bytes() for p in path.rglob('*') if p.is_file() and p.name != '.git'})
+        again = self.cleanup(mode='daily')
+        self.assertEqual([r for r in again['items'] if r['reason_code'].startswith('lost_registration')], [])

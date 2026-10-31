@@ -98,43 +98,104 @@ def differing(repo, path, ref):
     return len(changed), len(total)
 
 
-def candidate(repo, name):
-    """The local branch named like the directory: `drover-T1` is `drover-T1` or `drover/T1`."""
-    for branch in dict.fromkeys((name, name.replace('-', '/', 1))):
+def candidate(repo, name, rel=None):
+    """The local branch named like the directory: its path under the worktree root (`hx/api-names`), or its last
+    component, which `drover-T1` also reads as `drover/T1`."""
+    for branch in dict.fromkeys(filter(None, (rel, name, name.replace('-', '/', 1)))):
         if placement.git(repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch, timeout=60).returncode == 0:
             return branch
     return None
 
 
-def judge(machine, path, listed):
-    """('repair', branch, '') for a proven match, ('unproven', None, reason) otherwise."""
+SKIP = {'.git', 'node_modules', 'obj', 'bin', 'target', '.venv', '__pycache__'}
+
+
+def newest_files(path, count=5):
+    """The most recently written files of a directory, build output and `.git` pruned, links not followed."""
+    found = []
+    for folder, names, files in os.walk(path):
+        names[:] = [n for n in names if n not in SKIP and not os.path.islink(os.path.join(folder, n))]
+        for name in files:
+            full = os.path.join(folder, name)
+            if not os.path.islink(full):
+                found.append((os.stat(full).st_mtime, full))
+    return [os.path.relpath(full, path).replace(os.sep, '/') for _, full in sorted(found, reverse=True)[:count]]
+
+
+def suggest(repo, path):
+    """Report-only: the one local branch alone holding a newest file of the directory exactly as committed (the skill's
+    SUGGEST ranked trees; this reads one blob per file and costs one `git log` each, at most five). Never applied."""
+    for name in newest_files(path):
+        blob = placement.git(repo, 'hash-object', '--path=' + name, '--', str(path / name), timeout=60).stdout.strip()
+        commit = placement.git(repo, 'log', '--branches', '--format=%H', '-1', '--raw', '--find-object=' + blob,
+                              timeout=60).stdout.split()[:1]
+        commit = commit[0] if commit else ''
+        if not commit:
+            continue
+        held = placement.git(repo, 'branch', '--contains', commit, '--format=%(refname:short)', timeout=60).stdout.split()
+        if len(held) == 1:
+            return held[0]
+    return None
+
+
+def judge(machine, path, listed, rel=None):
+    """('repair', branch, why) for a proven match, ('unproven', branch, why) otherwise; a suggestion rides in why."""
     repo = machine['repo']
-    branch = candidate(repo, path.name)
+    branch = candidate(repo, path.name, rel)
     if branch is None:
-        return 'unproven', None, f'no branch named like {path.name}'
+        maybe = suggest(repo, path)
+        note = f'; suggestion: {maybe} holds its newest file (not applied)' if maybe else ''
+        return 'unproven', None, f'no branch named like {rel or path.name}{note}', maybe
     for entry in listed:
         if entry.get('branch') == 'refs/heads/' + branch:
-            return 'unproven', branch, f'branch {branch} is checked out at {entry["worktree"]}'
+            return 'unproven', branch, f'branch {branch} is checked out at {entry["worktree"]}', None
     bad, total = differing(repo, path, 'refs/heads/' + branch)
     if total == 0 or bad * 100 > THRESHOLD * total:
-        return 'unproven', branch, f'branch {branch} does not match its content ({bad} of {total} files differ; limit {THRESHOLD}%)'
-    return 'repair', branch, f'{bad} of {total} files differ from {branch}'
+        return 'unproven', branch, f'branch {branch} does not match its content ({bad} of {total} files differ; limit {THRESHOLD}%)', None
+    return 'repair', branch, f'{bad} of {total} files differ from {branch}', None
+
+
+DEPTH = 4   # `hx/api-names` is two below the root; deeper trees are not worktree layouts
+
+
+def checkouts(root):
+    """Directories below a worktree root that hold a `.git` file, found by walking down and stopping at the first
+    one: each is a (path, path relative to the root). Links, `.git` and build output are not entered, so a tree of
+    hundreds of worktrees costs one listing per folder above them."""
+    stack = [(root, 0)]
+    while stack:
+        folder, depth = stack.pop()
+        try:
+            children = sorted(os.scandir(folder), key=lambda e: e.name, reverse=True)
+        except OSError:
+            continue
+        for entry in children:
+            if entry.name in SKIP or entry.name.startswith('.drover-repair') or entry.is_symlink():
+                continue
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                marker = os.path.join(entry.path, '.git')
+                if os.path.isfile(marker) and not os.path.islink(marker):
+                    yield Path(entry.path), Path(entry.path).relative_to(root).as_posix()
+                elif not os.path.lexists(marker) and depth + 1 < DEPTH:
+                    stack.append((Path(entry.path), depth + 1))
+            except OSError:
+                continue
 
 
 def lost(machine, listed):
     """Directories under this side's worktree roots whose `.git` file names an admin directory of this repo that is
-    gone, or that no longer points back at the directory (an interrupted registration). Returns {path: target}."""
+    gone, or that no longer points back at the directory (an interrupted registration).
+    Returns {path: (admin directory, path relative to its root)}."""
     common, found = common_dir(machine), {}
     registered = {placement.cleanup_parts(placement.native(e['worktree'])) for e in listed}
     for root in worktree_roots(machine, this_side=True):
         if not root.is_dir() or not safe_path(root):
             continue
-        for path in sorted(root.iterdir()):
-            dotgit = path / '.git'
+        for path, rel in checkouts(root):
             try:
-                if path.is_symlink() or not path.is_dir() or not dotgit.is_file():
-                    continue
-                first = dotgit.read_text(encoding='utf-8', errors='replace').splitlines()[0]
+                first = (path / '.git').read_text(encoding='utf-8', errors='replace').splitlines()[0]
             except (OSError, IndexError):
                 continue
             if not first.startswith('gitdir:'):
@@ -149,24 +210,24 @@ def lost(machine, listed):
                 back = pointer_at(target)
                 if back is not None and placement.cleanup_parts(back[1]) == placement.cleanup_parts(path):
                     continue       # fully registered
-            found[str(path)] = target
+            found[str(path)] = (target, rel)
     return found
 
 
 def report(request, machine, listed, found, store):
     """Decide each lost directory; on apply, register the proven ones. Dry runs only describe."""
     rows = []
-    for text, target in found.items():
+    for text, (target, rel) in found.items():
         path = Path(text)
         row = item(path, request, 'lost_registration', repo=machine['repo'], name=machine['name'])
         try:
             if target.exists():
-                verdict, branch, why = 'repair', None, 'interrupted registration; pointers are rewritten'
+                verdict, branch, why, maybe = 'repair', None, 'interrupted registration; pointers are rewritten', None
             else:
-                verdict, branch, why = judge(machine, path, listed)
+                verdict, branch, why, maybe = judge(machine, path, listed, rel)
         except (OSError, ValueError) as error:
-            verdict, branch, why = 'unproven', None, f'could not be matched: {error}'
-        row.update(branch=branch, detail=why)
+            verdict, branch, why, maybe = 'unproven', None, f'could not be matched: {error}', None
+        row.update(branch=branch, detail=why, suggestion=maybe)
         if verdict != 'repair':
             row.update(action='keep', reason_code='lost_registration_unproven')
         elif not request['apply']:

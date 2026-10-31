@@ -181,14 +181,18 @@ writes the missing lock (`windows` or `wsl`, from the worktree's recorded path; 
 already there is kept, and a worktree whose directory this side can see is gone is left
 alone). A directory whose registration was lost is reported as `lost_registration` with the
 branch it would join. On apply it is registered again, locked with this side's name, only if
-a local branch is named like the directory (`drover-T1` matches `drover-T1` or `drover/T1`),
+a local branch is named like the directory (its path under the worktree root, so `hx/api-names` matches
+`hx/api-names`; or its last component, where `drover-T1` also matches `drover/T1`),
 that branch is not checked out in another worktree, and at most 10% of the branch's tracked
 files differ from the directory (uncommitted work does not stop a match). Files are never
 changed: the old `.git` file is saved under `<state>/disk/registration-backup/` and the
 action is journaled in `disk-cleanup-manifest.jsonl`. Every other case is kept untouched and
 reported as `lost_registration_unproven` with the reason (no branch named like it, branch in
-use elsewhere, content mismatch) for the owner to resolve; a failed attempt is
-`lost_registration_failed`. Each side handles only the roots it can open.
+use elsewhere, content mismatch) for the owner to resolve; when no branch is named like it, the
+row's `suggestion` may name the one branch that alone holds one of its five newest files exactly
+as committed, and it is never applied; a failed attempt is
+`lost_registration_failed`. Worktrees nested below a root are found (to four levels, stopping at the first `.git`, skipping
+links and build output). Each side handles only the roots it can open.
 
 Stage 6 reports merged worktrees with live tasks as `merged_live_task` items;
 cleanup never closes those tasks or removes their worktrees.
