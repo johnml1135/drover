@@ -144,8 +144,7 @@ retracted when cleanup runs. At the `critical` disk level the cooldown (kept per
 
 Windows load: there is no load average, so the `load` tracker reads CPU busy % (`GetSystemTimes`, smoothed over 60 s)
 and maps it onto the per-core scale: 100% busy counts as about 3.68 per core. With the defaults (`queue_per_core` 2.5,
-`hold_per_core` 3.5) new work therefore queues at about 68% busy and holds at 95%, and cleanup will not launch above
-the queue line. This is stricter dispatch on Windows than before, when load was unread. To tune it, set
+`hold_per_core` 3.5) new work therefore queues at about 68% busy and holds at 95%. Disk cleanup ignores this load. Dispatch is stricter on Windows than before, when load was unread. To tune it, set
 `queue_per_core` and `hold_per_core` on the `load` tracker: the busy percentage is `per_core / 3.68`, so
 `queue_per_core = 3.0` queues at about 82% busy.
 
