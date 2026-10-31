@@ -6,7 +6,7 @@ build slice does not.
 #>
 param(
     [string]$Root = (Split-Path -Parent $PSScriptRoot),    # the checkout that holds the drover package
-    [string]$Python = (Get-Command python).Source
+    [Parameter(Mandatory)][string]$Python    # a real python.exe; the WindowsApps alias fails under Task Scheduler
 )
 $ErrorActionPreference = 'Stop'
 $user = "$env:USERDOMAIN\$env:USERNAME"

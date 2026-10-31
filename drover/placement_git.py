@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import compaction_hold
 from .placement_paths import (
     IS_WINDOWS,
     MNT_RE,
@@ -122,7 +123,7 @@ def git(repo, *args, timeout=None, env=None, runner=None, side=None):
         if timeout is not None and time.perf_counter() - started >= timeout:
             raise subprocess.TimeoutExpired(argv, timeout, output=result.stdout, stderr=result.stderr)
         return result
-    except FileNotFoundError as e:
+    except (FileNotFoundError, compaction_hold.WslOffline) as e:
         return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {e}")
 
 def reachable(path, runner=None):

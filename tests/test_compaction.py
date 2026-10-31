@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_runtime, disk_state, ledger, placement
-from drover import placement_exec, placement_host, resources, usage
+from drover import placement_exec, placement_git, placement_host, resources, usage
 from drover.launch import RunnerLauncher
 from drover.ledger import disk_notices
 from drover.port import DirectPort
@@ -461,6 +461,12 @@ class Hold(DiskCase):
         with self.assertRaises(OSError):
             placement.WSL('U').command(['true'])
 
+    def test_git_in_wsl_offline_is_a_failed_command(self):
+        self.cfg['paths']['wsl_distro'] = 'Ubuntu'
+        self.live('offline')
+        with mock.patch.object(placement_git, 'routes_through_wsl', return_value=True):
+            self.assertEqual(placement_git.git('/home/j/x', 'status').returncode, 127)
+
     def test_draining_still_lets_a_wsl_command_through(self):
         self.live('draining')
         self.assertEqual(placement.wsl_control(['-l']), ['wsl.exe', '-l'])
@@ -669,6 +675,41 @@ class WindDown(Hubbed):
         self.d.tick()
         self.assertEqual(self.status(other), 'ready')
         self.assertEqual(self.port.list_runs(other), [])
+
+    def test_after_the_window_the_task_launches_again_with_nothing_left_held(self):
+        self.side('wsl')
+        go = self.verdict
+        self.verdict = dict(go, verdict='hold')
+        record = self.hold()
+        self.clock.now += 301
+        self.d.tick()
+        self.finish(0, res('error', 'killed'))
+        self.d.tick()
+        self.assertEqual(self.status(self.tid), 'ready')
+        compaction_hold.release(self.state, record['id'])
+        self.verdict = go
+        self.d.tick()
+        runs = self.port.list_runs(self.tid)
+        self.assertEqual([r['outcome'] for r in runs], ['control-held', None])
+        self.assertEqual(self.status(self.tid), 'running')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM questions').fetchone()[0], 0)
+
+    def test_a_new_worktree_waits_while_wsl_is_offline(self):
+        self.side('windows')
+        other = self.task(size='S')
+        self.hold('offline')
+        self.d.tick()
+        self.assertEqual(self.status(other), 'ready')
+        self.assertEqual(self.port.list_runs(other), [])
+
+    def test_a_windows_task_with_its_worktree_still_launches_offline(self):
+        self.side('windows')
+        other = self.task(size='S')
+        self.port.update_task(other, worktree=str(self.state))
+        self.hold('offline')
+        self.d.tick()
+        self.assertEqual(self.status(other), 'running')
+        self.assertEqual(len(self.port.list_runs(other)), 1)
 
     def test_a_dead_job_is_released_on_the_first_tick(self):
         compaction_hold.claim(self.state, at=self.clock(), pid=999999, birth='b')

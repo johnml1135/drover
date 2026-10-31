@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import compaction_hold
 from . import contract, placement, repos, task_access
 from . import config as config_mod
 from . import launch as launch_mod
@@ -394,6 +395,10 @@ class AdmissionSteps:
                 p.note_wsl_needed(tid)
                 self._defer(task, "WSL is not running", reason_code="wsl-down")
                 return "wsl-down"
+        if not had and task.get("write", True) and compaction_hold.offline():
+            # A new worktree is chosen against the WSL registrations too, and they cannot be read now.
+            self._defer(task, "WSL is down for the overnight compaction", reason_code="wsl-down")
+            return "wsl-down"
         wt = self._worktree(task, where)
         if wt is False:
             return "worktree-refused"                # the task went to the owner
