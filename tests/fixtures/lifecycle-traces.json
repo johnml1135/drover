@@ -1,0 +1,868 @@
+{
+ "approve_claim_start_finish_land": {
+  "final": {
+   "landed": [
+    {"land_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "receipt": "merge gate", "task_id": "task1", "tip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+   ],
+   "runs": [
+    {"backend": "local", "gate_receipt": {"diff_lines": null, "ok": true, "receipt": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "passed"}}, "model": null, "note": null, "outcome": "gated", "review_verdict": null, "role": "worker", "task_id": "task1"},
+    {"backend": "local", "gate_receipt": null, "model": null, "note": null, "outcome": "passed", "review_verdict": null, "role": "gate", "task_id": "task1"},
+    {"backend": "local", "gate_receipt": null, "model": null, "note": null, "outcome": "land", "review_verdict": "LAND@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "role": "review", "task_id": "task1"}
+   ],
+   "tasks": [
+    {"approved_at": true, "archived": 0, "attempts": 3, "blocker": null, "branch": "drover/land", "epic_id": null, "internal": 0, "kind": "implementation", "model": "sonnet", "owner_kind": "claude", "parent_id": null, "priority": "P1", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"src/land\"]", "size": "S", "status": "landed", "title": "Land me", "worktree": "wt-land", "write": 1}
+   ],
+   "wait_subjects": [],
+   "waits": []
+  },
+  "steps": [
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "Land me"}, "epic": null, "kind": "task-created", "task": "task1"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task1"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task1"}
+    ],
+    "result": "task1",
+    "step": "create"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "step": "approve"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": "sonnet", "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "result": "task1",
+    "step": "claim"
+   },
+   {
+    "events": [
+     {"actor": "worker", "data": {"backend": "local", "role": "worker", "run": "run1"}, "epic": null, "kind": "run-started", "task": "task1"},
+     {"actor": "worker", "data": {"from": "claimed", "reason": "run started", "run": "run1", "to": "running"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "run": "run1",
+    "step": "start worker"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"run": "run1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "epic": null, "kind": "worker-done", "task": "task1"},
+     {"actor": "system", "data": {"outcome": "done", "run": "run1"}, "epic": null, "kind": "run-finished", "task": "task1"}
+    ],
+    "run": "run1",
+    "step": "worker done"
+   },
+   {
+    "events": [
+     {"actor": "gate", "data": {"backend": "local", "role": "gate", "run": "run2"}, "epic": null, "kind": "run-started", "task": "task1"},
+     {"actor": "dispatcher", "data": {"gate_run": "run2", "platform": "windows", "run": "run1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "epic": null, "kind": "gate-started", "task": "task1"},
+     {"actor": "system", "data": {"outcome": "passed", "run": "run2"}, "epic": null, "kind": "run-finished", "task": "task1"},
+     {"actor": "system", "data": {"outcome": "gated", "run": "run1"}, "epic": null, "kind": "run-amended", "task": "task1"}
+    ],
+    "run": "run2",
+    "step": "gate passed"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "running", "reason": "gate passed", "run": "run1", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "to": "gated"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "step": "advance gated"
+   },
+   {
+    "events": [
+     {"actor": "review", "data": {"backend": "local", "role": "review", "run": "run3"}, "epic": null, "kind": "run-started", "task": "task1"},
+     {"actor": "dispatcher", "data": {"run": "run3", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "worker_run": "run1"}, "epic": null, "kind": "review-started", "task": "task1"},
+     {"actor": "system", "data": {"outcome": "land", "run": "run3"}, "epic": null, "kind": "run-finished", "task": "task1"}
+    ],
+    "run": "run3",
+    "step": "review land"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "gated", "reason": "review LAND@aaaaaaaaaaaa", "run": "run3", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "to": "reviewed"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "step": "advance reviewed"
+   },
+   {
+    "events": [
+     {"actor": "system", "data": {"from": "reviewed", "land_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "reason": "fast-forwarded", "receipt": "merge gate", "tip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "to": "landed"}, "epic": null, "kind": "status", "task": "task1"},
+     {"actor": "landing", "data": {"land_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "receipt": "merge gate", "tip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "epic": null, "kind": "task.landed", "task": "task1"}
+    ],
+    "step": "land"
+   },
+   {
+    "events": [],
+    "message": "landing requires an exact review and passed merge receipt",
+    "refused": "ValueError",
+    "step": "land again"
+   },
+   {
+    "events": [],
+    "message": "illegal transition landed -> reviewed",
+    "refused": "IllegalTransition",
+    "step": "advance after landing"
+   },
+   {
+    "events": [],
+    "message": "engine stages require evidence-checked operations",
+    "refused": "IllegalTransition",
+    "step": "generic claimed"
+   }
+  ]
+ },
+ "claim_order_scope_and_deps": {
+  "final": {
+   "landed": [],
+   "runs": [],
+   "tasks": [
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P3", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/low\"]", "size": "M", "status": "claimed", "title": "low", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": "epic1", "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/in-epic\"]", "size": "M", "status": "claimed", "title": "in-epic", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/aged\"]", "size": "M", "status": "claimed", "title": "aged", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/pressed\"]", "size": "M", "status": "claimed", "title": "pressed", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/small\"]", "size": "S", "status": "claimed", "title": "small", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/large\"]", "size": "L", "status": "claimed", "title": "large", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 2.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/twin-a\"]", "size": "M", "status": "claimed", "title": "twin-a", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/twin-b\"]", "size": "M", "status": "claimed", "title": "twin-b", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"src/*\"]", "size": "M", "status": "claimed", "title": "src-wide", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"src/one\"]", "size": "M", "status": "ready", "title": "src-one", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/needs-first\"]", "size": "M", "status": "ready", "title": "needs-first", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/waits-for\"]", "size": "M", "status": "claimed", "title": "waits-for", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P0", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/urgent\"]", "size": "M", "status": "claimed", "title": "urgent", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 3.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower0\"]", "size": "M", "status": "proposed", "title": "follower0", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 4.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower1\"]", "size": "M", "status": "proposed", "title": "follower1", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 5.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower2\"]", "size": "M", "status": "proposed", "title": "follower2", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 6.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower3\"]", "size": "M", "status": "proposed", "title": "follower3", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 7.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower4\"]", "size": "M", "status": "proposed", "title": "follower4", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 8.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower5\"]", "size": "M", "status": "proposed", "title": "follower5", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 9.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower6\"]", "size": "M", "status": "proposed", "title": "follower6", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 10.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower7\"]", "size": "M", "status": "proposed", "title": "follower7", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 11.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower8\"]", "size": "M", "status": "proposed", "title": "follower8", "worktree": null, "write": 1}
+   ],
+   "wait_subjects": [],
+   "waits": []
+  },
+  "steps": [
+   {
+    "events": [],
+    "result": {
+     "aged": "task3",
+     "in-epic": "task2",
+     "large": "task6",
+     "low": "task1",
+     "needs-first": "task11",
+     "pressed": "task4",
+     "small": "task5",
+     "src-one": "task10",
+     "src-wide": "task9",
+     "twin-a": "task7",
+     "twin-b": "task8",
+     "urgent": "task13",
+     "waits-for": "task12"
+    },
+    "step": "ranked backlog"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": "epic1", "kind": "status", "task": "task2"}
+    ],
+    "result": "in-epic",
+    "step": "claim with the best task excluded"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task13"}
+    ],
+    "result": "urgent",
+    "step": "claim 1"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task4"}
+    ],
+    "result": "pressed",
+    "step": "claim 2"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task5"}
+    ],
+    "result": "small",
+    "step": "claim 3"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task3"}
+    ],
+    "result": "aged",
+    "step": "claim 4"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task8"}
+    ],
+    "result": "twin-b",
+    "step": "claim 5"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task9"}
+    ],
+    "result": "src-wide",
+    "step": "claim 6"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task12"}
+    ],
+    "result": "waits-for",
+    "step": "claim 7"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task6"}
+    ],
+    "result": "large",
+    "step": "claim 8"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task7"}
+    ],
+    "result": "twin-a",
+    "step": "claim 9"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "result": "low",
+    "step": "claim 10"
+   },
+   {
+    "events": [],
+    "result": [
+     "in-epic",
+     "urgent",
+     "pressed",
+     "small",
+     "aged",
+     "twin-b",
+     "src-wide",
+     "waits-for",
+     "large",
+     "twin-a",
+     "low"
+    ],
+    "step": "claim order"
+   },
+   {
+    "events": [],
+    "result": [
+     "src-one",
+     "needs-first"
+    ],
+    "step": "skipped while their scope or dependency is active"
+   }
+  ]
+ },
+ "claim_tiebreak_is_task_id_text": {
+  "final": {
+   "landed": [],
+   "runs": [],
+   "tasks": [
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/first\"]", "size": "M", "status": "claimed", "title": "first", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/second\"]", "size": "M", "status": "claimed", "title": "second", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/third\"]", "size": "M", "status": "claimed", "title": "third", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/fourth\"]", "size": "M", "status": "claimed", "title": "fourth", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 5.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower0\"]", "size": "M", "status": "proposed", "title": "follower0", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 6.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/follower1\"]", "size": "M", "status": "proposed", "title": "follower1", "worktree": null, "write": 1}
+   ],
+   "wait_subjects": [],
+   "waits": []
+  },
+  "steps": [
+   {
+    "events": [],
+    "result": {
+     "first": "task1",
+     "fourth": "task4",
+     "second": "task2",
+     "third": "task3"
+    },
+    "step": "four equal tasks"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "result": "first",
+    "step": "claim 1"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task3"}
+    ],
+    "result": "third",
+    "step": "claim 2"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task4"}
+    ],
+    "result": "fourth",
+    "step": "claim 3"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "result": "second",
+    "step": "claim 4"
+   },
+   {
+    "events": [],
+    "result": [
+     "task1",
+     "task3",
+     "task4",
+     "task2"
+    ],
+    "step": "claim order by id"
+   }
+  ]
+ },
+ "internal_accounting_task_is_created_once_and_immutable": {
+  "steps": [
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"task_id": "task2"}, "epic": null, "kind": "director.accounting-created", "task": null}
+    ],
+    "run": {
+     "backend": "claude",
+     "model": "test-model",
+     "note": null,
+     "outcome": null,
+     "review_verdict": null,
+     "role": "director",
+     "task_id": "task2"
+    },
+    "step": "first director start",
+    "task": {
+     "approved_at": false,
+     "archived": 1,
+     "attempts": 0,
+     "blocker": null,
+     "branch": null,
+     "epic_id": null,
+     "internal": 1,
+     "kind": "implementation",
+     "model": null,
+     "owner_kind": null,
+     "parent_id": null,
+     "priority": "P2",
+     "rank": 0.0,
+     "replans_used": 0,
+     "repo": "__director_accounting__",
+     "retry_after_run": 0,
+     "scope_files": "[]",
+     "size": "M",
+     "status": "draft",
+     "title": "Director run accounting",
+     "worktree": null,
+     "write": 0
+    }
+   },
+   {
+    "events": [],
+    "message": "internal director accounting task is immutable",
+    "refused": "PermissionError",
+    "step": "status of the accounting task"
+   },
+   {
+    "events": [],
+    "message": "director runs require the supervised runtime",
+    "refused": "PermissionError",
+    "step": "worker run on the accounting task"
+   },
+   {
+    "events": [],
+    "message": "internal director accounting task is immutable",
+    "refused": "PermissionError",
+    "step": "outside landing on the accounting task"
+   },
+   {
+    "events": [],
+    "message": "internal director accounting task is immutable",
+    "refused": "PermissionError",
+    "step": "archive of the accounting task"
+   },
+   {
+    "events": [],
+    "message": "internal director accounting task is immutable",
+    "refused": "PermissionError",
+    "step": "delete of the accounting task"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"comment": 1, "replan": false, "urgent": false}, "epic": null, "kind": "comment", "task": "task2"}
+    ],
+    "step": "comment on the accounting task"
+   }
+  ]
+ },
+ "nested_event_release_order": {
+  "final": {
+   "landed": [],
+   "runs": [
+    {"backend": "local", "gate_receipt": null, "model": null, "note": null, "outcome": "error", "review_verdict": null, "role": "worker", "task_id": "task3"}
+   ],
+   "tasks": [
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"source\"]", "size": "M", "status": "cancelled", "title": "source", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 2.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"held\"]", "size": "M", "status": "ready", "title": "held", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 1, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 3.0, "replans_used": 0, "repo": "p", "retry_after_run": "run1", "scope_files": "[\"parked\"]", "size": "M", "status": "proposed", "title": "parked", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 4.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"drafted\"]", "size": "M", "status": "draft", "title": "drafted", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 5.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"late-source\"]", "size": "M", "status": "cancelled", "title": "late-source", "worktree": null, "write": 1}
+   ],
+   "wait_subjects": [
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task2"]},
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task3"]},
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task4"]},
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task5"]}
+   ],
+   "waits": [
+    {"cause": "[\"manual\",\"task2\"]", "data": {"mode": "blocked", "note": "owner has local work"}, "kind": "manual", "released": true, "subject": ["task", "task2"]},
+    {"cause": "[\"urgent\",\"task\",\"task1\"]", "data": {"mode": "blocked"}, "kind": "owner-answer", "released": true, "subject": ["task", "task2"]},
+    {"cause": "[\"urgent\",\"task\",\"task1\"]", "data": {"mode": "blocked"}, "kind": "owner-answer", "released": true, "subject": ["task", "task3"]},
+    {"cause": "[\"urgent\",\"task\",\"task1\"]", "data": {"mode": "blocked"}, "kind": "owner-answer", "released": true, "subject": ["task", "task4"]},
+    {"cause": "[\"manual\",\"task5\"]", "data": {"mode": "blocked", "note": "source with its own wait"}, "kind": "manual", "released": true, "subject": ["task", "task5"]}
+   ]
+  },
+  "steps": [
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task2\"]", "key": "[\"task2\"]", "kind": "manual", "subject": ["task", "task2"]}, "epic": null, "kind": "waiting.registered", "task": "task2"},
+     {"actor": "owner", "data": {"from": "ready", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "resolved": [
+     [
+      "waiting.registered",
+      "task2"
+     ],
+     [
+      "status",
+      "task2"
+     ]
+    ],
+    "step": "independent hold on one follower"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"comment": 1, "replan": false, "urgent": true}, "epic": null, "kind": "comment", "task": "task1"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "key": "[\"[\\\"urgent\\\",\\\"task\\\",\\\"task1\\\"]\"]", "kind": "owner-answer", "subject": ["task", "task2"]}, "epic": null, "kind": "waiting.registered", "task": "task2"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "key": "[\"[\\\"urgent\\\",\\\"task\\\",\\\"task1\\\"]\"]", "kind": "owner-answer", "subject": ["task", "task3"]}, "epic": null, "kind": "waiting.registered", "task": "task3"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task3"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "key": "[\"[\\\"urgent\\\",\\\"task\\\",\\\"task1\\\"]\"]", "kind": "owner-answer", "subject": ["task", "task4"]}, "epic": null, "kind": "waiting.registered", "task": "task4"},
+     {"actor": "owner", "data": {"from": "draft", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task4"},
+     {"actor": "owner", "data": {"question": "question1", "title": "Resume work?"}, "epic": null, "kind": "question-asked", "task": "task1"}
+    ],
+    "resolved": [
+     [
+      "comment",
+      "task1"
+     ],
+     [
+      "waiting.registered",
+      "task2"
+     ],
+     [
+      "waiting.registered",
+      "task3"
+     ],
+     [
+      "status",
+      "task3"
+     ],
+     [
+      "waiting.registered",
+      "task4"
+     ],
+     [
+      "status",
+      "task4"
+     ],
+     [
+      "question-asked",
+      "task1"
+     ]
+    ],
+    "step": "urgent comment holds every follower"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"from": "ready", "reason": null, "to": "cancelled"}, "epic": null, "kind": "status", "task": "task1"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "wait": "wait1"}, "epic": null, "kind": "waiting.released", "task": "task2"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "wait": "wait2"}, "epic": null, "kind": "waiting.released", "task": "task3"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "wait": "wait3"}, "epic": null, "kind": "waiting.released", "task": "task4"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": "waiting", "to": "proposed"}, "epic": null, "kind": "status", "task": "task3"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": "waiting", "to": "draft"}, "epic": null, "kind": "status", "task": "task4"},
+     {"actor": "owner", "data": {"cause": "[\"urgent\",\"task\",\"task1\"]", "question": "question1"}, "epic": null, "kind": "question-superseded", "task": null}
+    ],
+    "resolved": [
+     [
+      "status",
+      "task1"
+     ],
+     [
+      "waiting.released",
+      "task2"
+     ],
+     [
+      "waiting.released",
+      "task3"
+     ],
+     [
+      "waiting.released",
+      "task4"
+     ],
+     [
+      "status",
+      "task3"
+     ],
+     [
+      "status",
+      "task4"
+     ],
+     [
+      "question-superseded",
+      null
+     ]
+    ],
+    "step": "cancelling the source releases its waits, not the independent hold"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task2\"]"}, "epic": null, "kind": "waiting.release", "task": null},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task2\"]", "wait": "wait4"}, "epic": null, "kind": "waiting.released", "task": "task2"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": "waiting", "to": "ready"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "resolved": [
+     [
+      "waiting.release",
+      null
+     ],
+     [
+      "waiting.released",
+      "task2"
+     ],
+     [
+      "status",
+      "task2"
+     ]
+    ],
+    "step": "the independent hold is released last"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task5\"]", "key": "[\"task5\"]", "kind": "manual", "subject": ["task", "task5"]}, "epic": null, "kind": "waiting.registered", "task": "task5"},
+     {"actor": "owner", "data": {"from": "ready", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task5"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": null, "to": "cancelled"}, "epic": null, "kind": "status", "task": "task5"},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task5\"]", "wait": "wait5"}, "epic": null, "kind": "waiting.released", "task": "task5"}
+    ],
+    "resolved": [
+     [
+      "waiting.registered",
+      "task5"
+     ],
+     [
+      "status",
+      "task5"
+     ],
+     [
+      "status",
+      "task5"
+     ],
+     [
+      "waiting.released",
+      "task5"
+     ]
+    ],
+    "step": "a cancelled source releases its own waits"
+   }
+  ]
+ },
+ "owner_findings_outside_and_manual_holds": {
+  "final": {
+   "landed": [
+    {"land_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "receipt": "{\"base_ref\":\"origin/main\",\"base_sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"gate\":\"gate passed\",\"review\":\"review approved\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}", "task_id": "task3", "tip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+   ],
+   "runs": [
+    {"backend": "codex", "gate_receipt": null, "model": null, "note": "Findings ready", "outcome": "read-only-done", "review_verdict": null, "role": "worker", "task_id": "task1"}
+   ],
+   "tasks": [
+    {"approved_at": true, "archived": 0, "attempts": 1, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "research", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/findings\"]", "size": "M", "status": "landed", "title": "findings", "worktree": null, "write": 0},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 2.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/implementation\"]", "size": "M", "status": "ready", "title": "implementation", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 3.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/elsewhere\"]", "size": "M", "status": "landed", "title": "elsewhere", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 4.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/held\"]", "size": "M", "status": "ready", "title": "held", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 5.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/source\"]", "size": "M", "status": "cancelled", "title": "source", "worktree": null, "write": 1},
+    {"approved_at": false, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 6.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/draft-hold\"]", "size": "M", "status": "proposed", "title": "draft-hold", "worktree": null, "write": 1}
+   ],
+   "wait_subjects": [
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task4"]},
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task2"]},
+    {"parked": 0, "reset_external": 0, "resume_state": null, "subject": ["task", "task6"]}
+   ],
+   "waits": [
+    {"cause": "[\"manual\",\"task4\"]", "data": {"mode": "blocked", "note": "owner has local work"}, "kind": "manual", "released": true, "subject": ["task", "task4"]},
+    {"cause": "[\"manual\",\"task2\"]", "data": {"mode": "blocked", "note": "pause a claimed task"}, "kind": "manual", "released": true, "subject": ["task", "task2"]},
+    {"cause": "[\"task\",\"task5\"]", "data": {"mode": "blocked", "source": "task5"}, "kind": "task-terminal", "released": true, "subject": ["task", "task4"]},
+    {"cause": "[\"manual\",\"task6\"]", "data": {"mode": "blocked", "note": "park the proposal"}, "kind": "manual", "released": true, "subject": ["task", "task6"]}
+   ]
+  },
+  "steps": [
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "findings"}, "epic": null, "kind": "task-created", "task": "task1"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task1"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task1"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task1"},
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task1"},
+     {"actor": "worker", "data": {"backend": "codex", "role": "worker", "run": "run1"}, "epic": null, "kind": "run-started", "task": "task1"},
+     {"actor": "worker", "data": {"from": "claimed", "reason": "run started", "run": "run1", "to": "running"}, "epic": null, "kind": "status", "task": "task1"},
+     {"actor": "system", "data": {"outcome": "read-only-done", "run": "run1"}, "epic": null, "kind": "run-finished", "task": "task1"},
+     {"actor": "dispatcher", "data": {"from": "running", "reason": "Review findings", "to": "needs-owner"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "result": "task1",
+    "step": "read-only findings ready"
+   },
+   {
+    "events": [],
+    "message": "only the owner may accept read-only findings",
+    "refused": "PermissionError",
+    "step": "accept as dispatcher"
+   },
+   {
+    "events": [],
+    "message": "engine stages require evidence-checked operations",
+    "refused": "IllegalTransition",
+    "step": "generic landed"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"from": "needs-owner", "read_only": true, "read_only_receipt": {"evidence": {"allowance_used": null, "backend": "codex", "effort": null, "gate_receipt": null, "model": null, "note": "Findings ready", "outcome": "read-only-done", "policy_version": null, "review_verdict": null, "role": "worker", "task_id": "task1", "tokens_cached": null, "tokens_in": null, "tokens_out": null}, "result_hash": "<sha256>", "schema_version": 1}, "reason": "Owner accepted read-only findings", "run": "run1", "to": "landed"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "step": "owner accepts findings"
+   },
+   {
+    "events": [],
+    "message": "task has no completed read-only findings to accept",
+    "refused": "ValueError",
+    "step": "accept again"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "implementation"}, "epic": null, "kind": "task-created", "task": "task2"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task2"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task2"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "result": "task2",
+    "step": "second task ready"
+   },
+   {
+    "events": [],
+    "message": "task has no completed read-only findings to accept",
+    "refused": "ValueError",
+    "step": "findings shortcut for a write task"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "elsewhere"}, "epic": null, "kind": "task-created", "task": "task3"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task3"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task3"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task3"},
+     {"actor": "worker", "data": {"from": "ready", "reason": "landed elsewhere", "to": "needs-owner"}, "epic": null, "kind": "status", "task": "task3"}
+    ],
+    "result": "task3",
+    "step": "worker hands over"
+   },
+   {
+    "events": [],
+    "message": "only the owner may record an external landing",
+    "refused": "PermissionError",
+    "step": "outside by worker"
+   },
+   {
+    "events": [],
+    "message": "a full 40-character commit SHA is required",
+    "refused": "ValueError",
+    "step": "outside by short sha"
+   },
+   {
+    "events": [],
+    "message": "only implementations awaiting the owner can be recorded",
+    "refused": "IllegalTransition",
+    "step": "outside on a ready task"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"external_landing": {"base_ref": "origin/main", "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "gate": "gate passed", "review": "review approved", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "from": "needs-owner", "reason": "Owner recorded external landing", "to": "landed"}, "epic": null, "kind": "status", "task": "task3"},
+     {"actor": "landing", "data": {"land_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "receipt": "{\"base_ref\":\"origin/main\",\"base_sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"gate\":\"gate passed\",\"review\":\"review approved\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}", "tip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "epic": null, "kind": "task.landed", "task": "task3"}
+    ],
+    "step": "owner records outside landing"
+   },
+   {
+    "events": [],
+    "step": "same evidence again"
+   },
+   {
+    "events": [],
+    "message": "task already landed with different evidence",
+    "refused": "IllegalTransition",
+    "step": "different evidence"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "held"}, "epic": null, "kind": "task-created", "task": "task4"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task4"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task4"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task4"},
+     {"actor": "owner", "data": {"status": "proposed", "title": "source"}, "epic": null, "kind": "task-created", "task": "task5"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task5"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task5"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task5"},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task4\"]", "key": "[\"task4\"]", "kind": "manual", "subject": ["task", "task4"]}, "epic": null, "kind": "waiting.registered", "task": "task4"},
+     {"actor": "owner", "data": {"from": "ready", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task4"}
+    ],
+    "result": "task4",
+    "step": "block"
+   },
+   {
+    "events": [
+     {"actor": "dispatcher", "data": {"from": "ready", "model": null, "reason": "claim", "to": "claimed"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "result": "implementation",
+    "step": "claim passes over the hold"
+   },
+   {
+    "events": [],
+    "message": "blocked needs a reason",
+    "refused": "ValueError",
+    "step": "blocked needs a reason"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task2\"]", "key": "[\"task2\"]", "kind": "manual", "subject": ["task", "task2"]}, "epic": null, "kind": "waiting.registered", "task": "task2"},
+     {"actor": "owner", "data": {"from": "claimed", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "result": "task2",
+    "step": "hold on a claimed task"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task2\"]"}, "epic": null, "kind": "waiting.release", "task": null},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task2\"]", "wait": "wait1"}, "epic": null, "kind": "waiting.released", "task": "task2"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": "waiting", "to": "ready"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "step": "release returns a parked claimed task to ready, not claimed"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"task\",\"task5\"]", "key": "[\"task5\"]", "kind": "task-terminal", "subject": ["task", "task4"]}, "epic": null, "kind": "waiting.registered", "task": "task4"}
+    ],
+    "step": "independent wait on source"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task4\"]"}, "epic": null, "kind": "waiting.release", "task": null},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task4\"]", "wait": "wait2"}, "epic": null, "kind": "waiting.released", "task": "task4"}
+    ],
+    "step": "unblock releases only the manual hold"
+   },
+   {
+    "events": [],
+    "message": "task5 is ready, not blocked",
+    "refused": "IllegalTransition",
+    "step": "unblock a task that is not held"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"from": "ready", "reason": null, "to": "cancelled"}, "epic": null, "kind": "status", "task": "task5"},
+     {"actor": "owner", "data": {"cause": "[\"task\",\"task5\"]", "wait": "wait3"}, "epic": null, "kind": "waiting.released", "task": "task4"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": "waiting", "to": "ready"}, "epic": null, "kind": "status", "task": "task4"}
+    ],
+    "step": "source cancelled releases the other wait"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "draft-hold"}, "epic": null, "kind": "task-created", "task": "task6"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task6"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task6"},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task6\"]", "key": "[\"task6\"]", "kind": "manual", "subject": ["task", "task6"]}, "epic": null, "kind": "waiting.registered", "task": "task6"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task6"},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task6\"]"}, "epic": null, "kind": "waiting.release", "task": null},
+     {"actor": "owner", "data": {"cause": "[\"manual\",\"task6\"]", "wait": "wait4"}, "epic": null, "kind": "waiting.released", "task": "task6"},
+     {"actor": "owner", "data": {"from": "blocked", "reason": "waiting", "to": "proposed"}, "epic": null, "kind": "status", "task": "task6"}
+    ],
+    "result": "task6",
+    "step": "proposed task held and released"
+   }
+  ]
+ },
+ "rollback_leaves_no_event_or_row": {
+  "final": {
+   "landed": [],
+   "runs": [],
+   "tasks": [
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 1.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/rolled\"]", "size": "M", "status": "blocked", "title": "rolled", "worktree": null, "write": 1},
+    {"approved_at": true, "archived": 0, "attempts": 0, "blocker": null, "branch": null, "epic_id": null, "internal": 0, "kind": "implementation", "model": null, "owner_kind": null, "parent_id": null, "priority": "P2", "rank": 2.0, "replans_used": 0, "repo": "p", "retry_after_run": 0, "scope_files": "[\"files/rolled-source\"]", "size": "M", "status": "ready", "title": "rolled-source", "worktree": null, "write": 1}
+   ],
+   "wait_subjects": [
+    {"parked": 1, "reset_external": 0, "resume_state": "ready", "subject": ["task", "task1"]}
+   ],
+   "waits": [
+    {"cause": "[\"task\",\"task2\"]", "data": {"mode": "blocked", "source": "task2"}, "kind": "task-terminal", "released": false, "subject": ["task", "task1"]}
+   ]
+  },
+  "steps": [
+   {
+    "events": [
+     {"actor": "owner", "data": {"status": "proposed", "title": "rolled"}, "epic": null, "kind": "task-created", "task": "task1"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task1"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task1"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task1"},
+     {"actor": "owner", "data": {"status": "proposed", "title": "rolled-source"}, "epic": null, "kind": "task-created", "task": "task2"},
+     {"actor": "owner", "data": {"deps": []}, "epic": null, "kind": "deps-set", "task": "task2"},
+     {"actor": "owner", "data": {"related": []}, "epic": null, "kind": "related-set", "task": "task2"},
+     {"actor": "owner", "data": {"from": "proposed", "reason": "approved", "to": "ready"}, "epic": null, "kind": "status", "task": "task2"}
+    ],
+    "step": "two ready tasks"
+   },
+   {
+    "events": [],
+    "step": "outer failure rolls back claim, hold and status"
+   },
+   {
+    "events": [
+     {"actor": "owner", "data": {"cause": "[\"task\",\"task2\"]", "key": "[\"task2\"]", "kind": "task-terminal", "subject": ["task", "task1"]}, "epic": null, "kind": "waiting.registered", "task": "task1"},
+     {"actor": "owner", "data": {"from": "ready", "reason": "waiting", "to": "blocked"}, "epic": null, "kind": "status", "task": "task1"}
+    ],
+    "result": "task1",
+    "step": "wait registered"
+   },
+   {
+    "events": [],
+    "message": "cause is not satisfied",
+    "refused": "ValueError",
+    "step": "release of an unsatisfied cause"
+   },
+   {
+    "events": [],
+    "message": "task has independent waits",
+    "refused": "ValueError",
+    "step": "owner readies a task with an independent wait"
+   }
+  ]
+ }
+}

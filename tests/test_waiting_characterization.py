@@ -1,18 +1,22 @@
 """Behavior that must survive the replacement of the legacy wait mechanisms."""
 import json
 import time
+import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 from drover.port import DirectPort
 from drover import config, landing, repos, route
 from drover.ledger import ops
+from drover.ledger.waiting import Waiting
 from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
 from tests.test_dispatcher import Base as DispatchBase, BLOCKED, res
 from tests.test_pipeline import prog_dict, result
 from tests.rcw_fixture import PipelineBase
 from tests.test_landing import fake_decider
 from tests.waiting_fixture import LandingCase
+from tests.test_lifecycle_characterization import WAITING_KEY, Recorder, check_trace, memory_ledger
 
 def fixture(owner, cls):
     case = cls()
@@ -248,3 +252,51 @@ class Consumers(PipelineBase):
                 again = run()
                 self.assertEqual(again['gates'] == 0, action == 'Keep holding')
                 self.assertEqual(f.status(tid), 'landed' if action == 'move' else 'reviewed')
+
+
+class WaitingTrace(unittest.TestCase):
+    """The order in which one source event, and the events its waits emit, reach the ledger and the resolver."""
+
+    def test_nested_event_release_order(self):
+        conn = memory_ledger()
+        self.addCleanup(conn.close)
+        rec, seen = Recorder(conn, self), []
+        original = Waiting.resolve
+
+        def resolve(waiting, event):
+            seen.append([event['kind'], rec.norm(event['task_id'])])
+            return original(waiting, event)
+
+        def step(label, **kw):
+            rec.step(label, **kw)
+            rec.steps[-1]['resolved'] = [list(s) for s in seen]
+            seen.clear()
+
+        make = lambda title: ops.create_task(conn, title, 'p', scope_files=[title])['id']
+        source, held, parked, drafted = (make(t) for t in ('source', 'held', 'parked', 'drafted'))
+        ops.approve(conn, source)
+        ops.approve(conn, held)
+        ops.set_status(conn, drafted, 'draft')
+        for follower in (held, parked, drafted):
+            ops.add_dep(conn, follower, source)
+        # A failed worker run before the holds: releasing the urgent wait resets the retry marker past it.
+        failed = ops.start_run(conn, parked, 'worker', 'local')
+        ops.finish_run(conn, failed, 'error')
+        late = make('late-source')
+        ops.approve(conn, late)
+        rec.events()        # the backlog setup is not part of the trace
+        with mock.patch.object(Waiting, 'resolve', resolve):
+            ops.block(conn, held, 'owner has local work', actor='owner')
+            step('independent hold on one follower')
+            ops.add_comment(conn, 'task', source, 'owner', 'Pause followers', urgent=True)
+            step('urgent comment holds every follower')
+            ops.set_status(conn, source, 'cancelled', actor='owner')
+            step('cancelling the source releases its waits, not the independent hold')
+            # Observation: each released wait writes waiting.released as it is released, before the next wait is
+            # released and before the status event that restores its task; resolve sees events in emission order.
+            ops.unblock(conn, held, actor='owner')
+            step('the independent hold is released last')
+            ops.block(conn, late, 'source with its own wait', actor='owner')
+            ops.set_status(conn, late, 'cancelled', actor='owner')
+            step('a cancelled source releases its own waits')
+        check_trace(self, WAITING_KEY, rec.trace())
