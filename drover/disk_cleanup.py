@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import config, disk, disk_runtime, disk_state, placement, repos
+from . import config, disk, disk_budget, disk_runtime, disk_state, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, CleanupState, decide, decide_and_store, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
 
@@ -111,6 +111,61 @@ def _reading(value):
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
 
 
+def _budget_purge(cfg, runtime, progress, result, base):
+    """Serve a `wsl` claim: the WSL side's output stage alone, whatever the host drive's free space. Returns its
+    receipt. WSL lives on the wsl_combined drive; without one no worktree can be proven to be inside it."""
+    combined = {t['name'] for t in cfg['trackers'] if t.get('wsl_combined')}
+    drive = next((d for d in result['drives'] if d['name'] in combined and d['path'] is not None), None)
+    target = disk.wsl_budget(cfg)['target_gb']
+    receipt = dict(applied=False, status='completed', budget='no_host', used_gb=None, target_gb=target,
+                   reclaimed_bytes=0, shortfall_bytes=None)
+    if drive is None:
+        return receipt
+    side = disk_budget.SIDE
+    free = drive.get('post_free_gb', drive['free_gb'])
+    request = dict(base, stage=5, apply=base['apply'] and free is not None, now=runtime.now(), drive=drive,
+                   budget=dict(target_gb=target))
+    receipt.update(applied=request['apply'], budget='failed')
+    result['stages'].append(dict(drive=drive['name'], stage=5))
+    progress.begin(drive['name'], 5, side)
+    try:
+        answer = _valid_result(runtime.call(side, request))
+        progress.end('ok', len(answer['items']), len(answer['errors']))
+        result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
+        result['items'].extend(dict(item, stage=5, side=side) for item in answer['items'])
+        result['errors'].extend(dict(item, stage=5, side=side) for item in answer['errors'])
+        receipt['reclaimed_bytes'] = answer['reclaimed_bytes']
+        if answer.get('budget'):
+            receipt.update(budget=answer['budget']['status'], used_gb=answer['budget']['used_gb'],
+                           shortfall_bytes=answer['budget']['shortfall_bytes'])
+        if request['apply'] and answer['reclaimed_bytes'] >= 1024 ** 3:
+            trimmed = _valid_result(runtime.call('windows', dict(request, stage=1, budget=None)))
+            result['errors'].extend(trimmed['errors'])
+    except (OSError, ValueError, RuntimeError) as error:
+        progress.end('error', errors=1)
+        result['errors'].append(dict(stage=5, side=side, error=str(error)))
+        if getattr(error, 'termination_confirmed', True) is False:
+            try:
+                _save_report(config.state_dir(cfg), result)
+            except OSError:
+                pass
+            raise
+    return receipt
+
+
+def _finish_wsl(state_dir, claim, receipt):
+    """Its own receipt, holding no free space: the drive's baselines mean nothing to an episode judged on used GB."""
+    disk_state.save_file(state_dir, 'result-' + claim['id'] + '.json', receipt)
+    def finish(state):
+        episode = state['episodes']['wsl']
+        if (episode.get('claim') or {}).get('id') == claim['id']:
+            episode.update(claim=None)
+    try:
+        disk_state.update(state_dir, finish)
+    except BlockingIOError:
+        pass
+
+
 def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None) -> dict:
     cfg = config.get() if cfg is None else cfg
     if mode not in ('on-demand', 'triggered', 'daily'):
@@ -125,6 +180,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         if apply and disk_state.read(state_dir).get('report_scope') != key:
             raise ValueError('complete a dry report for the same cleanup scope before apply')
         claims = {name: episode['claim'] for name, episode in disk_state.read(state_dir).get('episodes', {}).items() if episode.get('claim')}
+        wsl_claim = claims.get('wsl') if mode == 'triggered' else None
         machines = _repos(cfg, result['errors'])
         rows = disk.read(cfg, reader=runtime.read)
         inventories = set()
@@ -136,7 +192,9 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             result['drives'].append(drive)
             for stage in range(1, 5 if mode == 'daily' else 7):
                 # Report all scopes, even when healthy. Unknown readings cannot authorize mutation.
-                if apply and mode != 'daily' and free is not None and free >= tracker['warn_gb']:
+                # A wsl claim is no reason to run a drive's stages: during one, only a claimed drive runs them.
+                if apply and mode != 'daily' and (free is not None and free >= tracker['warn_gb'] or
+                                                  wsl_claim and row['name'] not in claims):
                     break
                 result['stages'].append(dict(drive=row['name'], stage=stage))
                 for side in ('windows', 'wsl'):
@@ -185,6 +243,10 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                         disk_state.update(state_dir, finish)
                     except BlockingIOError:
                         pass
+            if wsl_claim:
+                base = dict(mode=mode, apply=apply, repos=machines, paths=cfg['disk_cleanup'], state_dir=str(state_dir),
+                            tasks=tasks, _inventory_id=inventory_id)
+                _finish_wsl(state_dir, wsl_claim, _budget_purge(cfg, runtime, progress, result, base))
         if apply:
             # Budget observation is report-only and independent of destructive stages.
             budgeted = [m for m in machines if m.get('budget_gb')]

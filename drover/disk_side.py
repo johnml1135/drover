@@ -56,6 +56,9 @@ def _serve(request):
     if stage == 4:
         from .disk_worktrees import settled
         return settled(request)
+    if stage == 5 and request.get('budget'):
+        from .disk_budget import purge
+        return purge(request)
     if stage in (5, 6):
         from .disk_paths import outputs, report
         return outputs(request) if stage == 5 else report(request)

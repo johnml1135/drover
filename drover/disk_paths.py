@@ -2,6 +2,7 @@
 import shutil
 import subprocess
 import time
+from functools import partial
 from pathlib import Path
 
 from . import placement
@@ -347,17 +348,50 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     if (placement.cleanup_processes(request=request) if fresh else request.get('_processes') or placement.cleanup_processes(request=request)).busy(str(path)):
         raise ValueError('process using worktree')
     # Disposable paths only: whole-worktree removal keeps its own three-day settlement (disk_cleanup_decisions).
+    # A drive in trouble waives the idle rule; a budget purge, which is about WSL and not that drive, never does.
     limit = request.get('paths', {}).get('worktree_output_idle_s', OUTPUT_IDLE_S)
-    if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < limit:
+    if (request.get('budget') or request['drive'].get('level') not in ('hold', 'critical')) and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < limit:
         raise ValueError(f'worktree idle less than {limit:g} seconds')
     head = head_at(path)
     return path, head, ownership.read(str(path)), outputs_at(machine, path)
 
 
-def outputs(request: dict) -> dict:
-    """Remove only declared ignored/untracked files; source edits always survive."""
+def remove_output(request, out, machine, entry, evidence, touched, name, row):
+    """The one removal of a declared output: every fact is proven again now, and any change keeps the path."""
     from .disk_worktrees import registration_identity, entries, tracked_at, overlaps_worktrees, status
-    out = result()
+    path = evidence[0]
+    target = Path(name)
+    relative = target.relative_to(path)
+    try:
+        current = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
+        current_dirty, current_ignored = status(path)
+        if registration_identity(current) != registration_identity(entry):
+            raise ValueError('disposable registration changed')
+        fresh_evidence = output_evidence(request, machine, current, touched=touched, fresh=True)
+        if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
+                fresh_evidence[1:] != evidence[1:] or \
+                name not in current_dirty + current_ignored or \
+                tracked_at(path, relative) or \
+                facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
+            raise ValueError('disposable evidence changed')
+        after = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
+        if registration_identity(after) != registration_identity(entry) or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
+                not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
+            raise ValueError('disposable side marker changed')
+        # status expands ignored directories to leaves; only empty directories reach here.
+        target.rmdir() if target.is_dir() else target.unlink()
+        touched.add(target.parent)
+        row['action'] = 'removed'
+        out['reclaimed_bytes'] += row['bytes']
+    except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
+        row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
+
+
+def disposable_rows(request, out):
+    """Yield (row, remove) for each declared ignored/untracked output, its row already in `out`; calling remove()
+    runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept and never yielded."""
+    from .disk_worktrees import entries, tracked_at, overlaps_worktrees, status
+    budget = bool(request.get('budget'))
     for machine in request['repos']:
         try:
             listed = entries(machine['repo'])
@@ -365,19 +399,21 @@ def outputs(request: dict) -> dict:
                 try:
                     evidence = output_evidence(request, machine, entry)
                     path, head, tag, declarations = evidence
+                    idle = dict(idle_s=facts(path, request['now'], request=request)['age_s']) if budget else {}
                     dirty, ignored = status(path, expand=request['apply'])
                     if not request['apply'] and declarations and any(
                             Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
                             for name in dirty + ignored):
                         dirty, ignored = status(path)
                     tracked = set(tracked_at(path))
-                    touched = set()
+                    touched = set()     # shared by this worktree's removals, in whatever order they run
                     for name in dict.fromkeys(dirty + ignored):
                         target = Path(name)
                         relative = target.relative_to(path)
                         if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
                             continue
-                        row = item(target, request, 'declared_disposable', repo=machine['repo'], root=str(path))
+                        row = item(target, request, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
+                        eligible = False
                         try:
                             if not placement.cleanup_contains(request, str(target)):
                                 row['reason_code'] = 'drive_unproven'
@@ -387,36 +423,26 @@ def outputs(request: dict) -> dict:
                                 row['reason_code'] = 'protected'
                             else:
                                 row.update(facts(target, request['now'], request=request), owner=tag['owner'] if tag else None, action='candidate')
-                                if request['apply']:
-                                    current = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
-                                    current_dirty, current_ignored = status(path)
-                                    if registration_identity(current) != registration_identity(entry):
-                                        raise ValueError('disposable registration changed')
-                                    fresh_evidence = output_evidence(request, machine, current, touched=touched, fresh=True)
-                                    if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
-                                            fresh_evidence[1:] != evidence[1:] or \
-                                            name not in current_dirty + current_ignored or \
-                                            tracked_at(path, relative) or \
-                                            facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
-                                        raise ValueError('disposable evidence changed')
-                                    after = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
-                                    if registration_identity(after) != registration_identity(entry) or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
-                                            not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
-                                        raise ValueError('disposable side marker changed')
-                                    # status expands ignored directories to leaves; only empty directories reach here.
-                                    target.rmdir() if target.is_dir() else target.unlink()
-                                    touched.add(target.parent)
-                                    row['action'] = 'removed'
-                                    out['reclaimed_bytes'] += row['bytes']
+                                eligible = True
                         except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
                             row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
                         out['items'].append(row)
+                        if eligible:
+                            yield row, partial(remove_output, request, out, machine, entry, evidence, touched, name, row)
                 except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
                     out['items'].append(item(entry['worktree'], request, 'output_evidence_unavailable',
                                              repo=machine['repo'], error=str(error)))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             out['items'].append(item(machine['repo'], request, 'repository_unavailable', error=str(error)))
             out['errors'].append(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
+
+
+def outputs(request: dict) -> dict:
+    """Remove only declared ignored/untracked files; source edits always survive."""
+    out = result()
+    for _, remove in disposable_rows(request, out):
+        if request['apply']:
+            remove()
     return out
 
 
