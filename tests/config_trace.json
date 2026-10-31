@@ -57,7 +57,8 @@
    "temp_roots": [
     "/var/tmp/drover"
    ],
-   "worker_timeout_s": 900
+   "worker_timeout_s": 900,
+   "worktree_output_idle_s": 7200
   },
   "hub": {
    "allowed_logins": [],
@@ -227,6 +228,7 @@
   "director.seat": "default",
   "disk_cleanup.caches": "default",
   "disk_cleanup.cooldown_s": "env:DROVER_DISK_CLEANUP_COOLDOWN_S",
+  "disk_cleanup.worktree_output_idle_s": "default",
   "disk_cleanup.process_ignore.0": "default",
   "disk_cleanup.process_ignore.1": "default",
   "disk_cleanup.process_ignore.10": "default",
