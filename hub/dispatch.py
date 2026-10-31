@@ -1,6 +1,7 @@
 """The dispatcher inside the hub (ADR 0002): a thread with DirectPort on its own ledger connection.
 A file lock held for the thread's life keeps a second dispatcher (another hub, `python -m drover.dispatcher`) out.
 """
+from drover import compaction_hold
 from drover import placement
 import json
 import logging
@@ -112,7 +113,7 @@ class LandingService:
         if not control['allowed']:
             self.ci.stop_active(conn, control['epoch'])
             return {}
-        if not truthy(ops.get_setting(conn, "dispatch_enabled", "false")):
+        if not truthy(ops.get_setting(conn, "dispatch_enabled", "false")) or compaction_hold.active():
             return {}
         allow = dispatch_repos.allowed(lambda k, d=None: ops.get_setting(conn, k, d))
         pipe = Pipeline(DirectPort(conn, actor="landing"), repos_dir=self.repos_dir, runs_dir=self.settings.runs_dir)
@@ -202,6 +203,8 @@ class DispatcherService:
 
     def _validate_seat_homes(self, port, *, force=False):
         from drover import config, seat_paths
+        if compaction_hold.active():
+            return                                      # the check runs WSL; it is due again on the next tick
         distro = self._distro()
         if not force and distro == self._seat_home_distro:
             return

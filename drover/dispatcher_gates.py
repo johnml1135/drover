@@ -72,6 +72,8 @@ class GateSteps:
                 continue                             # the owner limited dispatch to other repos
             if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or not self._awaiting_gate(runs):
                 continue
+            if self._wsl_window(t):
+                continue
             try:
                 if self._begin_gate(t, runs):
                     started.append(t["id"])

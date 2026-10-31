@@ -21,6 +21,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
+from . import compaction_hold
 from . import config, seat_paths, task_access
 from . import runner
 from .runner import ScanError
@@ -468,6 +469,8 @@ class RunnerLauncher(Launcher):
         return normalize_run_ids(self.runners(want_wsl))
 
     def _wsl_runners(self):
+        if compaction_hold.active():
+            raise ScanError('WSL is held for the overnight compaction')
         cmd, env = placement_mod.ci_runner_command(["find", "--json"], self.drover_dir, self.distro,
                                                     windows=self.windows)
         try:

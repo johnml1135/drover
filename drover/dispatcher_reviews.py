@@ -69,6 +69,8 @@ class ReviewSteps:
             runs = p.list_runs(t["id"])
             if p.waiting.pending(("task", t["id"])) or t["id"] in live_tasks or not self._awaiting_review(runs):
                 continue
+            if self._wsl_window(t):
+                continue
             try:
                 if self._begin_review(t, runs, policy, admitted):
                     started.append(t["id"])

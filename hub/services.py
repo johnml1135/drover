@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from drover import config, importer, tuner
+from drover import compaction_hold, config, importer, tuner
 from drover.tool_discovery import DISCOVERY_SCRIPT, TOOLS, parse_discovery_result, valid_tool_path
 from drover.ledger import ops
 
@@ -138,13 +138,17 @@ class Services:
         return placement.distro(self.settings.distro, self.store.get_settings())
 
     def wsl_up(self) -> bool:
-        """Is the distro running? `wsl -l --running` lists without booting anything."""
+        """Is the distro running? `wsl -l --running` lists without booting anything. A compaction window reads as down."""
+        if compaction_hold.active():
+            return False
         rc, out = self.wsl(["-l", "--running"], self.settings.wsl_timeout_s)
         names = {ln.replace("(Default)", "").strip().lower() for ln in out.splitlines()}
         return rc == 0 and self.distro().lower() in names
 
     def discover_tools(self) -> dict:
         """Return validated discoveries and fill unset machine tool paths; preserve explicit choices."""
+        if compaction_hold.active():
+            return {}
         self._tried = self.clock()
         rc, out = self.wsl(placement.WSL(self.distro()).command(["bash", "-c", DISCOVERY_SCRIPT])[1:],
                            self.settings.wsl_timeout_s)
@@ -158,6 +162,8 @@ class Services:
         return found
 
     def check_wsl(self):
+        if compaction_hold.active():
+            return                                # WSL coming back after the window counts as no change
         up = self.wsl_up()
         have = self.store.get_settings()
         if up and (not self._wsl_was_up or not all(have.get(f"wsl_bin_{t}") for t in TOOLS)):

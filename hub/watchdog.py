@@ -4,7 +4,7 @@ The dispatcher runs inside the hub (ADR 0002), so there is no dispatcher to rest
 note when it defers a WSL task because WSL is down; this is the only thing that starts WSL. A booted WSL VM idles
 out in about a minute, so the watchdog holds it up with a tracked `wsl.exe --exec sleep` child until the note
 expires (no WSL work is waiting), then kills that child."""
-from drover import placement
+from drover import compaction_hold, placement
 import subprocess
 import threading
 import time
@@ -76,6 +76,10 @@ class Watchdog:
     def check(self) -> str:
         """One decision step. Returns the action taken (or 'ok')."""
         s = self.settings
+        if compaction_hold.active():                    # a boot or a keepalive here would lock the disk being compacted
+            self.stop_keepalive()
+            self.wsl_failures = 0
+            return "compaction-hold"
         if not self.wsl_needed():                       # no WSL work waiting: let WSL idle out
             self.stop_keepalive()
             self.wsl_failures = 0

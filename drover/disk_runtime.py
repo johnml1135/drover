@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import config, disk_state, placement
+from . import compaction_hold, config, disk_state, placement
 from .disk_cleanup_decisions import CleanupRuntime
 
 
@@ -28,6 +28,8 @@ def cleanup_call(side: str, request: dict) -> dict:
     if not placement.IS_WINDOWS and side == 'windows':
         errors = [dict(reason_code='side_unavailable')] if os.environ.get('WSL_DISTRO_NAME') else []
         return dict(items=[], errors=errors, reclaimed_bytes=0)
+    if side == 'wsl' and placement.IS_WINDOWS and compaction_hold.active(request['state_dir']):
+        return dict(items=[], errors=[dict(reason_code='compaction_window')], reclaimed_bytes=0)
     request = copy.deepcopy(request)
     original_state = request['state_dir']
     token = uuid.uuid4().hex

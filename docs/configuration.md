@@ -150,6 +150,15 @@ one triggers nothing). Used space at or above `wsl_purge_gb` starts a cleanup on
 free; the cleanup aims for `wsl_target_gb`; at or above `wsl_stop_gb` new work stops starting. Each is finite and
 positive, and `wsl_target_gb` < `wsl_purge_gb` < `wsl_stop_gb`.
 
+The overnight WSL compaction has no settings. `scripts/Install-CompactionTask.ps1` registers `\DroverCompaction`,
+nightly at 03:30, elevated, as the owner; a night the machine was off is not caught up. The task runs
+`python -m drover.compaction`, which holds WSL through `disk/compaction-active.json` in the state directory. While that
+file is under 2 hours old, new WSL work is held, nothing on a timer calls `wsl.exe`, and a cleanup that falls due waits.
+The hub gives headless WSL runs 5 minutes from the start of the hold, then stops them and puts their tasks back on
+ready in their worktrees. The job then kills what is left, runs `fstrim` and `wsl --shutdown`, compacts the VHDX
+read-only, restarts WSL and releases the hold, even when a step failed. The result is in
+`disk/compaction-report.json`, and anything but `compacted` raises an Inbox notice. `sparseVhd` stays off.
+
 Cleanup deferrals (the cooldown, or another cleanup holding the lock) are recorded in the disk state as
 `cleanup_deferred`; after 30 minutes of deferral while a drive is at queue or worse, one Inbox notice is raised and
 retracted when cleanup runs. At the `critical` disk level the cooldown (kept per drive) is bypassed.

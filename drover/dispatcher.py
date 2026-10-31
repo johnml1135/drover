@@ -22,6 +22,7 @@ from pathlib import Path
 
 from dataclasses import dataclass, field
 
+from . import compaction, compaction_hold
 from . import dispatch_repos
 from . import task_access
 from . import brief as brief_mod
@@ -172,10 +173,14 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
                 p.heartbeat({**beat, "not_dispatched": {k: n for k, n in skipped.items() if n}})
             return out
         if not self.recovered:
+            compaction.recover()                           # a job that died with the hub must not hold WSL work
             out["recovered"] = self.recover_orphans()      # its scan counts as this tick's scan
         else:
             out["recovered"] = self.watch_runs()
         out["recovered"] += self.requeue_stale_claims()
+        hold = compaction_hold.active()
+        if hold:
+            out['compaction'] = self._compaction_drain(hold)
         self.check_stale()
         from .ledger.waiting import DEADLINE
         p.waiting.expire(self.now())
@@ -226,9 +231,11 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         slots = min(policy["parallel_cap"] - in_use(), res.get("slots", 0) - out.get('directors', {}).get('capacity_used', 0))
         out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
         slots -= len(out["reviewed"])
-        out["planned"] = self._start_replans(policy, admitted, max(slots, 0))
+        out["planned"] = [] if hold else self._start_replans(policy, admitted, max(slots, 0))   # planners read checkouts
         slots -= len(out["planned"])
         skip = {row["subject_key"] for row in p.waiting.pending() if row["subject_kind"] == "task"}
+        if hold:
+            skip.update(t["id"] for t in p.list_tasks("ready") if self._wsl_window(t))
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
         skipped = {}

@@ -4,7 +4,7 @@ import math
 import shutil
 import subprocess
 
-from . import config, disk_runtime, placement
+from . import compaction_hold, config, disk_runtime, placement
 
 
 def _free(path):
@@ -62,14 +62,26 @@ def wsl_stop_row(cfg, used):
                 detail=f"WSL: {budget['used_gb']:.0f} GB used, at or above the {limit:g} GB limit")
 
 
+def compaction_row(cfg):
+    """A hold row for new WSL work while the overnight compaction holds WSL, else None."""
+    if not compaction_hold.active(config.state_dir(cfg) if cfg.get('paths') else None):
+        return None
+    return dict(name='wsl', level='hold', free_gb=None, detail='WSL: held for the overnight compaction')
+
+
+def wsl_hold_rows(cfg, used):
+    """The rows that hold WSL work whatever the drives say."""
+    return [row for row in (wsl_stop_row(cfg, used), compaction_row(cfg)) if row]
+
+
 def held(side, cfg=None):
     """Disk hold for work placed on this side, from the shared WSL measurement; it never spawns a process.
-    WSL work is also held while WSL used space is at wsl_stop_gb; Windows work is not."""
+    WSL work is also held while WSL used space is at wsl_stop_gb or a compaction holds WSL; Windows work is not."""
     cfg = config.get() if cfg is None else cfg
     wsl_free = placement.wsl_free_known(tracker_distro(cfg)) if side == 'wsl' else None
     rows = read(cfg, side=side, wsl_free=wsl_free)
-    if side == 'wsl' and (stop := wsl_stop_row(cfg, placement.wsl_used_known(tracker_distro(cfg)))):
-        rows.append(stop)
+    if side == 'wsl':
+        rows.extend(wsl_hold_rows(cfg, placement.wsl_used_known(tracker_distro(cfg))))
     return admission(rows)['verdict'] == 'hold'
 
 
@@ -230,6 +242,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     # The WSL episode is judged on used space, not free: its row is never a drive reading, never pauses anything.
     episode_rows = rows + [dict(name='wsl', free_gb=budget['used_gb'], level=budget['level'], wsl=True)]
     directory = config.state_dir(cfg)
+    compacting = compaction_hold.active(directory)
     # The sticky pause stops the whole dispatcher, so it needs every seat side to be paused: Windows work at H: below
     # critical_gb, WSL work at H: below the floor of a wsl_combined drive (critical_gb for any other drive).
     sides = {s.get('placement') for s in cfg.get('seats', [])} & {'windows', 'wsl'}
@@ -330,6 +343,9 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             if blocker is not None:
                 continue
             if claim or (baseline is not None and free > baseline - RETRIGGER_DROP_GB):
+                continue
+            if compacting:     # every cleanup has a WSL stage, so one that falls due in the window waits for its end
+                deferrals.append(('compaction', ['%s: waiting for the WSL compaction to end' % row['name']]))
                 continue
             last = episode.get('last_cleanup', -math.inf)
             wait = min(cooldown, PARTIAL_RETRY_S) if episode.get('partial') else cooldown

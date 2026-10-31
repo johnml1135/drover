@@ -1,7 +1,8 @@
 """Dispatcher recovery steps."""
 import json
 
-from . import contract
+from . import compaction_hold, contract, placement
+from . import config as config_mod
 from . import launch as launch_mod
 from .runner import ScanError
 from .dispatcher_admission import _epoch, ORPHAN_SCANS, CLAIM_STALE_S
@@ -182,6 +183,58 @@ class RecoverySteps:
         if not any(r["ended"] is None for r in p.list_runs(task_id)) and p.get_task(task_id)["status"] in ("running", "claimed"):
             p.set_status(task_id, "ready", reason="orphaned run recovered")
         return task_id
+
+    def _wsl_window(self, task):
+        """True while a compaction holds WSL and this task's worktree is inside it, so its git would wake WSL."""
+        return bool(task.get('worktree') and compaction_hold.active()
+                    and placement.routes_through_wsl(task['worktree']))
+
+    def _compaction_drain(self, hold):
+        """Wind WSL runs down for a compaction hold and answer the job in a file. The grace counts from the hold file,
+        so a hub restart does not start it over: at WIND_DOWN_S each WSL run still open gets the durable nonce stop,
+        and _compaction_stopped requeues it when the runner reports the kill. Windows runs are not touched."""
+        from .directors import stop_intent
+        p, places = self.port, self._placements()
+        runs = {rid: spec for rid, spec in self._run_specs().items()
+                if (spec.get('placement') or places.get(rid, 'unknown')) != 'windows'}
+        tasks = {rid: entry[1] for rid, entry in self.live.items()}
+        tasks.update({run['id']: task['id'] for task, run in self._open_runs()})
+
+        def mine(kind):
+            return {e['data']['run']: e['task_id'] for e in p.events(kind) if e['data'].get('hold') == hold['id']}
+        seen, killed = mine('compaction-wind-down'), mine('compaction-stop')
+        for rid in runs.keys() - seen.keys():
+            p.append_event('compaction-wind-down', {'run': rid, 'hold': hold['id']}, tasks.get(rid))
+            seen[rid] = tasks.get(rid)
+        if self.now() - hold['since'] >= compaction_hold.WIND_DOWN_S:
+            for rid, spec in runs.items():
+                if rid not in killed:   # recorded first: _finish needs it to tell this kill from a worker failure
+                    p.append_event('compaction-stop', {'run': rid, 'hold': hold['id']}, tasks.get(rid))
+                    killed[rid] = tasks.get(rid)
+                stop_intent(p, spec, self._control_epoch, lambda value: self.launcher.cancel(value['run_id'], value['nonce']))
+        answer = dict(id=hold['id'], stopped=sorted(seen.keys() - killed.keys()), killed=sorted(killed),
+                      requeued=list(mine('compaction-requeued').values()), drained=not runs)
+        try:
+            compaction_hold.save_drain(config_mod.state_dir(), answer)
+        except OSError:
+            pass                        # the job reads it again; the next tick writes it again
+        return answer
+
+    def _compaction_stopped(self, run_id, task_id, role, usage):
+        """A run the compaction stopped says nothing about the task, so it counts as no failure, spends no continuation
+        budget and touches no git. The task goes back to ready in its worktree; a gate or review is derived again."""
+        p = self.port
+        note = 'stopped for the overnight WSL compaction'
+        if role == 'planner':
+            self.replanning.finish(run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=self.now())
+        else:
+            p.finish_run(run_id, 'control-held', note=note, **usage)
+            if role in ('gate', 'review'):
+                self.ci_runners.release(task_id)
+            elif not any(r['ended'] is None for r in p.list_runs(task_id)) and p.get_task(task_id)['status'] in ('running', 'claimed'):
+                p.set_status(task_id, 'ready', reason=note)
+        hold = self._event_for('compaction-stop', 'run', run_id).get('hold')
+        p.append_event('compaction-requeued', {'run': run_id, 'hold': hold}, task_id)
 
     def requeue_stale_claims(self):
         """A claim with no open run for over CLAIM_STALE_S is a dispatcher that died between claim and start."""

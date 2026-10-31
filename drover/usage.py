@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import compaction_hold
 from . import config
 from .ledger import ops, tx
 
@@ -261,6 +262,8 @@ class Poller:
                                    (name,)).fetchone()
         if recent and 0 <= now - recent['ts'] < POLL_S and '"source": "manual"' in recent['raw_text']:
             return headroom(self.conn, name, now)
+        if self.windows and seat['placement'] == 'wsl' and compaction_hold.active():
+            return headroom(self.conn, name, now)   # the last reading stands; asking would wake WSL
         self.checked[name] = now
         raw = ''
         try:

@@ -171,16 +171,19 @@ class AdmissionSteps:
                 self.port.set_status(task['id'], 'ready', reason=str(error))
             return False
 
-    def _stop_for_control(self, epoch, changed_only=False):
-        from .directors import stop_intent
-        # Include durable launch intents even if a restart has not adopted them.
+    def _run_specs(self):
+        """{run id: spec} of every open run, including durable launch intents a restart has not adopted."""
         specs = {rid: spec for rid, (_, _, spec) in self.live.items()}
         launches = {e['data'].get('run'): e['data'] for e in self.port.events('run-launching')}
         for task, run in self._open_runs():
             saved = launches.get(run['id'], {})
             specs.setdefault(run['id'], dict(run_id=run['id'], nonce=saved.get('nonce'),
                                              control_epoch=saved.get('control_epoch') or 0))
-        for spec in specs.values():
+        return specs
+
+    def _stop_for_control(self, epoch, changed_only=False):
+        from .directors import stop_intent
+        for spec in self._run_specs().values():
             if changed_only and (spec.get('control_epoch') or 0) == epoch:
                 continue
             stop_intent(self.port, spec, epoch, lambda value: self.launcher.cancel(value['run_id'], value['nonce']))

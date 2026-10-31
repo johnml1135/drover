@@ -383,8 +383,8 @@ def check(new_workers=1, fake=None, config=None, with_wsl_memory=False):
         rows = [row for t in by_kind.get('disk', [])
                 for row in disk.read({'trackers': [t]}, reader=lambda path, t=t: facts['disk_free_gb'].get(t['name']),
                                      side=side, wsl_free=facts.get('wsl_disk_free_gb'))]
-        stop = disk.wsl_stop_row(config_mod.get() if config is None else config, facts.get('wsl_used_gb')) if side == 'wsl' else None
-        disk_sides[side] = dict(disk.admission(rows + [stop] if stop else rows), rows=rows)
+        extra = disk.wsl_hold_rows(config_mod.get() if config is None else config, facts.get('wsl_used_gb')) if side == 'wsl' else []
+        disk_sides[side] = dict(disk.admission(rows + extra), rows=rows)
     # disks: the first seat side's view (windows when it is a seat); disks_by_side labels each side's own reading.
     facts['disks'] = next(iter(disk_sides.values()))['rows']
     facts['disks_by_side'] = {side: d['rows'] for side, d in disk_sides.items()}

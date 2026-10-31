@@ -20,6 +20,7 @@ from .placement_exec import (
     distro,
     wsl_control,
 )
+from . import compaction_hold
 from .config_defaults import PROCESS_IGNORE
 
 
@@ -38,6 +39,8 @@ def wsl_zoneinfo_path(zone):
     """The configured distro's timezone file visible to Windows, or None."""
     if not IS_WINDOWS or any(p in ('', '.', '..') for p in zone.split('/')) or '\\' in zone:
         return None
+    if compaction_hold.active():
+        return None   # opening a path under wsl.localhost starts the distro
     return Path('//wsl.localhost') / distro() / 'usr/share/zoneinfo' / zone
 
 
@@ -132,7 +135,10 @@ def detect_distros():
 
 
 def wsl_running(default, run=subprocess.run):
-    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`."""
+    """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`.
+    During a compaction window the answer is False and wsl.exe is not called."""
+    if compaction_hold.active():
+        return False
     try:
         r = run(wsl_control(["-l", "--running", "-q"]), capture_output=True, timeout=20, **NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
@@ -149,10 +155,13 @@ _WSL_USED = {}   # the same, for used space
 def _wsl_df(cache, column, distro, up, run, ttl):
     """One `df` column of the distro's root filesystem in GB, cached per distro for ttl. On Windows it is one
     `wsl.exe -d <distro> -- df` with a 5 s timeout, and only when `up` (the distro is already running, so the call
-    cannot start it). None means unknown."""
+    cannot start it). None means unknown. During a compaction window it returns what is cached, however old, and
+    measures nothing."""
     hit = cache.get(distro)
     if hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
+    if IS_WINDOWS and compaction_hold.active():
+        return hit[1] if hit else None
     value = None
     try:
         if not IS_WINDOWS:

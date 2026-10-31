@@ -5,6 +5,7 @@ import subprocess
 import sys
 import shutil
 
+from . import compaction_hold
 from .placement_paths import (
     IS_WINDOWS,
     is_linux_native,
@@ -108,6 +109,7 @@ class WSL:
 
 
 def wsl_control(args):
+    compaction_hold.refuse_when_offline()
     command = ["wsl.exe", *args]
     if len(subprocess.list2cmdline(command).encode('utf-16-le')) >= 8192:
         raise ValueError('WSL command exceeds 8 KB; pass payloads through stdin or files')
