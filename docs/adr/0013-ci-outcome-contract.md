@@ -1,6 +1,6 @@
 ---
 schema_version: 1
-id: ADR-0011
+id: ADR-0013
 status: accepted
 date: "2026-10-29"
 decision-makers: [johnm]

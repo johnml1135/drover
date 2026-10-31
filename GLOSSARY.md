@@ -54,6 +54,22 @@ _Avoid_: Rung, tier, ladder
 The owner's list of repos (`dispatch_repos`) that may start work; every other repo stays idle, and unset means all repos. The pause switch (`dispatch_enabled`) still overrides it. Set with `python -m drover.dispatch_repos`.
 _Avoid_: Repo pause, allowlist
 
+**Drover dispatch**:
+The setting of an epic under which Drover picks its next work. The owner can switch an epic to Director dispatch at any time; tasks outside any epic follow a global default.
+_Avoid_: Automatic mode, drover-lead
+
+**Director dispatch**:
+The setting of an epic under which its director picks the next work. The owner can switch an epic to Drover dispatch at any time.
+_Avoid_: Manual mode, director-lead
+
+**Bypass**:
+One task taken completely outside Drover by the owner, a yank, so that Drover neither dispatches, watches nor reports on it until the owner hands it back. A director may carry it out on the owner's instruction, and disk cleanup still applies to its worktree.
+_Avoid_: Manual mode, third mode
+
+**Compaction stop**:
+The escalating stop that clears the Linux side before overnight compaction: ask agents to stop, interrupt them, then kill what remains. Agents are told to continue once compaction is done.
+_Avoid_: Drain, shutdown
+
 **Tracker**:
 One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with its levels: warn, queue (no new work starts), hold (running work winds down) and critical (Drover pauses). A disk tracker measures the drive itself, never the free space inside a virtual disk stored on it.
 _Avoid_: Check, guard, monitor
