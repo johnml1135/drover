@@ -74,6 +74,14 @@ _Avoid_: build output, temp, ephemeral
 The record on a worktree of who owns it (a task, a lane or a session) and until when. A worktree without a current tag is an orphan: it is quarantined, then removed after a grace period if it is still clean.
 _Avoid_: Lease file, marker, claim
 
+**Side lock**:
+The lock file on a worktree's registration whose text is the side that owns it (`windows` or `wsl`), or an owner's note. It is what stops the other side's `git worktree prune` from dropping the registration, because Windows git cannot see a Linux path. Drover writes it when it creates a worktree, and disk cleanup adds it to any worktree found without one.
+_Avoid_: Lock note (for the side name), lease (that is the ownership tag's time limit)
+
+**Lost registration**:
+A worktree directory that still exists but whose git registration is gone, typically after the other side's `git worktree prune`. Disk cleanup reports it (`lost_registration`) and, on apply, registers it again only when its name and content prove which branch it belongs to; otherwise it is kept untouched and reported (`lost_registration_unproven`) for the owner. It is never removed.
+_Avoid_: Orphan (that is a worktree without a current ownership tag), dangling worktree, broken worktree
+
 **Placement**:
 The operating system side, Windows or Linux, on which a run executes.
 _Avoid_: Host, side, target

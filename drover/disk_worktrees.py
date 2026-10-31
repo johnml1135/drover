@@ -217,6 +217,9 @@ def settled(request: dict, *, runtime=None) -> dict:
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             out['errors'].append(dict(repo=machine['repo'], error=str(error)))
             continue
+        found = {}
+        if not request.get('approved_path'):
+            found = registrations(request, machine, listed, runtime, out)
         for entry in listed:
             try:
                 store = runtime.state if runtime and runtime.state is not None else None
@@ -235,11 +238,26 @@ def settled(request: dict, *, runtime=None) -> dict:
                     out['items'].append(row)
 
         if not request.get('approved_path'):
-            loose = unlisted(request, machine, listed)
+            loose = unlisted(request, machine, listed, skip=found)
             out['items'].extend(loose)
             out['reclaimed_bytes'] += sum(r['bytes'] for r in loose if r['action'] == 'removed')
             out['errors'].extend(r for r in loose if r.get('error') and r.get('unlisted'))
     return out
+
+
+def registrations(request, machine, listed, runtime, out):
+    """Prevent a foreign prune from dropping registrations, then report (and on apply repair) lost ones."""
+    from . import disk_registrations
+    from .disk_cleanup import CleanupState
+    try:
+        out['items'].extend(disk_registrations.protect(request, machine))
+        found = disk_registrations.lost(machine, listed)
+        store = runtime.state if runtime and runtime.state is not None else CleanupState(request.get('state_dir'))
+        out['items'].extend(disk_registrations.report(request, machine, listed, found, store))
+        return found
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+        return {}
 
 
 def ignored_outside(path, ignored, declarations):
@@ -400,13 +418,13 @@ def unlisted_live(request, path):
         tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
 
 
-def unlisted(request, machine, listed):
+def unlisted(request, machine, listed, skip=()):
     out = []
     registered = {str(Path(placement.native(e['worktree']))) for e in listed}
     roots = [r for r in worktree_roots(machine, this_side=True)
              if r.name.endswith('.worktrees') and r.is_dir() and safe_path(r)]
     for path in (p for root in roots for p in root.iterdir()):
-        if str(path) in registered or not placement.cleanup_contains(request, str(path)):
+        if str(path) in registered or str(path) in skip or not placement.cleanup_contains(request, str(path)):
             continue
         row = item(path, request, 'unknown_folder', repo=machine['repo'], name=machine['name'])
         try:

@@ -21,8 +21,9 @@ class AddOnExt4(unittest.TestCase):
 
     def test_an_ext4_destination_runs_every_git_call_on_the_wsl_side(self):
         calls = self.run_add(EXT4, True)
-        self.assertEqual([c[1][c[1].index("worktree") + 1] for c in calls], ["add"])
+        self.assertEqual([c[1][c[1].index("worktree") + 1] for c in calls if "worktree" in c[1]], ["add"])
         self.assertTrue(all(c[2] == {"side": "wsl"} for c in calls), calls)
+        self.assertEqual(calls[-1][1], ("config", "gc.worktreePruneExpire", "never"))      # neither side's gc expires it
         self.assertIn("--relative-paths", calls[0][1])
         i = calls[0][1].index("--lock")
         self.assertEqual(calls[0][1][i:i + 3], ("--lock", "--reason", "wsl"))      # locked at birth

@@ -173,6 +173,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
                     (disk_worktrees, 'lock_at', lambda repo, p, reason: repository(repo).lock(p, reason)),
                     (disk_worktrees, 'discard_at', lambda repo, p: repository(repo).discard(p)),
                     (disk_worktrees, 'rescue_at', lambda repo, ref, head: None),
+                    (disk_worktrees, 'registrations', lambda *args: {}),    # process-free; real git is tested in test_disk_registrations
                     (disk_worktrees, 'snapshot', snapshot),
                     (placement, 'worktree_metadata', metadata),
                     (repos, 'wsl_worktrees_root', lambda: str(self.root / 'ext4'))]

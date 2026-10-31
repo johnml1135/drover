@@ -142,6 +142,8 @@ def add_worktree(repo, dest, *tail, run=None, error=RuntimeError):
         r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *lock, *tail, check=False, **side)
     if r.returncode:
         raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
+    # The repository is shared by both OSes: neither side's gc may expire an entry the other cannot see. Best effort.
+    run(repo, 'config', 'gc.worktreePruneExpire', 'never', check=False, **side)
 
 
 def unlock_worktree(repo, path):

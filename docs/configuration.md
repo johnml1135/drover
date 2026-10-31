@@ -171,6 +171,25 @@ leaves the worktree itself. Removing a whole worktree is separate and keeps its
 three-day settlement. Live-task, ownership, busy-process and tracked-file checks
 apply at any idle time. Dirty worktrees may qualify;
 tracked files, source edits, protected paths and linked targets are retained.
+Stage 4 also keeps worktree registrations safe to share between Windows and WSL, for every
+registered repo and without new settings. Windows git cannot see a Linux path, so a
+`git worktree prune` run from Windows drops the registration of every unlocked WSL worktree.
+Drover creates each worktree locked with its side's name and sets
+`gc.worktreePruneExpire=never` when it creates one. The stage backstops both: it reports
+`prune_expiry_unset` and `unlocked_worktree` in a dry run, and on apply sets the expiry and
+writes the missing lock (`windows` or `wsl`, from the worktree's recorded path; a lock note
+already there is kept, and a worktree whose directory this side can see is gone is left
+alone). A directory whose registration was lost is reported as `lost_registration` with the
+branch it would join. On apply it is registered again, locked with this side's name, only if
+a local branch is named like the directory (`drover-T1` matches `drover-T1` or `drover/T1`),
+that branch is not checked out in another worktree, and at most 10% of the branch's tracked
+files differ from the directory (uncommitted work does not stop a match). Files are never
+changed: the old `.git` file is saved under `<state>/disk/registration-backup/` and the
+action is journaled in `disk-cleanup-manifest.jsonl`. Every other case is kept untouched and
+reported as `lost_registration_unproven` with the reason (no branch named like it, branch in
+use elsewhere, content mismatch) for the owner to resolve; a failed attempt is
+`lost_registration_failed`. Each side handles only the roots it can open.
+
 Stage 6 reports merged worktrees with live tasks as `merged_live_task` items;
 cleanup never closes those tasks or removes their worktrees.
 
