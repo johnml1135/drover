@@ -74,6 +74,7 @@ class _CleanupProcesses:
         self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
         self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
+        self.budget = bool((request or {}).get('budget'))
         self.ignored = (request or {}).get('paths', {}).get('process_ignore', PROCESS_IGNORE)
         self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
         self.query_failure = None
@@ -174,10 +175,21 @@ class _CleanupProcesses:
             self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd,
                          exe=exe, command_unreadable=command_unreadable)
 
+    def _image(self, name):
+        image = re.split(r'[/\\]', name or '')[-1]
+        return _ordinal_case(image) if self.windows else image
+
+    def _cleared(self, name, exe):
+        """A budget purge takes the owner's process_ignore name for a process whose executable cannot be read. Only
+        regenerable outputs idle 2 hours are at stake, and Windows hides these images from a non-elevated hub, so no
+        location check can ever pass for them. Linux cuts a process name to 15 characters. Other stages never ask."""
+        image = self._image(name)
+        return self.budget and not exe and (image in self.ignored or (
+            not self.windows and len(image) == 15 and any(entry.startswith(image) for entry in self.ignored)))
+
     def _scope(self, name, exe, same_user, session_id):
         """The one predicate: (ignored OS helper, foreign owner) for a process."""
-        image = re.split(r'[/\\]', name or '')[-1]
-        image = _ordinal_case(image) if self.windows else image
+        image = self._image(name)
         ignored = image in self.ignored and _process_os_location(exe, self.windows)
         if ignored and self.windows:
             # A PID may have changed between CIM and the limited image query.
@@ -187,11 +199,11 @@ class _CleanupProcesses:
         return ignored, foreign
 
     def _same_process_out_of_scope(self, row, native_name):
-        """A CIM row for the same image (PID not reused) that is foreign or an ignored helper."""
+        """A CIM row for the same image (PID not reused) that is foreign, an ignored helper or cleared by name."""
         if not row or _ordinal_case(row.get('name') or '') != _ordinal_case(native_name or ''):
             return False
         ignored, foreign = self._scope(row.get('name'), row.get('exe'), row.get('same_user'), row.get('session_id'))
-        return foreign or (ignored and row.get('same_user') is None)
+        return foreign or (ignored and row.get('same_user') is None) or self._cleared(row.get('name'), row.get('exe'))
 
     def _unreadable(self, pid, name, **extra):
         row = dict(pid=pid, name=name, **extra)
@@ -205,7 +217,7 @@ class _CleanupProcesses:
         if own_cwd:
             cwd, same_user = cwd or own_cwd, True
         ignored, foreign = self._scope(name, exe, same_user, session_id)
-        if ignored and (same_user is None or not cwd):
+        if self._cleared(name, exe) or (ignored and (same_user is None or not cwd)):
             self.out_of_scope += 1
         elif self.windows and same_user is None and not foreign:
             self.unknown = True

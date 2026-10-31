@@ -3,13 +3,22 @@ import hashlib
 import json
 import uuid
 
-from . import config, disk_runtime, disk_state
+from . import config, disk, disk_runtime, disk_state
+
+
+def _unreadable(result):
+    """The names of the processes that kept a budget purge from proving anything."""
+    return sorted({process['name'] for row in result['items'] for process in row.get('processes', [])
+                   if row.get('reason_code') in ('budget_processes_unknown', 'process_visibility_unavailable')})
 
 
 def _report_notices(state_dir, result):
-    if not any(i.get('reason_code') == 'merged_live_task' for i in result['items']):
+    budget = result.get('budget')
+    if not budget and not any(i.get('reason_code') == 'merged_live_task' for i in result['items']):
         return
     def prepare(state):
+        if budget:      # report-only claims notify too: the owner has to know before apply is switched on
+            disk.budget_notice(state, budget['budget'], applied=budget['applied'], processes=_unreadable(result))
         outbox = state.setdefault('outbox', {})
         for item in result['items']:
             if item.get('reason_code') != 'merged_live_task':

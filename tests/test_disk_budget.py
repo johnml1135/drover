@@ -1,11 +1,15 @@
 """The budget purge removes disposable paths, least recently used first, until WSL used space reaches the target."""
 import json
+import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk, disk_budget, disk_cleanup, disk_side, disk_state, disk_worktrees, placement, placement_proof
+from drover import config, disk, disk_budget, disk_cleanup, disk_side, disk_state, disk_worktrees, ledger, placement, placement_proof
+from drover.ledger import disk_notices
 from tests.disk_fixture import GIB, empty_result
 from tests.disk_memory import MemoryWorktreeCase
 
@@ -579,6 +583,216 @@ class WindowsProcesses(LocalSide):
             answer = disk_side.serve(request)
         self.assertEqual(answer['budget']['status'], 'processes_unknown')
         self.assertTrue(path.exists())
+
+
+def live_row(pid, name, session):
+    """A CIM row exactly as this machine's non-elevated hub gets it for a process it cannot open."""
+    return dict(pid=pid, name=name, session_id=session, exe=None, command_unreadable=True, same_user=None, cmd='')
+
+
+class LiveSnapshot(LocalSide):
+    """The snapshot of 2026-10-31: session 1 processes with no birth, exe, owner, cwd or command line, the set that
+    stopped every purge. Every row goes through the refresh path, which a fake with a birth time never reaches."""
+    BLOCKERS = (('csrss.exe', 1720), ('winlogon.exe', 1784), ('fontdrvhost.exe', 1008), ('dwm.exe', 2252),
+                ('NVDisplay.Container.exe', 6764), ('RtkAudUService64.exe', 10060), ('WacomHost.exe', 14048),
+                ('Wacom_Tablet.exe', 14628))
+
+    def setUp(self):
+        super().setUp()
+        self.windows_rows = [live_row(pid, name, 1) for name, pid in self.BLOCKERS] + [live_row(2032, 'svchost.exe', 0)]
+        for context in (patch.object(placement_proof, '_windows_processes',
+                                     side_effect=lambda: {str(r['pid']): [r['name'], None] for r in self.windows_rows}),
+                        patch.object(placement_proof, '_cim_rows',
+                                     side_effect=lambda timeout=240, pids=None: [dict(r) for r in self.windows_rows]),
+                        patch.object(placement_proof, '_windows_cwd', return_value=None)):
+            context.start()
+            self.addCleanup(context.stop)
+
+    def outbox(self):
+        return [entry['notice'] for entry in disk_state.read(self.state).get('outbox', {}).values()
+                if entry['notice']['kind'] == 'wsl_budget']
+
+    def test_named_system_processes_no_longer_stop_the_purge(self):
+        path = self.output('idle', 9 * DAY)
+        self.purge()
+        self.assertFalse(path.exists())
+        self.assertEqual(self.receipt()['budget'], 'met')
+        self.assertEqual(self.outbox(), [])
+
+    def test_an_unnamed_unreadable_process_still_blocks_and_is_named(self):
+        path = self.output('idle', 9 * DAY)
+        self.windows_rows.append(live_row(25672, 'sleep.exe', 1))
+        result = self.purge()
+        self.assertTrue(path.exists())
+        self.assertEqual(self.receipt()['budget'], 'processes_unknown')
+        row = next(i for i in result['items'] if i.get('reason_code') == 'budget_processes_unknown')
+        self.assertEqual([p['name'] for p in row['processes']], ['sleep.exe'])
+        self.assertIn('sleep.exe', self.outbox()[0]['body'])
+
+    def test_the_owner_naming_it_clears_it(self):
+        path = self.output('idle', 9 * DAY)
+        self.windows_rows.append(live_row(25672, 'sleep.exe', 1))
+        self.cfg['disk_cleanup']['process_ignore'] = [*placement_proof.PROCESS_IGNORE, 'SLEEP.EXE']
+        self.purge()
+        self.assertFalse(path.exists())
+
+    def test_a_name_does_not_clear_a_readable_image_elsewhere(self):
+        path = self.output('idle', 9 * DAY)
+        self.windows_rows[0].update(exe=r'C:\Users\me\csrss.exe')
+        self.purge()
+        self.assertTrue(path.exists())
+        self.assertEqual(self.receipt()['budget'], 'processes_unknown')
+
+    def test_a_reused_pid_is_not_cleared_by_the_old_name(self):
+        def renamed(timeout=240, pids=None):
+            return [dict(r, name='devenv.exe') if r['pid'] == 1720 else dict(r) for r in self.windows_rows]
+        self.output('idle', 9 * DAY)
+        with patch.object(placement_proof, '_cim_rows', side_effect=renamed):
+            self.purge()
+        self.assertEqual(self.receipt()['budget'], 'processes_unknown')
+
+    def test_a_cleared_process_still_counts_as_path_evidence(self):
+        self.windows_rows[0].update(cmd=r'csrss.exe \\wsl$\Disk Test Distro\home\me\wt')
+        self.windows_rows[0].update(cmd=r'csrss.exe --root=\\wsl$\Ubuntu\home\me\wt')
+        proof = placement_proof._CleanupProcesses(windows=True, request=dict(budget=True))
+        self.assertEqual(proof.wsl_paths('Ubuntu'), ['/home/me/wt'])
+
+    def test_a_failed_refresh_query_clears_nothing(self):
+        self.output('idle', 9 * DAY)
+        with patch.object(placement_proof, '_cim_rows', side_effect=OSError('no cim')):
+            self.purge()
+        self.assertEqual(self.receipt()['budget'], 'processes_unknown')
+
+    def test_ordinary_stages_keep_their_rule(self):
+        proof = placement_proof._CleanupProcesses(windows=True, request=dict(paths={}))
+        self.assertTrue(proof.unknown)
+        self.assertEqual(sorted(row['name'] for row in proof.unreadable), sorted(name for name, _ in self.BLOCKERS))
+        self.assertTrue(proof.busy('/anywhere'))
+
+
+class WslProcesses(unittest.TestCase):
+    """The WSL side, from a /proc tree shaped like the distro's: on 2026-10-31 systemd --user and (sd-pam) are the only
+    processes of this user with no cwd or exe, as for any non-dumpable daemon (ssh-agent, gpg-agent)."""
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        self.proc = Path(folder.name)
+        uid = patch.object(os, 'getuid', return_value=1000, create=True)
+        uid.start()
+        self.addCleanup(uid.stop)
+
+    def process(self, pid, name):
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        (entry / 'status').write_text(f'Name:\t{name}\nUid:\t1000\t1000\t1000\t1000\n')
+        (entry / 'cmdline').write_bytes(name.encode() + b'\0')
+
+    def proof(self, *ignored, budget):
+        request = dict(paths=dict(process_ignore=list(ignored)), **(dict(budget=dict(target_gb=225)) if budget else {}))
+        return placement_proof._CleanupProcesses(proc_root=self.proc, windows=False, request=request)
+
+    def test_a_named_process_clears_for_a_purge_as_for_any_stage(self):
+        self.process(364, 'systemd')
+        self.process(366, '(sd-pam)')
+        for budget in (True, False):
+            self.assertFalse(self.proof('systemd', '(sd-pam)', budget=budget).unknown)
+
+    def test_an_unnamed_process_blocks_and_is_named(self):
+        self.process(900, 'ssh-agent')
+        proof = self.proof('systemd', budget=True)
+        self.assertTrue(proof.busy('/home/me/wt'))
+        self.assertEqual([row['name'] for row in proof.unreadable], ['ssh-agent'])
+
+    def test_a_long_name_matches_for_a_purge_though_linux_cut_it(self):
+        self.process(901, 'xdg-document-po')
+        self.assertFalse(self.proof('xdg-document-portal', budget=True).unknown)
+        self.assertTrue(self.proof('xdg-document-portal.x', budget=False).unknown)
+
+
+class Notices(LocalSide):
+    """Every outcome but `met` reaches the Inbox through the disk outbox, once per outcome per episode."""
+    def notices(self):
+        return [entry['notice'] for entry in disk_state.read(self.state).get('outbox', {}).values()
+                if entry['notice']['kind'] == 'wsl_budget']
+
+    def titles(self):
+        return sorted(notice['title'] for notice in self.notices())
+
+    def fire(self, outcome):
+        disk_state.update(self.state, lambda state: disk.budget_notice(state, outcome))
+
+    def test_each_outcome_raises_its_own_notice(self):
+        outcomes = ['no_host', 'processes_unknown', 'shortfall', 'deadline', 'unknown', 'failed', 'died']
+        for outcome in outcomes:
+            self.fire(outcome)
+        self.assertEqual(self.titles(), sorted('WSL disk budget not met: ' + outcome for outcome in outcomes))
+
+    def test_met_raises_nothing(self):
+        self.output('idle', 9 * DAY)
+        self.purge()
+        self.assertEqual(self.receipt()['budget'], 'met')
+        self.assertEqual(self.notices(), [])
+
+    def test_the_same_outcome_does_not_fire_every_run(self):
+        self.output('idle', 9 * DAY)
+        self.allowed = -GIB
+        for _ in range(3):
+            self.approve_report()
+            self.claim()
+            self.run_cleanup(apply=True, mode='triggered')
+        self.assertEqual(self.receipt()['budget'], 'shortfall')
+        self.assertEqual(self.titles(), ['WSL disk budget not met: shortfall'])
+
+    def test_a_new_episode_notifies_again_under_a_new_id(self):
+        self.fire('shortfall')
+        first = self.notices()[0]['id']
+        self.fire('met')
+        self.fire('shortfall')
+        ids = {notice['id'] for notice in self.notices()}
+        self.assertEqual(len(ids), 2)
+        self.assertIn(first, ids)
+
+    def test_a_healthy_reading_ends_the_episode(self):
+        with patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
+            self.claim()
+            disk_state.update(self.state, lambda state: state['episodes']['wsl'].update(claim=None))
+            self.fire('shortfall')
+            disk.tick(self.cfg, now=self.now, reader=lambda path: 200., wsl_used=lambda: 200., enqueue=lambda: None)
+        self.assertNotIn('wsl', disk_state.read(self.state)['notice_episodes'])
+
+    def test_a_report_only_claim_notifies_too(self):
+        self.output('old', 9 * DAY)
+        self.allowed = -GIB
+        self.approve_report()
+        self.claim(applied=False)
+        self.run_cleanup(apply=False, mode='triggered')
+        self.assertIn('Report-only', self.notices()[0]['body'])
+
+    def test_it_is_retried_when_the_state_is_busy(self):
+        self.output('old', 9 * DAY)
+        self.allowed = -GIB
+        self.approve_report()
+        self.claim()
+        with patch.object(disk_cleanup, '_report_notices', side_effect=BlockingIOError('busy')):
+            self.run_cleanup(apply=True, mode='triggered')
+        self.assertEqual(self.notices(), [])
+        self.assertTrue(list((self.state / 'disk').glob('pending-notices-*.json')))
+        disk_cleanup.retry_notices(self.cfg)
+        self.assertEqual(self.titles(), ['WSL disk budget not met: shortfall'])
+
+    def test_a_dead_claim_raises_one(self):
+        self.claim()
+        with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
+                patch.object(placement, 'cleanup_claim_alive', return_value=False):
+            disk.tick(self.cfg, now=self.now + 60, reader=lambda path: 200., wsl_used=lambda: 310., enqueue=lambda: None)
+        self.assertEqual(self.titles(), ['WSL disk budget not met: died'])
+
+    def test_the_notice_reaches_the_inbox(self):
+        self.fire('shortfall')
+        conn = ledger.connect(self.state / 'l.db')
+        self.addCleanup(conn.close)
+        self.assertEqual(len([i for i in disk_notices.replay(conn, self.cfg, self.now) if i.startswith('wsl_budget:')]), 1)
+        self.assertEqual(conn.execute("SELECT title FROM questions").fetchone()[0], 'WSL disk budget not met: shortfall')
 
 
 class WslPaths(unittest.TestCase):

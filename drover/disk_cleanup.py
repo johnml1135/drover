@@ -116,7 +116,7 @@ def _windows_paths(cfg, base):
     """What Windows processes name inside WSL, which the WSL worker cannot see. (paths, unreadable); paths is None
     when the snapshot is unknown or failed."""
     try:
-        proof = placement.cleanup_windows_proof(dict(paths=base['paths'], state_dir=base['state_dir']))
+        proof = placement.cleanup_windows_proof(dict(paths=base['paths'], state_dir=base['state_dir'], budget=True))
         return (proof.wsl_paths(disk.tracker_distro(cfg)), proof.unreadable) if proof else (None, [])
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return None, []
@@ -261,7 +261,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             if wsl_claim:
                 base = dict(mode=mode, apply=apply, repos=machines, paths=cfg['disk_cleanup'], state_dir=str(state_dir),
                             tasks=tasks, _inventory_id=inventory_id)
-                _finish_wsl(state_dir, wsl_claim, _budget_purge(cfg, runtime, progress, result, base))
+                result['budget'] = _budget_purge(cfg, runtime, progress, result, base)
+                _finish_wsl(state_dir, wsl_claim, result['budget'])
         if apply:
             # Budget observation is report-only and independent of destructive stages.
             budgeted = [m for m in machines if m.get('budget_gb')]

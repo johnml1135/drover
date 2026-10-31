@@ -3,6 +3,7 @@ import json
 import math
 import shutil
 import subprocess
+import uuid
 
 from . import compaction_hold, config, disk_runtime, placement
 
@@ -224,6 +225,35 @@ def _deferral_notice(state, now, rows):
             del outbox[ident]
 
 
+BUDGET_OUTCOMES = {
+    'no_host': 'no disk tracker has wsl_combined, so no WSL worktree can be proven to be on a tracked drive',
+    'processes_unknown': 'a process could not be read, so nothing proves which WSL worktrees are free',
+    'shortfall': 'every disposable path that could go has gone and WSL is still above the target',
+    'deadline': 'the purge ran out of time before WSL reached the target',
+    'unknown': 'space used inside WSL could not be read',
+    'failed': 'the cleanup worker failed',
+    'died': 'the cleanup process died before it reported',
+}
+
+
+def budget_notice(state, outcome, *, applied=True, processes=()):
+    """One Inbox notice per outcome in a WSL budget episode; `met` ends the episode, as does a healthy reading in tick.
+    Each notice has a new id: the ledger never publishes an id twice, so a fixed one would fire once a lifetime."""
+    episodes = state.setdefault('notice_episodes', {})
+    if outcome == 'met':
+        episodes.pop('wsl', None)
+        return
+    episode = episodes.setdefault('wsl', {})
+    if outcome in episode:
+        return
+    ident = episode[outcome] = 'wsl_budget:' + uuid.uuid4().hex
+    named = f" Unreadable: {', '.join(processes)}. Close them or add them to [disk_cleanup] process_ignore." if processes else ''
+    state.setdefault('outbox', {})[ident] = dict(toasted=False, acknowledged=False, notice=dict(
+        id=ident, kind='wsl_budget', title=f'WSL disk budget not met: {outcome}',
+        body=f"{'Budget purge' if applied else 'Report-only budget purge'} ended {outcome}: "
+             f"{BUDGET_OUTCOMES.get(outcome, 'no reason recorded')}.{named}"))
+
+
 def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None, wsl_used=None) -> dict:
     """Observe even while paused; short claims precede all background work.
 
@@ -330,6 +360,8 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 episode['last_cleanup'] = now
                 episode['claim'] = claim = None
                 episode.pop('partial', None)
+                if row.get('wsl'):
+                    budget_notice(state, 'died', applied=applied)
             free = row['free_gb']
             if free is None:
                 continue
