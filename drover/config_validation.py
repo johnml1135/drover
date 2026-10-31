@@ -259,6 +259,14 @@ def _cleanup_policy(raw):
     if type(cpus) is not int or cpus <= 0:
         raise ConfigError("disk_cleanup.cpu_limit must be a positive integer")
     out['cpu_limit'] = cpus
+    sizes = {}
+    for key in ('wsl_target_gb', 'wsl_purge_gb', 'wsl_stop_gb'):
+        size = raw.get(key, defaults[key])
+        if type(size) not in (int, float) or not math.isfinite(size) or size <= 0:
+            raise ConfigError(f"disk_cleanup.{key} must be finite and positive")
+        sizes[key] = out[key] = size
+    if not sizes['wsl_target_gb'] < sizes['wsl_purge_gb'] < sizes['wsl_stop_gb']:
+        raise ConfigError("disk_cleanup requires wsl_target_gb < wsl_purge_gb < wsl_stop_gb")
     out['process_ignore'] = _strs(raw.get('process_ignore', defaults['process_ignore']), ['disk_cleanup', 'process_ignore'])
     if any(not name or any(char in name for char in '/\\\0') for name in out['process_ignore']):
         raise ConfigError('disk_cleanup.process_ignore must contain image basenames')

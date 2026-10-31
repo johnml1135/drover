@@ -71,7 +71,7 @@ The escalating stop that clears the Linux side before overnight compaction: ask 
 _Avoid_: Drain, shutdown
 
 **Tracker**:
-One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with its levels: warn, queue (no new work starts), hold (running work winds down) and critical (Drover pauses). A disk tracker measures the drive itself, never the free space inside a virtual disk stored on it.
+One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with its levels: warn, queue (no new work starts), hold (running work winds down) and critical (Drover pauses). A disk tracker measures the drive itself. A Tracker may also measure the space used inside WSL, which triggers cleanup on its own, whatever the drive has free.
 _Avoid_: Check, guard, monitor
 
 **Disk tracker**:

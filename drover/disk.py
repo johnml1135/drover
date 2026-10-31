@@ -20,6 +20,36 @@ def tracker_distro(cfg):
     return placement.distro(t['distro'] or None if t else None)
 
 
+def wsl_budget(cfg, *, used=None) -> dict:
+    """Judge GB used inside WSL against [disk_cleanup] wsl_purge_gb / wsl_stop_gb. level is 'ok', 'purge' (at or
+    above wsl_purge_gb), 'stop' (at or above wsl_stop_gb) or 'unknown' (no usable reading, which triggers nothing).
+    target_gb is where a purge aims."""
+    from .config_defaults import DEFAULTS
+    policy = {**DEFAULTS['disk_cleanup'], **cfg.get('disk_cleanup', {})}
+    if type(used) not in (int, float) or not math.isfinite(used) or used < 0:
+        level = 'unknown'
+    elif used >= policy['wsl_stop_gb']:
+        level = 'stop'
+    elif used >= policy['wsl_purge_gb']:
+        level = 'purge'
+    else:
+        level = 'ok'
+    return dict(used_gb=used if level != 'unknown' else None, level=level, target_gb=policy['wsl_target_gb'])
+
+
+def _wsl_used(cfg):
+    """GB used inside WSL, or None. Only a wsl_combined drive means WSL lives on this machine's tracked drive; the
+    distro must already be running (`wsl -l --running` starts nothing), so a reading never boots it."""
+    if not any(t['kind'] == 'disk' and t.get('enabled', True) and t.get('wsl_combined') for t in cfg['trackers']):
+        return None
+    distro = tracker_distro(cfg)
+    try:
+        up = placement.wsl_running(distro)
+    except (OSError, subprocess.SubprocessError):
+        up = False
+    return placement.wsl_used_gb(distro, up)
+
+
 def held(side, cfg=None):
     """Disk hold for work placed on this side, from the shared WSL measurement; it never spawns a process."""
     cfg = config.get() if cfg is None else cfg
@@ -165,11 +195,13 @@ def _deferral_notice(state, now, rows):
             del outbox[ident]
 
 
-def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None) -> dict:
+def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None, wsl_used=None) -> dict:
     """Observe even while paused; short claims precede all background work.
 
     Machine load never defers a cleanup, which runs on a CPU cap at low priority; `gate` is accepted and ignored.
-    Only the lock and the cooldown defer, and state['cleanup_deferred'] records when and why."""
+    Only the lock and the cooldown defer, and state['cleanup_deferred'] records when and why.
+    Free space on a drive and GB used inside WSL trigger independently: WSL at purge or stop claims its own
+    episode named 'wsl'. `wsl_used` is a callable returning that reading (default: read it without starting WSL)."""
     import json
     import time
     import uuid
@@ -177,6 +209,9 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     cfg = config.get() if cfg is None else cfg
     now = time.time() if now is None else now
     rows = read(cfg, reader=reader)
+    budget = wsl_budget(cfg, used=(wsl_used or (lambda: _wsl_used(cfg)))())
+    # The WSL episode is judged on used space, not free: its row is never a drive reading, never pauses anything.
+    episode_rows = rows + [dict(name='wsl', free_gb=budget['used_gb'], level=budget['level'], wsl=True)]
     directory = config.state_dir(cfg)
     # The sticky pause stops the whole dispatcher, so it needs every seat side to be paused: Windows work at H: below
     # critical_gb, WSL work at H: below the floor of a wsl_combined drive (critical_gb for any other drive).
@@ -232,7 +267,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 return result  # Process state unknown (slow query): skip this tick's disk step.
     identity = None
     # Healthy ticks must never inventory processes.
-    if any(row['level'] not in ('ok', 'unknown') for row in rows):
+    if any(row['level'] not in ('ok', 'unknown') for row in episode_rows):
         try:
             identity = placement.cleanup_identity()
         except (subprocess.SubprocessError, OSError):
@@ -247,14 +282,17 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
         state['readings'] = rows
         deferrals = []
         _lock_wait(state, blocker, directory, now)
-        for row in rows:
+        for row in episode_rows:
+            if row.get('wsl') and row['name'] not in episodes and row['level'] not in ('purge', 'stop'):
+                continue   # a healthy distro leaves no episode behind
             episode = episodes.setdefault(row['name'], {})
             claim = episode.get('claim')
             if claim and claim['id'] in receipts:
                 completed = receipts[claim['id']]
                 episode['last_cleanup'] = now
                 episode.update(claim=None)
-                episode['post' if completed['applied'] else 'report_post'] = completed['free']
+                if not row.get('wsl'):   # the receipt's free space is the drive's; WSL re-arms on its cooldown alone
+                    episode['post' if completed['applied'] else 'report_post'] = completed['free']
                 claim = None
             elif claim and claim['id'] in dead:
                 episode['last_cleanup'] = now

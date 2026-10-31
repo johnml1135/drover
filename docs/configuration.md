@@ -138,6 +138,12 @@ BelowNormal (Windows) or nice 10 (WSL), pinned to `cpu_limit` CPUs.
 Global `[disk_cleanup]` `cpu_limit` (default 4, a positive integer) is the number of CPUs cleanup and its child
 processes may use (the first N; never more than the machine has). Pinning is best effort.
 
+Global `[disk_cleanup]` `wsl_purge_gb` (default 300), `wsl_target_gb` (default 225) and `wsl_stop_gb` (default 500)
+are sizes in GB of the space used inside WSL, read from the running distro (a reading never starts WSL; an unreadable
+one triggers nothing). Used space at or above `wsl_purge_gb` starts a cleanup on its own cooldown, whatever H: has
+free; the cleanup aims for `wsl_target_gb`; at or above `wsl_stop_gb` new work stops starting. Each is finite and
+positive, and `wsl_target_gb` < `wsl_purge_gb` < `wsl_stop_gb`.
+
 Cleanup deferrals (the cooldown, or another cleanup holding the lock) are recorded in the disk state as
 `cleanup_deferred`; after 30 minutes of deferral while a drive is at queue or worse, one Inbox notice is raised and
 retracted when cleanup runs. At the `critical` disk level the cooldown (kept per drive) is bypassed.

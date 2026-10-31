@@ -143,28 +143,42 @@ def wsl_running(default, run=subprocess.run):
 
 WSL_FREE_TTL_S = 60
 _WSL_FREE = {}   # distro -> (monotonic time, GB or None): the one measurement every consumer in a minute shares
+_WSL_USED = {}   # the same, for used space
 
 
-def wsl_free_gb(distro, up=True, *, run=subprocess.run, ttl=WSL_FREE_TTL_S):
-    """Free GB on the distro's root filesystem, measured at most once per ttl (the free space inside the VHDX is
-    reusable without growing it). On Windows it is one `wsl.exe -d <distro> -- df` with a 5 s timeout, and only when
-    `up` (the distro is already running, so the call cannot start it). None means unknown, which counts as 0."""
-    hit = _WSL_FREE.get(distro)
+def _wsl_df(cache, column, distro, up, run, ttl):
+    """One `df` column of the distro's root filesystem in GB, cached per distro for ttl. On Windows it is one
+    `wsl.exe -d <distro> -- df` with a 5 s timeout, and only when `up` (the distro is already running, so the call
+    cannot start it). None means unknown."""
+    hit = cache.get(distro)
     if hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
     value = None
     try:
         if not IS_WINDOWS:
             st = os.statvfs('/')
-            value = st.f_bavail * st.f_frsize / (1024 ** 3)
+            blocks = st.f_bavail if column == 'avail' else st.f_blocks - st.f_bfree
+            value = blocks * st.f_frsize / (1024 ** 3)
         elif up:
-            out = run(WSL(distro).command(['df', '-B1', '--output=avail', '/']), text=True,
+            out = run(WSL(distro).command(['df', '-B1', '--output=' + column, '/']), text=True,
                       capture_output=True, timeout=5, **NO_WINDOW)
             value = int(out.stdout.split()[-1]) / (1024 ** 3) if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         value = None
-    _WSL_FREE[distro] = (time.monotonic(), value)
+    cache[distro] = (time.monotonic(), value)
     return value
+
+
+def wsl_free_gb(distro, up=True, *, run=subprocess.run, ttl=WSL_FREE_TTL_S):
+    """Free GB on the distro's root filesystem, measured at most once per ttl (the free space inside the VHDX is
+    reusable without growing it). None means unknown, which counts as 0."""
+    return _wsl_df(_WSL_FREE, 'avail', distro, up, run, ttl)
+
+
+def wsl_used_gb(distro, up=True, *, run=subprocess.run, ttl=WSL_FREE_TTL_S):
+    """Used GB on the distro's root filesystem, measured at most once per ttl under the same rules as wsl_free_gb.
+    Never starts the distro (up=False runs nothing). None means unknown, which triggers nothing."""
+    return _wsl_df(_WSL_USED, 'used', distro, up, run, ttl)
 
 
 def wsl_free_known(distro):
