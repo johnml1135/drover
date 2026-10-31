@@ -22,7 +22,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import placement
+from . import disk_preflight
 from .config_defaults import (BACKENDS, PLACEMENTS, TRACKER_KINDS, DEVICES, AUTH_MODES, SIZES,
                               NAME_RE, ENV_ALIASES, DEFAULT_SEATS, SEAT_DEFAULTS, DEFAULT_TRACKERS,
                               DEFAULTS, RESERVED, ConfigError)
@@ -35,7 +35,7 @@ from .config_sources import (_read, _merge, _leaves, env_names, _parse_env, _app
 from .config_toml import _str, _val, _key, dumps
 from .config_paths import home, seat_env
 
-from .placement import native, default_disk_trackers
+from .placement import native
 
 
 def state_dir(cfg=None):
@@ -88,30 +88,6 @@ def validate(raw):
                                    {"parallel_cap": (1, 64)})
     cfg["trackers"] = _trackers(raw.get("trackers", []))
     cfg["disk_cleanup"] = _cleanup_policy(raw.get("disk_cleanup", {}))
-    folders = [c['path'] for c in cfg['disk_cleanup']['caches'] if 'path' in c]
-    if folders:
-        from . import placement, repos
-        from .disk_paths import repository_tree
-        protected = [str(state_dir(cfg)), cfg['paths']['repos_root'], cfg['paths']['worktrees']]
-        try:
-            for machine_file in repos_dir(cfg).glob('*.toml'):
-                machine = repos.read_machine(machine_file)
-                protected.extend(machine.get(k) for k in ('repo', 'worktrees'))
-                if machine.get('repo') and not machine.get('worktrees') and not cfg['paths']['worktrees']:
-                    protected.append(machine['repo'].rstrip('\\/') + '.worktrees')
-            for folder in folders:
-                concrete = Path(placement.native(folder))
-                if repository_tree(concrete):
-                    raise ConfigError('folder cache overlaps protected repository')
-                parts = placement.cleanup_parts(folder)
-                if any(part in ('.git', '.venv') for part in parts):
-                    raise ConfigError('folder cache overlaps protected path')
-                for root in filter(None, protected):
-                    other = placement.cleanup_parts(root)
-                    if parts[:len(other)] == other or other[:len(parts)] == parts:
-                        raise ConfigError('folder cache overlaps protected repository, worktree or state path')
-        except (OSError, ValueError) as error:
-            raise ConfigError(str(error)) from error
     cfg["policy"] = _check_table(raw.get("policy", {}), DEFAULTS["policy"], ["policy"],
                                  {"tau": (0, 1), "landing_batch_size": (1, 5)})
     cfg["decider"] = _check_table(raw.get("decider", {}), DEFAULTS["decider"], ["decider"], {"timeout_s": (0.1, 600)})
@@ -146,7 +122,7 @@ def load(home_path=None, env=None, *, sources=None):
     raw = _read(path)
     raw = _legacy(raw) if raw is not None else {}
     try:
-        validate(raw)
+        disk_preflight.check_cache_folders(validate(raw))
     except ConfigError as e:
         raise ConfigError(f"{path}: {e}") from e
     label = "machine:" + str(path.resolve())
@@ -154,6 +130,7 @@ def load(home_path=None, env=None, *, sources=None):
     raw = _apply_env(raw, env, sources=origins)
     try:
         cfg = validate(raw)
+        disk_preflight.check_cache_folders(cfg)
     except ConfigError as e:
         raise ConfigError(f"configuration error: {e}") from e
 
@@ -304,7 +281,7 @@ def migrate_disk_config(raw):
     if "disk_cleanup" not in proposed:
         proposed["disk_cleanup"] = placement.detected_cleanup_policy(state_dir(validate(proposed)))
     placement.seed_cleanup_process_policy(proposed['disk_cleanup'])
-    validate(proposed)
+    disk_preflight.check_cache_folders(validate(proposed))
     return proposed
 
 
@@ -361,7 +338,7 @@ def main(argv=None):
             raw = _read(a.check)
             if raw is None:
                 raise ConfigError(f"{a.check}: no such file")
-            validate(raw)
+            disk_preflight.check_cache_folders(validate(raw))
             print(f"{a.check}: ok")
             return 0
         if a.action == "migrate-machine" and not a.key:

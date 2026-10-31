@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, placement
+from drover import config, disk_preflight, placement
 from drover.disk_side import serve
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
@@ -78,7 +78,7 @@ class PathSafety(ProcessFreeDiskCase):
                 with self.subTest(kind=kind, folder=folder):
                     self.cfg['disk_cleanup']['caches'] = [dict(path=str(folder), placement=self.side)]
                     with self.assertRaisesRegex(config.ConfigError, 'protected|overlap'):
-                        config.validate(self.cfg)
+                        disk_preflight.check_cache_folders(config.validate(self.cfg))
 
     def test_repository_appearing_at_final_protection_pass_is_kept(self):
         for stage in (2, 3):
@@ -104,7 +104,7 @@ class PathSafety(ProcessFreeDiskCase):
         self.cfg['disk_cleanup']['caches'] = [dict(
             path=str(spare / '..' / self.state.name / 'private'), placement=self.side)]
         with self.assertRaisesRegex(config.ConfigError, 'protected|overlap'):
-            config.validate(self.cfg)
+            disk_preflight.check_cache_folders(config.validate(self.cfg))
 
     def test_unknown_mount_keeps_and_reports_candidates(self):
         valuable = self.file(self.temp_root / 'precious')

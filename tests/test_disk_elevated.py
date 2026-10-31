@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from drover import config, disk_paths, disk_worktrees, placement, placement_process, placement_proof
+from drover import config, config_defaults, disk_paths, disk_worktrees, placement, placement_process, placement_proof
 
 
 class ElevatedProcesses(unittest.TestCase):
@@ -96,7 +96,7 @@ class ElevatedProcesses(unittest.TestCase):
             self.assertEqual(evidence, (path, 'head', None, ['bin']))
 
     def test_prior_factory_lists_migrate_but_owner_edits_survive(self):
-        current = placement_proof.default_process_ignore()
+        current = list(config_defaults.PROCESS_IGNORE)
         previous = [name for name in current if name not in ('taskhostw.exe', 'dllhost.exe')]
         for old in (previous, [name for name in previous if name != 'remoting_desktop.exe']):
             with self.subTest(old=old):

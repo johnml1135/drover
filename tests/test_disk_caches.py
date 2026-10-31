@@ -106,7 +106,7 @@ class Caches(DiskCase):
         self.assertTrue(any(i['reason_code'] == 'protected' for i in result['items']))
 
     def test_config_rejects_folder_cache_overlapping_configured_repo(self):
-        from drover import config
+        from drover import config, disk_preflight
         from tests.gitfix import Repo
         repo = Repo()
         self.addCleanup(repo.cleanup)
@@ -116,10 +116,10 @@ class Caches(DiskCase):
             with self.subTest(folder=folder):
                 self.cfg['disk_cleanup']['caches'] = [dict(path=str(folder), placement=self.side)]
                 with self.assertRaisesRegex(config.ConfigError, 'overlap|protected'):
-                    config.validate(self.cfg)
+                    disk_preflight.check_cache_folders(config.validate(self.cfg))
 
     def test_cache_validation_checks_default_worktree_root_without_loading_config(self):
-        from drover import config
+        from drover import config, disk_preflight
         from tests.gitfix import Repo
         from unittest.mock import patch
         repo = Repo()
@@ -129,4 +129,4 @@ class Caches(DiskCase):
         self.cfg['disk_cleanup']['caches'] = [dict(path=str(repo.repo) + '.worktrees/cache', placement=self.side)]
         with patch.object(config, 'get', side_effect=AssertionError('validation loaded global config')):
             with self.assertRaisesRegex(config.ConfigError, 'overlap|protected'):
-                config.validate(self.cfg)
+                disk_preflight.check_cache_folders(config.validate(self.cfg))

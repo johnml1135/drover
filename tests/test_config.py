@@ -1,4 +1,7 @@
+import json
 import os
+import re
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -8,6 +11,20 @@ from unittest.mock import patch
 from drover import config, placement
 
 REPO = Path(__file__).resolve().parents[1]
+TRACE_EXPECTED = json.loads((REPO / "tests/config_trace.json").read_text(encoding="utf-8"))
+
+
+
+def host_disks():
+    """The default disk trackers written out, independent of the code that builds them."""
+    row = dict(kind="disk", enabled=True, host_floor_gb=10.0)
+    if sys.platform == "win32" or os.environ.get("WSL_DISTRO_NAME"):
+        return [dict(row, name="h", path="H:/", warn_gb=150.0, queue_gb=100.0, hold_gb=50.0, critical_gb=25.0,
+                     wsl_combined=True),
+                dict(row, name="c", path="C:/", warn_gb=60.0, queue_gb=40.0, hold_gb=25.0, critical_gb=15.0,
+                     wsl_combined=False)]
+    return [dict(row, name="root", path="/", warn_gb=150.0, queue_gb=100.0, hold_gb=50.0, critical_gb=25.0,
+                 wsl_combined=False)]
 
 
 def load(toml="", env=None):
@@ -17,6 +34,90 @@ def load(toml="", env=None):
         if toml:
             (home / "config.toml").write_text(toml, encoding="utf-8")
         return config.load(home, env or {})
+
+
+TRACE_TOML = """
+repos_dir = "{home}/machine-repos"
+[paths]
+state_dir = "{home}/state"
+repos_root = "/srv/repos"
+[hub]
+ui_port = 9001
+[capacity]
+parallel_cap = 6
+[disk_cleanup]
+worker_timeout_s = 900
+temp_roots = ["/var/tmp/drover"]
+[[seats]]
+name = "lead"
+backend = "claude"
+director = true
+[[seats]]
+name = "second"
+backend = "codex"
+[[trackers]]
+kind = "load"
+queue_per_core = 3.0
+[[trackers]]
+kind = "disk"
+name = "scratch"
+path = "/scratch"
+warn_gb = 200.0
+[[trackers]]
+kind = "ram"
+hold_gb = 3.0
+"""
+TRACE_ENV = {"DROVER_DECIDER_MODE": "live", "DROVER_WSL_USER": "alice", "DROVER_DISK_CLEANUP_COOLDOWN_S": "7200"}
+
+
+def trace(home):
+    """Normalized configuration and the source of every leaf, with machine-dependent parts made comparable."""
+    sources = {}
+    cfg = config.load(home, TRACE_ENV, sources=sources)
+    names = [row["name"] for row in cfg["trackers"]]
+    defaults = {row["name"]: row for row in host_disks()}
+    rows = [row for row in cfg["trackers"] if row["name"] not in defaults]
+    # Platform default disk trackers are compared with the platform's own detection, never with literals.
+    disks = [row for row in cfg["trackers"] if row["name"] in defaults]
+    keyed = {}
+    for key, label in sources.items():
+        parts = key.split(".")
+        if parts[0] == "trackers":
+            parts[1] = names[int(parts[1])]
+        keyed[".".join(parts)] = label
+    plain = {key: label for key, label in keyed.items() if key.split(".")[:2] not in
+             [["trackers", name] for name in defaults]}
+    return dict(config=dict(cfg, trackers=rows), default_disks=disks, defaults=list(defaults.values()),
+                default_disk_sources={label for key, label in keyed.items() if key not in plain},
+                sources=plain)
+
+
+def portable(value, home):
+    """The value with this run's temporary home replaced by <home> and path separators made uniform."""
+    if isinstance(value, dict):
+        return {key: portable(item, home) for key, item in value.items()}
+    if isinstance(value, list):
+        return [portable(item, home) for item in value]
+    if not isinstance(value, str):
+        return value
+    for spelling in {str(home.resolve()), home.resolve().as_posix(), str(home), home.as_posix()}:
+        # Derived sources embed the label as JSON, which doubles each backslash.
+        for written in (json.dumps(spelling)[1:-1], spelling):
+            value = value.replace(written, "<home>")
+    return re.sub(r"(?<=<home>)\\+", "/", value)
+
+
+class ConfigTrace(unittest.TestCase):
+    maxDiff = None
+
+    def test_normalized_values_and_sources(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "config.toml").write_text(TRACE_TOML.format(home=home.as_posix()), encoding="utf-8")
+            actual = trace(home)
+            self.assertEqual(actual["default_disks"], actual["defaults"])
+            self.assertEqual(actual["default_disk_sources"] - {"default"}, set())
+            self.assertEqual(portable(dict(config=actual["config"], sources=actual["sources"]), home), TRACE_EXPECTED)
 
 
 class Defaults(unittest.TestCase):
@@ -53,7 +154,7 @@ class Defaults(unittest.TestCase):
         t = {x["name"]: x for x in load()["trackers"]}
         self.assertEqual((t["load"]["queue_per_core"], t["load"]["hold_per_core"]), (2.5, 3.5))
         self.assertEqual((t["ram"]["queue_base_gb"], t["ram"]["queue_per_worker_gb"], t["ram"]["hold_gb"]), (6.0, 0.5, 4.0))
-        self.assertEqual([x for x in t.values() if x["kind"] == "disk"], placement.default_disk_trackers())
+        self.assertEqual([x for x in t.values() if x["kind"] == "disk"], host_disks())
         self.assertEqual(t["vram"]["fallback_pct"], 80.0)
         self.assertEqual((t["vram"]["queue_pct"], t["vram"]["hold_pct"]), (0.0, 0.0))     # VRAM never queues or holds
         self.assertEqual((t["wsl-up"]["queue_mem_pct"], t["wsl-up"]["hold_mem_pct"]), (0.0, 0.0))

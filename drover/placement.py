@@ -41,13 +41,13 @@ from .placement_process import (
     process_cmdlines,
 )
 from .placement_proof import (
-    _CleanupProcesses, _PROCESS_IGNORE_R11_WINDOWS, _PROCESS_IGNORE_WSL, _process_os_location,
-    cleanup_processes, default_process_ignore, seed_cleanup_process_policy,
+    _CleanupProcesses, _process_os_location,
+    cleanup_processes, seed_cleanup_process_policy,
 )
 from .placement_host import (
     wsl_free_gb, wsl_free_known, wsl_running, _WSL_FREE,
     CLEANUP_CACHE_COMMANDS, CLEANUP_CACHE_FOLDERS, CLEANUP_SCRATCH_ROOTS, LXSS, REG, _VHDX_CACHE,
-    _vhdx_dir, _vhdx_reading, _wsl_vhdx_paths, cleanup_vhdx_report, decode_output, default_disk_trackers,
+    _vhdx_dir, _vhdx_reading, _wsl_vhdx_paths, cleanup_vhdx_report, decode_output,
     detect_distros, detect_vhdx_drives, detected_cleanup_policy, is_drvfs, linux_mount, parse_distros,
     physical_disk_path, trim_argv, vhdx_dir, wsl_zoneinfo_path,
 )

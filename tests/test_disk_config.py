@@ -11,6 +11,38 @@ from unittest.mock import patch
 
 from drover import config, placement
 
+EXPECTED_REFUSALS = [
+    ('plain',
+     'accepted'),
+    ('inside-repository',
+     '<root>/home/config.toml: folder cache overlaps protected repository'),
+    ('above-repository',
+     '<root>/home/config.toml: folder cache overlaps protected repository'),
+    ('git-part',
+     '<root>/home/config.toml: folder cache overlaps protected repository'),
+    ('venv-part',
+     '<root>/home/config.toml: folder cache overlaps protected repository'),
+    ('state',
+     '<root>/home/config.toml: folder cache overlaps protected repository, worktree or state path'),
+    ('repos-root',
+     '<root>/home/config.toml: folder cache overlaps protected repository, worktree or state path'),
+    ('worktrees',
+     '<root>/home/config.toml: folder cache overlaps protected repository, worktree or state path'),
+    ('machine-repo',
+     '<root>/home/config.toml: folder cache overlaps protected repository, worktree or state path'),
+    ('machine-worktrees',
+     '<root>/home/config.toml: folder cache overlaps protected repository, worktree or state path'),
+    ('derived-worktrees-unused',
+     'accepted'),
+    ('environment-moves-state',
+     'configuration error: folder cache overlaps protected repository, worktree or state path'),
+    ('derived-worktrees',
+     '<root>/home/config.toml: folder cache overlaps protected repository, worktree or state path'),
+    ('unreadable-machine-file',
+     "<root>/home/config.toml: Expected ']' at the end of a table declaration (at end of document)"),
+    ('internal-machine-key',
+     '<root>/home/config.toml: <root>/machine-repos/broken.toml: _internal is internal metadata'),
+]
 KEYS = ('warn_gb', 'queue_gb', 'hold_gb', 'critical_gb')
 
 
@@ -152,3 +184,57 @@ class Migration(unittest.TestCase):
             with self.subTest(tracker=tracker):
                 with self.assertRaises(config.ConfigError):
                     config.migrate_disk_config({'trackers': [tracker]})
+
+class DiskConfig(unittest.TestCase):
+    """Folder caches are refused at load when they could touch a repository, worktree, state or machine-repo path."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='disk-refusals-')
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.home = self.root / 'home'
+        self.home.mkdir()
+        self.machine = self.root / 'machine-repos'
+        self.machine.mkdir()
+        self.repo = self.root / 'repo'
+        (self.repo / '.git').mkdir(parents=True)
+        self.plain = self.root / 'plain'
+        self.plain.mkdir()
+
+    def outcome(self, folder, *, env=None, trees=True):
+        text = (f'repos_dir = "{self.machine.as_posix()}"\n[paths]\nstate_dir = "{(self.root / "state").as_posix()}"\n'
+                f'repos_root = "{(self.root / "root").as_posix()}"\n'
+                + (f'worktrees = "{(self.root / "trees").as_posix()}"\n' if trees else '') +
+                f'[[disk_cleanup.caches]]\npath = "{Path(folder).as_posix()}"\nplacement = "wsl"\n')
+        (self.home / 'config.toml').write_text(text, encoding='utf-8')
+        try:
+            config.load(self.home, env or {})
+        except config.ConfigError as error:
+            return str(error).replace(str(self.root), '<root>').replace(self.root.as_posix(), '<root>').replace('\\', '/')
+        return 'accepted'
+
+    def test_existing_safety_refusals(self):
+        (self.machine / 'beta.toml').write_text(config.dumps(dict(
+            name='beta', repo=str(self.root / 'beta'), worktrees=str(self.root / 'beta-trees'))), encoding='utf-8')
+        (self.machine / 'gamma.toml').write_text(config.dumps(dict(name='gamma', repo=str(self.root / 'gamma'))),
+                                                 encoding='utf-8')
+        env = {'DROVER_PATHS_STATE_DIR': str(self.root / 'moved-state')}
+        trace = [(name, self.outcome(folder, env=extra_env)) for name, folder, extra_env in (
+            ('plain', self.plain / 'cache', None),
+            ('inside-repository', self.repo / 'cache', None),
+            ('above-repository', self.root, None),
+            ('git-part', self.plain / '.git' / 'cache', None),
+            ('venv-part', self.plain / '.venv', None),
+            ('state', self.root / 'state' / 'cache', None),
+            ('repos-root', self.root / 'root', None),
+            ('worktrees', self.root / 'trees' / 'a', None),
+            ('machine-repo', self.root / 'beta' / 'out', None),
+            ('machine-worktrees', self.root / 'beta-trees', None),
+            ('derived-worktrees-unused', self.root / 'gamma.worktrees' / 'x', None),
+            ('environment-moves-state', self.root / 'moved-state' / 'cache', env))]
+        trace.append(('derived-worktrees', self.outcome(self.root / 'gamma.worktrees' / 'x', trees=False)))
+        (self.machine / 'broken.toml').write_text('[unterminated', encoding='utf-8')
+        trace.append(('unreadable-machine-file', self.outcome(self.plain / 'cache')))
+        (self.machine / 'broken.toml').write_text('_internal = 1\n', encoding='utf-8')
+        trace.append(('internal-machine-key', self.outcome(self.plain / 'cache')))
+        self.assertEqual(trace, EXPECTED_REFUSALS)

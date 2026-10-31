@@ -202,8 +202,8 @@ class FreshDecisions(DiskCase):
             self.assertEqual(query.call_count, 3)
 
     def test_r12_default_list_upgrades_to_include_remote_desktop_without_overwriting_edits(self):
-        from drover import config
-        old = [name for name in placement.default_process_ignore()
+        from drover import config, config_defaults
+        old = [name for name in config_defaults.PROCESS_IGNORE
                if name not in ('remoting_desktop.exe', 'taskhostw.exe', 'dllhost.exe')]
         new = config.migrate_disk_config(dict(disk_cleanup=dict(process_ignore=old)))
         self.assertIn('remoting_desktop.exe', new['disk_cleanup']['process_ignore'])

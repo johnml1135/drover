@@ -4,14 +4,22 @@
     "DEFAULT_INFRA_RETRIES",
     "SeatHomeSeam",
     "_env_block_to_ready",
-    "_commit_ready"
+    "_commit_ready",
+    "default_disk_trackers",
+    "default_process_ignore",
+    "_PROCESS_IGNORE_R11_WINDOWS",
+    "_PROCESS_IGNORE_WSL"
   ],
   "qualified_names": [
     "hub.dispatch.HubPort.set_status",
     "drover.dispatcher_launch.LaunchSteps._launch",
     "drover.pipeline.Repository.ahead",
     "drover.ledger.ops_tasks.read_only_result",
-    "drover.ledger.ops_tasks.accept_read_only"
+    "drover.ledger.ops_tasks.accept_read_only",
+    "drover.placement.default_disk_trackers",
+    "drover.placement_host.default_disk_trackers",
+    "drover.placement.default_process_ignore",
+    "drover.placement_proof.default_process_ignore"
   ],
   "removed_receipt_fields": [
     "infra"
@@ -56,6 +64,10 @@
     {
       "file": "drover/dispatcher_launch.py",
       "binding": "brief_mod"
+    },
+    {
+      "file": "drover/config_defaults.py",
+      "binding": "placement"
     }
   ],
   "scoped_definitions": [

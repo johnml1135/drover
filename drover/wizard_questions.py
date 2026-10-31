@@ -1,8 +1,8 @@
 """Interactive setup questions and recommendations."""
 import re
 
-from drover import placement
 from . import config
+from .config_defaults import WINDOWS_OR_WSL, host_disk_trackers
 from .wizard_asking import WizardError, to_bool, to_float, to_int, one_of
 from .wizard_detect import BENCH_CALLS
 from .wizard_files import _merge_named
@@ -222,7 +222,7 @@ def scale_levels(ram_gb, drives, wsl_cap, vhdx_letters, wanted=None):
                      f"{ts[-1]['hold_gb']:g} GB" + (" (hosts the WSL disk)" if vhdx else ""))
         if d["free_gb"] is not None and d["free_gb"] < ts[-1]["warn_gb"]:
             notes.append(f"WARNING: {d['path']} has only {d['free_gb']:.0f} GB free, below its warning level; free space there")
-    for default in placement.default_disk_trackers():
+    for default in host_disk_trackers(WINDOWS_OR_WSL):
         if default["name"] not in {t["name"] for t in ts}:
             ts.append({**default, "enabled": False})
     ts.append({"kind": "wsl", "name": "wsl-up", "queue_mem_pct": 85.0 if wsl_cap else 0.0,

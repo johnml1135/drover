@@ -6,6 +6,7 @@ import json
 import time
 from pathlib import Path
 
+from .config_defaults import PROCESS_IGNORE, PROCESS_IGNORE_R11_WINDOWS, PROCESS_IGNORE_WSL
 from .placement_paths import (
     IS_WINDOWS,
     _ordinal_case,
@@ -35,28 +36,13 @@ def _process_os_location(exe, windows):
     return any(path.startswith(cleanup_normalize(root, windows).rstrip('/') + '/') for root in roots)
 
 
-_PROCESS_IGNORE_R11_WINDOWS = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
-                               'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe']
-
-
-_PROCESS_IGNORE_WSL = ['systemd', '(sd-pam)']
-
-
-def default_process_ignore():
-    """Owner-editable non-workspace helpers; shells are deliberately excluded."""
-    return [*_PROCESS_IGNORE_R11_WINDOWS,
-            'csrss.exe', 'winlogon.exe', 'dwm.exe', 'fontdrvhost.exe', 'NVDisplay.Container.exe',
-            'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe',
-            'taskhostw.exe', 'dllhost.exe', *_PROCESS_IGNORE_WSL]
-
-
 def seed_cleanup_process_policy(policy):
     """Upgrade the exact prior factory list; preserve every owner-modified list."""
-    previous = [name for name in default_process_ignore() if name not in ('taskhostw.exe', 'dllhost.exe')]
+    previous = [name for name in PROCESS_IGNORE if name not in ('taskhostw.exe', 'dllhost.exe')]
     before_remoting = [name for name in previous if name != 'remoting_desktop.exe']
     if 'process_ignore' not in policy or policy['process_ignore'] in (
-            _PROCESS_IGNORE_R11_WINDOWS + _PROCESS_IGNORE_WSL, before_remoting, previous):
-        policy['process_ignore'] = default_process_ignore()
+            PROCESS_IGNORE_R11_WINDOWS + PROCESS_IGNORE_WSL, before_remoting, previous):
+        policy['process_ignore'] = list(PROCESS_IGNORE)
     policy.setdefault('process_query_timeout_s', 240)
 
 
@@ -79,7 +65,7 @@ class _CleanupProcesses:
         self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
         self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
-        self.ignored = (request or {}).get('paths', {}).get('process_ignore', default_process_ignore())
+        self.ignored = (request or {}).get('paths', {}).get('process_ignore', PROCESS_IGNORE)
         self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
         self.query_failure = None
         self.request = request or {}

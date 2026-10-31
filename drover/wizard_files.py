@@ -6,7 +6,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from . import config, repos
+from . import config, disk_preflight, repos
 from .wizard_asking import WizardError, to_bool
 
 
@@ -126,7 +126,7 @@ def _merge_named(existing, updates):
 
 
 def build_config(s, existing=None):
-    """The raw config dict for the answers `s`; validated with config.validate before it is returned."""
+    """The raw config dict for the answers `s`; validated with config.validate and the disk preflight before it is returned."""
     existing = existing or {}
     seats = []
     for seat in s["seats"]:
@@ -149,7 +149,7 @@ def build_config(s, existing=None):
                                      + existing.get("hub", {}).get("allowed_logins", [])[1:],
                    "auth": {"mode": "tailscale"}}}
     raw = config._merge(existing, raw)
-    config.validate(raw)
+    disk_preflight.check_cache_folders(config.validate(raw))
     return raw
 
 

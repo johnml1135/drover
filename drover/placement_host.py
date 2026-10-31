@@ -20,9 +20,7 @@ from .placement_exec import (
     distro,
     wsl_control,
 )
-from .placement_proof import (
-    default_process_ignore,
-)
+from .config_defaults import PROCESS_IGNORE
 
 
 def decode_output(raw):
@@ -208,17 +206,6 @@ def linux_mount(path):
         return None
 
 
-def default_disk_trackers() -> list[dict]:
-    """Physical disks for a Windows host (including WSL), or the Linux root."""
-    paths = [("h", "H:/"), ("c", "C:/")] if IS_WINDOWS or os.environ.get("WSL_DISTRO_NAME") else [("root", "/")]
-    keys = ("warn_gb", "queue_gb", "hold_gb", "critical_gb")
-    return [{"kind": "disk", "name": name, "enabled": True, "path": path,
-             **dict(zip(keys, (60.0, 40.0, 25.0, 15.0) if drive(path) == "C" else (150.0, 100.0, 50.0, 25.0))),
-             # H: holds the WSL VHDX, so free space inside WSL counts for work placed there (floor: H alone).
-             "wsl_combined": name == "h" and path != "/", "host_floor_gb": 10.0}
-            for name, path in paths]
-
-
 # Detection is installation data, never stage policy. Existing declarations win.
 CLEANUP_CACHE_COMMANDS = (
     ('uv', ('uv', 'cache', 'prune')),
@@ -243,7 +230,7 @@ def detected_cleanup_policy(state_dir):
     roots.extend(str(Path(p).expanduser().absolute()) for p in CLEANUP_SCRATCH_ROOTS
                  if Path(p).expanduser().is_dir())
     return dict(temp_roots=list(dict.fromkeys(roots)), report_roots=[],
-                process_ignore=default_process_ignore(), process_query_timeout_s=240, caches=[
+                process_ignore=list(PROCESS_IGNORE), process_query_timeout_s=240, caches=[
         dict(argv=list(argv), cwd=str(state), placement=side)
         for tool, argv in CLEANUP_CACHE_COMMANDS if shutil.which(tool)] + [
         dict(path=str(Path(os.environ.get(variable, fallback)).expanduser().absolute() / suffix),

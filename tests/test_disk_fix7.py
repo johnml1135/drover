@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_state, placement, repos
+from drover import config, config_defaults, disk_state, placement, repos
 from tests.disk_fixture import DiskCase
 from tests.gitfix import Repo
 
@@ -191,7 +191,7 @@ class HelperPolicy(DiskCase):
 
     def test_defaults_seed_install_and_migration_idempotently(self):
         from drover.disk_schedule import install
-        expected = set(placement.default_process_ignore())
+        expected = set(config_defaults.PROCESS_IGNORE)
         self.assertTrue(R12_HELPERS <= expected)
         raw = dict(disk_cleanup=dict(temp_roots=[]))
         migrated = config.migrate_disk_config(raw)
