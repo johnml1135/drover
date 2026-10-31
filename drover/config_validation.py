@@ -255,6 +255,10 @@ def _cleanup_policy(raw):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ConfigError(f"disk_cleanup.{key} must be finite and positive")
         out[key] = timeout
+    cpus = raw.get('cpu_limit', defaults['cpu_limit'])
+    if type(cpus) is not int or cpus <= 0:
+        raise ConfigError("disk_cleanup.cpu_limit must be a positive integer")
+    out['cpu_limit'] = cpus
     out['process_ignore'] = _strs(raw.get('process_ignore', defaults['process_ignore']), ['disk_cleanup', 'process_ignore'])
     if any(not name or any(char in name for char in '/\\\0') for name in out['process_ignore']):
         raise ConfigError('disk_cleanup.process_ignore must contain image basenames')

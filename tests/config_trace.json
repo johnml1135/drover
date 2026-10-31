@@ -28,6 +28,7 @@
   "disk_cleanup": {
    "caches": [],
    "cooldown_s": 7200,
+   "cpu_limit": 4,
    "process_ignore": [
     "ctfmon.exe",
     "TabTip.exe",
@@ -228,6 +229,7 @@
   "director.seat": "default",
   "disk_cleanup.caches": "default",
   "disk_cleanup.cooldown_s": "env:DROVER_DISK_CLEANUP_COOLDOWN_S",
+  "disk_cleanup.cpu_limit": "default",
   "disk_cleanup.worktree_output_idle_s": "default",
   "disk_cleanup.process_ignore.0": "default",
   "disk_cleanup.process_ignore.1": "default",

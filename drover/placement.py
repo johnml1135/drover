@@ -53,7 +53,7 @@ from .placement_host import (
 )
 from .placement_worker import (
     BELOW_NORMAL_PRIORITY_CLASS, CLEANUP_NICE, CleanupWorkerError, _CLEANUP_STARTUP_PROOF, _CleanupJob,
-    cleanup_worker, disk_toast, lower_priority,
+    cleanup_worker, disk_toast, limit_cpus, lower_priority,
 )
 
 if IS_WINDOWS:

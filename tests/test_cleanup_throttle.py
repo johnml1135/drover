@@ -1,4 +1,4 @@
-"""Cleanup is gated on load and RAM: no launch on a loaded machine, abort mid-run when a hold threshold is crossed."""
+"""Cleanup ignores machine load and RAM: it launches and runs to the end, paced by a CPU cap at low priority."""
 import json
 import os
 import unittest
@@ -63,22 +63,10 @@ class LaunchGate(Trigger):
     def tick_gated(self, gate):
         return disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, enqueue=self.enqueue, gate=gate)
 
-    def test_loaded_machine_defers_and_records_why(self):
+    def test_tick_launches_under_load(self):
         self.activate()
         self.free = 60
-        for verdict in ('queue', 'hold'):
-            self.tick_gated(pressure(verdict, 'load 4.00 per core > 2.5'))
-            self.assertEqual(self.launches, [])
-        deferred = disk_state.read(config.state_dir(self.cfg))['cleanup_deferred']
-        self.assertEqual(deferred['reasons'], ['load 4.00 per core > 2.5'])
-        self.assertEqual(deferred['at'], self.now)
-
-    def test_go_launches_once_load_clears(self):
-        self.activate()
-        self.free = 60
-        self.tick_gated(pressure('queue', 'busy'))
-        self.assertEqual(self.launches, [])
-        self.tick_gated(pressure('go'))
+        self.tick_gated(pressure('hold', 'load 4.00 per core > 2.5'))
         self.assertEqual(len(self.launches), 1)
         self.assertNotIn('cleanup_deferred', disk_state.read(config.state_dir(self.cfg)))
 
@@ -99,31 +87,26 @@ class MidRunAbort(Trigger):
         with patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
             return disk_cleanup.run(self.cfg, mode='triggered', apply=apply, runtime=runtime)
 
-    def test_hold_before_a_stage_aborts_cleanly_and_releases_the_lock(self):
+    def test_hold_before_a_stage_does_not_abort(self):
         self.free = 60
-        seen = []
         def pressure_fn():
-            seen.append(len(self.calls))
-            return dict(verdict='go' if len(seen) <= 2 else 'hold', reasons=['load 5.00 per core > 3.5'])
+            return dict(verdict='hold', reasons=['load 5.00 per core > 3.5'])
         result = self.run_triggered(pressure_fn)
-        self.assertEqual(result['aborted'], 'aborted_load')
-        self.assertEqual(result['abort_reasons'], ['load 5.00 per core > 3.5'])
-        self.assertEqual(len(self.calls), 2)          # two stage workers ran, no third started
+        self.assertNotIn('aborted', result)
+        self.assertEqual([s['stage'] for s in result['stages']], [1, 2, 3, 4, 5, 6])
         with disk_state.CleanupLock(config.state_dir(self.cfg)):
             pass                                        # the lock is free again
-        self.assertFalse(list((config.state_dir(self.cfg) / 'disk').glob('processes-*')))
 
-    def test_abort_records_the_triggered_result(self):
+    def test_hold_does_not_change_the_triggered_result(self):
         self.free = 60
         claim = dict(id='abc', identity=placement.cleanup_identity(), applied=True)
         disk_state.update(config.state_dir(self.cfg), lambda s: s.setdefault('episodes', {}).setdefault(
             'test-drive', {}).update(claim=claim))
         result = self.run_triggered(pressure('hold', 'RAM available 3.0 GB < 4 GB'))
         receipt = json.loads((config.state_dir(self.cfg) / 'disk' / 'result-abc.json').read_text())
-        self.assertEqual(receipt['status'], 'aborted_load')
-        self.assertFalse(receipt['applied'])
-        self.assertEqual(self.calls, [])
-        self.assertEqual(result['aborted'], 'aborted_load')
+        self.assertEqual(receipt['status'], 'completed')
+        self.assertNotEqual(self.calls, [])
+        self.assertNotIn('aborted', result)
         state = disk_state.read(config.state_dir(self.cfg))
         self.assertIsNone(state['episodes']['test-drive']['claim'])
 
@@ -166,11 +149,6 @@ class Cooldown(Trigger):
         self.launches.append(self.now)
         if self.outcome == 'completed':
             return self.complete()
-        if self.outcome == 'aborted':
-            from dataclasses import replace
-            from drover import disk_cleanup
-            return disk_cleanup.run(self.cfg, mode='triggered', apply=True,
-                                    runtime=replace(self.runtime(), pressure=pressure('hold', 'busy')))
         return None   # failed: no receipt, no process
 
     def go(self, free, advance=0):
@@ -182,7 +160,7 @@ class Cooldown(Trigger):
         self.assertEqual(config.validate({})['disk_cleanup']['cooldown_s'], 6 * 3600)
 
     def test_cooldown_blocks_after_each_kind_of_run(self):
-        for outcome in ('completed', 'aborted', 'failed'):
+        for outcome in ('completed', 'failed'):
             with self.subTest(outcome):
                 self.launches.clear()
                 self.outcome = outcome
@@ -328,21 +306,26 @@ class DeferralNotice(Trigger):
         return disk_state.read(config.state_dir(self.cfg)).get('outbox', {})
 
     def test_notice_after_thirty_minutes_then_retracted_when_cleanup_runs(self):
-        self.cfg['disk_cleanup']['cooldown_s'] = 0
+        self.cfg['disk_cleanup']['cooldown_s'] = 6 * 3600
         self.activate()
         self.free = 60                                   # queue level
-        self.tick_gated(pressure('queue', 'busy'))
+        self.tick_gated(None)
+        self.assertEqual(len(self.launches), 1)
+        self.free = 30                                   # a big drop, but the cooldown defers it
+        self.now += 60
+        self.tick_gated(None)                            # the deferral starts here
         self.now += 20 * 60
-        self.tick_gated(pressure('queue', 'busy'))
+        self.tick_gated(None)
         self.assertNotIn('cleanup_deferred', self.outbox())
         self.now += 11 * 60
-        self.tick_gated(pressure('queue', 'busy'))
+        self.tick_gated(None)
         entry = self.outbox()['cleanup_deferred']
         self.assertEqual(entry['notice']['kind'], 'cleanup_deferred')
-        self.tick_gated(pressure('queue', 'busy'))
-        self.assertEqual(len(self.outbox()), 1)          # one notice, not one per tick
-        self.tick_gated(pressure('go'))
-        self.assertEqual(len(self.launches), 1)
+        self.tick_gated(None)
+        self.assertEqual(self.outbox()['cleanup_deferred'], entry)   # one notice, not one per tick
+        self.now += 6 * 3600
+        self.tick_gated(None)
+        self.assertEqual(len(self.launches), 2)
         self.assertNotIn('cleanup_deferred', self.outbox())
 
 
@@ -358,12 +341,10 @@ class CriticalDisk(Trigger):
     def tick_gated(self, gate):
         return disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, enqueue=self.enqueue, gate=gate)
 
-    def test_critical_launches_under_queue_pressure_but_not_hold(self):
+    def test_critical_launches_under_load(self):
         self.activate()
         self.free = 20                                   # critical (below 25)
         self.tick_gated(pressure('hold', 'RAM'))
-        self.assertEqual(self.launches, [])
-        self.tick_gated(pressure('queue', 'busy'))
         self.assertEqual(len(self.launches), 1)
 
     def test_critical_bypasses_the_cooldown_but_queue_level_does_not(self):

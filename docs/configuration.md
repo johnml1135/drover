@@ -131,13 +131,16 @@ Global `[disk_cleanup]` `worktree_output_idle_s` (default 7200, finite and posit
 before cleanup removes its declared disposable paths below hold (see below). It never shortens whole-worktree removal.
 
 Global `[disk_cleanup]` `cooldown_s` (default 21600, 6 h) is the least time the hub waits after any cleanup it
-launched (finished, `aborted_load` or failed) before launching another. The hub also launches only when load and
-RAM are `go`, re-triggers only after free space falls 10 GB below the last cleanup's result, and a running cleanup
-stops with `aborted_load` when load or RAM reach hold. Cleanup runs at BelowNormal (Windows) or nice 10 (WSL).
+launched (finished or failed) before launching another. The hub re-triggers only after free space falls 10 GB below
+the last cleanup's result. Cleanup never consults machine load or RAM: it neither waits nor stops for them, and runs at
+BelowNormal (Windows) or nice 10 (WSL), pinned to `cpu_limit` CPUs.
 
-Cleanup deferrals are recorded in the disk state as `cleanup_deferred`; after 30 minutes of deferral while a drive is
-at queue or worse, one Inbox notice is raised and retracted when cleanup runs. At the `critical` disk level the gate
-relaxes to "load and RAM below hold" and the cooldown (kept per drive) is bypassed.
+Global `[disk_cleanup]` `cpu_limit` (default 4, a positive integer) is the number of CPUs cleanup and its child
+processes may use (the first N; never more than the machine has). Pinning is best effort.
+
+Cleanup deferrals (the cooldown, or another cleanup holding the lock) are recorded in the disk state as
+`cleanup_deferred`; after 30 minutes of deferral while a drive is at queue or worse, one Inbox notice is raised and
+retracted when cleanup runs. At the `critical` disk level the cooldown (kept per drive) is bypassed.
 
 Windows load: there is no load average, so the `load` tracker reads CPU busy % (`GetSystemTimes`, smoothed over 60 s)
 and maps it onto the per-core scale: 100% busy counts as about 3.68 per core. With the defaults (`queue_per_core` 2.5,

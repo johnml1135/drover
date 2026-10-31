@@ -60,6 +60,9 @@ def cleanup_worker(request):
     """Own the worker group/job before any stage can spawn children."""
     from . import disk_side, disk_state
     lower_priority()
+    cap = (request.get('paths') or {}).get('cpu_limit')
+    if cap:
+        limit_cpus(cap)
     if IS_WINDOWS:
         # The caller holds this named job until every member has exited. Join before
         # executing the stage, so no deletion subprocess can escape containment.
@@ -188,3 +191,30 @@ def lower_priority(windows=None, set_class=None):
             os.nice(CLEANUP_NICE)
     except (OSError, AttributeError):
         pass
+
+
+def limit_cpus(count, *, windows=None, set_mask=None, available=None):
+    """Pin this process, and so its children, to the first `count` CPUs. Best effort.
+
+    Returns the number of CPUs in effect: the smaller of `count` and those available, or all of them if pinning failed."""
+    windows = IS_WINDOWS if windows is None else windows
+    if available is None:
+        try:
+            available = len(os.sched_getaffinity(0))
+        except (OSError, AttributeError):
+            available = os.cpu_count() or 1
+    limit = max(1, min(count, available))
+    if limit >= available:
+        return available
+    try:
+        if windows:
+            if set_mask is None:
+                def set_mask(mask):
+                    if not _k32.SetProcessAffinityMask(_k32.GetCurrentProcess(), ctypes.c_size_t(mask)):
+                        raise ctypes.WinError(ctypes.get_last_error())
+            set_mask((1 << limit) - 1)
+        else:
+            (set_mask or (lambda cpus: os.sched_setaffinity(0, cpus)))(set(range(limit)))
+    except (OSError, AttributeError, OverflowError):
+        return available
+    return limit

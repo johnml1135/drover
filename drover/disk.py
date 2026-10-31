@@ -168,8 +168,8 @@ def _deferral_notice(state, now, rows):
 def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None) -> dict:
     """Observe even while paused; short claims precede all background work.
 
-    gate() returns a load/RAM verdict ({'verdict', 'reasons'}); a cleanup launches only on 'go', otherwise it is
-    deferred and state['cleanup_deferred'] records when and why."""
+    Machine load never defers a cleanup, which runs on a CPU cap at low priority; `gate` is accepted and ignored.
+    Only the lock and the cooldown defer, and state['cleanup_deferred'] records when and why."""
     import json
     import time
     import uuid
@@ -239,18 +239,6 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             return result
     # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick.
     blocker = disk_state.lock_blocker(directory) if identity else None
-    pressure = None
-    if gate is not None and identity and blocker is None and \
-            any(row['level'] not in ('ok', 'unknown') and row['free_gb'] is not None for row in rows):
-        try:
-            pressure = gate()
-        except (OSError, ValueError, subprocess.SubprocessError):
-            pressure = None   # an unreadable machine state defers nothing
-    def blocked(row):
-        # Critical space relaxes the gate: only hold stops it. Everything else needs go.
-        if pressure is None:
-            return False
-        return pressure.get('verdict') == 'hold' if row['level'] == 'critical' else pressure.get('verdict') != 'go'
     def change(state):
         episodes = state.setdefault('episodes', {})
         applied = bool(state.get('automation', {}).get('apply', False))
@@ -288,9 +276,6 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             if row['level'] != 'critical' and now - last < cooldown:
                 deferrals.append(('cooldown', ['%s: last cleanup ended %d min ago; waiting %d min' % (
                     row['name'], (now - last) // 60, cooldown // 60)]))
-                continue
-            if blocked(row):
-                deferrals.append((pressure['verdict'], list(pressure.get('reasons', []))))
                 continue
             claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied, at=now,
                          prior_last=episode.get('last_cleanup'))

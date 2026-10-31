@@ -12,7 +12,7 @@ class CleanupRuntime:
     read: Callable
     call: Callable
     toast: Callable
-    pressure: Callable | None = None   # () -> {'verdict': go|queue|hold, 'reasons': [...]}; hold aborts the run
+    pressure: Callable | None = None   # unused: cleanup no longer consults machine load
     evidence: object | None = None
     state: object | None = None
 
