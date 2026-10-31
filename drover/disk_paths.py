@@ -32,17 +32,24 @@ def item(path, request, reason, **extra):
                 files=0, age_s=0, bytes=0, **extra)
 
 
-def safe_path(path):
-    """All ancestors must be concrete; protected names override broad declarations."""
+def safe_path(path, proven=None):
+    """All ancestors must be concrete; protected names override broad declarations. `proven`, a set kept only for one
+    validation pass, spares a folder's many paths from proving the same ancestors again."""
     path = Path(path).absolute()
     if any(part.casefold() in ('.git', '.venv') for part in path.parts):
         return False
+    checked = []
     for parent in (path, *path.parents):
+        if proven is not None and parent in proven:
+            break
         try:
             if placement.cleanup_link(parent):
                 return False
         except FileNotFoundError:
             continue
+        checked.append(parent)
+    if proven is not None:
+        proven.update(parent for parent in checked if parent != path)
     return True
 
 
@@ -82,18 +89,24 @@ def repository_config(candidate):
         return True  # No certain parse, including unavailable Git: retain.
 
 
-def repository_tree(path, *, boundary=None):
+def repository_tree(path, *, boundary=None, proven=None):
     """Repository evidence protects even damaged, unregistered and bare trees.
 
     A worktree's own gitfile is allowed only at the output stage's checked boundary.
-    Never follow links while looking for evidence; unreadable trees fail closed.
+    Never follow links while looking for evidence; unreadable trees fail closed. `proven` is as for safe_path.
     """
     path = Path(path).absolute()
+    checked = []
     for parent in (path, *path.parents):
+        if proven is not None and (parent, boundary) in proven:
+            break
         if boundary is not None and placement.cleanup_parts(parent) == placement.cleanup_parts(boundary):
             break
-        if not safe_path(parent) or repository_root(parent):
+        if not safe_path(parent, proven) or repository_root(parent):
             return True
+        checked.append((parent, boundary))
+    if proven is not None:
+        proven.update(key for key in checked if key[0] != path)
     if path.is_dir():
         for child in path.iterdir():
             if not safe_path(child) or repository_root(child) or child.is_dir() and repository_tree(child, boundary=path):
@@ -347,6 +360,9 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
                f'drive_host={placement.physical_disk_path(request["drive"]["path"])!r}')
     if (placement.cleanup_processes(request=request) if fresh else request.get('_processes') or placement.cleanup_processes(request=request)).busy(str(path)):
         raise ValueError('process using worktree')
+    # This worker cannot see Windows processes; a budget carries what the coordinator found them naming inside WSL.
+    if any(within(named, path) for named in (request.get('budget') or {}).get('windows_paths') or ()):
+        raise ValueError('windows process using worktree')
     # Disposable paths only: whole-worktree removal keeps its own three-day settlement (disk_cleanup_decisions).
     # A drive in trouble waives the idle rule; a budget purge, which is about WSL and not that drive, never does.
     limit = request.get('paths', {}).get('worktree_output_idle_s', OUTPUT_IDLE_S)
@@ -356,40 +372,82 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     return path, head, ownership.read(str(path)), outputs_at(machine, path)
 
 
-def remove_output(request, out, machine, entry, evidence, touched, name, row):
-    """The one removal of a declared output: every fact is proven again now, and any change keeps the path."""
+def prune_emptied(target, removed, touched):
+    """Folders a removal emptied go with it, deepest first, up to the target; rmdir only ever takes an empty one."""
+    folders = set()
+    for name in removed:
+        parent = Path(name).parent
+        while parent not in folders:
+            folders.add(parent)
+            if parent == target:
+                break
+            parent = parent.parent
+    for folder in sorted(folders, key=lambda p: len(p.parts), reverse=True):
+        try:
+            folder.rmdir()
+            touched.add(folder.parent)
+        except OSError:
+            pass
+
+
+def remove_output(request, out, machine, entry, evidence, touched, target, measured, row):
+    """The one removal of declared outputs: `target` is proven again now, as one unit, immediately before its paths
+    (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count as each path actually goes."""
     from .disk_worktrees import registration_identity, entries, tracked_at, overlaps_worktrees, status
     path = evidence[0]
-    target = Path(name)
-    relative = target.relative_to(path)
     try:
         current = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
         current_dirty, current_ignored = status(path)
         if registration_identity(current) != registration_identity(entry):
             raise ValueError('disposable registration changed')
         fresh_evidence = output_evidence(request, machine, current, touched=touched, fresh=True)
+        tracked = {str(path / name) for name in tracked_at(path, target.relative_to(path))}
         if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
                 fresh_evidence[1:] != evidence[1:] or \
-                name not in current_dirty + current_ignored or \
-                tracked_at(path, relative) or \
-                facts(target, request['now']) != {k: row[k] for k in ('files', 'age_s', 'bytes')}:
+                set(measured) - set(current_dirty + current_ignored) or \
+                tracked & set(measured) or (tracked and str(target) in measured) or \
+                any(facts(Path(name), request['now']) != known for name, known in measured.items()):
             raise ValueError('disposable evidence changed')
         after = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
-        if registration_identity(after) != registration_identity(entry) or overlaps_worktrees(request, target, path) or repository_tree(target, boundary=path) or \
+        proven = set()
+        if registration_identity(after) != registration_identity(entry) or overlaps_worktrees(request, target, path) or \
+                any(repository_tree(Path(name), boundary=path, proven=proven) for name in measured) or \
                 not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
             raise ValueError('disposable side marker changed')
-        # status expands ignored directories to leaves; only empty directories reach here.
-        target.rmdir() if target.is_dir() else target.unlink()
-        touched.add(target.parent)
+        for name, known in measured.items():
+            leaf = Path(name)
+            # status expands ignored directories to leaves; only empty directories reach here.
+            leaf.rmdir() if leaf.is_dir() else leaf.unlink()
+            touched.add(leaf.parent)
+            out['reclaimed_bytes'] += known['bytes']
+        if str(target) not in measured:
+            prune_emptied(target, measured, touched)
         row['action'] = 'removed'
-        out['reclaimed_bytes'] += row['bytes']
     except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
         row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
 
 
+def output_units(names, path, tracked, declarations, whole):
+    """Group listed paths into what is revalidated as one: each path alone, or with `whole` (a budget purge) each
+    shortest declared disposable prefix with every listed path under it. Tracked and undeclared paths are left out."""
+    units, matched = {}, {}
+    for name in dict.fromkeys(names):
+        relative = Path(name).relative_to(path)
+        if str(relative).replace('\\', '/') in tracked:
+            continue
+        for end in range(1, len(relative.parts) + 1):
+            prefix = relative.parts[:end]
+            if prefix not in matched:
+                matched[prefix] = disposable_match(Path(*prefix), declarations)
+            if matched[prefix]:
+                units.setdefault(path.joinpath(*prefix) if whole else Path(name), []).append(name)
+                break
+    return units
+
+
 def disposable_rows(request, out):
-    """Yield (row, remove) for each declared ignored/untracked output, its row already in `out`; calling remove()
-    runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept and never yielded."""
+    """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row already in `out`; calling
+    remove() runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept, never yielded."""
     from .disk_worktrees import entries, tracked_at, overlaps_worktrees, status
     budget = bool(request.get('budget'))
     for machine in request['repos']:
@@ -400,35 +458,46 @@ def disposable_rows(request, out):
                     evidence = output_evidence(request, machine, entry)
                     path, head, tag, declarations = evidence
                     idle = dict(idle_s=facts(path, request['now'], request=request)['age_s']) if budget else {}
-                    dirty, ignored = status(path, expand=request['apply'])
-                    if not request['apply'] and declarations and any(
+                    expand = request['apply'] or budget
+                    dirty, ignored = status(path, expand=expand)
+                    if not expand and declarations and any(
                             Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
                             for name in dirty + ignored):
                         dirty, ignored = status(path)
                     tracked = set(tracked_at(path))
                     touched = set()     # shared by this worktree's removals, in whatever order they run
-                    for name in dict.fromkeys(dirty + ignored):
-                        target = Path(name)
-                        relative = target.relative_to(path)
-                        if str(relative).replace('\\', '/') in tracked or not disposable_match(relative, declarations):
-                            continue
-                        row = item(target, request, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
-                        eligible = False
+                    units = output_units(dirty + ignored, path, tracked, declarations, budget)
+                    for target, names in units.items():
+                        def row_for(where):
+                            return item(where, request, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
+                        row, measured = row_for(target), {}
                         try:
                             if not placement.cleanup_contains(request, str(target)):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, request):
                                 row['reason_code'] = 'live_owner'
-                            elif not safe_path(target) or (repository_tree(target, boundary=path) if request['apply'] else request['_inventory'].contains_repository(target)) or overlaps_worktrees(request, target, path):
+                            elif overlaps_worktrees(request, target, path):
                                 row['reason_code'] = 'protected'
                             else:
-                                row.update(facts(target, request['now'], request=request), owner=tag['owner'] if tag else None, action='candidate')
-                                eligible = True
+                                proven = set()
+                                for name in names:
+                                    leaf = Path(name)
+                                    if safe_path(leaf, proven) and not (repository_tree(leaf, boundary=path, proven=proven) if request['apply'] else request['_inventory'].contains_repository(leaf)):
+                                        measured[name] = facts(leaf, request['now'], request=request)
+                                    elif len(names) > 1:
+                                        out['items'].append(dict(row_for(leaf), reason_code='protected'))
+                                if measured:
+                                    rows = list(measured.values())
+                                    row.update(files=sum(r['files'] for r in rows), bytes=sum(r['bytes'] for r in rows),
+                                               age_s=min(r['age_s'] for r in rows), owner=tag['owner'] if tag else None,
+                                               action='candidate')
+                                else:
+                                    row['reason_code'] = 'protected'
                         except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
                             row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
                         out['items'].append(row)
-                        if eligible:
-                            yield row, partial(remove_output, request, out, machine, entry, evidence, touched, name, row)
+                        if row['action'] == 'candidate':
+                            yield row, partial(remove_output, request, out, machine, entry, evidence, touched, target, measured, row)
                 except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
                     out['items'].append(item(entry['worktree'], request, 'output_evidence_unavailable',
                                              repo=machine['repo'], error=str(error)))

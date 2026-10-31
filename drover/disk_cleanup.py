@@ -5,6 +5,7 @@ import json
 import math
 import os
 import socket
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass
@@ -111,6 +112,16 @@ def _reading(value):
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
 
 
+def _windows_paths(cfg, base):
+    """What Windows processes name inside WSL, which the WSL worker cannot see. (paths, unreadable); paths is None
+    when the snapshot is unknown or failed."""
+    try:
+        proof = placement.cleanup_windows_proof(dict(paths=base['paths'], state_dir=base['state_dir']))
+        return (proof.wsl_paths(disk.tracker_distro(cfg)), proof.unreadable) if proof else (None, [])
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None, []
+
+
 def _budget_purge(cfg, runtime, progress, result, base):
     """Serve a `wsl` claim: the WSL side's output stage alone, whatever the host drive's free space. Returns its
     receipt. WSL lives on the wsl_combined drive; without one no worktree can be proven to be inside it."""
@@ -118,13 +129,20 @@ def _budget_purge(cfg, runtime, progress, result, base):
     drive = next((d for d in result['drives'] if d['name'] in combined and d['path'] is not None), None)
     target = disk.wsl_budget(cfg)['target_gb']
     receipt = dict(applied=False, status='completed', budget='no_host', used_gb=None, target_gb=target,
-                   reclaimed_bytes=0, shortfall_bytes=None)
+                   reclaimed_bytes=0, shortfall_bytes=None, partial=False)
     if drive is None:
         return receipt
     side = disk_budget.SIDE
+    windows_paths, unreadable = _windows_paths(cfg, base)
+    if windows_paths is None:
+        # Any WSL worktree could be the one a Windows editor or build has open, so this run purges none of them.
+        result['items'].append(dict(disk_budget.processes_unknown(drive['path'], target), stage=5, side=side,
+                                    count=len(unreadable), processes=unreadable[:20]))
+        receipt['budget'] = 'processes_unknown'
+        return receipt
     free = drive.get('post_free_gb', drive['free_gb'])
     request = dict(base, stage=5, apply=base['apply'] and free is not None, now=runtime.now(), drive=drive,
-                   budget=dict(target_gb=target))
+                   budget=dict(target_gb=target, windows_paths=windows_paths))
     receipt.update(applied=request['apply'], budget='failed')
     result['stages'].append(dict(drive=drive['name'], stage=5))
     progress.begin(drive['name'], 5, side)
@@ -137,7 +155,8 @@ def _budget_purge(cfg, runtime, progress, result, base):
         receipt['reclaimed_bytes'] = answer['reclaimed_bytes']
         if answer.get('budget'):
             receipt.update(budget=answer['budget']['status'], used_gb=answer['budget']['used_gb'],
-                           shortfall_bytes=answer['budget']['shortfall_bytes'])
+                           shortfall_bytes=answer['budget']['shortfall_bytes'],
+                           partial=answer['budget']['status'] == 'deadline' and answer['reclaimed_bytes'] > 0)
         if request['apply'] and answer['reclaimed_bytes'] >= 1024 ** 3:
             trimmed = _valid_result(runtime.call('windows', dict(request, stage=1, budget=None)))
             result['errors'].extend(trimmed['errors'])
@@ -154,12 +173,13 @@ def _budget_purge(cfg, runtime, progress, result, base):
 
 
 def _finish_wsl(state_dir, claim, receipt):
-    """Its own receipt, holding no free space: the drive's baselines mean nothing to an episode judged on used GB."""
+    """Its own receipt, holding no free space: the drive's baselines mean nothing to an episode judged on used GB.
+    `partial` records a purge cut off by its deadline with work still done, which tick retries sooner."""
     disk_state.save_file(state_dir, 'result-' + claim['id'] + '.json', receipt)
     def finish(state):
         episode = state['episodes']['wsl']
         if (episode.get('claim') or {}).get('id') == claim['id']:
-            episode.update(claim=None)
+            episode.update(claim=None, partial=receipt['partial'])
     try:
         disk_state.update(state_dir, finish)
     except BlockingIOError:

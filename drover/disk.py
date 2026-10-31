@@ -128,6 +128,7 @@ def admission(readings: list[dict]) -> dict:
 LOCK_BACKOFF_S = 30 * 60
 RETRIGGER_DROP_GB = 10.0       # a finished cleanup re-triggers only after free space falls this far below its result
 DEFAULT_COOLDOWN_S = 6 * 3600  # minimum gap after any cleanup run; disk_cleanup.cooldown_s overrides
+PARTIAL_RETRY_S = 30 * 60      # minimum gap after a budget purge its deadline cut off, while WSL stays over budget
 UNKNOWN_CLAIM_MAX_S = 24 * 3600
 ABSENT_GRACE_S = 120
 
@@ -291,18 +292,22 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 completed = receipts[claim['id']]
                 episode['last_cleanup'] = now
                 episode.update(claim=None)
-                if not row.get('wsl'):   # the receipt's free space is the drive's; WSL re-arms on its cooldown alone
+                if row.get('wsl'):       # the receipt's free space is the drive's; WSL re-arms on its cooldown alone
+                    episode['partial'] = bool(completed.get('partial'))
+                else:
                     episode['post' if completed['applied'] else 'report_post'] = completed['free']
                 claim = None
             elif claim and claim['id'] in dead:
                 episode['last_cleanup'] = now
                 episode['claim'] = claim = None
+                episode.pop('partial', None)
             free = row['free_gb']
             if free is None:
                 continue
             if row['level'] == 'ok':
                 episode.pop('post', None)
                 episode.pop('report_post', None)
+                episode.pop('partial', None)
                 state.setdefault('notice_episodes', {}).pop(row['name'], None)
                 continue
             baseline = episode.get('post' if applied else 'report_post')
@@ -311,9 +316,10 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             if claim or (baseline is not None and free > baseline - RETRIGGER_DROP_GB):
                 continue
             last = episode.get('last_cleanup', -math.inf)
-            if row['level'] != 'critical' and now - last < cooldown:
+            wait = min(cooldown, PARTIAL_RETRY_S) if episode.get('partial') else cooldown
+            if row['level'] != 'critical' and now - last < wait:
                 deferrals.append(('cooldown', ['%s: last cleanup ended %d min ago; waiting %d min' % (
-                    row['name'], (now - last) // 60, cooldown // 60)]))
+                    row['name'], (now - last) // 60, wait // 60)]))
                 continue
             claim = dict(id=uuid.uuid4().hex, identity=identity, applied=applied, at=now,
                          prior_last=episode.get('last_cleanup'))

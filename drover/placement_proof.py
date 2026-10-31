@@ -12,6 +12,7 @@ from .placement_paths import (
     _ordinal_case,
     cleanup_normalize,
     drive,
+    is_linux_native,
     windows_fold_uncertain,
 )
 from .placement_process import (
@@ -34,6 +35,14 @@ def _process_os_location(exe, windows):
               r'C:\Windows\SystemApps'] if windows else ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/opt'])
     path = cleanup_normalize(exe, windows)
     return any(path.startswith(cleanup_normalize(root, windows).rstrip('/') + '/') for root in roots)
+
+
+WSL_UNC = re.compile(r'^(?:\\\\\?\\UNC\\|\\\\|//)(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$', re.I | re.S)
+
+
+def cleanup_windows_proof(request):
+    """A fresh Windows snapshot for the coordinator, or None off Windows, where nothing can take one."""
+    return _CleanupProcesses(windows=True, request=request) if IS_WINDOWS else None
 
 
 def seed_cleanup_process_policy(policy):
@@ -243,9 +252,7 @@ class _CleanupProcesses:
         if self._indexed == len(self.rows):
             return self._prefixes
         prefixes, bare = set(), False
-
-        def add(value):
-            nonlocal bare
+        for value in self._named():
             value = cleanup_normalize(value, self.windows)
             bare |= value.startswith('/')
             prefixes.add(value)
@@ -254,10 +261,15 @@ class _CleanupProcesses:
             while at != -1:
                 prefixes.add(value[:at])
                 at = value.find('/', at + 1)
+        self._prefixes, self._indexed = (prefixes, bare), len(self.rows)
+        return self._prefixes
+
+    def _named(self):
+        """Every path the processes name, as written: cwd, executable and path-like arguments."""
         for cwd, cmd, exe in self.rows:
             for path in (cwd, exe):
                 if path:
-                    add(path)
+                    yield path
             # Preserve quoted paths with spaces and option=value paths. Every path
             # goes through the same identity normalization as cwd and executable.
             if isinstance(cmd, list):
@@ -270,9 +282,22 @@ class _CleanupProcesses:
             for token in tokens:
                 for value in (token, token.partition('=')[2]):
                     if value and (drive(value) or value.startswith(('/', '\\\\'))):
-                        add(value)
-        self._prefixes, self._indexed = (prefixes, bare), len(self.rows)
-        return self._prefixes
+                        yield value
+
+    def wsl_paths(self, distro):
+        """The Linux paths in `distro` that these Windows processes name, through a UNC path or a bare Linux path as
+        given to wsl.exe; None when the snapshot is unknown, which proves nothing about any of them."""
+        if self.unknown:
+            return None
+        paths = set()
+        for value in self._named():
+            match = WSL_UNC.match(value)
+            if match:
+                if match[1].casefold() == distro.casefold():
+                    paths.add('/' + match[2].replace('\\', '/').strip('/'))
+            elif is_linux_native(value):
+                paths.add(value)
+        return sorted(paths)
 
     def busy(self, worktree):
         if self.unknown:

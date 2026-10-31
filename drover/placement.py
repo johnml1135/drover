@@ -42,7 +42,7 @@ from .placement_process import (
 )
 from .placement_proof import (
     _CleanupProcesses, _process_os_location,
-    cleanup_processes, seed_cleanup_process_policy,
+    cleanup_processes, cleanup_windows_proof, seed_cleanup_process_policy,
 )
 from .placement_host import (
     wsl_free_gb, wsl_free_known, wsl_used_gb, wsl_running, _WSL_FREE, _WSL_USED,
