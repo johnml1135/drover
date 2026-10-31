@@ -249,7 +249,8 @@ def _cleanup_policy(raw):
     defaults = DEFAULTS["disk_cleanup"]
     _unknown(raw, defaults, ["disk_cleanup"])
     out = {}
-    for key in ('worker_timeout_s', 'process_query_timeout_s', 'temp_root_budget_s', 'cooldown_s'):
+    for key in ('worker_timeout_s', 'process_query_timeout_s', 'temp_root_budget_s', 'cooldown_s',
+                'worktree_output_idle_s'):
         timeout = raw.get(key, defaults[key])
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
             raise ConfigError(f"disk_cleanup.{key} must be finite and positive")

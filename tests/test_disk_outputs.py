@@ -135,7 +135,7 @@ class Outputs(WorktreeCase):
         keep = wt / 'precious'
         keep.write_text('undeclared')
         self.free = 120
-        self.age(wt, 2 * 86400)
+        self.age(wt, 3600)
         self.cleanup()
         self.cleanup(apply=True)
         self.assertTrue(log.exists())
@@ -155,6 +155,60 @@ class Outputs(WorktreeCase):
         self.busy_paths.clear()
         self.cleanup(apply=True)
         self.assertFalse(log.exists())
+
+    def same_day_tree(self, name, idle):
+        wt = self.worktree(name)
+        self.r.commit('pending.txt', cwd=wt)
+        output = wt / 'generated' / 'result'
+        output.parent.mkdir()
+        output.write_text('rebuildable')
+        self.age(wt, idle)
+        return wt, output
+
+    def test_same_day_idle_worktree_outputs_removed_after_threshold_but_worktree_survives(self):
+        wt, output = self.same_day_tree('same day', 3 * 3600)
+        self.free = 120
+        branches = self.branches()
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertFalse(output.exists())
+        self.assertTrue(wt.is_dir())
+        self.assertEqual((wt / 'pending.txt').read_text(), 'pending.txt\n')
+        self.assertIn(str(wt), self.registrations())
+        self.assertEqual(self.branches(), branches)
+
+    def test_worktree_idle_under_threshold_keeps_outputs_at_normal_level(self):
+        wt, output = self.same_day_tree('too fresh', 3600)
+        self.free = 120
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertTrue(output.exists())
+        self.free = 40
+        self.cleanup(apply=True)
+        self.assertFalse(output.exists(), 'hold still bypasses the idle limit')
+
+    def test_same_day_busy_or_live_task_worktree_keeps_outputs(self):
+        busy, busy_output = self.same_day_tree('busy', 3 * 3600)
+        live, live_output = self.same_day_tree('live', 3 * 3600)
+        self.free = 120
+        self.busy_paths.add(str(busy))
+        self.tasks = dict(at=self.now, active_worktrees=[str(live)], tasks=[])
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertTrue(busy_output.exists())
+        self.assertTrue(live_output.exists())
+
+    def test_configured_output_idle_limit_applies(self):
+        wt, output = self.same_day_tree('configured', 2 * 86400)
+        self.cfg['disk_cleanup']['worktree_output_idle_s'] = 3 * 86400
+        self.free = 120
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertTrue(output.exists())
+        self.cfg['disk_cleanup']['worktree_output_idle_s'] = 86400
+        self.cleanup()
+        self.cleanup(apply=True)
+        self.assertFalse(output.exists())
 
     def test_warn_removes_multiple_disposable_files_without_resetting_own_idle_age(self):
         import time

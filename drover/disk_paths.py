@@ -6,6 +6,8 @@ from pathlib import Path
 
 from . import placement
 
+OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
+
 
 def result():
     return dict(items=[], errors=[], reclaimed_bytes=0)
@@ -344,8 +346,10 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
                f'drive_host={placement.physical_disk_path(request["drive"]["path"])!r}')
     if (placement.cleanup_processes(request=request) if fresh else request.get('_processes') or placement.cleanup_processes(request=request)).busy(str(path)):
         raise ValueError('process using worktree')
-    if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < 3 * 86400:
-        raise ValueError('worktree idle less than three days')
+    # Disposable paths only: whole-worktree removal keeps its own three-day settlement (disk_cleanup_decisions).
+    limit = request.get('paths', {}).get('worktree_output_idle_s', OUTPUT_IDLE_S)
+    if request['drive'].get('level') not in ('hold', 'critical') and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < limit:
+        raise ValueError(f'worktree idle less than {limit:g} seconds')
     head = head_at(path)
     return path, head, ownership.read(str(path)), outputs_at(machine, path)
 

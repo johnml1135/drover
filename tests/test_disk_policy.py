@@ -56,9 +56,9 @@ class Policy(unittest.TestCase):
                   'caches': [{'argv': ['fixture-tool', '--literal', 'a b;$(echo nope)'],
                               'cwd': root, 'placement': 'wsl'}]}
         self.assertEqual(config.validate({'disk_cleanup': policy})['disk_cleanup'], dict(
-            policy, worker_timeout_s=1800, process_query_timeout_s=240, temp_root_budget_s=300, cooldown_s=21600, process_ignore=PROCESS_IGNORE))
+            policy, worker_timeout_s=1800, process_query_timeout_s=240, temp_root_budget_s=300, cooldown_s=21600, worktree_output_idle_s=7200, process_ignore=PROCESS_IGNORE))
         self.assertEqual(config.validate({})['disk_cleanup'], {'temp_roots': [], 'report_roots': [], 'caches': [],
-                         'worker_timeout_s': 1800, 'process_query_timeout_s': 240, 'temp_root_budget_s': 300, 'cooldown_s': 21600, 'process_ignore': PROCESS_IGNORE})
+                         'worker_timeout_s': 1800, 'process_query_timeout_s': 240, 'temp_root_budget_s': 300, 'cooldown_s': 21600, 'worktree_output_idle_s': 7200, 'process_ignore': PROCESS_IGNORE})
         state = self.fix.root / 'state'
         machine_file = state / 'repos' / 'alpha.toml'
         machine_file.parent.mkdir(parents=True)
@@ -67,6 +67,12 @@ class Policy(unittest.TestCase):
         with patch.dict(os.environ, {'DROVER_HOME': str(state)}), contextlib.redirect_stdout(output):
             self.assertEqual(config.main(['migrate-machine', 'alpha', '--apply']), 0, output.getvalue())
         self.assertEqual(tomllib.loads(machine_file.read_text())['budget_gb'], 12.5)
+
+    def test_worktree_output_idle_s_is_validated(self):
+        self.assertEqual(config.validate({'disk_cleanup': {'worktree_output_idle_s': 600}})['disk_cleanup']['worktree_output_idle_s'], 600)
+        for bad in (0, -1, True, float('nan'), float('inf'), '7200'):
+            with self.subTest(value=bad), self.assertRaises(config.ConfigError):
+                config.validate({'disk_cleanup': {'worktree_output_idle_s': bad}})
 
     def test_rejects_escape_and_invalid_cache_argv(self):
         cleanup_config = repos.cleanup_config

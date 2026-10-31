@@ -127,6 +127,9 @@ VHDX sources to physical paths; unresolved paths refuse migration. The existing
 Global `[disk_cleanup]` `temp_root_budget_s` (default 300) bounds the scan of each temp root. When it is
 exceeded the root is reported as `temp_root_partial`, scanning stops, and nothing unscanned is removed.
 
+Global `[disk_cleanup]` `worktree_output_idle_s` (default 7200, finite and positive) is the idle time a worktree needs
+before cleanup removes its declared disposable paths below hold (see below). It never shortens whole-worktree removal.
+
 Global `[disk_cleanup]` `cooldown_s` (default 21600, 6 h) is the least time the hub waits after any cleanup it
 launched (finished, `aborted_load` or failed) before launching another. The hub also launches only when load and
 RAM are `go`, re-triggers only after free space falls 10 GB below the last cleanup's result, and a running cleanup
@@ -161,8 +164,12 @@ Worktree branches and machine files cannot widen the declarations. If the defaul
 branch cannot be resolved or read, cleanup retains the affected content and
 reports the unavailable evidence. Stage 5 removes only matching ignored/untracked
 files, checking tracked files against each worktree's own index. At warn
-or queue, a worktree must have no process using it and be idle at least three
-days; at hold or critical, any age qualifies. Dirty worktrees may qualify;
+or queue, a worktree must have no process using it and be idle at least
+`[disk_cleanup] worktree_output_idle_s` (default 7200, 2 h); at hold or critical,
+any age qualifies. This limit applies only to removing these disposable paths, which
+leaves the worktree itself. Removing a whole worktree is separate and keeps its
+three-day settlement. Live-task, ownership, busy-process and tracked-file checks
+apply at any idle time. Dirty worktrees may qualify;
 tracked files, source edits, protected paths and linked targets are retained.
 Stage 6 reports merged worktrees with live tasks as `merged_live_task` items;
 cleanup never closes those tasks or removes their worktrees.

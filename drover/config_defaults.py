@@ -63,7 +63,7 @@ DEFAULT_TRACKERS = [
 DEFAULTS = {
     "disk_cleanup": {"temp_roots": [], "report_roots": [], "caches": [], "worker_timeout_s": 1800,
                      "process_ignore": list(PROCESS_IGNORE), "process_query_timeout_s": 240, "temp_root_budget_s": 300,
-                     "cooldown_s": 6 * 3600},
+                     "cooldown_s": 6 * 3600, "worktree_output_idle_s": 2 * 3600},
     "repos_dir": "",
     "config_sync": {"remote": "", "auto_push": True},
     "paths": {"state_dir": "", "repos_root": "~/repos", "worktrees": "", "wsl_distro": "Ubuntu", "wsl_user": "",

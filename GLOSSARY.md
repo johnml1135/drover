@@ -67,7 +67,7 @@ The staged reclaim of disk space across the machine's repositories and declared 
 _Avoid_: Garden, sweep, prune, tend
 
 **Disposable path**:
-A path in a worktree that can be deleted without losing work or hindering anyone picking it back up, because it is regenerated or no longer needed; the repo declares them.
+A path in a worktree that can be deleted without losing work or hindering anyone picking it back up, because it is regenerated or no longer needed; the repo declares them. Removing them leaves the worktree in place, so it needs only a short idle time (`worktree_output_idle_s`), unlike removing the whole worktree.
 _Avoid_: build output, temp, ephemeral
 
 **Ownership tag**:
