@@ -7,7 +7,7 @@ build slice does not. -Root is the deployed checkout: elevated code must not run
 param(
     [string]$Root = 'H:\repos\drover.deploy',                # the deployed checkout that holds the drover package
     [string]$StateDir = $(if ($env:DROVER_HOME) { $env:DROVER_HOME } else { Join-Path $env:USERPROFILE '.drover' }),
-    [Parameter(Mandatory)][string]$Python    # a real python.exe; the WindowsApps alias fails under Task Scheduler
+    [string]$Python = (Join-Path $Root 'hub\.venv\Scripts\python.exe')    # a real python.exe; an elevated task must not depend on PATH
 )
 $ErrorActionPreference = 'Stop'
 $user = "$env:USERDOMAIN\$env:USERNAME"

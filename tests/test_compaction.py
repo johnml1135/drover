@@ -849,6 +849,9 @@ class Install(unittest.TestCase):
         self.assertIn(r"$Root = 'H:\repos\drover.deploy'", text)
         self.assertIn('DROVER_HOME=$StateDir', text)
         self.assertNotIn('SYSTEM', text)
+        self.assertIn(r"$Python = (Join-Path $Root 'hub\.venv\Scripts\python.exe')", text)
+        self.assertNotIn('Mandatory', text)
+        self.assertNotRegex(text, r'"python(\.exe)?"')
 
 
 if __name__ == '__main__':

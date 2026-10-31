@@ -261,16 +261,17 @@ side or host, or with an unreadable owner.json, stays locked for deliberate insp
 disk tick it launches no triggered run, and after 30 minutes it raises one Inbox notice naming the lock and owner.
 Drover never edits external cleaner scripts or retires them.
 
-Keep herdr until the owner records seven consecutive calendar days of successful
+Keep `HerdrDiskGuard` until the owner records 3 clean applied days: three consecutive calendar days of successful
 applied daily reports for the same scope, without cleanup errors or protected
 mutations. A missing, failed or scope-changed day restarts that release evidence.
-The owner reviews the reports and decides retirement separately.
+The owner reviews the reports and decides retirement separately. The step-by-step rollout is in
+`docs/operations/disk-budget-rollout.md`.
 
 Restore removed checkouts using exact owning-side argv in
 `disk-cleanup-manifest.jsonl`; branches survive and detached commits have rescue
 refs. To roll back automation, disable its two schedules, retain disk state and
 the journal for inspection, restore the configuration backup and previous code.
-VHDX compaction remains a separate manual owner operation; cleanup never schedules it.
+Cleanup never compacts the VHDX itself; the overnight compaction job described above does, and only that job.
 
 Windows review must verify interpreter/import-root availability after updates,
 task XML quoting and current-user identity, physical-drive readings with WSL down,
