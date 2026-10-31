@@ -220,6 +220,10 @@ class RecoverySteps:
             pass                        # the job reads it again; the next tick writes it again
         return answer
 
+    def _compaction_killed(self, run_id, result):
+        """True when this result is the compaction's kill; a run that finished its work anyway keeps its result."""
+        return result['status'] in ('error', 'no-record', 'timeout') and bool(self._event_for('compaction-stop', 'run', run_id))
+
     def _compaction_stopped(self, run_id, task_id, role, usage):
         """A run the compaction stopped says nothing about the task, so it counts as no failure, spends no continuation
         budget and touches no git. The task goes back to ready in its worktree; a gate or review is derived again."""

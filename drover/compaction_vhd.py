@@ -29,15 +29,16 @@ def _quoted(path):
     return "'" + str(path).replace("'", "''") + "'"
 
 
-def _pwsh(run, script, timeout=STEP_TIMEOUT_S):
+def _pwsh(run, script, timeout=STEP_TIMEOUT_S, label=None):
     """Run one script; the error text when it failed, else None."""
+    label = label or script.split()[0]
     try:
         done = run(['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], capture_output=True,
                    text=True, timeout=timeout, **NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as error:
-        return f'{script.split()[0]}: {error}'
+        return f'{label}: {error}'
     if done.returncode:
-        return f'{script.split()[0]} exited {done.returncode}: {str(done.stderr or "")[-300:].strip()}'
+        return f'{label} exited {done.returncode}: {str(done.stderr or "")[-300:].strip()}'
     return None
 
 
@@ -66,8 +67,11 @@ def _released(vhdx, run, sleep):
 
 
 def dismount(vhdx, *, run=subprocess.run):
-    """The error text, else None."""
-    return _pwsh(run, f'Dismount-VHD -Path {_quoted(vhdx)} -ErrorAction Stop')
+    """Detach the disk if it is attached. The error text, else None: a disk that is not attached, after a failed mount
+    or a reboot, is already dismounted."""
+    path = _quoted(vhdx)
+    return _pwsh(run, f'if ((Test-Path -LiteralPath {path}) -and (Get-VHD -Path {path} -ErrorAction Stop).Attached) '
+                      f'{{ Dismount-VHD -Path {path} -ErrorAction Stop }}', label='Dismount-VHD')
 
 
 def compact(vhdx: str, *, run=subprocess.run, sleep=time.sleep, size=_size, before_mount=lambda: None) -> dict:

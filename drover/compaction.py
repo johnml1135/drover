@@ -122,14 +122,15 @@ def holder_dead(record):
 
 
 def report(state_dir, result, at):
-    """The morning report: always a file, and an Inbox notice through the disk outbox unless the job compacted."""
+    """The morning report: always a file. An Inbox notice goes through the disk outbox unless the night was clean."""
     disk_state.save_file(state_dir, compaction_hold.REPORT_FILE, {**result, 'at': at})
-    if result['status'] == 'compacted':
+    if result['status'] == 'compacted' and not result['errors']:
         return
     ident = 'compaction:%s:%s' % (time.strftime('%Y-%m-%d', time.localtime(at)), result['status'])
     why = '; '.join(str(error) for error in result['errors']) or 'no reason recorded'
-    notice = dict(id=ident, kind='compaction', title=f"WSL compaction {result['status']}",
-                  body=f"The overnight WSL compaction {result['status']}: {why}")
+    outcome = 'compacted with errors' if result['status'] == 'compacted' else result['status']
+    notice = dict(id=ident, kind='compaction', title=f'WSL compaction {outcome}',
+                  body=f'The overnight WSL compaction {outcome}: {why}')
 
     def change(state):
         state.setdefault('outbox', {}).setdefault(ident, dict(notice=notice, toasted=False, acknowledged=False))
@@ -143,6 +144,14 @@ def report(state_dir, result, at):
 def _step(runtime, record, name, phase=None):
     record.update(step=name, at=runtime.clock(), phase=phase or record['phase'], steps=[*record['steps'], name])
     runtime.save(record)
+
+
+def _note_step(runtime, record, result, name):
+    """Record a closing step. A record that cannot be written must not stop what comes next."""
+    try:
+        _step(runtime, record, name)
+    except Exception as error:
+        result['errors'].append(f'step {name} was not recorded: {type(error).__name__}: {error}')
 
 
 def _attempt(result, action):
@@ -195,18 +204,18 @@ def run(cfg=None, *, runtime=None, now=None) -> dict:
         result['status'] = 'failed'
         result['errors'].append(f'{type(error).__name__}: {error}')
     finally:
+        _note_step(runtime, record, result, 'restart')
         try:
-            _step(runtime, record, 'restart')
             runtime.restart()
         except Exception as error:
             result['status'] = 'failed'
             result['errors'].append(f'{type(error).__name__}: {error}')
+        _note_step(runtime, record, result, 'release')
         try:
-            _step(runtime, record, 'release')
             runtime.release(record)
-        except OSError as error:        # the hold then ends by age
+        except Exception as error:      # the hold then ends by age
             result['status'] = 'failed'
-            result['errors'].append(f'the hold was not released: {error}')
+            result['errors'].append(f'the hold was not released: {type(error).__name__}: {error}')
     report(config.state_dir(cfg), result, at)
     return result
 

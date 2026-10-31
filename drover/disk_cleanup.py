@@ -122,6 +122,32 @@ def _windows_paths(cfg, base):
         return None, []
 
 
+def _serve_stage(runtime, progress, result, state_dir, side, request, *, trim=None):
+    """Call one destructive stage and merge what it says into `result`. A failure is recorded, unless its termination
+    is unconfirmed, which saves the report and raises. `trim` is the stage-1 request to send after a large reclaim.
+    Returns the stage's answer, kept even when the trim after it failed; None when the stage itself failed."""
+    answer, stage = None, request['stage']
+    try:
+        answer = _valid_result(runtime.call(side, request))
+        progress.end('ok', len(answer['items']), len(answer['errors']))
+        result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
+        result['items'].extend(dict(item, stage=stage, side=side) for item in answer['items'])
+        result['errors'].extend(dict(item, stage=stage, side=side) for item in answer['errors'])
+        if trim is not None and answer['reclaimed_bytes'] >= 1024 ** 3:
+            result['errors'].extend(_valid_result(runtime.call('windows', trim))['errors'])
+    except (OSError, ValueError, RuntimeError) as error:
+        if answer is None:
+            progress.end('error', errors=1)
+        result['errors'].append(dict(stage=stage, side=side, error=str(error)))
+        if getattr(error, 'termination_confirmed', True) is False:
+            try:
+                _save_report(state_dir, result)
+            except OSError:
+                pass
+            raise
+    return answer
+
+
 def _budget_purge(cfg, runtime, progress, result, base):
     """Serve a `wsl` claim: the WSL side's output stage alone, whatever the host drive's free space. Returns its
     receipt. WSL lives on the wsl_combined drive; without one no worktree can be proven to be inside it."""
@@ -146,29 +172,14 @@ def _budget_purge(cfg, runtime, progress, result, base):
     receipt.update(applied=request['apply'], budget='failed')
     result['stages'].append(dict(drive=drive['name'], stage=5))
     progress.begin(drive['name'], 5, side)
-    try:
-        answer = _valid_result(runtime.call(side, request))
-        progress.end('ok', len(answer['items']), len(answer['errors']))
-        result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
-        result['items'].extend(dict(item, stage=5, side=side) for item in answer['items'])
-        result['errors'].extend(dict(item, stage=5, side=side) for item in answer['errors'])
+    answer = _serve_stage(runtime, progress, result, config.state_dir(cfg), side, request,
+                          trim=dict(request, stage=1, budget=None) if request['apply'] else None)
+    if answer is not None:
         receipt['reclaimed_bytes'] = answer['reclaimed_bytes']
         if answer.get('budget'):
             receipt.update(budget=answer['budget']['status'], used_gb=answer['budget']['used_gb'],
                            shortfall_bytes=answer['budget']['shortfall_bytes'],
                            partial=answer['budget']['status'] == 'deadline' and answer['reclaimed_bytes'] > 0)
-        if request['apply'] and answer['reclaimed_bytes'] >= 1024 ** 3:
-            trimmed = _valid_result(runtime.call('windows', dict(request, stage=1, budget=None)))
-            result['errors'].extend(trimmed['errors'])
-    except (OSError, ValueError, RuntimeError) as error:
-        progress.end('error', errors=1)
-        result['errors'].append(dict(stage=5, side=side, error=str(error)))
-        if getattr(error, 'termination_confirmed', True) is False:
-            try:
-                _save_report(config.state_dir(cfg), result)
-            except OSError:
-                pass
-            raise
     return receipt
 
 
@@ -222,26 +233,10 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                                    drive=drive, repos=machines, paths=cfg['disk_cleanup'],
                                    state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
                     progress.begin(row['name'], stage, side)
-                    try:
-                        answer = _valid_result(runtime.call(side, request))
-                        progress.end('ok', len(answer['items']), len(answer['errors']))
-                        result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
-                        if stage == 6:
-                            inventories.add((row['name'], side))
-                        result['items'].extend(dict(item, stage=stage, side=side) for item in answer['items'])
-                        result['errors'].extend(dict(item, stage=stage, side=side) for item in answer['errors'])
-                        if stage > 1 and apply and side == 'wsl' and answer['reclaimed_bytes'] >= 1024 ** 3:
-                            trimmed = _valid_result(runtime.call('windows', dict(request, stage=1)))
-                            result['errors'].extend(trimmed['errors'])
-                    except (OSError, ValueError, RuntimeError) as error:
-                        progress.end('error', errors=1)
-                        result['errors'].append(dict(stage=stage, side=side, error=str(error)))
-                        if getattr(error, 'termination_confirmed', True) is False:
-                            try:
-                                _save_report(state_dir, result)
-                            except OSError:
-                                pass
-                            raise
+                    answer = _serve_stage(runtime, progress, result, state_dir, side, request,
+                                          trim=dict(request, stage=1) if stage > 1 and apply and side == 'wsl' else None)
+                    if answer is not None and stage == 6:
+                        inventories.add((row['name'], side))
                 free = _reading(runtime.read(row['path'])) if row['path'] is not None else None
                 drive['post_free_gb'] = free
                 drive['level'] = next((level for level in ('critical', 'hold', 'queue', 'warn')

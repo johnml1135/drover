@@ -134,7 +134,7 @@ class FinishSteps:
             if result is None:
                 continue
             if (compaction_hold.offline() and spec.get('placement') != 'windows'
-                    and not self._event_for('compaction-stop', 'run', run_id)):
+                    and not self._compaction_killed(run_id, result)):
                 continue                            # finishing reads its WSL worktree: wait for WSL to come back
             try:
                 if self._finish(run_id, task_id, spec, result) == 'termination-unknown':
@@ -186,7 +186,7 @@ class FinishSteps:
         if result.get("tail_error"):
             p.append_event("tail-error", {"run": run_id, "error": result["tail_error"]}, task_id)
         role = spec.get("role", "worker")
-        if st in ('error', 'no-record', 'timeout') and self._event_for('compaction-stop', 'run', run_id):
+        if self._compaction_killed(run_id, result):
             return self._compaction_stopped(run_id, task_id, role, usage)
         if role != 'gate' and result.get('infrastructure_error') and st in ('error', 'no-record', 'timeout'):
             message = result['infrastructure_error'][:300]

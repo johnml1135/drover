@@ -47,6 +47,30 @@ class FakeRun:
         return [call for call in self.calls if text in call]
 
 
+class Vhdx(FakeRun):
+    """A disk with attached state. Like the real command, Dismount-VHD refuses a disk that is not attached."""
+
+    def __init__(self, refuse_mount=False, refuse_dismount=False, attached=False):
+        super().__init__()
+        self.refuse_mount, self.refuse_dismount, self.attached = refuse_mount, refuse_dismount, attached
+
+    def __call__(self, argv, **kw):
+        text = ' '.join(argv)
+        if ' Mount-VHD ' in text:
+            self.calls.append(text)
+            self.attached = not self.refuse_mount
+            return done('', 1 if self.refuse_mount else 0)
+        if 'Dismount-VHD' in text:
+            self.calls.append(text)
+            if not self.attached:
+                return done('', 0 if '.Attached' in text else 1)
+            if self.refuse_dismount:
+                return done('', 1)
+            self.attached = False
+            return done()
+        return super().__call__(argv, **kw)
+
+
 class Clock:
     def __init__(self, now=NOW):
         self.now = now
@@ -216,6 +240,43 @@ class Failure(Job):
         self.assertFalse(self.fake.seen('--shutdown'))
         self.assertIsNone(self.hold())
 
+    def test_a_record_that_cannot_be_written_stops_no_restart_release_or_report(self):
+        class Unrecorded(compaction.Runtime):
+            def save(self, record):
+                raise RuntimeError('state directory is unwell')
+        answer = self.run_job(Unrecorded)
+        self.assertEqual(answer['status'], 'failed')
+        self.assertTrue(self.fake.seen('--exec true'))
+        self.assertFalse(self.fake.seen('--shutdown'))              # the hub was never told WSL goes offline
+        self.assertIsNone(self.hold())
+        self.assertEqual(self.report()['status'], 'failed')
+
+    def test_only_the_closing_records_failing_changes_nothing_but_the_errors(self):
+        class Closing(compaction.Runtime):
+            def save(self, record):
+                if record['step'] in ('restart', 'release'):
+                    raise ValueError('nope')
+                super().save(record)
+        answer = self.run_job(Closing)
+        self.assertEqual(answer['status'], 'compacted')
+        self.assertTrue(self.fake.seen('--exec true'))
+        self.assertIsNone(self.hold())
+        self.assertEqual(len(self.outbox()), 1)
+
+    def test_a_release_that_raises_anything_is_still_reported(self):
+        class Stuck(compaction.Runtime):
+            def release(self, record):
+                raise ValueError('nope')
+        self.assertEqual(self.run_job(Stuck)['status'], 'failed')
+        self.assertEqual(self.report()['status'], 'failed')
+
+    def test_a_compacted_night_with_errors_raises_a_notice(self):
+        self.fake.answers['ps -eo'] = done('', 1)
+        self.assertEqual(self.run_job()['status'], 'compacted')
+        notice = next(iter(self.outbox().values()))['notice']
+        self.assertIn('compacted with errors', notice['title'])
+        self.assertIn('process list', notice['body'])
+
     def test_no_hub_answer_is_reported_and_the_job_goes_on(self):
         self.ack = dict(stopped=[], killed=[], requeued=[], drained=False)
         answer = self.run_job()
@@ -315,10 +376,23 @@ class Recovery(Job):
         self.assertEqual(noted, [VHDX])
         self.assertIsNone(compaction_hold.mounted(self.state))
 
-    def test_a_failed_dismount_keeps_the_mount_note(self):
-        self.fake.answers['Dismount-VHD'] = done('', 1)
+    def test_an_attached_disk_that_will_not_dismount_keeps_the_mount_note(self):
+        self.fake = Vhdx(refuse_dismount=True)
         self.assertEqual(self.run_job()['status'], 'failed')
         self.assertEqual(compaction_hold.mounted(self.state), VHDX)
+
+    def test_a_failed_mount_leaves_no_note_to_fail_later_nights(self):
+        self.fake = Vhdx(refuse_mount=True)
+        self.assertEqual(self.run_job()['status'], 'failed')
+        self.assertIsNone(compaction_hold.mounted(self.state))
+        self.fake = Vhdx()
+        self.assertEqual(self.run_job()['status'], 'compacted')
+
+    def test_a_reboot_while_mounted_clears_the_note_on_the_next_night(self):
+        compaction_hold.note_mount(self.state, VHDX)
+        self.fake = Vhdx()                                          # the reboot detached it
+        self.assertEqual(self.run_job()['status'], 'compacted')
+        self.assertIsNone(compaction_hold.mounted(self.state))
 
 
 class Vhd(unittest.TestCase):
@@ -332,8 +406,11 @@ class Vhd(unittest.TestCase):
         fake = FakeRun()
         self.assertEqual(self.compact(fake), dict(status='compacted', before_gb=7.0, after_gb=7.0, errors=[], dismounted=True))
         script = self.vhd_calls(fake)
-        self.assertEqual([next(word for word in call.split() if word.endswith('-VHD')) for call in script],
-                         ['Mount-VHD', 'Optimize-VHD', 'Dismount-VHD'])
+        self.assertEqual(len(script), 3)
+        self.assertIn('Mount-VHD -Path', script[0])
+        self.assertIn('Optimize-VHD -Path', script[1])
+        self.assertIn('.Attached', script[2])
+        self.assertIn('Dismount-VHD -Path', script[2])
         self.assertIn('-ReadOnly', script[0])
         self.assertIn('-NoDriveLetter', script[0])
         self.assertIn('-Mode Full', script[1])
@@ -367,9 +444,12 @@ class Vhd(unittest.TestCase):
         fake = FakeRun(**{'--running': done('There are no running distributions.', 1)})
         self.assertEqual(self.compact(fake)['status'], 'compacted')
 
-    def test_mount_failure_fails_without_optimizing(self):
-        fake = FakeRun(**{'Mount-VHD -Path': done('', 1)})
-        self.assertEqual(self.compact(fake)['status'], 'failed')
+    def test_mount_failure_fails_without_optimizing_and_counts_as_dismounted(self):
+        fake = Vhdx(refuse_mount=True)
+        answer = self.compact(fake)
+        self.assertEqual(answer['status'], 'failed')
+        self.assertTrue(answer['dismounted'])
+        self.assertEqual(len(answer['errors']), 1)
         self.assertFalse(fake.seen('Optimize-VHD'))
 
     def test_a_timed_out_optimize_is_a_failure_and_dismounts(self):
@@ -667,6 +747,31 @@ class WindDown(Hubbed):
         self.d.tick()
         self.assertIsNone(self.outcome())
 
+    def test_a_stopped_review_is_derived_again(self):
+        self.side('wsl')
+        self.d.live[self.rid][2]['role'] = 'review'
+        self.hold()
+        self.clock.now += 301
+        self.d.tick()
+        self.finish(0, res('error', 'killed'))
+        self.d.tick()
+        runs = self.port.list_runs(self.tid)
+        self.assertEqual(runs[0]['outcome'], 'control-held')
+        self.assertTrue(self.d._awaiting_review([dict(role='worker', outcome='gated', ended='t'), dict(runs[0], role='review')]))
+
+    def test_a_stopped_run_that_finished_anyway_waits_for_wsl(self):
+        self.side('wsl')
+        self.hold()
+        self.clock.now += 301
+        self.d.tick()
+        record = compaction_hold.read(self.state)
+        record['phase'] = 'offline'
+        disk_state.save_file(self.state, compaction_hold.HOLD_FILE, record)
+        self.finish(0, res('done', DONE_RECORD))
+        self.d.tick()
+        self.assertIsNone(self.outcome())
+        self.assertIn(self.rid, self.d.live)
+
     def test_a_ready_task_in_a_wsl_worktree_is_not_claimed(self):
         self.side('windows')
         other = self.task(size='S')
@@ -741,6 +846,8 @@ class Install(unittest.TestCase):
                        '-ExecutionTimeLimit'):
             self.assertIn(needle, text)
         self.assertNotIn('-StartWhenAvailable', text)
+        self.assertIn(r"$Root = 'H:\repos\drover.deploy'", text)
+        self.assertIn('DROVER_HOME=$StateDir', text)
         self.assertNotIn('SYSTEM', text)
 
 
