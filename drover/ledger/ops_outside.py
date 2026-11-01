@@ -9,7 +9,7 @@ from .ops_common import _j, event, events, stamp
 from .ops_tasks import get_task
 
 
-PROOFS = ('ancestor', 'patch-equivalent', 'adds-nothing')
+PROOFS = ('ancestor', 'patch-equivalent', 'adds-nothing', 'decider')
 
 
 def _landable(conn, task_id, sha, base_ref, gate, review, sources, refusal):
@@ -90,8 +90,20 @@ def record_external_landing(conn, task_id, sha, base_ref, gate, review, actor='o
                            'Owner recorded external landing')
 
 
+def record_answered_landing(conn, task_id, sha, base_ref, actor='owner'):
+    """Record the commit the owner named in answer to a landing question, for a task awaiting the owner or yanked."""
+    if actor != 'owner':
+        raise PermissionError('only the owner may answer that a task landed')
+    return _record_landing(conn, task_id, sha, base_ref, 'outside-drover', 'owner-answer', actor,
+                           (states.NEEDS_OWNER, states.YANKED),
+                           'only yanked or owner-held implementations can be recorded',
+                           'Owner answered that it landed outside Drover')
+
+
 def record_detected_landing(conn, task_id, sha, base_ref, proof, actor='detector'):
-    """Record a landing git proved outside Drover, for a task awaiting the owner or yanked."""
+    """Record a landing found outside Drover, for a task awaiting the owner or yanked.
+
+    'decider' is a commit the model cited and git then showed on the base; the other proofs are git's alone."""
     if proof not in PROOFS:
         raise ValueError(f'unknown landing proof {proof!r}')
     # NEEDS_OWNER -> LANDED is owner-only in states.check; this runs under the owner's standing grant from the design.

@@ -319,7 +319,7 @@ class ScanCase(GitCase):
                   {'run': run, 'output_snapshot': base and {'base': base}}, task_id=tid)
 
     def scan(self):
-        return outside_land.tick(self.conn, {})
+        return outside_land.tick(self.conn, {}, decide=lambda *a, **kw: {'name': 'landed_outside', 'acted': False})
 
     def landed_by_hand(self):
         tip = self.r.branch('feat', {'f.txt': 'x'})
@@ -571,7 +571,8 @@ class ScanLimitTests(ScanCase):
     def test_running_wsl_is_scanned(self):
         running, routes = self.on_wsl(True)
         self.repo_task('acme')
-        with running, routes, patch.object(outside_land, '_detect', return_value=False) as detect:
+        with running, routes, patch.object(outside_land, '_detect', return_value=False) as detect, \
+                patch.object(outside_land, '_unproved', return_value=False):
             self.assertEqual(self.scan()['scanned'], 1)
         detect.assert_called_once()
 
