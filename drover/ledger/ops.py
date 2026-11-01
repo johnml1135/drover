@@ -72,6 +72,7 @@ from .ops_outside import (answer_taken, record_answered_landing, record_detected
                           status_mark, take_answer)
 from .ops_dispatch import set_epic_mode, set_default_mode, pick, awaiting_pick, mode_of, default_mode
 from .ops_bypass import yank, abandon, handback
+from .ops_panes import record_agent, update_agent, open_agents, by_pane, note_write, finish_write, last_write
 from .ops_execution import (
     _active_scopes,
     _candidates,

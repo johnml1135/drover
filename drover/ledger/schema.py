@@ -394,4 +394,16 @@ ALTER TABLE tasks ADD COLUMN picked_at TEXT;
 ALTER TABLE tasks ADD COLUMN picked_by TEXT;
 """
 
-MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15), (16, V16), (17, V17), (18, V18)]
+V19 = """
+CREATE TABLE pane_agents (
+ id INTEGER PRIMARY KEY, role_id TEXT, run_id INTEGER, pane_id TEXT NOT NULL, terminal_id TEXT, name TEXT,
+ kind TEXT NOT NULL CHECK(kind IN ('claude','codex')), seat TEXT NOT NULL,
+ placement TEXT NOT NULL CHECK(placement IN ('windows','wsl')), session_id TEXT, cwd TEXT,
+ started_by TEXT NOT NULL CHECK(started_by IN ('drover','owner')), state TEXT NOT NULL, handoff_state TEXT,
+ context_tokens INTEGER, created TEXT NOT NULL, updated TEXT NOT NULL);
+CREATE TABLE pane_writes (
+ id INTEGER PRIMARY KEY, agent_id INTEGER NOT NULL, kind TEXT NOT NULL, digest TEXT NOT NULL, head TEXT,
+ state TEXT NOT NULL, reason TEXT, at TEXT NOT NULL);
+"""
+
+MIGRATIONS = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6), (7, V7), (8, V8), (9, V9), (10, V10), (11, V11), (12, V12), (13, V13), (14, V14), (15, V15), (16, V16), (17, V17), (18, V18), (19, V19)]
