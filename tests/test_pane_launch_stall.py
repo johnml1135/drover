@@ -177,18 +177,18 @@ class BlankTabGuards(Launching):
         return fake
 
     def kept(self):
-        self.assertIs(pane_launch._close_blank(self.port, self.herdr, self.row), False)
+        self.assertIs(pane_launch.pane_blank.close_blank(self.port, self.herdr, self.row), False)
         self.assertEqual(self.calls('pane', 'close'), [])
 
     def test_a_blank_first_row_closes(self):
         self.blank_row()
-        self.assertIs(pane_launch._close_blank(self.port, self.herdr, self.row), True)
+        self.assertIs(pane_launch.pane_blank.close_blank(self.port, self.herdr, self.row), True)
         self.assertEqual(self.calls('pane', 'close'), [['pane', 'close', PANE]])
 
     def test_a_write_that_never_went_out_does_not_keep_it(self):
         self.blank_row()
         ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, self.row['id'], 'shell', 'x')['id'], 'unsent')
-        self.assertIs(pane_launch._close_blank(self.port, self.herdr, self.row), True)
+        self.assertIs(pane_launch.pane_blank.close_blank(self.port, self.herdr, self.row), True)
 
     def test_a_write_that_may_have_gone_out_keeps_it(self):
         for state in ('sent', 'unverified', 'observed'):

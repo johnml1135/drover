@@ -139,6 +139,14 @@ class Maintain(Resident):
         self.written()
         self.assertEqual(self.at(HANDOFF)['handoff_state'], 'written')
 
+    def test_the_file_closes_a_request_that_went_out_unverified(self):
+        self.fake.hang = {('agent', 'prompt')}
+        self.at(HANDOFF)
+        self.fake.hang = False
+        self.written()
+        self.at(HANDOFF)
+        self.assertEqual(self.request()['state'], 'observed')
+
     def test_a_valid_file_on_an_unsafe_pane_is_still_written(self):
         self.at(HANDOFF)
         self.written()
@@ -168,7 +176,7 @@ class Maintain(Resident):
         self.assertIn(task, text)
         self.assertNotIn('T-landed', text)
         self.assertIn('"cursor": 4', text)
-        self.assertEqual(self.requests(), [])
+        self.assertEqual([call for call in self.requests() if 'handoff' in call[-1]], [])
 
     def test_at_300k_a_half_written_file_is_replaced(self):
         self.at(HANDOFF)
@@ -216,6 +224,7 @@ class Maintain(Resident):
     def test_owner_compact_cancels_a_file_already_written(self):
         self.at(HANDOFF)
         self.written()
+        self.fake.agents[PANE].update(focused=True)
         self.at(HANDOFF)
         self.assertIsNone(self.at(LOW)['handoff_state'])
         self.assertFalse(self.path.exists())

@@ -16,11 +16,34 @@ SECTIONS = ('Goal', 'Done', 'Decisions and rejected options', 'Standing rules', 
 UNKNOWN = 'unknown'
 HEADING = re.compile(r'#{1,6}\s+(.*?)\s*#*')
 MAX_TASKS = 50
+RESTATED = 'restated.md'
+PENDING = 'pane_handoff:'       # a role's setting: the file its next session must take up, until that session restates it
+
+
+def folder(cfg, role_id) -> Path:
+    return config.state_dir(cfg) / 'directors' / quote(str(role_id), safe='').replace('.', '%2E')
 
 
 def path_for(cfg, role_id, generation) -> Path:
-    folder = quote(str(role_id), safe='').replace('.', '%2E')
-    return config.state_dir(cfg) / 'directors' / folder / f'handoff-{int(generation)}.md'
+    return folder(cfg, role_id) / f'handoff-{int(generation)}.md'
+
+
+def restated_path(path) -> Path:
+    return Path(path).with_name(RESTATED)
+
+
+def pending(port, role_id) -> str | None:
+    return port.get_setting(PENDING + role_id) or None
+
+
+def set_pending(port, role_id, path) -> None:
+    port.set_setting(PENDING + role_id, str(path) if path else '')
+
+
+def for_launch(port, role_id, where, mode) -> dict:
+    """What a new run's spec needs from a rotation. A resumed session keeps its context, so it takes no handoff."""
+    path = pending(port, role_id)
+    return dict(handoff=agent_path(path, where)) if path and mode == 'fresh' else {}
 
 
 def agent_path(path, where) -> str:

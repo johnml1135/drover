@@ -17,7 +17,7 @@ import re
 import time
 from datetime import datetime
 
-from . import config, pane_files, pane_guard, pane_screen, pane_send, placement, runner
+from . import config, handoff, pane_blank, pane_files, pane_guard, pane_screen, pane_send, placement, runner
 from .config import state_dir
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .launch import AdmissionHeld
@@ -26,7 +26,7 @@ from .pane_files import NATIVE_COMPACT, repo_trusted, write_private
 from .pane_send import PaneRefused
 
 __all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'START_DEADLINE_S', 'advance', 'age', 'blocked', 'brief', 'expire', 'open_pane', 'publish',
-           'repo_trusted', 'resume', 'session_of', 'start', 'write_private']
+           'repo_trusted', 'resume', 'rotate', 'session_of', 'start', 'write_private']
 
 FIRST_TURN_S = 90
 STARTUP_S = 60
@@ -58,7 +58,7 @@ def _ticks(seconds):
 
 def brief(spec, handoff=None) -> str:
     """One short line, so the screen can prove it is Drover's. Anything longer belongs in a file."""
-    first = f'First read the handoff at {handoff} and restate its standing rules in restated.md beside it, before anything else. ' if handoff else ''
+    first = f'First read the handoff at {handoff} and restate its standing rules in restated.md beside it. ' if handoff else ''
     return f"Drover: you are director role {spec['role_id']}. {first}" + ' '.join(str(spec.get('user_prompt') or DEFAULT_PROMPT).split())
 
 
@@ -125,9 +125,10 @@ def _prepare(spec, cfg, *, resume_id=None):
     settings = None
     if spec['backend'] == 'claude' and spec['placement'] == 'wsl':
         settings = placement.to_wsl_path(_folder(spec, cfg) / 'settings.json')
+    roots = [handoff.agent_path(handoff.folder(cfg, spec['role_id']), spec['placement'])]
     try:
-        args = pane_files.agent_args(spec, model=config.model_id(spec['model'], cfg), effort=_effort(spec, cfg),
-                                     settings=settings, resume=resume_id)
+        args = pane_files.agent_args(dict(spec, run_config=dict(sandbox_writable_roots=roots)), model=config.model_id(spec['model'], cfg),
+                                     effort=_effort(spec, cfg), settings=settings, resume=resume_id)
     except ValueError:
         raise AdmissionHeld('permission-bypass-refused') from None
     return seat, args
@@ -166,6 +167,7 @@ def _write_credential(spec, credential, cfg):
 
 def _write_files(spec, seat, args, cfg):
     folder = _folder(spec, cfg)
+    handoff.folder(cfg, spec['role_id']).mkdir(parents=True, exist_ok=True)
     if '--settings' in args:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'settings.json').write_text(pane_files.hook_settings(spec['backend']), encoding='utf-8', newline='\n')
@@ -195,22 +197,6 @@ def _launch(port, herdr, row, launcher, args):
     if row['placement'] == 'wsl' or written['state'] != 'sent':
         return written
     return _when_shell_is_free(SHELL_BACK_S, lambda: pane_send.start_agent(port, herdr, row, row['name'], args), 'shell-not-back')
-
-
-def _close_blank(port, herdr, row):
-    """Close a tab Drover opened that never showed a prompt. True only if it did: anything on it, and it stays."""
-    last = ops_panes.last_write(port.conn, row['id'])
-    if ops_panes.reused_pane(port.conn, row) or (last and last['state'] != 'unsent'):
-        return False
-    try:
-        pane = herdr.call('pane', 'get', row['pane_id'])['pane']
-        if not pane_send.shell_alone(herdr, row) or herdr.text('pane', 'read', row['pane_id'], '--source', 'visible').strip() or \
-                pane.get('focused') is not False or pane.get('terminal_id') != row['terminal_id']:
-            return False
-        herdr.call('pane', 'close', row['pane_id'])
-    except (PaneRefused, HerdrUnavailable, HerdrRefused, KeyError):
-        return False
-    return True
 
 
 def _dialog(screen):
@@ -299,7 +285,7 @@ def _launched(port, herdr, row, launcher, args, cfg) -> dict:
     try:
         written = _launch(port, herdr, row, launcher, args)
     except PaneRefused as refused:
-        if refused.reason == SHELL_NOT_READY and _close_blank(port, herdr, row):
+        if refused.reason == SHELL_NOT_READY and pane_blank.close_blank(port, herdr, row):
             _fail(port, herdr, row, refused.reason, outcome='Its blank tab was closed.')
             return ops_panes.update_agent(port.conn, row['id'], state='gone')
         return _fail(port, herdr, row, refused.reason)
@@ -363,11 +349,11 @@ def _first_turn(port, herdr, row, write, spec, now, cfg) -> bool:
 
 
 def advance(port, herdr, row, spec, guard, now, *, cfg) -> bool:
-    """Take a `live` row one step past its launch, with no wait: True once none is left. A reused pane has no brief here.
+    """Take a `live` row one step past its launch, with no wait: True once none is left. Only a handoff briefs a reused pane.
 
     Herdr unreachable ends nothing: a deadline counts only on a read that answered, and a guard that refuses waits.
     """
-    if row['state'] != 'live' or ops_panes.reused_pane(port.conn, row):
+    if row['state'] != 'live' or (ops_panes.reused_pane(port.conn, row) and not spec.get('handoff')):
         return True
     write = ops_panes.last_write(port.conn, row['id'], 'brief')
     if write is None or write['state'] == 'unsent':
@@ -464,6 +450,17 @@ def resume(port, herdr, row, spec, *, cfg, credential=None) -> dict:
     """
     if row.get('state') not in RESUMABLE or row.get('started_by') != 'drover' or not runner.valid_worker_session(row.get('session_id')):
         raise AdmissionHeld('pane-not-resumable')
+    return _take_pane(port, herdr, row, spec, cfg, credential, row['session_id'])
+
+
+def rotate(port, herdr, row, spec, *, cfg, credential) -> dict:
+    """A fresh session on the pane a rotated agent left: `resume` with no `--resume`, which would bring the context back."""
+    if row.get('state') != 'retired' or row.get('handoff_state') != 'rotated' or row.get('started_by') != 'drover':
+        raise AdmissionHeld('pane-not-rotated')
+    return _take_pane(port, herdr, row, spec, cfg, credential, None)
+
+
+def _take_pane(port, herdr, row, spec, cfg, credential, resume_id):
     _available(herdr)
     current = ops_panes.by_pane(port.conn, row['pane_id'])
     if current is None or current['id'] != row['id']:
@@ -476,7 +473,7 @@ def resume(port, herdr, row, spec, *, cfg, credential=None) -> dict:
         raise AdmissionHeld('pane-agent-running')
     spec = dict(spec, backend=row['kind'], placement=row['placement'], seat=row['seat'], cwd=row['cwd'],
                 run_id=spec['run_id'] if credential else row['run_id'])
-    seat, args = _prepare(spec, cfg, resume_id=row['session_id'])
+    seat, args = _prepare(spec, cfg, resume_id=resume_id)
     fresh = ops_panes.record_agent(port.conn, run_id=spec['run_id'], **{name: row[name] for name in (
         'pane_id', 'terminal_id', 'kind', 'seat', 'placement', 'started_by', 'role_id', 'cwd', 'name')})
     ops_panes.update_agent(port.conn, row['id'], state='gone')

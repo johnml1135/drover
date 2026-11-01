@@ -41,6 +41,7 @@ NOTHING_WENT_OUT = ('usage', 'agent_blocked', 'pane_not_found')     # Task 15 ma
 SHELL_PROMPT = re.compile(r'(?:PS [^>]*>|[A-Za-z]:[\\/][^>]*>|[^\s$#%]*[$#%])\s*')  # Task 15 adds the owner's real prompts
 PASTED = 'pasted'           # the text went out and its Enter is still to come
 ENTER_PRESSED = 'enter-pressed'     # an Enter may have gone out: no second one, ever
+EXIT_TEXT = '/exit'
 
 
 def _check_text(text):
@@ -147,9 +148,9 @@ def _write(port, herdr, row, kind, text, read, argv, after=('sent', None), once=
     return finish(*after)
 
 
-def _paste(port, herdr, row, kind, text, read, hold_id=None):
+def _paste(port, herdr, row, kind, text, read, hold_id=None, once=()):
     argv = ('pane', 'send-text', row['pane_id'], PASTE_START + text + PASTE_END)
-    write = _write(port, herdr, row, kind, text, read, argv, ('unverified', PASTED))
+    write = _write(port, herdr, row, kind, text, read, argv, ('unverified', PASTED), once)
     if write['reason'] != PASTED:
         return write
     time.sleep(PASTE_SETTLE_S)
@@ -163,6 +164,10 @@ def send(port, herdr, row, text, kind) -> dict:
     _check_text(text)
     row = _current(port, row)
     _refuse_open_write(port, row)
+    return _type(port, herdr, row, kind, text)
+
+
+def _type(port, herdr, row, kind, text, once=()):
     first = check(herdr, row)
 
     def read():
@@ -170,8 +175,20 @@ def send(port, herdr, row, text, kind) -> dict:
             raise PaneRefused('screen-changed')
     read()
     if row['placement'] == 'windows':
-        return _write(port, herdr, row, kind, text, read, ('agent', 'prompt', row['pane_id'], text))
-    return _paste(port, herdr, row, kind, text, read)
+        return _write(port, herdr, row, kind, text, read, ('agent', 'prompt', row['pane_id'], text), once=once)
+    return _paste(port, herdr, row, kind, text, read, once=once)
+
+
+def exit_agent(port, herdr, row) -> dict:
+    """`/exit`, once for a row, so a rotation can take the pane: only with the handoff written, on the reads `send` needs.
+
+    Its own kind, so `send` cannot type it and `submit_own` cannot finish it. A refusal means it did not go out.
+    """
+    row = _current(port, row)
+    if row.get('handoff_state') != 'written':
+        raise PaneRefused('no-handoff')
+    _refuse_open_write(port, row)
+    return _type(port, herdr, row, 'exit', EXIT_TEXT, once=('exit',))
 
 
 def _submittable(write):
