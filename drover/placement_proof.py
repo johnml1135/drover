@@ -87,6 +87,7 @@ class _CleanupProcesses:
         self.ignored = (request or {}).get('paths', {}).get('process_ignore', PROCESS_IGNORE)
         self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
         self.query_failure = None
+        self.current = None
         self.request = request or {}
         if self.windows:
             try:
@@ -141,6 +142,13 @@ class _CleanupProcesses:
                 for row in rows:
                     # Refresh readable cwd evidence even when reusing the run's CIM snapshot.
                     self._record(**dict(row, cwd=row.get('cwd') if 'cwd' in row else _windows_cwd(row['pid'])))
+                if self.clear_ignored and self.unreadable and self.rows and not self.query_failure:
+                    try:
+                        after = _windows_processes()
+                    except (OSError, ValueError):
+                        after = None    # no answer keeps every row
+                    if after is not None:
+                        self._drop_exited(after)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 self.unknown = True
                 self.query_failure = dict(reason_code='process_visibility_unavailable', error=str(error))
@@ -183,6 +191,22 @@ class _CleanupProcesses:
                 cwd = None
             self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd,
                          exe=exe, command_unreadable=command_unreadable, ppid=_parent(entry))
+
+    def _drop_exited(self, after):
+        """Under clear_ignored only: a process that has exited, or whose pid now has another creation time, cannot be
+        using anything, so its unreadable row goes. A row that still exists, or whose identity cannot be compared,
+        stays and keeps the snapshot unknown."""
+        current = self.current or {}
+
+        def exited(pid):
+            now = after.get(str(pid))
+            if now is None:
+                return True
+            was = current.get(str(pid))
+            return bool(was and was[1] and now[1] and was[1] != now[1])
+
+        self.unreadable = [row for row in self.unreadable if not exited(row['pid'])]
+        self.unknown = bool(self.unreadable)
 
     def _image(self, name):
         image = re.split(r'[/\\]', name or '')[-1]

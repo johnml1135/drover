@@ -95,7 +95,9 @@ class Cleared(PaneCloseBase):
 
     def proof(self, request, **over):
         rows = self.rows(**over)
-        return placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, request=request)
+        alive = {str(row['pid']): [row['name'], 3] for row in rows}    # nothing here has exited
+        with mock.patch.object(placement_proof, '_windows_processes', return_value=alive):
+            return placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, request=request)
 
     def test_ignored_images_with_unreadable_executables_are_cleared_only_when_asked(self):
         paths = {'process_ignore': ['csrss.exe']}

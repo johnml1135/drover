@@ -21,6 +21,7 @@ import logging
 from . import config, pane_guard, pane_screen, placement, placement_git
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .ledger import ops_panes
+from .ledger.db import tx
 
 MIN_IDLE_S = 3600
 SETTING = 'pane_close_observed'
@@ -195,9 +196,10 @@ def _settle(port, pending, row):
 
 def _gone(port, row, pending, entry, reason):
     """The pane is not there: one pane-closed event, the row to `gone`, the pending mark cleared."""
-    _event(port, 'pane-closed', entry, row, reason)
-    ops_panes.update_agent(port.conn, row['id'], state='gone')
-    _settle(port, pending, row)
+    with tx(port.conn):     # one commit: a failure between the steps leaves no event and the pending mark
+        _event(port, 'pane-closed', entry, row, reason)
+        ops_panes.update_agent(port.conn, row['id'], state='gone')
+        _settle(port, pending, row)
 
 
 def reconcile(port, herdr, row, pending):
