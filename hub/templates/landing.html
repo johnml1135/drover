@@ -9,6 +9,11 @@
 </section>
 {% endfor %}
 {% endif %}
+{% if holds %}
+<section class="card"><strong>Merging is held</strong> for a red base commit.
+<ul>{% for hold in holds %}<li>{{ hold.repo }} <code>{{ hold.sha[:12] }}</code></li>{% endfor %}</ul>
+<form method="post" action="/landing/clear-hold"><button type="submit">Clear merge hold</button></form></section>
+{% endif %}
 <h2>Merge queue</h2>
 <ol class="queue">
 {% for q in queue %}<li class="card"><strong>{{ q.title }}</strong> {{ badge(q.state | label) }} {{ comment_btn('task', q.id) }}</li>

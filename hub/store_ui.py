@@ -279,6 +279,12 @@ class UiView:
                            "checking": snapshot is None}
                           for prog in self.ui_repos().values()
                           if (snapshot := self.repo_states.get(prog)) is None or snapshot.get("ahead") != 0]}
+    def base_holds(self):
+        return self.s.base_holds()
+
+    def clear_hold(self):
+        return self.s.clear_hold()
+
     def push_main(self, name):
         """Owner action; repo paths and remote names come only from validated configuration."""
         from drover.notifications.controls import admission

@@ -206,3 +206,40 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
                              options=[{'label': 'Acknowledged'}], actor='landing')
 def land_sha(conn, task_id):
     return storage.land_sha(conn, task_id)
+def contained(repo, branch, main_sha):
+    """True when every commit of `branch` is in `main_sha`: an ancestor, or (replayed commits) all patch-equivalent."""
+    if git(repo, 'rev-parse', '--verify', '-q', f'{branch}^{{commit}}', check=False).returncode:
+        return False
+    if git(repo, 'merge-base', '--is-ancestor', branch, main_sha, check=False).returncode == 0:
+        return True
+    cherry = git(repo, 'cherry', main_sha, branch, check=False)
+    return cherry.returncode == 0 and not any(line.startswith('+') for line in cherry.stdout.splitlines())
+def verify_manual_land(repo, branch, main_sha, default_branch):
+    """The full main_sha, once it is on `default_branch` (ancestor or equal) and holds all of `branch`'s commits."""
+    if not branch:
+        raise ValueError('the task has no branch, so its commits cannot be checked')
+    full = git(repo, 'rev-parse', '--verify', '-q', f'{main_sha}^{{commit}}', check=False)
+    if full.returncode or not full.stdout.strip():
+        raise ValueError(f'{main_sha} is not a commit in the repo')
+    full = full.stdout.strip()
+    if git(repo, 'merge-base', '--is-ancestor', full, default_branch, check=False).returncode:
+        raise ValueError(f'{full[:12]} is not on {default_branch}')
+    if not contained(repo, branch, full):
+        raise ValueError(f'commits of {branch!r} are not all contained in {full[:12]}')
+    return full
+def base_holds(conn):
+    """Each repo whose merge queue waits on the owner for a red base: repo, base sha and the open question."""
+    from .ledger.waiting import BASE, Waiting
+    rows = [r for r in Waiting(conn).pending() if r['kind'] == BASE and r['question_id'] and r['cause_state'] == 'open']
+    return list({r['cause']: {'repo': r['data']['repo'], 'sha': r['data']['sha'], 'question': r['question_id']}
+                 for r in rows}.values())
+def clear_hold(conn, actor='owner'):
+    """Owner action: forget each held base's gate result and answer its question Retry."""
+    if actor != 'owner':
+        raise PermissionError(f'only the owner may clear a landing hold (actor {actor!r})')
+    holds = base_holds(conn)
+    for hold in holds:
+        storage.forget_base(conn, hold['repo'], hold['sha'])
+        ops.answer_question(conn, hold['question'], RETRY, actor=actor)
+        ops.event(conn, 'landing-hold-cleared', actor, hold)
+    return {'cleared': bool(holds), 'holds': holds}
