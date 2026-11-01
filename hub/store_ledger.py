@@ -192,7 +192,10 @@ class Store:
     @_translate
     def handback_task(self, tid):
         """Owner Bypass. The caller must have authenticated the owner."""
-        t = ops.handback(self.conn, tid, actor="owner")
+        with tx(self.conn):
+            explicit = self.get_task(tid)["requires_explicit_approval"]
+            t = ops.handback(self.conn, tid, actor="owner")
+            self.set_explicit_approval(t["id"], explicit)
         self._changed("task.status", id=tid, status="cancelled")
         self._changed("task.created", id=t["id"])
         return t

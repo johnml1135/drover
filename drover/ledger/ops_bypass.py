@@ -40,17 +40,34 @@ def abandon(conn, task_id, actor='owner'):
         return set_status(conn, task_id, states.CANCELLED, actor=actor, reason='abandoned')
 
 
+def _retarget_terminal_waits(conn, old_id, new_id, actor):
+    """Hold whatever waits on the old task's outcome on the new task's instead, before the cancel releases it."""
+    from .waiting import TASK_TERMINAL, Waiting, cause_key
+    waiting = Waiting(conn, actor)
+    for row in waiting.pending():
+        if row['kind'] == TASK_TERMINAL and row['data']['source'] == old_id:
+            cause = cause_key('task', new_id) if row['cause'] == cause_key('task', old_id) else row['cause']
+            waiting.wait((row['subject_kind'], row['subject_key']), TASK_TERMINAL, cause_key(new_id), cause=cause,
+                         data={**row['data'], 'source': new_id})
+
+
 def handback(conn, task_id, actor='owner'):
-    """Turn a yanked task into new work: a draft the owner must approve, which its dependents now wait on."""
+    """Turn a yanked task into new work: a draft the owner must approve, which its dependents now wait on.
+
+    The draft may do no more than the old task could: every field that defines or restricts the work is copied."""
     _refuse_unless_owner(actor, 'hand back a task')
     with tx(conn):
         old = _yanked(conn, task_id, 'handed back')
         new = create_task(conn, old['title'], old['repo'], epic_id=old['epic_id'], repo_path=old['repo_path'],
                           goal=old['goal'], acceptance=old['acceptance'], scope_files=old['scope_files'],
                           priority=old['priority'], size=old['size'], risk=old['risk'], status=states.DRAFT,
-                          actor=actor)
+                          actor=actor, kind=old['kind'], write=old['write'])
+        # Stored values, not revalidated: a repo unregistered since must neither refuse the handback nor widen it.
+        conn.execute('UPDATE tasks SET (read_access,model_pin)=(SELECT read_access,model_pin FROM tasks WHERE id=?) '
+                     'WHERE id=?', (task_id, new['id']))
         # Before the cancel: dependents must never see the old task settled while still pointing at it.
         conn.execute('UPDATE task_deps SET depends_on=? WHERE depends_on=?', (new['id'], task_id))
+        _retarget_terminal_waits(conn, task_id, new['id'], actor)
         set_status(conn, task_id, states.CANCELLED, actor=actor, reason='handed back')
         event(conn, 'handback', actor, {'to': new['id']}, task_id=task_id, epic_id=old['epic_id'])
         event(conn, 'handback', actor, {'from': task_id}, task_id=new['id'], epic_id=old['epic_id'])

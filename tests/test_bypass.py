@@ -156,6 +156,30 @@ class YankTests(BypassBase):
         self.assertTrue(rows[kept]['live'])
         self.assertEqual(snapshot['active_worktrees'], [])
 
+    def test_snapshot_yanked_with_open_run_stays_live(self):
+        tid = self.task()['id']
+        run = ledger_fixture.stage(self.conn, tid, 'running')
+        with ops.tx(self.conn):
+            self.conn.execute("UPDATE tasks SET worktree='H:/wt/one' WHERE id=?", (tid,))
+        yank(self.conn, tid)
+        state = Path(self.tmp.name) / 'state'
+
+        def row():
+            with mock.patch('drover.config.state_dir', return_value=state):
+                disk_notices.replay(self.conn, {}, 1000)
+            snapshot = json.loads((state / 'disk' / 'tasks.json').read_text())
+            return next(t for t in snapshot['tasks'] if t['id'] == tid), snapshot['active_worktrees']
+
+        entry, active = row()
+        self.assertFalse(entry['terminal'])
+        self.assertTrue(entry['live'])
+        self.assertEqual(active, ['H:/wt/one'])
+        ops.finish_run(self.conn, run, 'yanked')
+        entry, active = row()
+        self.assertTrue(entry['terminal'])
+        self.assertFalse(entry['live'])
+        self.assertEqual(active, [])
+
 
 class ClosedSubjectTests(BypassBase):
     """Waits and replans never move a yanked task, and never fail because of one."""
@@ -255,6 +279,44 @@ class HandbackTests(BypassBase):
         self.assertEqual(ops.deps_of(self.conn, also), [dict(depends_on=new, kind='waits-for')])
         self.assertEqual(ops.dependents_of(self.conn, old), [])
         self.assertNotIn(follower, [t['id'] for t in ops.ready_tasks(self.conn)])
+
+    def test_handback_keeps_terminal_wait_followers_held(self):
+        old = self.yanked()
+        follower = self.task()['id']
+        self.terminal_wait(follower, old)
+        new = handback(self.conn, old)['id']
+        self.assertEqual(self.status(follower), states.BLOCKED)
+        self.assertEqual(ops.ready_tasks(self.conn), [])
+        self.assertEqual([r['data']['source'] for r in Waiting(self.conn).pending(('task', follower))], [new])
+        ops.set_status(self.conn, new, states.CANCELLED, actor='owner')
+        self.assertEqual(self.status(follower), states.READY)
+
+    def test_handback_keeps_a_split_follower_on_its_replan_cause(self):
+        old = self.yanked()
+        follower = self.task()['id']
+        request = Waiting(self.conn, 'owner').request_replan(self.task()['id'], 'fixture')
+        cause = cause_key('replan', request['id'])
+        Waiting(self.conn, 'owner').wait(('task', follower), TASK_TERMINAL, cause_key(old), cause=cause,
+                                         data=dict(source=old, mode='blocked'))
+        new = handback(self.conn, old)['id']
+        rows = Waiting(self.conn).pending(('task', follower))
+        self.assertEqual([(r['data']['source'], r['cause']) for r in rows], [(new, cause)])
+
+    def test_handback_keeps_every_restriction_of_the_work(self):
+        old = self.yanked(kind='research', write=False, read_access=[])
+        pin = '{"backend": "claude", "model": "sonnet"}'
+        with ops.tx(self.conn):
+            self.conn.execute('UPDATE tasks SET model_pin=? WHERE id=?', (pin, old))
+        new = handback(self.conn, old)
+        self.assertEqual(new['kind'], 'research')
+        self.assertIs(new['write'], False)
+        self.assertEqual(new['read_access'], [])
+        self.assertEqual(new['model_pin'], {'backend': 'claude', 'model': 'sonnet'})
+
+    def test_handback_keeps_read_access_of_an_unregistered_repo(self):
+        old = self.yanked()
+        self.assertEqual(ops.get_task(self.conn, old)['read_access'], ['p@main'])
+        self.assertEqual(handback(self.conn, old)['read_access'], ['p@main'])
 
     def test_handback_needs_owner_approval_to_run(self):
         new = handback(self.conn, self.yanked())

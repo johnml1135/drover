@@ -65,6 +65,16 @@ class BypassHubTests(unittest.TestCase):
         self.assertEqual(r.json()["status"], "draft")
         self.assertEqual(self.status(tid), "cancelled")
 
+    def test_handback_keeps_read_only_and_explicit_approval(self):
+        tid = self.store.create_task("A", kind="research", write=False, scope_files=["fixture/a"],
+                                     requires_explicit_approval=True)["id"]
+        self.assertTrue(self.store.get_task(tid)["requires_explicit_approval"])
+        self.store.yank_task(tid, "")
+        new = self.store.handback_task(tid)
+        self.assertEqual(new["kind"], "research")
+        self.assertIs(new["write"], False)
+        self.assertTrue(self.store.get_task(new["id"])["requires_explicit_approval"])
+
     def test_the_generic_status_route_yanks_with_the_same_record_and_owner_rule(self):
         tid = self.task()
         r = self.token.post(f"/api/v1/tasks/{tid}/status", json={"status": "yanked"}, headers=AUTH)
