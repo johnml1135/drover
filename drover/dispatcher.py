@@ -206,6 +206,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             service_tick(p, self.now)
         if p.get_setting('admission_hold'):
             self._admission_report()
+        out['yanked'] = self._stop_yanked()
         control = p.admission(epoch=self._control_epoch)
         if not control['allowed']:
             self._stop_for_control(control['epoch'])
@@ -247,12 +248,14 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            got = self._admit(task, policy, admitted)
+            got = self._unless_yanked(task["id"], self._admit, task, policy, admitted)
+            if got is None:
+                continue
             if isinstance(got, str):
                 skipped[got] = skipped.get(got, 0) + 1
                 continue
             route, placement, wt = got
-            if self._launch(task, route, policy, placement, cwd=wt) is not None \
+            if self._unless_yanked(task["id"], self._launch, task, route, policy, placement, cwd=wt) is not None \
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1

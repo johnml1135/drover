@@ -189,6 +189,27 @@ class AdmissionSteps:
                 continue
             stop_intent(self.port, spec, epoch, lambda value: self.launcher.cancel(value['run_id'], value['nonce']))
 
+    def _stop_yanked(self):
+        """Ask every open run of a yanked task to stop, whatever the controls say. Asked once: watch_runs asks again
+        while a scan finds the runner, and launch-cancel carries the request across a restart. Returns the run ids."""
+        p = self.port
+        runs = [(task, run) for task in p.list_tasks('yanked') for run in p.list_runs(task['id'])
+                if run['ended'] is None]
+        if not runs:
+            return []
+        asked = {e['data'].get('run') for e in p.events('launch-cancel')}
+        places, nonces, stopped = self._placements(), self._nonces(), []
+        for task, run in runs:
+            rid = run['id']
+            if rid in asked or rid in self.cancelling:
+                continue
+            place = places.get(rid, 'unknown')
+            p.append_event('launch-cancel', {'run': rid, 'placement': place}, task['id'])
+            self.cancelling[rid] = (task['id'], place, nonces.get(rid))
+            self.launcher.cancel(rid, nonces.get(rid))
+            stopped.append(rid)
+        return stopped
+
     def _director_admission(self, spec):
         seat = config_mod.seat_by_name(spec['seat'])
         if seat is None or seat['backend'] != spec['backend']:

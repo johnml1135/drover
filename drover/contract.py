@@ -25,9 +25,10 @@ FAILED = 'failed'
 LAND = 'land'
 HOLD = 'hold'
 READ_ONLY_DONE = 'read-only-done'
+YANKED = 'yanked'
 
 OUTCOMES = (GATED, GATE_FAIL, NO_RECORD, ERROR, LAUNCH_ERROR, PROVIDER_ERROR, TIMEOUT, ROTATED, ORPHANED,
-            UNVERIFIED, BLOCKED, DONE, PASSED, FAILED, LAND, HOLD, READ_ONLY_DONE)
+            UNVERIFIED, BLOCKED, DONE, PASSED, FAILED, LAND, HOLD, READ_ONLY_DONE, YANKED)
 # `done` is a worker run that finished and awaits its gate (amended to gated or gate-fail). Gate runs end `passed` or
 # `failed`, review runs `land` or `hold`: none of these is a worker failure, so FAIL_OUTCOMES leaves them out.
 # The dispatcher counts a `hold` against the worker run it reviewed.

@@ -108,6 +108,9 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         base_sha = git(repo, 'rev-parse', base_ref).stdout.strip()
         tip, tasks, conflicts = build_tip(repo, work, base_sha, tasks)
         for tid in conflicts:
+            if storage.yanked(conn, tid):
+                result['dropped'][tid] = 'yanked'
+                continue
             result['dropped'][tid] = 'rebase conflict'
             ops.set_status(conn, tid, states.NEEDS_OWNER, actor='landing', reason='rebase conflict')
         if not tasks:
@@ -127,6 +130,9 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             stopped.set()
             if observe:
                 watcher.join(FETCH_TIMEOUT_S + 1)
+        if _drop_yanked(conn, tasks, result):
+            tasks = [t for t in tasks if t['id'] not in result['dropped']]
+            continue                         # what is left must pass on a tip of its own
         if red and observe:
             if moved.is_set():
                 result['outcome'] = 'stale-base'
@@ -143,6 +149,9 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 result.update(outcome='refused', error='Landing requires exact-SHA full CI on every required platform')
                 return
             _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name, land_stage=land_stage)
+            if result['outcome'] == 'yanked':
+                tasks = [t for t in tasks if t['id'] not in result['dropped']]
+                continue
             if result['outcome'] == 'stale-base' and stale_retries < 2:
                 stale_retries += 1
                 result.pop('error', None)
@@ -162,9 +171,16 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             culprit = bisect(tasks, red_at)
             how = 'bisect'
         result['dropped'][culprit] = how
-        requeue(conn, culprit, failures, how)
+        if not storage.yanked(conn, culprit):
+            requeue(conn, culprit, failures, how)
         tasks = [t for t in tasks if t['id'] != culprit]
-    result['outcome'] = 'red'
+    result['outcome'] = 'yanked' if set(result['dropped'].values()) == {'yanked'} else 'red'
+def _drop_yanked(conn, tasks, result):
+    """Record every yanked task as dropped from the batch. Nothing moves it. True when there was one."""
+    gone = [t['id'] for t in tasks if storage.yanked(conn, t['id'])]
+    for tid in gone:
+        result['dropped'][tid] = 'yanked'
+    return bool(gone)
 def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=False, repo_name=None, *, land_stage):
     result['tip'] = tip
     for t in tasks:
@@ -177,6 +193,9 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
     sync_result = sync_main(conn, repo, remote, branch, repo_name, control_epoch=epoch)
     if sync_result:
         result.update(sync_result)
+        return
+    if _drop_yanked(conn, tasks, result):      # the last read before main moves; after it the landing is recorded
+        result.update(outcome='yanked', tip=None)
         return
     try:
         local_fast_forward(conn, repo, work, branch, tip, receipt, control_epoch=epoch,
