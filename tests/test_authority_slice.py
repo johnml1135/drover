@@ -58,9 +58,6 @@ class AuthorityTests(unittest.TestCase):
         receipt = {'version': ci.VERSION, 'passed': True, 'sha': tip, 'log': 'receipt'}
         self.assertEqual(land_stage(self.conn, evidence, tip, receipt)['status'], 'landed')
         self.assertEqual(self.conn.execute('SELECT tip FROM task_landed WHERE task_id=?', (tid,)).fetchone()[0], tip)
-        before = ops.events(self.conn, task_id=tid)              # detection saw it first: the landing has nothing to add
-        self.assertEqual(land_stage(self.conn, evidence, 'c' * 40, receipt)['status'], 'landed')
-        self.assertEqual(ops.events(self.conn, task_id=tid), before)
 
     def test_running_stage_rejects_a_foreign_or_nonworker_run(self):
         one = ops.create_task(self.conn, 'one', 'p', scope_files=['one'])['id']

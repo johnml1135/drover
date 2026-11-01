@@ -5,11 +5,22 @@ import unittest
 from drover import outside_land
 from drover.ledger import landing as landing_storage
 from drover.ledger import ops, states
+from drover.ledger.ops_stages import land_stage
 from drover.ledger.waiting import Waiting
 from tests.outside_land_fixture import Decider, FakeGitCase
 
 
 class RecordedScans(FakeGitCase):
+    def test_a_landing_that_detection_saw_first_changes_nothing(self):
+        tid = self.task('yanked')
+        tip = self.landed_by_hand()
+        self.worker_done(tid, tip)
+        self.assertEqual(self.scan()['landed'], [tid])
+        before = ops.events(self.conn, task_id=tid)
+        task = dict(id=tid, head='a' * 40, last_sha=tip)
+        self.assertEqual(land_stage(self.conn, task, tip, {})['status'], states.LANDED)
+        self.assertEqual(ops.events(self.conn, task_id=tid), before)
+
     def test_yanked_task_lands_and_unblocks_dependents(self):
         tid = self.task('ready')
         follower = ops.create_task(self.conn, 'F', 'acme', scope_files=['g.txt'], deps=[tid])['id']

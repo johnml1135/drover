@@ -158,7 +158,7 @@ class Dispatch(BatchPipelineCase):
         from drover import config
         old = config.get()
         self.addCleanup(config.use, old)
-        config.use({**old, 'capacity': {'parallel_cap': 1}})
+        config.use({**old, 'capacity': {**old['capacity'], 'parallel_cap': 1}})
         tids, requests, spec = self.run_batch(8)
         self.d.tick()
         self.assertEqual(len(self.planners()), 1)

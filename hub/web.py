@@ -274,7 +274,8 @@ def push_main(name: str, store=Depends(get_store)):
 @router.get("/health", response_class=HTMLResponse)
 def health(request: Request, store=Depends(get_store)):
     return _tab(request, "health", store, h=_call(store, "health", default={}) or {},
-                default_dispatch=request.app.state.store.get_default_dispatch())
+                default_dispatch=(request.app.state.store.get_default_dispatch()
+                                  if hasattr(request.app.state, "store") else "drover"))
 
 
 def _inbox_response(request, store):
