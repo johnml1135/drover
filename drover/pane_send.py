@@ -418,6 +418,10 @@ def _shell_line_empty(herdr, row):
     rows = [line for line in _starting(herdr, row, _lone_shell).splitlines() if line.strip()]
     if not rows or not SHELL_PROMPT.fullmatch(rows[-1]):
         raise PaneRefused('shell-line-not-empty')
+    for above in rows[:-1]:     # a wrapped draft: its first row is a prompt with text, its tail may pass as a prompt
+        found = SHELL_PROMPT.match(above.rstrip())
+        if found and found.end() < len(above.rstrip()):
+            raise PaneRefused('shell-line-not-empty')
 
 
 def _launched(port, row):

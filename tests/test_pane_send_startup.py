@@ -222,6 +222,19 @@ class Launch(Base):
                     self.assertIsNone(self.last())
                     self.reset()
 
+    def test_a_wrapped_draft_whose_tail_looks_like_a_prompt_is_refused(self):
+        wrapped = dict(percent='PS C:\\repos> git commit -m "raise the limit to\n100%',
+                       path_tail='PS C:\\repos> type\nC:\\logs\\a.txt >',
+                       bash_tail='x@h:~$ echo long words here\nabc$',
+                       history_then_tail='ok\nPS C:\\repos> git log --grep\n#')
+        for way, (act, stage) in zip(('run', 'agent'), self.ways()):
+            for name, screen in wrapped.items():
+                with self.subTest(way=way, line=name):
+                    self.fresh(screen, **stage)
+                    self.refused(act, 'shell-line-not-empty')
+                    self.assertIsNone(self.last())
+                    self.reset()
+
     def test_each_empty_prompt_passes(self):
         for screen in (PROMPT, 'history\nPS C:\\my repos\\x>', 'C:\\repos>', 'user@host:~/x$ ', 'history\n\n$ \n\n\n'):
             with self.subTest(screen):
