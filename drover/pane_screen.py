@@ -47,7 +47,10 @@ STUCK_CLASSES = ('rate_limit', 'model_prompt', 'approval', 'question', 'trust', 
                  'error_turn', 'exited', 'wake_unverified', 'scope_stale', 'queued_wedged', 'viewport_held', 'viewport_unknown',
                  'screen_unknown')
 BUSY_ROWS = 12
-LIVE_TURN = re.compile(r'esc to interrupt|^\s*•\s*Working\b', re.I)
+# Read over the joined rows, so a wrapped row still matches. Whole or cut: Working under any glyph or none, one word and
+# a running time, or the phrase's start, even with a wrap inside `esc to`. The cost of a look-alike row is mail.
+LIVE_TURN = re.compile(r'^\W*Working\b|^\W*W[orking]*…|^\W*\w+…?\s*\(\d+(?:\s*[smh]|…|$)|'
+                       r'e\s*s\s*c\s*t\s*o\b|\besc(?:\s+t)?\s*(?:…|$)', re.I | re.M)
 # Where a real Codex answer starts. Only this ends the composer walk; Claude's answer row has no capture yet, so has none.
 ANSWER_ROW = dict(codex=re.compile(r'•\s'))
 
@@ -165,7 +168,7 @@ def viewport_class(pane, screen):
 @_unknown(True)
 def turn_showing(screen):
     """A live turn's row near the bottom, even above the separator `working` stops at. Never idle, never unsent."""
-    return any(LIVE_TURN.search(line) for line in [line for line in screen.splitlines() if line.strip()][-BUSY_ROWS:])
+    return bool(LIVE_TURN.search('\n'.join([line for line in screen.splitlines() if line.strip()][-BUSY_ROWS:])))
 
 
 @_unknown(None)

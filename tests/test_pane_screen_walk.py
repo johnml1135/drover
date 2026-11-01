@@ -112,6 +112,27 @@ class Turn(unittest.TestCase):
         self.assertEqual(stuck(old, 'claude'), 'unsent_prompt')
         self.assertFalse(turn_showing('Some • Working row in a sentence\n› \n' + TAIL))
 
+    def test_a_cut_or_wrapped_turn_row_is_not_idle_or_unsent(self):
+        # Finding N5: a narrow pane cuts or wraps the row, and Herdr may still say idle. Any leading glyph, or none.
+        for row in ('Working (5h 01m 35…', 'Working (3s · esc to int…', 'Working (3s · esc to\ninterrupt)',
+                    '✻ Pondering… (12s · esc to\ninterrupt)', '✻ Pondering… (12s · esc\nto interrupt)',
+                    '✻ Pondering… (12s · esc t\no interrupt)', '✻ Pondering… (12s · esc…', '✻ Pondering… (12s · e…',
+                    '✻ Pondering… (12', '◦ Working (5h 01m 35…', '+ Working (5h', '• Wo…', 'Worki…', '• Thinking (5h 01m…',
+                    # No running time, so each of these stands on its own part of the match.
+                    'Working …', '+ Working', '✻ Pondering… (esc to int…', '✻ Pondering… (esc t\no interrupt)',
+                    '✻ Pondering… (es\nc to interrupt)', '✻ Pondering… (esc…', '✻ Pondering… (esc t…', '✻ Pondering… (esc', '✻ Pondering… (ESC TO INTERRUPT)'):
+            for rule in ('', '────\n', '---\n'):
+                for kind, empty, typed in (('codex', '›\n' + TAIL, '› ' + PROMPT + '\n' + TAIL),
+                                           ('claude', '────\n❯\n' + FENCE, '────\n❯ ' + PROMPT + '\n' + FENCE)):
+                    self.assertTrue(turn_showing(row + '\n' + rule + empty), (row, rule))
+                    self.assertNotEqual(status(row + '\n' + rule + empty, kind), 'idle', (row, rule, kind))
+                    self.assertNotEqual(stuck(row + '\n' + rule + typed, kind), 'unsent_prompt', (row, rule, kind))
+
+    def test_a_finished_row_is_not_a_cut_turn(self):
+        for row in ('• Worked for 3s', '• Worked…', 'Done (3 of 4)', 'Some • Working row', 'Escaped to safety', 'use the esc key now',
+                    'Wrote the report…', 'gpt-6-luna x…', 'Ran two checks (12s'):
+            self.assertFalse(turn_showing(row + '\n› \n' + TAIL), row)
+
     def test_an_unreadable_screen_shows_a_turn(self):
         self.assertTrue(turn_showing('› \x07\n'))
         self.assertTrue(turn_showing(None))
