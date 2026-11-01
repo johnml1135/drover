@@ -111,6 +111,23 @@ def framework_text(root):
             "never wait for design or plan approval.")
 
 
+def _decisions_text(files):
+    return "\n\n".join(f"### {f['path']}\n{f['text'].strip()}" for f in files)
+
+
+def _context_files(root, scope):
+    """The short ADRs matching the scope, or [] on any trouble: context never stops a brief."""
+    if not root or not scope:
+        return []
+    try:
+        from . import config, context_files
+        limits = config.get()["context"]
+        return context_files.select(root, scope, file_limit=limits["file_limit_bytes"],
+                                    total_limit=limits["total_limit_bytes"])["files"]
+    except Exception:
+        return []
+
+
 def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pinned=None):
     """-> {'system_append', 'user_prompt', 'tokens', 'budget'}. `scope` entries are 'path' or 'path:a-b'."""
     size = task.get("size", "M")
@@ -120,9 +137,11 @@ def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pin
     excerpt = _last_lines(retry_excerpt, EXCERPT_LINES) if retry_excerpt else ""
     notes_text = "\n".join(f"- {n}" for n in notes or [])
     framework = framework_text(task.get('worktree'))
+    decisions = _context_files(task.get('worktree'), scope)
 
     def build(excerpt, notes_text):
         parts = [_task_block(task), _scope_block(scope), _section("Repo instructions", task.get("repo_brief", "")),
+                 _section("Decisions that apply", _decisions_text(decisions)),
                  _section("Repository spec framework", framework),
                  _section("Earlier runs of this task", task.get("retry_work", "")),
                  _section("Last gate failure (fix this)", f"```\n{excerpt}\n```" if excerpt else ""),
@@ -131,7 +150,11 @@ def assemble(task, retry_excerpt=None, handoff=None, notes=None, scope=None, pin
         return "\n\n".join(p for p in parts if p)
 
     user = build(excerpt, notes_text)
-    # lossless-ish trimming, lowest value first: oldest excerpt lines, then owner notes; never pinned/task/handoff
+    # lossless-ish trimming, lowest value first: matching decision files (whole, last to first), oldest excerpt lines,
+    # then owner notes; never pinned/task/handoff
+    while decisions and estimate_tokens(system + user) > budget:
+        decisions = decisions[:-1]
+        user = build(excerpt, notes_text)
     lines = excerpt.splitlines()
     while estimate_tokens(system + user) > budget and len(lines) > 5:
         lines = lines[len(lines) // 4 + 1:]
