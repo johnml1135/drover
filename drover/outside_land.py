@@ -5,12 +5,9 @@ branch name can be reused, and history cannot see a revert. Every failure or unk
 never runs inside a ledger transaction. The scan is synchronous, so its time is budgeted and a stuck repo stops early.
 """
 import logging
-import os
 import re
 import subprocess
-import tempfile
 import time
-from pathlib import Path
 
 from . import ci, config, disk, landing, placement, repos
 from .ledger import ops, states
@@ -53,27 +50,16 @@ def _adds_nothing(repo, base, sha):
     return bool(base_tree) and fork_tree != sha_tree and merged == base_tree
 
 
-def _git_env(repo, index):
-    """The environment that points git at a private index, across wsl.exe when the repo lives in WSL."""
-    env = {**os.environ, 'GIT_INDEX_FILE': index}
-    if placement.routes_through_wsl(repo):
-        env['WSLENV'] = ':'.join(filter(None, (os.environ.get('WSLENV'), 'GIT_INDEX_FILE/p')))
-    return env
-
-
 def _survives(repo, base, start, sha):
-    """The change from `start` to `sha` still reverses cleanly off the base, in a private index, so no worktree is touched.
-    A later edit to the same lines also fails this: that is a missed proof, never a false one."""
+    """The task changed something, and merging its whole change from `start` into the base changes nothing, so it is
+    all still there. This compares trees: a conflict or a later edit of the same lines is a missed proof, never a false one."""
     if not start:
         return False
-    with tempfile.TemporaryDirectory(prefix='drover-landed-', ignore_cleanup_errors=True) as folder:
-        patch, env = Path(folder) / 'task.patch', _git_env(repo, str(Path(folder) / 'index'))
-        spelled = placement.to_wsl_path(patch) if placement.routes_through_wsl(repo) else str(patch)
-        if _out(repo, 'diff', '--binary', '--no-ext-diff', '--no-renames', f'--output={spelled}', start, sha) is None:
-            return False
-        if _out(repo, 'read-tree', base, env=env) is None:    # git apply refuses an empty patch, so a no-op proves nothing
-            return False
-        return _out(repo, 'apply', '--cached', '--check', '--reverse', spelled, env=env) is not None
+    merged = _out(repo, 'merge-tree', '--write-tree', f'--merge-base={start}', base, sha)
+    if not merged:
+        return False
+    start_tree, sha_tree, base_tree = (_out(repo, 'rev-parse', '--verify', f'{commit}^{{tree}}') for commit in (start, sha, base))
+    return bool(base_tree) and start_tree != sha_tree and merged == base_tree
 
 
 def _proof(repo, branch, base_ref, commits, start):
@@ -101,7 +87,7 @@ def _proof(repo, branch, base_ref, commits, start):
 def git_proof(repo, branch, base_ref, commits=(), start=None):
     """{'sha', 'proof'} when git proves the task's newest recorded commit landed on `base_ref` and is still there.
 
-    `commits` are the commits the ledger recorded for the task, and `start` the base of the run that made the newest.
+    `commits` are the commits the ledger recorded for the task, and `start` the base of its first worker run.
     `sha` is always on the base: the recorded commit for 'ancestor', the base itself for the other proofs, whose
     recorded commit never reached it. A timeout is unknown, so it gives None."""
     try:
@@ -115,7 +101,9 @@ def _evidence(conn, task_id):
             if SHA.fullmatch(e['data'].get('sha') or '')]
     bases = {e['data'].get('run'): (e['data'].get('output_snapshot') or {}).get('base')
              for e in ops.events(conn, task_id=task_id, kind='run-launching')}
-    start = bases.get(done[-1].get('run')) if done else None
+    first = next((e['data'].get('run') for e in ops.events(conn, task_id=task_id, kind='run-started')
+                  if e['data'].get('role') == 'worker'), None)
+    start = bases.get(first)
     return {'commits': [d['sha'] for d in done], 'start': start if SHA.fullmatch(start or '') else None}
 
 

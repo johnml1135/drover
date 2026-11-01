@@ -91,6 +91,48 @@ class GitProofTests(GitCase):
         self.revert_last()
         self.assertIsNone(self.proof([tip]))
 
+    def config(self, second):
+        section = '[{}]\nhost = h\nport = 1\nretries = 3\nenabled = {}\ntimeout = 5\nname = n\nlimit = 2\n'
+        return section.format('one', 'true') + section.format('two', second)
+
+    def config_section(self):
+        self.fork = self.r.commit('app.cfg', self.config('false'))
+
+    def flip(self, branch):
+        wt = self.r.root / f'{branch}-wt'
+        self.r.git('worktree', 'add', '-q', '-b', branch, wt, 'main')
+        tip = self.r.commit('app.cfg', self.config('true'), cwd=wt)
+        self.r.git('worktree', 'remove', '--force', wt)
+        return tip
+
+    def test_reverted_section_flip_is_not_proved(self):
+        self.config_section()
+        tip = self.flip('feat')
+        self.r.git('merge', '-q', '--ff-only', 'feat')
+        self.assertEqual(self.proof([tip])['proof'], 'ancestor')
+        self.r.git('revert', '--no-edit', 'HEAD')
+        self.assertIsNone(self.proof([tip]))
+        self.fork = self.main()
+        tip = self.flip('picked')
+        self.r.commit('other.txt')
+        self.r.git('cherry-pick', 'picked')
+        self.assertEqual(self.proof([tip], branch='picked')['proof'], 'patch-equivalent')
+        self.r.git('revert', '--no-edit', 'HEAD')
+        self.assertIsNone(self.proof([tip], branch='picked'))
+
+    def test_reverted_mode_change_is_not_proved(self):
+        wt = self.r.root / 'mode-wt'
+        self.r.git('worktree', 'add', '-q', '-b', 'feat', wt, 'main')
+        self.r.git('update-index', '--chmod=+x', 'base.txt', cwd=wt)
+        self.r.git('commit', '-q', '-m', 'executable', cwd=wt)
+        tip = self.r.git('rev-parse', 'HEAD', cwd=wt)
+        self.r.git('worktree', 'remove', '--force', wt)
+        self.r.git('merge', '-q', '--ff-only', 'feat')
+        self.assertEqual(self.proof([tip])['proof'], 'ancestor')
+        self.r.git('revert', '--no-edit', 'HEAD')
+        self.assertIn('100644', self.r.git('ls-tree', 'main', 'base.txt'))
+        self.assertIsNone(self.proof([tip]))
+
     def test_reverted_replay_is_not_proved(self):
         tip = self.r.branch('feat', {'f.txt': 'x'})
         self.r.commit('other.txt')
@@ -127,6 +169,7 @@ class GitProofTests(GitCase):
 
     def test_recorded_commit_that_changed_nothing_is_not_proved(self):
         self.r.git('commit', '-q', '--allow-empty', '-m', 'nothing')
+        self.r.git('branch', '-q', 'feat', 'main')
         self.assertIsNone(self.proof([self.main()]))
 
     def test_unknown_run_base_is_not_proved(self):
@@ -266,10 +309,14 @@ class ScanCase(GitCase):
             ops.yank(self.conn, t['id'])
         return t['id']
 
-    def worker_done(self, tid, sha, run=1):
-        ops.event(self.conn, 'run-launching', 'dispatcher',
-                  {'run': run, 'output_snapshot': {'base': self.fork}}, task_id=tid)
+    def worker_done(self, tid, sha, run=1, base=None):
+        self.launched(tid, run, base or self.fork)
         ops.event(self.conn, 'worker-done', 'dispatcher', {'run': run, 'sha': sha}, task_id=tid)
+
+    def launched(self, tid, run, base):
+        ops.event(self.conn, 'run-started', 'dispatcher', {'run': run, 'role': 'worker', 'backend': 'claude'}, task_id=tid)
+        ops.event(self.conn, 'run-launching', 'dispatcher',
+                  {'run': run, 'output_snapshot': base and {'base': base}}, task_id=tid)
 
     def scan(self):
         return outside_land.tick(self.conn, {})
@@ -348,10 +395,40 @@ class TickTests(ScanCase):
         tid = self.task()
         self.worker_done(tid, 'a' * 40)
         ops.event(self.conn, 'worker-done', 'dispatcher', {'run': 2, 'sha': ''}, task_id=tid)
-        ops.event(self.conn, 'run-launching', 'dispatcher', {'run': 3, 'output_snapshot': {'base': 'c' * 40}}, task_id=tid)
-        ops.event(self.conn, 'worker-done', 'dispatcher', {'run': 3, 'sha': 'b' * 40}, task_id=tid)
+        self.worker_done(tid, 'b' * 40, run=3, base='c' * 40)
         found = outside_land.candidates(self.conn)[0]
-        self.assertEqual((found['commits'], found['start']), (['a' * 40, 'b' * 40], 'c' * 40))
+        self.assertEqual((found['commits'], found['start']), (['a' * 40, 'b' * 40], self.fork))
+
+    def test_first_worker_run_with_no_recorded_base_gives_no_start(self):
+        tid = self.task()
+        self.launched(tid, 1, None)
+        self.worker_done(tid, 'b' * 40, run=2)
+        self.assertIsNone(outside_land.candidates(self.conn)[0]['start'])
+
+    def rerun_on_a_landed_first_run(self):
+        """Run 1's commit reaches main by hand, then run 2 starts from a base that holds it and lands too."""
+        tid = self.task('yanked')
+        first = self.landed_by_hand()
+        wt = self.r.root / 'run2-wt'
+        self.r.git('worktree', 'add', '-q', wt, 'feat')
+        second = self.r.commit('g.txt', cwd=wt)
+        self.r.git('worktree', 'remove', '--force', wt)
+        self.worker_done(tid, first, run=1)
+        self.worker_done(tid, second, run=2, base=first)
+        self.r.git('merge', '-q', '--ff-only', 'feat')
+        return tid, first
+
+    def test_reverting_an_earlier_run_is_not_proved(self):
+        tid, first = self.rerun_on_a_landed_first_run()
+        self.r.git('revert', '--no-edit', first)
+        self.assertFalse((self.r.repo / 'f.txt').exists())
+        self.assertEqual(self.scan()['landed'], [])
+        self.assertEqual(self.status(tid), states.YANKED)
+
+    def test_a_rerun_with_both_runs_on_main_lands(self):
+        tid, _ = self.rerun_on_a_landed_first_run()
+        self.r.commit('later.txt')
+        self.assertEqual(self.scan()['landed'], [tid])
 
     def test_shared_branch_gives_a_task_with_no_commits_nothing(self):
         older = self.r.branch('feat', {'f.txt': 'x'})
