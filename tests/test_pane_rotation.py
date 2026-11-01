@@ -181,7 +181,13 @@ class OldCliLeavesFirst(Rotating):
         self.cli_exits()
         self.panes._keep(run, self.guard)
         self.assertEqual(self.outcome(), 'rotated')
-        self.assertEqual(self.conn.execute("SELECT state FROM action_outbox WHERE action_id=?", (run['stop_action_id'],)).fetchone()[0], 'complete')
+        state = self.conn.execute('SELECT state FROM action_outbox WHERE action_id=?', (run['stop_action_id'],)).fetchone()[0]
+        self.assertEqual(state, 'complete')
+
+    def test_a_row_not_rotating_is_never_followed(self):
+        self.cli_exits()
+        self.follow()
+        self.assertIsNone(self.outcome())
 
     def test_a_rotating_agent_leaving_is_no_lost_director(self):
         self.told_to_exit()
@@ -204,7 +210,9 @@ class Rotated(Rotating):
         self.assertEqual((row['state'], row['handoff_state']), ('retired', 'rotated'))
         self.assertEqual(self.sessions(), 0)
         self.assertEqual(self.role()['pending_wake'], 1)
-        self.assertEqual(self.port.events(kind='director.rotated')[-1]['data']['run_id'], self.rid)
+        event = self.port.events(kind='director.rotated')[-1]
+        self.assertEqual(event['data']['run_id'], self.rid)
+        self.assertEqual(self.role()['wake_position'], event['id'])
 
     def test_open_writes_close_with_the_row(self):
         self.told_to_exit()
@@ -304,8 +312,19 @@ class NewSession(Rotating):
         rotate.assert_not_called()
 
     def test_only_a_rotated_row_is_taken(self):
-        with self.assertRaises(pane_launch.AdmissionHeld):
-            pane_launch.rotate(self.port, self.herdr, self.row, self.spec_, cfg=self.cfg, credential='c')
+        self.cli_exits()
+        retired = ops_panes.update_agent(self.conn, self.row['id'], state='retired')
+        self.assertIsNone(self.panes.rotated(ROLE))
+        with self.assertRaises(pane_launch.AdmissionHeld) as held:
+            pane_launch.rotate(self.port, self.herdr, retired, self.spec_, cfg=self.cfg, credential='c')
+        self.assertEqual(str(held.exception), 'pane-not-rotated')
+
+    def test_a_run_that_took_no_handoff_does_not_settle_one(self):
+        self.written()
+        self.restated.write_text('Not this run.', encoding='utf-8')
+        handoff.set_pending(self.port, ROLE, self.path)
+        pane_handoff.maintain(self.panes, self.run_row)
+        self.assertEqual(handoff.pending(self.port, ROLE), str(self.path))
 
     def test_missing_restatement_is_one_notice(self):
         self.relaunched()
@@ -349,6 +368,12 @@ class WritableRoots(Rotating):
         self.next_agent_boots()
         self.tick()
         self.launch_calls = list(self.fake.calls)
+
+
+class FirstLaunch(Resident):
+    def test_the_handoff_folder_exists_from_the_first_launch(self):
+        self.launched()
+        self.assertTrue(handoff.folder(self.cfg, ROLE).is_dir())
 
 
 class ExitAgent(Case):
