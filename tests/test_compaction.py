@@ -423,8 +423,7 @@ class CleanupLock(Job):
     def test_the_hub_raises_no_stale_lock_notice_for_the_job(self):
         compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth='b')
         tick = dict(reader=lambda path: 10.0, enqueue=mock.Mock(), wsl_used=lambda: None)
-        with disk_state.CleanupLock(self.state), \
-                mock.patch.object(placement, 'cleanup_identity', return_value=dict(pid=1, birth='b')):
+        with disk_state.CleanupLock(self.state):
             disk.tick(self.cfg, now=NOW, **tick)
             disk.tick(self.cfg, now=NOW + disk.LOCK_BACKOFF_S + 60, **tick)
         self.assertEqual([ident for ident in self.outbox() if ident.startswith('lock:')], [])
