@@ -6,6 +6,7 @@ a file that cannot be read or parsed is reported in `skipped` and the brief goes
 """
 import json
 import re
+import stat
 from pathlib import Path, PurePosixPath
 
 ADR_DIR = 'docs/adr'
@@ -77,7 +78,7 @@ def _narrowness(globs, paths):
     return best
 
 
-def _read_all(root):
+def _read_all(root, file_limit=None):
     """-> ({name: text}, [skipped]) for docs/adr/*.md at the checkout's HEAD for a WSL root, else on disk."""
     from . import compaction_hold, placement
     skipped = []
@@ -107,7 +108,13 @@ def _read_all(root):
                     continue
                 rel = f'{ADR_DIR}/{entry.name}'
                 try:
-                    texts[rel] = entry.read_bytes().decode('utf-8')
+                    info = entry.lstat()   # never follow a link, never open a FIFO or device
+                    if not stat.S_ISREG(info.st_mode):
+                        skipped.append({'path': rel, 'reason': 'not a regular file'})
+                    elif file_limit is not None and info.st_size > file_limit:
+                        skipped.append({'path': rel, 'reason': f'over the {file_limit}-byte file limit'})
+                    else:
+                        texts[rel] = entry.read_bytes().decode('utf-8')
                 except (OSError, UnicodeDecodeError) as error:
                     skipped.append({'path': rel, 'reason': f'unreadable: {type(error).__name__}'})
     except Exception as error:   # a read problem never stops the brief
@@ -122,7 +129,7 @@ def select(root, scope, *, file_limit, total_limit):
     if not root or not paths:
         return result
     try:
-        texts, skipped = _read_all(root)
+        texts, skipped = _read_all(root, file_limit)
     except Exception as error:
         return {'files': [], 'skipped': [{'path': ADR_DIR, 'reason': f'unreadable: {type(error).__name__}'}]}
     result['skipped'].extend(skipped)

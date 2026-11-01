@@ -1,4 +1,5 @@
 """Fresh agents load only short, accepted ADRs whose applies_to matches their scope."""
+import os
 import subprocess
 import tempfile
 import unittest
@@ -146,6 +147,25 @@ class SelectTests(unittest.TestCase):
         self.assertTrue(result['files'])
         self.assertLessEqual(sum(len(f['text'].encode()) for f in result['files']), limits['total_limit_bytes'])
         self.assertFalse([s for s in result['skipped'] if 'file limit' in s['reason']])
+
+    def test_a_symlink_or_irregular_entry_is_never_read(self):
+        outside = self.root / 'outside.md'
+        outside.write_bytes(adr(1, globs='["**"]').encode())
+        try:
+            os.symlink(outside, self.dir / '0001-link.md')
+        except (OSError, NotImplementedError):
+            self.skipTest('symlinks need privilege here')
+        self.put('0002-b.md', adr(2))
+        result = self.select()
+        self.assertEqual(self.paths(result), ['0002-b.md'])
+        self.assertEqual([s['reason'] for s in result['skipped']], ['not a regular file'])
+
+    def test_size_is_checked_before_the_file_is_opened(self):
+        self.put('0001-a.md', adr(1, body='x' * 500))
+        with patch.object(Path, 'read_bytes', side_effect=AssertionError('opened')):
+            result = self.select(file_limit=300)
+        self.assertEqual(result['files'], [])
+        self.assertIn('file limit', result['skipped'][0]['reason'])
 
 
 if __name__ == '__main__':
