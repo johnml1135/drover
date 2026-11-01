@@ -78,7 +78,14 @@ def validate(raw):
     cfg["seats"] = _seats(raw.get("seats", DEFAULT_SEATS))
     cfg["seats_policy"] = _check_table(raw.get("seats_policy", {}), DEFAULTS["seats_policy"], ["seats_policy"],
                                          {"waste_threshold_pct": (0, 100)})
-    cfg["director"] = _check_table(raw.get("director", {}), DEFAULTS["director"], ["director"])
+    cfg["director"] = _check_table(raw.get("director", {}), DEFAULTS["director"], ["director"],
+                                   {"handoff_tokens": (1, 10 ** 8)})
+    cfg["panes"] = _check_table(raw.get("panes", {}), DEFAULTS["panes"], ["panes"],
+                                {"call_timeout_s": (0.1, 3600), "retry_unavailable_s": (0.1, 86400)})
+    cfg["context"] = _check_table(raw.get("context", {}), DEFAULTS["context"], ["context"],
+                                  {"file_limit_bytes": (1, 10 ** 7), "total_limit_bytes": (1, 10 ** 7)})
+    if cfg["context"]["total_limit_bytes"] < cfg["context"]["file_limit_bytes"]:
+        raise ConfigError("context.total_limit_bytes must be at least context.file_limit_bytes")
     if cfg["director"]["seat"] and cfg["director"]["seat"] != next(s["name"] for s in cfg["seats"] if s["director"]):
         raise ConfigError("director.seat must name the director seat")
     if not cfg["director"]["effort"]:
@@ -109,12 +116,16 @@ def validate(raw):
     for name in (m["review"], m["director"]):
         if not any(name in ladder for ladder in m["ladders"].values()):
             raise ConfigError(f"model {name!r} is not on any ladder in models.ladders")
-    if m["director"] not in m["ladders"]["claude"]:
-        raise ConfigError(f"models.director {m['director']!r} must be on the claude ladder")
     if any(not d or d < 1 for d in cfg["policy"]["tuner_cadence_days"]) or not cfg["policy"]["tuner_cadence_days"]:
         raise ConfigError("policy.tuner_cadence_days must be a non-empty list of positive whole numbers")
-    if cfg["director"]["model"] and cfg["director"]["model"] not in m["ladders"]["claude"]:
-        raise ConfigError("director.model must be on the claude ladder")
+    seat = director_seat(cfg)
+    if seat["backend"] != "claude" and not cfg["director"]["model"]:
+        raise ConfigError(f"seat {seat['name']!r} is the director on the {seat['backend']} backend: "
+                          f"set director.model to a model on the {seat['backend']} ladder")
+    chosen = director_model(cfg)
+    if chosen not in m["ladders"].get(seat["backend"], []):
+        raise ConfigError(f"director model {chosen!r} is not on the {seat['backend']} ladder of the director seat "
+                          f"{seat['name']!r}")
     return cfg
 
 
@@ -196,13 +207,17 @@ def director_seat(cfg=None):
     return next(s for s in (cfg or get())["seats"] if s["director"])
 
 
+def director_model(cfg=None):
+    """The Director's model: director.model, else models.director. validate() puts it on the director seat's ladder."""
+    cfg = cfg or get()
+    return cfg["director"]["model"] or cfg["models"]["director"]
+
+
 def director_seats(cfg=None):
-    """Seats a director/planner run may use, in order: Claude seats (the director first, then by priority), then
+    """Seats a director/planner run may use, in order: the director seat, then the Claude seats by priority, then
     the other seats by priority as a last resort."""
     seats = (cfg or get())["seats"]
-    claude = sorted((s for s in seats if s["backend"] == "claude"), key=lambda s: (not s["director"], s["priority"], s["name"]))
-    rest = sorted((s for s in seats if s["backend"] != "claude"), key=lambda s: (s["priority"], s["name"]))
-    return claude + rest
+    return sorted(seats, key=lambda s: (not s["director"], s["backend"] != "claude", s["priority"], s["name"]))
 
 
 def seats_for(backend, cfg=None):

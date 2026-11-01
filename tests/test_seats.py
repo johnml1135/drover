@@ -259,6 +259,19 @@ class Dispatching(test_dispatcher.Base):
                          {"backend": "claude", "model": "haiku-5.5"})
         self.assertEqual(route.default_routes()["worker:M"][0], ("claude", "opus-5.5"))       # start index 1 of 2 rungs
 
+    def test_default_route_follows_the_director_seat(self):
+        cfg = config.validate({"seats": [
+            {"name": "codex", "backend": "codex", "priority": 1, "director": True},
+            {"name": "claude", "backend": "claude", "priority": 2}],
+            "director": {"model": "gpt-6.1-sol"}})
+        self.assertEqual(route.default_routes(cfg)["director"], [("codex", "gpt-6.1-sol")])
+        self.assertEqual(route.default_routes(config.validate({}))["director"], [("claude", "opus-5.5")])
+        config.use(cfg)
+        self.addCleanup(config.reset)
+        r = route.choose({"role": "planner"}, {}, seats=cfg["seats"],
+                         seat_headroom={"codex": {"remaining_pct": 80.0}, "claude": {"remaining_pct": 80.0}})
+        self.assertEqual((r["seat"], r["backend"], r["model"]), ("codex", "codex", "gpt-6.1-sol"))
+
     def test_model_ids_come_from_config(self):
         self.use(models={"ids": {"sonnet-5.5": "claude-sonnet-9"}})
         argv, _ = launch.build_argv({"backend": "claude", "model": "sonnet-5.5", "effort": "high",

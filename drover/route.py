@@ -30,7 +30,8 @@ def top_effort(cfg=None):
 def default_routes(cfg=None):
     """{route key: [(backend, model)]} from the ladders: S starts at the cheap rung, M and L one up; review and
     director use the configured models."""
-    m = (cfg or config_mod.get())["models"]
+    cfg = cfg or config_mod.get()
+    m = cfg["models"]
     ladders = m["ladders"]
 
     def rung(backend, size):
@@ -38,7 +39,8 @@ def default_routes(cfg=None):
         return ladder[min(m["start"][size], len(ladder) - 1)]
     both = [b for b in ("claude", "codex") if b in ladders]
     return {**{f"worker:{size}": [(b, rung(b, size)) for b in both] for size in ("S", "M", "L")},
-            "review": [("claude", m["review"])], "director": [("claude", m["director"])]}
+            "review": [("claude", m["review"])],
+            "director": [(config_mod.director_seat(cfg)["backend"], config_mod.director_model(cfg))]}
 
 
 def __getattr__(name):   # TOP_EFFORT and DEFAULT_ROUTES stay importable; they follow the active config
@@ -206,7 +208,7 @@ def _observed_choice(task, policy, seats, seat_load, platforms, heads, ordering,
                 "needs_owner": True, "borrow_seat": requested}
     candidates = [dict(c) for c in (policy or {}).get("routes", {}).get(key, [])] or default_candidates(key)
     if privileged:
-        candidates = [{"backend": "claude", "model": cfg["director"]["model"] or cfg["models"]["director"],
+        candidates = [{"backend": config_mod.director_seat(cfg)["backend"], "model": config_mod.director_model(cfg),
                        "effort": cfg["director"]["effort"]}]
     allowed = eligible_seats(seats, seat_load, platforms)
     if privileged:

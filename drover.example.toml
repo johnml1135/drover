@@ -121,12 +121,25 @@ waste_threshold_pct = 15.0 # projected unused weekly percentage points at reset;
 
 [director]
 seat = "claude"            # empty selects the seat flagged director
-model = "opus-5.5"         # empty uses models.director
+model = "opus-5.5"         # empty uses models.director; a codex director seat must set it (a codex-ladder model)
 effort = "high"
+handoff_tokens = 275000    # a pane director writes its handoff file at this context size
+
+[panes]                    # directors and agents in Windows Herdr panes; off unless enabled
+enabled = false
+herdr_bin = ""             # empty finds herdr on PATH
+socket = ""                # empty uses Herdr's default socket
+workspace = ""             # the Herdr workspace that holds Drover's tabs
+call_timeout_s = 10.0
+retry_unavailable_s = 60.0 # how long to wait before asking a closed Herdr again
+
+[context]                  # short ADR files loaded for a fresh agent
+file_limit_bytes = 6144
+total_limit_bytes = 12288
 
 [models]
 review = "sonnet-5.5"       # the reviewer model
-director = "opus-5.5"       # the director and planner model; it must be on the claude ladder
+director = "opus-5.5"       # the Claude director model; the director seat's backend ladder must hold the model in use
 
 [models.ids]                # the name used in Drover -> the id passed to the CLI (unlisted names pass through)
 "haiku-5.5" = "claude-haiku-5-5"

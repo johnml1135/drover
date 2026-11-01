@@ -301,7 +301,7 @@ class Validation(unittest.TestCase):
         self.bad(seat.format(n="a", b="claude", extra="director=true\n") * 2, "used twice")
         two = (seat.format(n="a", b="claude", extra="director=true\n") + seat.format(n="b", b="claude", extra="director=true\n"))
         self.bad(two, "found a, b")
-        self.bad(seat.format(n="a", b="codex", extra="director=true\n"), "only a claude seat can be the director")
+        self.bad(seat.format(n="a", b="codex", extra="director=true\n"), "director.model")
         self.bad(seat.format(n="a", b="claude", extra="director=true\n") +
                  seat.format(n="c", b="codex", extra="placement='windows'\n"), "codex must run in wsl")
         self.bad(seat.format(n="a", b="claude", extra="director=true\nreserve_pct=120\n"), "reserve_pct must be between")
@@ -322,7 +322,7 @@ class Validation(unittest.TestCase):
 
     def test_models(self):
         self.bad("[models]\nreview = 'gpt-9'\n", "not on any ladder")
-        self.bad("[models]\ndirector = 'gpt-6.1-sol'\n", "must be on the claude ladder")
+        self.bad("[models]\ndirector = 'gpt-6.1-sol'\n", "director model 'gpt-6.1-sol' is not on the claude ladder")
         self.bad("[models.ladders]\nclaude = []\n", "must not be empty")
         self.bad("[models.ladders]\ngemini = ['x']\n", "named for a backend")
         self.bad("[models.start]\nQ = 1\n", "unknown key models.start.Q")
@@ -332,6 +332,79 @@ class Validation(unittest.TestCase):
             (Path(d) / "config.toml").write_text("[hub]\nui_port = 'x'\n")
             with self.assertRaisesRegex(config.ConfigError, "config.toml"):
                 config.load(Path(d), {})
+
+
+CLAUDE_SEAT = "[[seats]]\nname='claude'\nbackend='claude'\npriority=2\n{extra}"
+CODEX_SEAT = "[[seats]]\nname='codex'\nbackend='codex'\npriority=1\n{extra}"
+
+
+class DirectorSeat(unittest.TestCase):
+    """Any configured seat may be the Director; the model and reserve follow it."""
+
+    def bad(self, toml, pattern):
+        with self.assertRaisesRegex(config.ConfigError, pattern):
+            load(toml)
+
+    def codex_director(self, extra="", model="[director]\nmodel='gpt-6.1-sol'\n"):
+        return CODEX_SEAT.format(extra="director=true\n" + extra) + CLAUDE_SEAT.format(extra="") + model
+
+    def test_codex_director_seat_is_accepted(self):
+        c = load(self.codex_director())
+        self.assertEqual(config.director_seat(c)["name"], "codex")
+        self.assertEqual(config.director_model(c), "gpt-6.1-sol")
+
+    def test_any_configured_seat_needs_no_model_minimum(self):
+        c = load(CLAUDE_SEAT.format(extra="director=true\n") + "[director]\nmodel='haiku-5.5'\n")
+        self.assertEqual(config.director_model(c), "haiku-5.5")
+        c = load(self.codex_director(model="[director]\nmodel='gpt-6-luna'\n"))
+        self.assertEqual(config.director_model(c), "gpt-6-luna")
+
+    def test_codex_on_windows_is_still_refused(self):
+        self.bad(self.codex_director("placement='windows'\n"), "codex must run in wsl")
+
+    def test_exactly_one_director_seat_still_required(self):
+        self.bad(CODEX_SEAT.format(extra="") + CLAUDE_SEAT.format(extra=""), "found none")
+        self.bad(CODEX_SEAT.format(extra="director=true\n") + CLAUDE_SEAT.format(extra="director=true\n"),
+                 "found codex, claude")
+
+    def test_default_director_is_opus_on_the_claude_seat(self):
+        c = load()
+        self.assertEqual(config.director_seat(c)["name"], "claude")
+        self.assertEqual(config.director_model(c), "opus-5.5")
+
+    def test_codex_director_without_director_model_names_the_fix(self):
+        self.bad(self.codex_director(model=""), "director.model")
+        self.bad(self.codex_director(model="[models]\ndirector='opus-5.5'\n"), "set director.model")
+
+    def test_director_model_must_be_on_the_seat_ladder(self):
+        self.bad(self.codex_director(model="[director]\nmodel='opus-5.5'\n"), "not on the codex ladder")
+        self.bad(CLAUDE_SEAT.format(extra="director=true\n") + "[director]\nmodel='gpt-6.1-sol'\n",
+                 "not on the claude ladder")
+        self.bad("[models]\ndirector='gpt-6.1-sol'\n", "not on the claude ladder")
+
+    def test_director_reserve_defaults_to_25_on_any_backend(self):
+        self.assertEqual(load(self.codex_director())["seats"][0]["director_reserve_pct"], 25.0)
+        self.assertEqual(load(self.codex_director())["seats"][1]["director_reserve_pct"], 0.0)
+        c = load(self.codex_director("director_reserve_pct=5\n"))
+        self.assertEqual(c["seats"][0]["director_reserve_pct"], 5.0)
+
+    def test_director_seats_put_the_director_seat_first(self):
+        c = load(self.codex_director() + "[[seats]]\nname='claude2'\nbackend='claude'\npriority=3\n")
+        self.assertEqual([s["name"] for s in config.director_seats(c)], ["codex", "claude", "claude2"])
+
+    def test_handoff_tokens_must_be_positive(self):
+        self.assertEqual(load()["director"]["handoff_tokens"], 275000)
+        self.bad("[director]\nhandoff_tokens=0\n", "handoff_tokens")
+        self.bad("[director]\nhandoff_tokens=-5\n", "handoff_tokens")
+        self.assertEqual(load("[director]\nhandoff_tokens=1000\n")["director"]["handoff_tokens"], 1000)
+
+    def test_panes_default_off(self):
+        c = load()
+        self.assertEqual(c["panes"], {"enabled": False, "herdr_bin": "", "socket": "", "workspace": "",
+                                      "call_timeout_s": 10.0, "retry_unavailable_s": 60.0})
+        self.assertEqual(c["context"], {"file_limit_bytes": 6144, "total_limit_bytes": 12288})
+        self.bad("[panes]\ncall_timeout_s=0\n", "call_timeout_s")
+        self.bad("[context]\nfile_limit_bytes=20000\n", "total_limit_bytes")
 
 
 class Writer(unittest.TestCase):
@@ -347,7 +420,7 @@ class Writer(unittest.TestCase):
         cfg = config.validate(raw)
         self.assertEqual([(s["name"], s["priority"]) for s in cfg["seats"]],
                          [("codex", 1), ("claude", 2), ("claude-personal", 3)])
-        self.assertEqual(cfg["director"], {"seat": "claude", "model": "opus-5.5", "effort": "high"})
+        self.assertEqual(cfg["director"], {"seat": "claude", "model": "opus-5.5", "effort": "high", "handoff_tokens": 275000})
         self.assertEqual(config.seat_env(cfg["seats"][0]), {"CODEX_HOME": "~/.codex"})
         for key in set(cfg) - {"seats", "director"}:
             self.assertEqual(cfg[key], load()[key])
