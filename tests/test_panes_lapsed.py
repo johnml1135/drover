@@ -32,8 +32,6 @@ class Case(Resident):
     def notes(self, prefix):
         return [n for n in self.notices() if n['id'].startswith(prefix)]
 
-    def expiry(self):
-        return self.conn.execute('SELECT expires FROM director_sessions WHERE role_id=?', (ROLE,)).fetchone()[0]
 
 
 class ClosedBeforeALaunch(Case):
@@ -366,6 +364,47 @@ class Lapsed(Case):
         self.assertEqual(len(self.calls('tab', 'create')), 1)
         self.assertEqual(self.role()['held_reason'], 'pane-role-unconfirmed')
 
+    def refused_mid_resume(self, event):
+        def refuses(*args, **kwargs):
+            event()
+            raise AdmissionHeld('pane-occupant-changed')
+        return mock.patch.object(pane_launch, 'resume', refuses)
+
+    def test_a_failed_read_inside_a_resume_changes_no_row(self):
+        self.launched()
+        self.exited()
+        self.time += DAY_AND_A_BIT
+        with self.refused_mid_resume(lambda: self.fake.panes[PANE].pop('terminal_id')):
+            self.tick()
+        self.assertEqual(self.row_now()['state'], 'live')
+        self.assertEqual(self.notes('pane-launch:'), [])
+        self.assertEqual(len(self.calls('tab', 'create')), 1)
+
+    def test_a_pane_closed_inside_a_resume_goes_to_a_fresh_one(self):
+        self.launched()
+        self.exited()
+        self.time += DAY_AND_A_BIT
+        with self.refused_mid_resume(lambda: self.fake.panes.pop(PANE)):
+            self.tick()
+        self.assertEqual(self.row_now()['state'], 'gone')
+        self.assertEqual(len(self.calls('tab', 'create')), 2)
+
+    def test_a_pane_that_cannot_be_read_before_the_resume_spends_nothing(self):
+        self.launched()
+        self.exited()
+        self.capacity['slots'] = 0
+        self.time += DAY_AND_A_BIT
+        self.tick()
+        self.assertEqual(self.outcome(), 'revived')
+        before = self.spent()
+        self.capacity['slots'] = 2
+        del self.fake.panes[PANE]['terminal_id']
+        self.ticks(3)
+        self.assertEqual(self.spent(), before)
+        self.assertEqual(self.role()['held_reason'], 'resume-verification-uncertain')
+        self.assertEqual(self.row_now()['state'], 'live')
+        self.assertEqual(self.open_questions(), 1)
+
     def test_herdr_closing_inside_a_resume_changes_no_row(self):
         self.launched()
         self.exited()
@@ -377,6 +416,7 @@ class Lapsed(Case):
         with mock.patch.object(pane_launch, 'resume', closes):
             self.tick()
         self.assertEqual(self.row_now()['state'], 'live')
+        self.assertEqual(self.role()['held_reason'], 'herdr-unavailable')
 
     def test_a_resume_that_stalls_ends_on_a_fresh_pane(self):
         self.launched()
@@ -435,30 +475,6 @@ class Lapsed(Case):
         self.assertEqual(self.calls('pane', 'send-keys'), [CTRL_C])
         self.assertEqual(len(self.notes('pane-stopped:')), 1)
         self.assertIsNone(self.outcome())
-
-
-class Paused(Case):
-    def test_any_other_fence_leaves_the_session_and_the_pane_unread(self):
-        self.launched()
-        self.time += 44000
-        first, reads = self.expiry(), len(self.calls('pane', 'get'))
-
-        def fenced():
-            raise AdmissionHeld('stop-work')
-        self.panes.maintain(self.run_row, fenced)
-        self.assertEqual(self.expiry(), first)
-        self.assertEqual(len(self.calls('pane', 'get')), reads)
-
-    def test_a_pause_stops_wakes_and_hooks_and_keeps_the_session(self):
-        self.launched()
-        wake, handoff = self.hooks()
-        self.port.set_setting('dispatch_enabled', 'false')
-        self.time += 44000
-        first = self.expiry()
-        self.tick()
-        wake.assert_not_called()
-        handoff.assert_not_called()
-        self.assertGreater(self.expiry(), first)
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@ from unittest import mock
 
 from drover import compaction_hold, config, pane_close, pane_files, pane_handoff, pane_launch, pane_wake, panes
 from drover.directors import DirectorRuntime
+from drover.launch import AdmissionHeld
 from drover.ledger import ops_panes
 from drover.notifications import roles
 from tests.pane_launch_support import LONE_SHELL, SECRET
@@ -12,9 +13,6 @@ from tests.panes_support import ROLE, Resident
 
 
 class Sessions(Resident):
-    def expiry(self):
-        return self.conn.execute('SELECT expires FROM director_sessions WHERE role_id=?', (ROLE,)).fetchone()[0]
-
     def test_session_renews_before_expiry_without_a_new_generation(self):
         self.launched()
         first, generation = self.expiry(), self.role()['generation']
@@ -350,6 +348,30 @@ class Sweep(Resident):
         running, tick = self.closing(False)
         running.assert_not_called()
         tick.assert_called_once()
+
+
+class Paused(Resident):
+    def test_any_other_fence_leaves_the_session_and_the_pane_unread(self):
+        self.launched()
+        self.time += 44000
+        first, reads = self.expiry(), len(self.calls('pane', 'get'))
+
+        def fenced():
+            raise AdmissionHeld('stop-work')
+        self.panes.maintain(self.run_row, fenced)
+        self.assertEqual(self.expiry(), first)
+        self.assertEqual(len(self.calls('pane', 'get')), reads)
+
+    def test_a_pause_stops_wakes_and_hooks_and_keeps_the_session(self):
+        self.launched()
+        wake, handoff = self.hooks()
+        self.port.set_setting('dispatch_enabled', 'false')
+        self.time += 44000
+        first = self.expiry()
+        self.tick()
+        wake.assert_not_called()
+        handoff.assert_not_called()
+        self.assertGreater(self.expiry(), first)
 
 
 if __name__ == '__main__':

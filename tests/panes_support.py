@@ -96,6 +96,9 @@ class Resident(Launching):
         self.addCleanup(handoff.stop)
         return started
 
+    def expiry(self):
+        return self.conn.execute('SELECT expires FROM director_sessions WHERE role_id=?', (ROLE,)).fetchone()[0]
+
     def role(self, role=ROLE):
         return self.notifications.role_state(role)
 

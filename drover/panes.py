@@ -332,10 +332,12 @@ class PaneDirectorAdapter:
         try:
             pane_launch.resume(service.port, service.herdr, row, spec, cfg=service.cfg, credential=credential)
         except AdmissionHeld as held:
-            if str(held) == pane_launch.HERDR_CLOSED or not service.herdr.available():
-                raise AdmissionHeld(pane_launch.HERDR_CLOSED) from None
-            pane_launch.expire(service.port, service.herdr, row, f'resume refused: {held}',
-                               outcome='A fresh agent starts in a new pane once this one shows none.')
+            seen = service.inspect(row)
+            if seen == UNKNOWN:         # only a clear read may end a row: this one proved nothing
+                raise AdmissionHeld(str(held) if service.herdr.available() else pane_launch.HERDR_CLOSED) from None
+            if seen != GONE:
+                pane_launch.expire(service.port, service.herdr, row, f'resume refused: {held}',
+                                   outcome='A fresh agent starts in a new pane once this one shows none.')
             return False
         return True
 
@@ -352,8 +354,15 @@ class PaneDirectorAdapter:
         return PaneHandle(service, spec)
 
     def verify_resume(self, spec):
-        """True while a `live` row outlives its run: that pane is where the role's next run belongs."""
-        return self.service.orphan(spec['role_id']) is not None
+        """True while a `live` row outlives its run: that pane is where the role's next run belongs.
+
+        A pane that cannot be read raises, so the runtime holds the role before it spends a launch.
+        """
+        row = self.service.orphan(spec['role_id'])
+        seen = row and self.service.inspect(row)
+        if seen == UNKNOWN:
+            raise AdmissionHeld('pane-unread')
+        return seen not in (None, GONE)
 
     def probe(self, spec):
         return self.service.probe(spec)

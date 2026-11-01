@@ -15,6 +15,7 @@ class FakeSeconds:
 
     def __init__(self, case):
         self.at = 0.0
+        self.moved = lambda: None
         case.sleep.side_effect = self.wait
         patcher = mock.patch.object(pane_launch, '_now', lambda: self.at)
         patcher.start()
@@ -22,6 +23,7 @@ class FakeSeconds:
 
     def wait(self, seconds):
         self.at += seconds
+        self.moved()
 
 
 class Case(Resident):
@@ -68,6 +70,34 @@ class TickSeconds(Case):
         self.tick()
         limit = pane_launch.SHELL_PROMPT_S + pane_launch.SHELL_BACK_S + pane_launch.STARTUP_S
         self.assertLessEqual(clock.at - started, limit)
+
+    def test_every_wait_at_its_limit_is_the_bound(self):
+        clock = FakeSeconds(self)
+        self.build(boots=False)
+        self.fake.processes = self.foreground
+        margin = pane_launch.POLL_S
+        free_at = dict(at=pane_launch.SHELL_PROMPT_S - margin)
+
+        def moved():
+            if clock.at >= free_at['at']:
+                self.fake.processes = LONE_SHELL
+
+        def shell_line_taken():
+            self.fake.processes = self.foreground
+            free_at['at'] = clock.at + pane_launch.SHELL_BACK_S - margin
+
+        def agent_up_and_silent():
+            free_at['at'] = float('inf')
+            self.fake.processes = self.foreground
+        clock.moved = moved
+        self.fake.after[('pane', 'run', 1)] = shell_line_taken
+        self.fake.after[('agent', 'start', 1)] = agent_up_and_silent
+        self.wake()
+        self.tick()
+        limit = pane_launch.SHELL_PROMPT_S + pane_launch.SHELL_BACK_S + pane_launch.STARTUP_S
+        self.assertEqual(self.reason(), 'agent-not-ready')
+        self.assertLessEqual(clock.at, limit)
+        self.assertGreaterEqual(clock.at, limit - 3 * margin)
 
     def test_a_pane_that_never_shows_a_prompt_costs_the_same_bound(self):
         clock = FakeSeconds(self)
