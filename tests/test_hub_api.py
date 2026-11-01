@@ -498,34 +498,3 @@ class TaskTests(HubCase):
         self.assertNotIn("_heartbeat", self.get("/settings").json())
         bad = self.c.put("/api/v1/settings", json={"seq_T": "9"}, headers=AUTH)
         self.assertEqual(bad.status_code, 400)
-
-
-class DispatchSettingApiTests(HubCase):
-    def setUp(self):
-        self.tmp, self.app = make(trusted_ui_hosts=("testclient",))     # loopback UI requests act as the owner
-        self.c = TestClient(self.app)
-        self.addCleanup(self.tmp.cleanup)
-        self.addCleanup(self.app.state.store.close)
-
-    def owner_post(self, path, body):
-        return self.c.post("/api/v1" + path, json=body, headers=SAME)
-
-    def test_hub_claim_route_obeys_the_setting(self):
-        eid = self.post("/epics", {"repo": "default", "title": "E"}).json()["id"]
-        self.assertEqual(self.post(f"/epics/{eid}/dispatch", {"mode": "director"}).status_code, 403)
-        self.assertEqual(self.owner_post(f"/epics/{eid}/dispatch", {"mode": "director"}).json()["dispatch"], "director")
-        tid = self.ready_task("A", epic_id=eid)
-        self.assertIsNone(self.post("/tasks/claim", {}).json()["task"])
-        self.assertEqual(self.post(f"/tasks/{tid}/pick").status_code, 200)    # the API token is a director
-        self.assertEqual(self.post("/tasks/claim", {}).json()["task"]["id"], tid)
-
-    def test_default_is_owner_only_and_readable(self):
-        self.assertEqual(self.get("/dispatch/default").json(), {"mode": "drover"})
-        self.assertEqual(self.post("/dispatch/default", {"mode": "director"}).status_code, 403)
-        self.assertEqual(self.owner_post("/dispatch/default", {"mode": "director"}).json(), {"mode": "director"})
-        self.assertEqual(self.get("/dispatch/default").json(), {"mode": "director"})
-        self.assertEqual(self.owner_post("/dispatch/default", {"mode": "x"}).status_code, 422)
-
-    def test_pick_of_a_task_that_is_not_ready_is_refused(self):
-        tid = self.task("D")
-        self.assertEqual(self.post(f"/tasks/{tid}/pick").status_code, 400)

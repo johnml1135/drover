@@ -85,10 +85,9 @@ class GateSteps:
         return started
 
     def _begin_gate(self, task, runs):
+        """A gate slot first: everything before it reads the ledger, so a queued task costs no resource check and no git,
+        and asking each tick is what keeps its ticket alive and its place in the queue."""
         if not self._launch_allowed(task):
-            return False
-        health = self.resources_fn(new_workers=0)
-        if health['verdict'] != 'go':
             return False
         p, pl, tid = self.port, self.pipeline, task["id"]
         worker = self._last_nongate(runs)
@@ -97,23 +96,10 @@ class GateSteps:
         if prog is None or repos.ci_policy(prog)["unknown"] or not task.get("worktree") or not sha:
             p.set_status(tid, "needs-owner", reason="cannot gate: no repo gate, worktree or commit")
             return False
-        head = pl.head(task)
-        if head != sha:
-            self._gate_failed(task, worker, f"worker reported commit {sha[:12]} but its worktree is at {head[:12]}; "
-                                            "commit the work and report that commit", 0, None)
-            return False
         platform = self._next_gate_platform(task, prog, worker["id"], sha)
-        if (health.get('side_admission', {}).get(platform, {}).get('verdict', 'go') != 'go'
-                or (platform == 'wsl' and health.get('wsl', {}).get('verdict', 'go') != 'go')):
-            return False
-        if platform == "wsl" and not self.launcher.wsl_up():
-            p.note_wsl_needed(tid)
-            return False
-        if platform == "wsl" and self._wsl_blocked():
-            return False
         if self.ci_runners.reserve(task, platform=platform) is None:
             return False                                     # waiting for a gate slot
-        if self._is_closed(tid):                             # the ledger refuses worker runs only
+        if not self._gate_ready(task, worker, sha, platform):
             self.ci_runners.release(tid)
             return False
         gate_run = p.start_run(tid, "gate", "local", "gate")
@@ -148,6 +134,27 @@ class GateSteps:
         p.append_event("run-process", {"run": gate_run, "runner_pid": getattr(handle, "pid", None),
                                        "placement": spec["placement"]}, tid)
         return True
+
+    def _gate_ready(self, task, worker, sha, platform):
+        """The checks that cost a process, once a slot is held. False leaves the task to the next tick, or fails its gate."""
+        p, tid = self.port, task["id"]
+        health = self.resources_fn(new_workers=0)
+        if health['verdict'] != 'go':
+            return False
+        head = self.pipeline.head(task)
+        if head != sha:
+            self._gate_failed(task, worker, f"worker reported commit {sha[:12]} but its worktree is at {head[:12]}; "
+                                            "commit the work and report that commit", 0, None)
+            return False
+        if (health.get('side_admission', {}).get(platform, {}).get('verdict', 'go') != 'go'
+                or (platform == 'wsl' and health.get('wsl', {}).get('verdict', 'go') != 'go')):
+            return False
+        if platform == "wsl" and not self.launcher.wsl_up():
+            p.note_wsl_needed(tid)
+            return False
+        if platform == "wsl" and self._wsl_blocked():
+            return False
+        return not self._is_closed(tid)                      # the ledger refuses worker runs only
 
     def _gate_passed_platforms(self, task_id, worker_id, sha):
         """Platforms whose gate run for this worker run and commit has passed (derived from the ledger)."""

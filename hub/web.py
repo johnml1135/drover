@@ -273,7 +273,9 @@ def push_main(name: str, store=Depends(get_store)):
 
 @router.get("/health", response_class=HTMLResponse)
 def health(request: Request, store=Depends(get_store)):
-    return _tab(request, "health", store, h=_call(store, "health", default={}) or {})
+    return _tab(request, "health", store, h=_call(store, "health", default={}) or {},
+                default_dispatch=(request.app.state.store.get_default_dispatch()
+                                  if hasattr(request.app.state, "store") else "drover"))
 
 
 def _inbox_response(request, store):
@@ -358,6 +360,16 @@ async def epic_dispatch(eid: str, request: Request, store=Depends(get_store)):
         raise HTTPException(422, "mode must be drover or director")
     store.set_epic_dispatch(eid, mode)
     return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/dispatch/default")
+async def default_dispatch(request: Request):
+    """Owner-only (the UI port only serves the owner): who picks the next task outside any epic."""
+    mode = _one(await _form(request), "mode")
+    if mode not in ("drover", "director"):
+        raise HTTPException(422, "mode must be drover or director")
+    request.app.state.store.set_default_dispatch(mode)
+    return RedirectResponse("/health", status_code=303)
 
 
 @router.post("/tasks/{tid}/pick")

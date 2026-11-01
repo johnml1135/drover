@@ -35,7 +35,7 @@ HEAVY = {'tests.test_pipeline_basics', 'tests.test_pipeline_worktrees', 'tests.t
          'tests.test_replans', 'tests.test_replans_records', 'tests.test_replans_dispatch', 'tests.test_garden',
          'tests.test_hub_runtime', 'tests.test_waiting_consumers', 'tests.test_platforms',
          'tests.test_waiting_characterization', 'tests.test_replan_batches', 'tests.test_replan_batches_ledger',
-         'tests.test_replan_batches_dispatch', 'tests.test_replan_batches_recovery', 'tests.test_ci',
+         'tests.test_replan_batches_dispatch', 'tests.test_replan_batches_recovery', 'tests.test_ci', 'tests.test_ci_policy',
          'tests.test_repo_entry', 'tests.test_landing_repository', 'tests.test_waiting_consumers_lifecycle',
          'tests.test_hub_runtime_integrity', 'tests.test_hub_runtime_paths'}  # before any timing exists
 SHARD_LIMITS = {'tests.test_hub_runtime': 8, 'tests.test_hub_runtime_integrity': 8, 'tests.test_hub_runtime_paths': 8, 'tests.test_deploy_hub': 7, 'tests.test_garden_branch': 4,

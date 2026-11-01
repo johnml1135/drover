@@ -1,12 +1,15 @@
-"""Shared CI documentation, receipt, and timestamp utilities."""
+"""Shared CI documentation, receipt, and timestamp utilities, and the git environment and saved runs of landing CI."""
 import datetime
 import json
+import os
 import re
 from pathlib import Path
 
 
 VERSION = 1
 INFRA_RETRIES = 1
+GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
+COMPACTION_STOP = 'compaction'
 
 
 def now():
@@ -166,3 +169,33 @@ def _tail(path, lines=40):
         return b''.join(reversed(chunks)).decode('utf-8', errors='replace').splitlines()[-lines:]
     except OSError:
         return []
+
+
+def git_environment(base=None):
+    """Environment that keeps Git noninteractive even when a machine has an interactive credential helper."""
+    env = os.environ.copy() if base is None else dict(base)
+    env.update(GIT_PROMPT_ENV)
+    return env
+
+
+def _unfinished(runs_dir):
+    """(request path, saved request, spec) of every saved CI that may have been issued and has no terminal status."""
+    from . import runner
+    for request in Path(runs_dir).glob('ci-*.json'):
+        saved = read_result(request) or {}
+        spec = (saved.get('context') or {}).get('spec')
+        if spec and saved.get('execution') != 'prepared':
+            status = runner.read_status(runs_dir, spec['run_id']) or {}
+            if not (status.get('nonce') == spec['nonce'] and status.get('state') in ('exited', 'killed', 'timeout')):
+                yield request, saved, spec
+
+
+def active_wsl(runs_dir):
+    """{run id: spec} of the landing CI running on the WSL side, which a compaction has to wind down like a run."""
+    return {spec['run_id']: spec for _, _, spec in _unfinished(runs_dir) if spec.get('placement') != 'windows'}
+
+
+def stop_for_compaction(runs_dir, spec):
+    """Stop one landing CI for the compaction. The runner records why, so the result spends no infrastructure retry."""
+    from . import runner
+    return runner.request_stop(runs_dir, spec['run_id'], COMPACTION_STOP, nonce=spec['nonce'])

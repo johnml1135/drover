@@ -63,15 +63,17 @@ def pick(conn, task_id, actor):
     if actor not in ('owner', 'dispatcher'):
         raise PermissionError('only the owner or a director may pick a task')
     with tx(conn):
-        row = conn.execute("SELECT status, epic_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+        row = conn.execute("SELECT status, epic_id, picked_at FROM tasks WHERE id=?", (task_id,)).fetchone()
         if row is None:
             raise NotFound(f"task {task_id}")
         if row['status'] != 'ready':
             raise IllegalTransition(f"cannot pick a {row['status']} task; only ready tasks are picked")
-        conn.execute("UPDATE tasks SET picked_at=COALESCE(picked_at,?), picked_by=COALESCE(picked_by,?), updated=? "
-                     "WHERE id=?", (stamp(), actor, stamp(), task_id))
-        event(conn, 'picked', actor, {}, task_id=task_id, epic_id=row['epic_id'])
         from .ops_tasks import get_task
+        if row['picked_at']:                         # the first pick stands, and the log records only that one
+            return get_task(conn, task_id)
+        conn.execute("UPDATE tasks SET picked_at=?, picked_by=?, updated=? WHERE id=?",
+                     (stamp(), actor, stamp(), task_id))
+        event(conn, 'picked', actor, {}, task_id=task_id, epic_id=row['epic_id'])
         return get_task(conn, task_id)
 
 

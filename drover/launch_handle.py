@@ -200,3 +200,16 @@ class RunnerHandle:
     def wait(self, timeout=None):
         self._done.wait(timeout)
         return self.poll()
+
+
+def normalize_run_ids(found):
+    """Integer ledger run ids only; ignore unrelated or malformed process markers."""
+    out = {}
+    for rid, placement in found.items():
+        if type(rid) not in (int, str):
+            continue
+        try:
+            out[int(rid)] = placement
+        except ValueError:
+            continue
+    return out

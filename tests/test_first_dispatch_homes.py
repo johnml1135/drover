@@ -44,7 +44,11 @@ class SeatHomes(unittest.TestCase):
             calls.append(argv)
             return SimpleNamespace(returncode=0, stdout='/srv/wsl-account/.codex\n')
         seat = {'placement': 'wsl'}
-        with patch('os.path.expanduser', side_effect=AssertionError('Windows home must not be used')):
+        real = os.path.expanduser
+        def windows_home(path):
+            self.assertFalse(str(path).startswith('~'), 'Windows home must not be used')
+            return real(path)                 # the hold check reads the state directory, which is no seat home
+        with patch('os.path.expanduser', side_effect=windows_home):
             home = seat_paths.resolve('~/.codex', seat, {'wsl_distro': 'Ubuntu'}, windows=True, run=run)
         self.assertEqual(home, '/srv/wsl-account/.codex')
         self.assertIn('Ubuntu', calls[0])

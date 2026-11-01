@@ -246,7 +246,7 @@ class DispatcherSeats(unittest.TestCase):
         from drover import config
         old = config.get()
         self.addCleanup(config.use, old)
-        config.use({**old, 'capacity': {'parallel_cap': 1}})
+        config.use({**old, 'capacity': {**old['capacity'], 'parallel_cap': 1}})
         for i in range(2):
             tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=[f'fixture-{i}'])['id']
             ops.approve(conn, tid)

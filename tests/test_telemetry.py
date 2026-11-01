@@ -26,7 +26,8 @@ class TelemetryTests(unittest.TestCase):
             self.assertIn(name, [item.split('/')[0] for item in env['WSLENV'].split(':')])
 
     def test_wsl_ci_command_passes_all_defaults_and_owner_values(self):
-        with patch.dict(os.environ, {'DOTNET_NOLOGO': 'owner'}, clear=True):
+        kept = {'DROVER_HOME': os.environ['DROVER_HOME']}     # the test home: the WSL command reads the compaction hold
+        with patch.dict(os.environ, {**kept, 'DOTNET_NOLOGO': 'owner'}, clear=True):
             cmd, env = placement.ci_runner_command(['--', 'pwsh'], r'C:\repo', 'Ubuntu', windows=True)
         self.assertIsNone(env)
         self.assertEqual(cmd[cmd.index('--exec') + 1], '/usr/bin/env')

@@ -141,6 +141,10 @@ class YankTests(BypassBase):
         yank(self.conn, running)
         self.assertEqual([t['id'] for t in ops.ready_tasks(self.conn)], [waiting])
 
+    def no_worktree_on_disk(self):
+        """A live task's lease is renewed through git in its worktree; these tasks only name one."""
+        return mock.patch('drover.ownership.owned_by', return_value=False)
+
     def test_snapshot_marks_yanked_terminal_and_not_live(self):
         tid = self.task()['id']
         with ops.tx(self.conn):
@@ -167,7 +171,7 @@ class YankTests(BypassBase):
         state = Path(self.tmp.name) / 'state'
 
         def row():
-            with mock.patch('drover.config.state_dir', return_value=state):
+            with mock.patch('drover.config.state_dir', return_value=state), self.no_worktree_on_disk():
                 disk_notices.replay(self.conn, {}, 1000)
             snapshot = json.loads((state / 'disk' / 'tasks.json').read_text())
             return next(t for t in snapshot['tasks'] if t['id'] == tid), snapshot['active_worktrees']
@@ -191,7 +195,7 @@ class YankTests(BypassBase):
         ops.set_status(self.conn, tid, states.CANCELLED, actor='owner')      # abandon and handback refuse this now
         self.assertEqual(self.status(tid), states.CANCELLED)
         state = Path(self.tmp.name) / 'state'
-        with mock.patch('drover.config.state_dir', return_value=state):
+        with mock.patch('drover.config.state_dir', return_value=state), self.no_worktree_on_disk():
             disk_notices.replay(self.conn, {}, 1000)
         snapshot = json.loads((state / 'disk' / 'tasks.json').read_text())
         entry = next(t for t in snapshot['tasks'] if t['id'] == tid)

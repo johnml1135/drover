@@ -92,7 +92,7 @@ def validate(raw):
         raise ConfigError("director.effort must not be empty")
     cfg["models"] = _check_table(raw.get("models", {}), DEFAULTS["models"], ["models"])
     cfg["capacity"] = _check_table(raw.get("capacity", {}), DEFAULTS["capacity"], ["capacity"],
-                                   {"parallel_cap": (1, 64)})
+                                   {"parallel_cap": (1, 64), "launches_per_tick": (1, 64)})
     cfg["dispatch"] = _check_table(raw.get("dispatch", {}), DEFAULTS["dispatch"], ["dispatch"])
     cfg["watch"] = _check_table(raw.get("watch", {}), DEFAULTS["watch"], ["watch"],
                                 {"interval_s": (1, 86400), "stalled_hours": (1, 8760), "context_tokens": (1000, 10 ** 7),

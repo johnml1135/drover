@@ -2,7 +2,7 @@ import itertools
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_paths, placement
+from drover import config, disk_temp, placement
 from tests.disk_fixture import DiskCase
 
 
@@ -54,7 +54,7 @@ class Budget(DiskCase):
             self.approve_report()  # the receipt covers the configured scope, budget included
         ticks = itertools.count()
         clock = SimpleNamespace(monotonic=lambda: float(next(ticks)))
-        with patch.object(disk_paths, 'time', clock):
+        with patch.object(disk_temp, 'time', clock):
             return self.run_cleanup(apply=apply)
 
     def test_exceeded_budget_records_partial_and_stops_scanning(self):

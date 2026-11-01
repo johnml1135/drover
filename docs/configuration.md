@@ -34,10 +34,14 @@ Legacy `resources.toml` and legacy resource dictionaries are unsupported. Move l
 ## Dispatch limits
 
 `capacity.parallel_cap` (default 40, range 1 to 64) is the owner's: stored policy values are ignored and the tuner never
-changes it. `[dispatch] conflict_hold` (default true) makes a ready task wait while an active task in the same
+changes it. `capacity.launches_per_tick` (default 4, range 1 to 64) limits the reviews, planners and workers one tick
+starts, counting a launch that fails. Each launch blocks the tick, and with it reaping and stopping a yanked run, so a
+burst reaches the cap over several ticks and the resources verdict is read between them. Ready tasks left for the next
+tick show in the heartbeat as `launch-limit`. `[dispatch] conflict_hold` (default true) makes a ready task wait while an active task in the same
 repository has branch changes (`git diff base...branch`, cached by tip) on a file its `scope_files` cover, or on a
 file matching the same `[dispatch] magnets` pattern (the Herdr skill's list by default). The task stays ready and
-the heartbeat counts it as `conflict-hold`. An unknown branch or a git failure holds nothing.
+the heartbeat counts it as `conflict-hold`. An unknown branch or a git failure holds nothing, and a repo whose git would
+start WSL, or wake it during a compaction, is skipped. The checkout is the repo's configured path.
 
 ## Watch notices
 

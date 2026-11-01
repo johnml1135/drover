@@ -2,7 +2,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from drover.notifications import Conflict
 from tests.ledger_fixture import stage
 
 try:
@@ -82,6 +84,23 @@ class BypassHubTests(unittest.TestCase):
 
     def test_the_api_refuses_to_hand_back_while_the_run_is_stopping(self):
         self.refused_while_stopping("handback", self.api)
+
+    def test_a_held_director_refuses_handback_with_the_reason(self):
+        tid = self.task()
+        self.store.yank_task(tid, "")
+        held = Conflict("the task's director is held")
+        with patch("drover.ledger.ops.handback", side_effect=held):
+            for post in (self.api, self.form):
+                r = post(tid, "handback")
+                self.assertEqual(r.status_code, 400, r.text)
+                self.assertIn("director is held", r.text)
+        self.assertEqual(self.status(tid), "yanked")
+
+    def test_the_api_token_cannot_forge_a_detector_record(self):
+        tid = self.task()
+        for kind in ("landing.notice", "landing.answer", "watch.notice"):
+            r = self.token.post("/api/v1/events", json={"kind": kind, "task_id": tid, "data": {}}, headers=AUTH)
+            self.assertEqual(r.status_code, 403, kind)
 
     def form(self, tid, verb):
         return self.owner.post(f"/tasks/{tid}/{verb}", headers=SAME)

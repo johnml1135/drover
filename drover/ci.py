@@ -4,10 +4,8 @@ full CI and waits for its result. Planning, docs classification, output and verd
 are shared by both. Targeted diagnostics require the repository script contract.
 """
 import argparse
-import datetime
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -19,14 +17,14 @@ if __package__ in (None, ""):
     from drover import placement, repos, runner, contract
     from drover.ledger import ci as slots, ops
     from drover.ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
-                                  _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail)
+                                  _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail,
+                                  GIT_PROMPT_ENV, COMPACTION_STOP, git_environment, _unfinished, active_wsl, stop_for_compaction)
 else:
     from . import placement, repos, runner, contract
     from .ledger import ci as slots, ops
     from .ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
-                            _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail)
-GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
-COMPACTION_STOP = 'compaction'
+                            _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail,
+                            GIT_PROMPT_ENV, COMPACTION_STOP, git_environment, _unfinished, active_wsl, stop_for_compaction)
 
 
 class CIError(RuntimeError):
@@ -44,11 +42,6 @@ class CIInterrupted(CIError):
         super().__init__(message)
 class CIDeferred(CIInterrupted):
     """No execution issued: retain the prepared request until resources recover."""
-def git_environment(base=None):
-    """Environment that keeps Git noninteractive even when a machine has an interactive credential helper."""
-    env = os.environ.copy() if base is None else dict(base)
-    env.update(GIT_PROMPT_ENV)
-    return env
 # ---- git ------------------------------------------------------------------------------------------------
 def git(repo, *args, check=True):
     try:
@@ -97,27 +90,6 @@ def problems(receipt, repo, base_ref):
     elif not has_base:
         found.append(f'HEAD does not contain {base_ref} {base[:12]}; rebase and regate')
     return found
-
-
-def _unfinished(runs_dir):
-    """(request path, saved request, spec) of every saved CI that may have been issued and has no terminal status."""
-    for request in Path(runs_dir).glob('ci-*.json'):
-        saved = read_result(request) or {}
-        spec = (saved.get('context') or {}).get('spec')
-        if spec and saved.get('execution') != 'prepared':
-            status = runner.read_status(runs_dir, spec['run_id']) or {}
-            if not (status.get('nonce') == spec['nonce'] and status.get('state') in ('exited', 'killed', 'timeout')):
-                yield request, saved, spec
-
-
-def active_wsl(runs_dir):
-    """{run id: spec} of the landing CI running on the WSL side, which a compaction has to wind down like a run."""
-    return {spec['run_id']: spec for _, _, spec in _unfinished(runs_dir) if spec.get('placement') != 'windows'}
-
-
-def stop_for_compaction(runs_dir, spec):
-    """Stop one landing CI for the compaction. The runner records why, so the result spends no infrastructure retry."""
-    return runner.request_stop(runs_dir, spec['run_id'], COMPACTION_STOP, nonce=spec['nonce'])
 
 
 class CI:

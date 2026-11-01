@@ -2,13 +2,15 @@
 
 Ported from the Herdr skill's admit-slice checks: a shared changed file, or a magnet file (a shared append-only list
 or generated file that conflicts on nearly every merge) matched by the same pattern on both sides. Git failure or an
-unknown branch holds nothing. Git never runs inside a ledger transaction.
+unknown branch holds nothing, and so does a repo with no configured checkout: `tasks.repo_path` is optional and dispatch
+never fills it, so the checkout comes from the repo registry. Git never runs inside a ledger transaction.
 """
 import fnmatch
 import logging
 import os
 import subprocess
 
+from . import placement
 from .config_defaults import DEFAULT_MAGNETS
 from .ledger import scope as scopes
 from .ledger import states
@@ -19,10 +21,10 @@ _CACHE = {}        # (repo, branch tip, base tip) -> changed files; a tip names 
 
 
 def _git(repo, *args):
-    """Stdout of `git -C repo args`, or None when git fails."""
+    """Stdout of git in the checkout, or None when git fails."""
     try:
-        done = subprocess.run(["git", "-C", repo, *args], text=True, capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+        done = placement.git(repo, *args, timeout=60)
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
 
@@ -85,8 +87,9 @@ def reason(candidate_scope, other_files, patterns):
     return None
 
 
-def holds(ready, active, cfg, git=None, cache=None, base_of=None):
-    """{task id: reason} for ready tasks to hold. cfg is the [dispatch] table; base_of(task) names the base ref.
+def holds(ready, active, cfg, repo_of, git=None, cache=None, base_of=None):
+    """{task id: reason} for ready tasks to hold. cfg is the [dispatch] table; repo_of(task) names the task's checkout,
+    or None to leave its repo alone; base_of(task) names the base ref.
 
     Git runs lazily: not at all without a scoped ready task and an active branch in its repo; otherwise one
     for-each-ref per repo, then a diff per uncached branch tip. The cache keeps only the keys seen this call.
@@ -99,13 +102,16 @@ def holds(ready, active, cfg, git=None, cache=None, base_of=None):
     scoped = [t for t in ready if t.get("scope_files")]
     if not scoped:
         return {}
-    tips, files, seen, out = {}, {}, set(), {}
+    checkouts, tips, files, seen, out = {}, {}, {}, set(), {}
     for task in scoped:
         for other in active:
             if other["id"] == task["id"] or other.get("repo") != task.get("repo") or not other.get("branch"):
                 continue
             if other["id"] not in files:
-                repo = other.get("repo_path") or task.get("repo_path")
+                name = other.get("repo")
+                if name not in checkouts:
+                    checkouts[name] = repo_of(other)
+                repo = checkouts[name]
                 if repo not in tips:
                     tips[repo] = branch_tips(repo, git) if repo else None
                 files[other["id"]] = changed_files(repo, other["branch"], base_of(other), cache, git,
@@ -119,11 +125,11 @@ def holds(ready, active, cfg, git=None, cache=None, base_of=None):
     return out
 
 
-def tick_holds(port, cfg, base_of, git=None):
+def tick_holds(port, cfg, base_of, repo_of, git=None):
     """The dispatcher's entry: holds for the ledger's ready tasks. Any failure logs and holds nothing."""
     try:
         active = [t for status in states.ACTIVE for t in port.list_tasks(status)]
-        return holds(port.list_tasks("ready"), active, cfg, git=git, base_of=base_of)
+        return holds(port.list_tasks("ready"), active, cfg, repo_of, git=git, base_of=base_of)
     except Exception:
         log.exception("conflict hold failed; nothing is held")
         return {}

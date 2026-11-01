@@ -3,7 +3,15 @@
 {% block content %}
 <h2>Dispatch</h2>
 <section class="card"><p>Dispatch is <strong>{{ dispatch.label }}</strong>. New installs start paused; only the owner can change this.</p>
-  {{ dispatch_ctl(dispatch, '/health') }}</section>
+  {{ dispatch_ctl(dispatch, '/health') }}
+  <form method="post" action="/dispatch/default" class="inline">
+    <label>Tasks outside any epic are picked by
+      <select name="mode">
+        <option value="drover"{% if default_dispatch == 'drover' %} selected{% endif %}>Drover</option>
+        <option value="director"{% if default_dispatch == 'director' %} selected{% endif %}>Director</option>
+      </select></label>
+    <button>Set</button>
+  </form></section>
 {% if h.notifications %}
 <h2>Director notifications</h2>
 <section class="card"><p>Unassigned events: {{ h.notifications.unassigned }}. Global control epoch: {{ h.notifications.controls.global_epoch }}. Sequence: {{ h.notifications.controls.sequence }}.</p>
