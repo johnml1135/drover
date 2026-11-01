@@ -86,6 +86,16 @@ class GitProofTests(GitCase):
         self.assertIsNone(self.proof([unlanded]))          # a recorded commit that never reached the base
         self.assertEqual(self.proof([unlanded, other]), {'sha': other, 'proof': 'ancestor'})
 
+    def test_earlier_attempt_on_the_base_does_not_land_the_later_one(self):
+        first = self.r.branch('feat', {'f.txt': 'x'})
+        self.r.git('merge', '-q', '--ff-only', 'feat')
+        wt = self.r.root / 'retry-wt'
+        self.r.git('worktree', 'add', '-q', wt, 'feat')
+        second = self.r.commit('g.txt', cwd=wt)
+        self.r.git('worktree', 'remove', '--force', wt)
+        self.r.git('branch', '-q', '-f', 'feat', 'main')
+        self.assertIsNone(self.proof([first, second]))
+
     def test_own_commits_block_the_ancestor_shortcut(self):
         landed = self.r.branch('feat', {'f.txt': 'x'})
         self.r.git('merge', '-q', '--ff-only', 'feat')
@@ -182,15 +192,18 @@ class ScanCase(GitCase):
 
 class TickTests(ScanCase):
     def test_yanked_task_lands_and_unblocks_dependents(self):
-        tid = self.task('yanked')
+        tid = self.task('ready')
         follower = ops.create_task(self.conn, 'F', 'acme', scope_files=['g.txt'], deps=[tid])['id']
         ops.approve(self.conn, follower)
+        ops.yank(self.conn, tid)
         self.assertNotIn(follower, [t['id'] for t in ops.ready_tasks(self.conn)])
         tip = self.landed_by_hand()
         self.worker_done(tid, tip)
         self.assertEqual(self.scan()['landed'], [tid])
         self.assertEqual(self.status(tid), states.LANDED)
         self.assertIn(follower, [t['id'] for t in ops.ready_tasks(self.conn)])
+        self.assertEqual(Waiting(self.conn).pending(('task', follower)), [])
+        self.assertEqual(ops.claim_next(self.conn, {})['id'], follower)
         event = ops.events(self.conn, task_id=tid, kind='status')[-1]
         self.assertEqual((event['actor'], event['data']['from'], event['data']['to']),
                          ('detector', states.YANKED, states.LANDED))
@@ -201,10 +214,16 @@ class TickTests(ScanCase):
         self.assertEqual(len(ops.events(self.conn, task_id=tid, kind='task.landed')), 1)
 
     def test_needs_owner_task_lands(self):
-        tid = self.task()
+        tid = self.task('ready')
+        follower = ops.create_task(self.conn, 'F', 'acme', scope_files=['g.txt'], deps=[tid])['id']
+        ops.approve(self.conn, follower)
+        ops.set_status(self.conn, tid, states.NEEDS_OWNER, 'worker', reason='stuck')
+        self.assertNotIn(follower, [t['id'] for t in ops.ready_tasks(self.conn)])
         self.worker_done(tid, self.landed_by_hand())
         self.assertEqual(self.scan()['landed'], [tid])
         self.assertEqual(self.status(tid), states.LANDED)
+        self.assertEqual(Waiting(self.conn).pending(('task', follower)), [])
+        self.assertIn(follower, [t['id'] for t in ops.ready_tasks(self.conn)])
 
     def test_branch_at_base_stays_unlanded(self):
         self.r.git('branch', '-q', 'feat', 'main')

@@ -34,14 +34,6 @@ def _replayed(repo, base, sha):
     return _count(repo, base, sha, '--merges') == '0' and landing.contained(repo, sha, base)
 
 
-def _landed_commit(repo, base, commits):
-    """The newest recorded commit that is on the base."""
-    for sha in reversed(commits):
-        if _out(repo, 'merge-base', '--is-ancestor', sha, base) is not None:
-            return sha
-    return None
-
-
 def _adds_nothing(repo, base, tip):
     """The branch changed something, and merging it into the base changes nothing."""
     fork = _out(repo, 'merge-base', base, tip)
@@ -62,10 +54,12 @@ def _proof(repo, branch, base_ref, commits):
         return None
     if own == '0':
         # A fast-forward and a branch that never diverged look the same to git: only the ledger can tell them apart.
-        sha = _landed_commit(repo, base, commits)
-        if sha:
-            return {'sha': sha, 'proof': 'ancestor'}
-        return {'sha': base, 'proof': 'patch-equivalent'} if commits and _replayed(repo, base, commits[-1]) else None
+        # Only the newest commit counts: an earlier attempt on the base says nothing about the task's final output.
+        if not commits:
+            return None
+        if _out(repo, 'merge-base', '--is-ancestor', commits[-1], base) is not None:
+            return {'sha': commits[-1], 'proof': 'ancestor'}
+        return {'sha': base, 'proof': 'patch-equivalent'} if _replayed(repo, base, commits[-1]) else None
     if _replayed(repo, base, tip):
         return {'sha': base, 'proof': 'patch-equivalent'}
     if commits and _adds_nothing(repo, base, tip):
