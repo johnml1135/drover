@@ -6,14 +6,14 @@ DAY = 86400
 
 
 class Yanked(base.WorktreeCase):
-    def yank(self, name, *, idle=4 * DAY, lease=True):
+    def yank(self, name, *, idle=4 * DAY, lease=True, state='yanked'):
         """A committed worktree owned by a yanked task whose run has stopped, last touched `idle` seconds ago."""
         from drover import ownership
         wt = self.worktree(name, lease=lease)
         self.r.commit(name + '.txt', name, cwd=wt)
         ownership.tag(str(wt), 'alpha', 'drover:' + name, self.now + 86400, now=self.now)
         self.age(wt, idle)
-        task = dict(id=name, state='yanked', terminal=True, live=False, worktree=str(wt), owner='drover:' + name)
+        task = dict(id=name, state=state, terminal=True, live=False, worktree=str(wt), owner='drover:' + name)
         self.tasks = dict(at=self.now, active_worktrees=[], tasks=[*self.tasks.get('tasks', []), task])
         return wt
 
@@ -87,3 +87,39 @@ class Yanked(base.WorktreeCase):
         self.assertTrue(wt.exists(), 'a report never removes')
         self.cleanup(apply=True)
         self.assertFalse(wt.exists())
+
+    def settle_as(self, name, state, idle):
+        """The task was yanked, then moved to `state`; its tree was last touched `idle` seconds ago."""
+        return self.yank(name, idle=idle, state=state)
+
+    @integration
+    def test_abandoned_after_yank_keeps_idle_gate(self):
+        wt = self.settle_as('abandoned', 'cancelled', DAY)
+        self.sweep()
+        self.assertTrue(wt.exists())
+
+    @integration
+    def test_handed_back_worktree_keeps_idle_gate(self):
+        wt = self.settle_as('handed', 'cancelled', DAY)
+        (wt / 'edit.txt').write_text('director edit, committed')
+        self.r.git('add', 'edit.txt', cwd=wt)
+        self.r.git('commit', '-q', '-m', 'edit', cwd=wt)
+        self.age(wt, DAY)
+        self.sweep()
+        self.assertTrue(wt.exists())
+
+    @integration
+    def test_cancelled_recent_worktree_is_kept(self):
+        recent = self.settle_as('recent', 'cancelled', 2 * DAY)
+        old = self.settle_as('old-cancel', 'cancelled', 4 * DAY)
+        before = self.branches()
+        self.sweep()
+        self.assertTrue(recent.exists())
+        self.assertFalse(old.exists())
+        self.assertEqual(self.branches(), before)
+
+    @integration
+    def test_landed_task_rule_is_unchanged(self):
+        wt = self.settle_as('landed', 'landed', 0)
+        self.sweep()
+        self.assertFalse(wt.exists(), 'a landed task needs no idle days')
