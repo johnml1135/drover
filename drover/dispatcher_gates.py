@@ -66,6 +66,11 @@ class GateSteps:
                     p.append_event('gate-infra-continue', data, tid)
             except ValueError:
                 continue                             # the ledger refused: the run is stale or already gated
+        reads = []
+        def health():                                # one resource read a tick, however many tasks are queued
+            if not reads:
+                reads.append(self.resources_fn(new_workers=0))
+            return reads[0]
         for t in p.list_tasks("running"):
             runs = p.list_runs(t["id"])
             if not dispatch_repos.permits(allow, t["repo"]):
@@ -75,7 +80,7 @@ class GateSteps:
             if self._wsl_window(t):
                 continue
             try:
-                if self._begin_gate(t, runs):
+                if self._begin_gate(t, runs, health):
                     started.append(t["id"])
             except Exception as e:
                 self._safe_event("gate-error", {"error": repr(e)[:300]}, t["id"])
@@ -84,7 +89,7 @@ class GateSteps:
                     p.set_status(t["id"], "needs-owner", reason=f"could not start the gate: {e!r}"[:300])
         return started
 
-    def _begin_gate(self, task, runs):
+    def _begin_gate(self, task, runs, health):
         """A gate slot first: everything before it reads the ledger, so a queued task costs no resource check and no git,
         and asking each tick is what keeps its ticket alive and its place in the queue."""
         if not self._launch_allowed(task):
@@ -99,7 +104,7 @@ class GateSteps:
         platform = self._next_gate_platform(task, prog, worker["id"], sha)
         if self.ci_runners.reserve(task, platform=platform) is None:
             return False                                     # waiting for a gate slot
-        if not self._gate_ready(task, worker, sha, platform):
+        if not self._gate_ready(task, worker, sha, platform, health()):
             self.ci_runners.release(tid)
             return False
         gate_run = p.start_run(tid, "gate", "local", "gate")
@@ -135,10 +140,9 @@ class GateSteps:
                                        "placement": spec["placement"]}, tid)
         return True
 
-    def _gate_ready(self, task, worker, sha, platform):
+    def _gate_ready(self, task, worker, sha, platform, health):
         """The checks that cost a process, once a slot is held. False leaves the task to the next tick, or fails its gate."""
         p, tid = self.port, task["id"]
-        health = self.resources_fn(new_workers=0)
         if health['verdict'] != 'go':
             return False
         head = self.pipeline.head(task)
