@@ -129,6 +129,19 @@ def task_facts(request, path, tag):
     return live, terminal
 
 
+YANKED_IDLE_S = 3 * 86400
+
+
+def yanked_owner(request, tag):
+    """True only when a fresh snapshot shows this tag's task yanked; anything unclear is not."""
+    snapshot = request.get('tasks') or {}
+    at = snapshot.get('at')
+    if not (type(at) in (float, int) and 0 <= request['now'] - at <= 900) or not tag:
+        return False
+    return any(tag['owner'] == 'drover:' + str(t.get('id')) and t.get('state') == 'yanked'
+               for t in snapshot.get('tasks', []))
+
+
 def merged(machine, head):
     repo = machine['repo']
     base = git(repo, 'rev-parse', '--verify', machine['remote'] + '/' + machine['default_branch'] + '^{commit}').strip()
@@ -189,6 +202,9 @@ def inspect(request, machine, entry):
     row.update(head=head, gitdir=gitdir_at(path))
     row.update(facts(path, request['now'], request=request))
     lease = bool(tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now'])
+    # A yanked task's outcome is undecided, so its worktree goes only after three quiet days; the branch always stays.
+    if terminal and yanked_owner(request, tag) and row['age_s'] < YANKED_IDLE_S:
+        terminal = False
     observed['settlement'] = dict(live=live, terminal=terminal,
                                  merged=merged(machine, head) if lease and not terminal else False)
     return decision()
