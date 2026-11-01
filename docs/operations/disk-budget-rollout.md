@@ -8,7 +8,7 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
 2. **Set `host_floor_gb = 50` on the `h` disk tracker** in the global config (`[[trackers]]` entry with `kind = "disk"`, name `h`).
    `h` already has `wsl_combined = true`: the default tracker sets it and an entry named `h` merges over the default. So
    the deploy in step 1 is what turns on the WSL used-space reading, the `wsl` claim and the 500 GB hold; there is no
-   switch to set first. Check with `python -m drover config explain trackers`.
+   switch to set first. `python -m drover config explain trackers` shows the resolved entry.
    The floor needs raising because the default of 10 GB rests on free space inside the VHDX being already allocated on H:.
    Nightly compaction returns that space, so WSL growth takes real H: space again. At the default, H: at 30 GB free with
    700 GB free inside WSL is `ok` for WSL work; at 50 it is held.

@@ -14,16 +14,19 @@ def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None)
     path = config.home() / 'config.toml'
     raw = config._read(path)
     seeded = False
+    written = cfg['disk_cleanup']
     if raw is not None:
         original = copy.deepcopy(raw)
         if 'disk_cleanup' not in raw:
             raw['disk_cleanup'] = placement.detected_cleanup_policy(config.state_dir(cfg))
         placement.seed_cleanup_process_policy(raw['disk_cleanup'])
         seeded = raw != original
-        disk_preflight.check_cache_folders(config.validate(raw))
-        cfg['disk_cleanup'] = raw['disk_cleanup']
+        resolved = config.validate(raw)
+        disk_preflight.check_cache_folders(resolved)
+        written = raw['disk_cleanup']
+        cfg['disk_cleanup'] = resolved['disk_cleanup']      # as run() sees it: the report's scope is hashed over this
     plan = disk_schedule_steps.schedule_plan(cfg, apply=apply)
-    plan['disk_cleanup'] = cfg['disk_cleanup']
+    plan['disk_cleanup'] = written
     if dry_run:
         return plan
     state_dir = config.state_dir(cfg)

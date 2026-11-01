@@ -53,6 +53,24 @@ class Windows(DiskCase):
         self.assertIn('--apply', applied)
         self.assertNotIn('--dry-run', applied)
 
+    def test_a_dry_report_satisfies_install_apply_with_a_partial_table(self):
+        # The owner's [disk_cleanup] names a few keys; run() and scope_key see all of them, filled in by validation.
+        from drover import config
+        (self.state / 'config.toml').write_text('[disk_cleanup]\ncooldown_s = 7200\n', encoding='utf-8')
+        self.cfg = config.load()
+        self.assertEqual(self.cfg['disk_cleanup']['cooldown_s'], 7200)
+        self.assertIn('wsl_stop_gb', self.cfg['disk_cleanup'])
+        self.run_cleanup(apply=False, real=False)
+        commands = []
+
+        def runner(argv, **kwargs):
+            commands.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        steps = dict(files={}, argv=[['schtasks.exe', '/Create']])
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=steps):
+            disk_schedule.install(self.cfg, apply=True, runner=runner)
+        self.assertEqual(commands, steps['argv'])
+
     def test_install_dry_run_and_first_live_report_receipt(self):
         from drover import disk_schedule, disk_cleanup, placement
         commands = []
