@@ -216,6 +216,15 @@ class UiView:
     def delete_task(self, tid, confirm=False):
         return self.s.delete_task(tid, confirm)
 
+    def yank_task(self, tid, reason=""):
+        return self.s.yank_task(tid, reason)
+
+    def abandon_task(self, tid):
+        return self.s.abandon_task(tid)
+
+    def handback_task(self, tid):
+        return self.s.handback_task(tid)
+
     def task(self, tid):
         return self.s.get_task(tid)
 

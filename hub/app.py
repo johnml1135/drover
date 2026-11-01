@@ -5,7 +5,7 @@ import time
 import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from hub import api, auth, events, notifications, outside, web, tree_web
+from hub import api, auth, bypass, events, notifications, outside, web, tree_web
 from hub.perf import Perf
 from hub.dispatch import DispatcherService
 from hub.services import Services
@@ -105,6 +105,7 @@ def create_app(db_path, settings: Settings | None = None, wsl=real_wsl, make_dis
     app.include_router(api.router)
     app.include_router(notifications.router)
     app.include_router(outside.router)
+    app.include_router(bypass.router)
     app.include_router(events.router)
     app.dependency_overrides[web.get_store] = lambda: ui_view
     app.include_router(web.router)

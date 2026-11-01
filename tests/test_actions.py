@@ -80,7 +80,7 @@ class ActionsTests(unittest.TestCase):
             self.service.commit('director:b', token, {}, [], [self.comment()], 'unlisted')
 
     def test_destination_rechecks_generation_transfer_revision_and_pause_after_commit(self):
-        for fence in ('generation', 'ownership', 'revision', 'pause', 'cancelled'):
+        for fence in ('generation', 'ownership', 'revision', 'pause', 'cancelled', 'yanked'):
             with self.subTest(fence=fence):
                 # Each fence gets its own role and scope, leaving pending receipts independent.
                 role = f'director:{fence}'
@@ -101,6 +101,8 @@ class ActionsTests(unittest.TestCase):
                     ops.event(self.conn, 'progress', 'worker', {}, task_id=task['id'])
                 elif fence == 'pause':
                     ops.set_setting(self.conn, 'dispatch_enabled', 'false')
+                elif fence == 'yanked':
+                    ops.yank(self.conn, task['id'])
                 else:
                     ops.set_status(self.conn, task['id'], 'cancelled', actor='owner')
                 result = actions.execute(self.conn, receipt['actions'][0]['action_id'], now=lambda: self.time)

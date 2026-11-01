@@ -33,9 +33,12 @@ def replay(conn, cfg, now):
     from .. import config, disk_state, ownership
     from . import states
     tasks = []
+    running = {row[0] for row in conn.execute('SELECT DISTINCT task_id FROM runs WHERE ended IS NULL')}
     for task in ops.list_tasks(conn, include_archived=True):
-        live = task['status'] not in states.TERMINAL
-        tasks.append(dict(id=task['id'], state=task['status'], terminal=task['status'] in states.TERMINAL,
+        # A yanked task's worktree stays live until its run has stopped.
+        closed = task['status'] in states.CLOSED and not (task['status'] == states.YANKED and task['id'] in running)
+        live = not closed
+        tasks.append(dict(id=task['id'], state=task['status'], terminal=closed,
                           live=live, worktree=task.get('worktree'), owner='drover:' + task['id']))
         try:
             if live and task.get('worktree') and ownership.owned_by(task['worktree'], 'drover:' + task['id']):

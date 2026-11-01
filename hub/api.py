@@ -18,7 +18,7 @@ TaskSize = Literal["S", "M", "L"]
 TaskRisk = Literal["low", "high"]
 NewTaskStatus = Literal["proposed", "draft"]
 TaskStatus = Literal["proposed", "draft", "ready", "claimed", "running", "gated", "reviewed",
-                     "landed", "blocked", "failed", "needs-owner", "cancelled"]
+                     "landed", "blocked", "failed", "needs-owner", "cancelled", "yanked"]
 
 public = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth.require_api)])
@@ -366,7 +366,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "bypass", "handback", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)

@@ -172,6 +172,8 @@ class Store:
 
     @_translate
     def set_status(self, tid, status, actor, reason=None):
+        if status == "yanked":  # every yank writes its bypass record, whichever route it came by
+            return self.yank_task(tid, reason or "", actor)
         t = ops.set_status(self.conn, tid, status, actor=actor, reason=reason)
         self._changed("task.status", id=tid, status=status)
         return t
@@ -195,6 +197,32 @@ class Store:
         if old != t['status']:
             self._changed('task.status', id=tid, status=t['status'])
         return t
+
+    @_translate
+    def yank_task(self, tid, reason="", actor="owner"):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.yank(self.conn, tid, actor=actor, reason=reason)
+        self._changed("task.status", id=tid, status=t["status"])
+        return t
+
+    @_translate
+    def abandon_task(self, tid):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.abandon(self.conn, tid, actor="owner")
+        self._changed("task.status", id=tid, status=t["status"])
+        return t
+
+    @_translate
+    def handback_task(self, tid):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        with tx(self.conn):
+            explicit = self.get_task(tid)["requires_explicit_approval"]
+            t = ops.handback(self.conn, tid, actor="owner")
+            self.set_explicit_approval(t["id"], explicit)
+        self._changed("task.status", id=tid, status="cancelled")
+        self._changed("task.created", id=t["id"])
+        return t
+
     @_translate
     def claim_next(self, worker):
         t = ops.claim_next(self.conn, dict(worker))

@@ -434,3 +434,18 @@ async def delete_task(tid: str, request: Request, store=Depends(get_store)):
     form = await _form(request)
     store.delete_task(tid, confirm=_one(form, "confirm") == "1")
     return RedirectResponse("/plan", status_code=303)
+
+@router.post("/tasks/{tid}/yank")
+async def yank_task(tid: str, request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    store.yank_task(tid, _one(form, "reason"))
+    return RedirectResponse(f"/tasks/{tid}", status_code=303)
+
+@router.post("/tasks/{tid}/abandon")
+def abandon_task(tid: str, store=Depends(get_store)):
+    store.abandon_task(tid)
+    return RedirectResponse(f"/tasks/{tid}", status_code=303)
+
+@router.post("/tasks/{tid}/handback")
+def handback_task(tid: str, store=Depends(get_store)):
+    return RedirectResponse(f"/tasks/{store.handback_task(tid)['id']}", status_code=303)

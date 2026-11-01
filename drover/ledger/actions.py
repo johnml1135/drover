@@ -87,8 +87,8 @@ def _validate_destination(service, kind, payload, authority):
         raise PermissionError('action ownership changed')
     if not task['approved_at']:
         raise ops.NotApproved('director actions require owner-approved work')
-    if task['status'] in ('cancelled', 'landed'):
-        raise Conflict('task is cancelled or complete')
+    if task['status'] in ('cancelled', 'yanked', 'landed'):
+        raise Conflict('task is closed')
     revision = conn.execute('SELECT COALESCE(MAX(id),0) FROM task_events WHERE task_id=?', (task['id'],)).fetchone()[0]
     if payload.get('expected_revision') != revision or payload.get('expected_status') != task['status']:
         raise Conflict('task revision or state changed')

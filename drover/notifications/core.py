@@ -134,7 +134,7 @@ def capture_event(conn, event, *, subscription=None, replay=False):
                                  task['id'] not in sub['selectors'].get('tasks', []))
     if not replay and sub and not group_following_child and preferences['stop_on_completion'] and (event_class in ('landed', 'group-ready') or
             (event_class == 'result-accepted' and task['kind'] in ('research', 'investigation')) or
-            (event['kind'] == 'status' and event['data'].get('to') == 'cancelled')):
+            (event['kind'] == 'status' and event['data'].get('to') in ('cancelled', 'yanked'))):
         Notifications(conn).tune(sub['id'], sub['revision'], enabled=False)
 
 
@@ -182,7 +182,7 @@ class Notifications(OwnershipMixin, ReplayMixin):
             if not is_landing or not question['visible'] or question['proposal']:
                 continue
             if not any(kind != 'task' or (
-                    (task := ops.get_task(self.conn, key))['status'] not in states.TERMINAL and not task['archived'])
+                    (task := ops.get_task(self.conn, key))['status'] not in states.CLOSED and not task['archived'])
                        for kind, key in question['subjects']):
                 continue
             if question['cause'] and waiting.state(question['cause']) != OPEN:

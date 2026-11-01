@@ -14,8 +14,8 @@ class WaitingReplan:
         if not isinstance(trigger, str) or not trigger:
             raise ValueError('replan trigger required')
         with tx(self.conn):
-            if ops.get_task(self.conn, task_id)['status'] in states.TERMINAL:
-                raise states.IllegalTransition('terminal task cannot request a replan')
+            if ops.get_task(self.conn, task_id)['status'] in states.CLOSED:
+                raise states.IllegalTransition('closed task cannot request a replan')
             ops.event(self.conn, 'replan-request', self.actor, {**(data or {}), 'trigger': trigger}, task_id=task_id)
             return next(r for r in self.replans() if r['task_id'] == task_id)
 
@@ -68,7 +68,7 @@ class WaitingReplan:
                 if task['id'] != source['id'] and scope.any_overlap(source['scope_files'], task['scope_files']):
                     followers.add(task['id'])
         return [t for t in ops.list_tasks(self.conn, include_archived=True) if t['id'] in followers
-                and t['status'] not in (*states.ACTIVE, *states.TERMINAL)]
+                and t['status'] not in (*states.ACTIVE, *states.CLOSED)]
 
     def _request(self, event) -> list[dict]:
         from . import ops
@@ -85,7 +85,7 @@ class WaitingReplan:
             raise ValueError('request requires a task or epic')
         result = []
         for task in tasks:
-            if task['status'] in states.TERMINAL:
+            if task['status'] in states.CLOSED:
                 continue
             existing = self.conn.execute(
                 'SELECT id FROM replan_requests WHERE task_id=? AND (requesting_event=? OR state<>?) ORDER BY id LIMIT 1',

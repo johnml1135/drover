@@ -170,7 +170,7 @@ class WaitingCore:
         if subject[0] != 'task':
             return
         task = ops.get_task(self.conn, subject[1])
-        if task['status'] in states.TERMINAL or self.conn.execute('SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL', (subject[1],)).fetchone():
+        if task['status'] in states.CLOSED or self.conn.execute('SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL', (subject[1],)).fetchone():
             return
         modes = {r['data']['mode'] for r in self.pending(subject)}
         target = states.NEEDS_OWNER if 'needs-owner' in modes else states.BLOCKED if 'blocked' in modes else None
@@ -223,7 +223,7 @@ class WaitingCore:
         if subject[0] != 'task':
             return
         task = self.conn.execute('SELECT * FROM tasks WHERE id=?', (subject[1],)).fetchone()
-        if task is None or task['status'] in states.TERMINAL:
+        if task is None or task['status'] in states.CLOSED:
             return
         task = dict(task)
         target = flags['resume_state']

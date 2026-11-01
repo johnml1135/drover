@@ -32,7 +32,7 @@ class WaitingReplanRuns:
     def _replan_eligible(self, request, enrolled, followers, order):
         from . import ops
         task = ops.get_task(self.conn, request['task_id'])
-        if request['state'] != QUEUED or task['archived'] or task['status'] in (*states.ACTIVE, *states.TERMINAL):
+        if request['state'] != QUEUED or task['archived'] or task['status'] in (*states.ACTIVE, *states.CLOSED):
             return False
         if self.replan_busy(task['id']) or self.conn.execute(
                 'SELECT 1 FROM runs WHERE task_id=? AND ended IS NULL', (task['id'],)).fetchone():
@@ -160,7 +160,7 @@ class WaitingReplanRuns:
             if request['state'] == DONE:
                 completed = json.loads(request['result'])
                 local_outcome = contract.UNVERIFIED
-            elif task['status'] in states.TERMINAL or task['archived']:
+            elif task['status'] in states.CLOSED or task['archived']:
                 completed = self._request_done(rid, 'cancelled')
                 local_outcome = contract.UNVERIFIED
             elif unchanged_queued and matches[rid]:
