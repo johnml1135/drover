@@ -13,6 +13,7 @@ from .db import tx
 
 AGENT_STATES = ('starting', 'live', 'rotating', 'compaction', 'retired', 'gone')
 HEAD_MAX = 60
+CLOSED_WRITES = ('sent', 'unsent', 'observed', 'acknowledged')    # any other state may still be acting on the pane
 _REQUIRED = ('pane_id', 'kind', 'seat', 'placement', 'started_by')
 _UPDATABLE = ('role_id', 'run_id', 'terminal_id', 'name', 'session_id', 'cwd', 'state', 'handoff_state', 'context_tokens')
 _CHOICES = {'kind': ('claude', 'codex'), 'placement': ('windows', 'wsl'), 'started_by': ('drover', 'owner'),
@@ -80,15 +81,30 @@ def by_pane(conn, pane_id) -> dict | None:
     return dict(row) if row else None
 
 
+def _note(conn, agent_id, kind, text):
+    text = ' '.join(text.split())
+    row = conn.execute("INSERT INTO pane_writes(agent_id,kind,digest,head,state,at) VALUES(?,?,?,?,'pending',?) "
+                       'RETURNING *', (agent_id, kind, hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                                       text[:HEAD_MAX], _stamp())).fetchone()
+    return dict(row)
+
+
 def note_write(conn, agent_id, kind, text) -> dict:
     """Record the intent to write, before the write."""
-    text = ' '.join(text.split())
     with tx(conn):
         _agent(conn, agent_id)
-        row = conn.execute("INSERT INTO pane_writes(agent_id,kind,digest,head,state,at) VALUES(?,?,?,?,'pending',?) "
-                           'RETURNING *', (agent_id, kind, hashlib.sha256(text.encode('utf-8')).hexdigest(),
-                                           text[:HEAD_MAX], _stamp())).fetchone()
-        return dict(row)
+        return _note(conn, agent_id, kind, text)
+
+
+def note_once(conn, agent_id, kinds, kind, text) -> dict | None:
+    """Record the intent unless a write of `kinds` is on record for this agent; only `unsent` shows none went out."""
+    marks = ','.join('?' * len(kinds))
+    with tx(conn):
+        _agent(conn, agent_id)
+        if conn.execute(f"SELECT 1 FROM pane_writes WHERE agent_id=? AND kind IN ({marks}) AND state<>'unsent' LIMIT 1",
+                        (agent_id, *kinds)).fetchone():
+            return None
+        return _note(conn, agent_id, kind, text)
 
 
 def finish_write(conn, write_id, state, reason=None) -> dict:
@@ -100,6 +116,21 @@ def finish_write(conn, write_id, state, reason=None) -> dict:
         if row is None:
             raise LookupError(f'no pane write {write_id}')
         return dict(row)
+
+
+def claim_enter(conn, write_id, state, reason) -> dict | None:
+    """Mark a write's Enter as pressed if the write is still as the caller read it, or None if another caller got there."""
+    with tx(conn):
+        row = conn.execute("UPDATE pane_writes SET reason='enter-pressed' WHERE id=? AND state=? AND "
+                           "coalesce(reason,'')=coalesce(?,'') RETURNING *", (write_id, state, reason)).fetchone()
+        return dict(row) if row else None
+
+
+def open_writes(conn, agent_id) -> list[dict]:
+    """Every write not known to be over, oldest first. A newer row of any kind never hides one."""
+    marks = ','.join('?' * len(CLOSED_WRITES))
+    return [dict(row) for row in conn.execute(f'SELECT * FROM pane_writes WHERE agent_id=? AND state NOT IN ({marks}) '
+                                              'ORDER BY id', (agent_id, *CLOSED_WRITES))]
 
 
 def last_write(conn, agent_id, kind=None) -> dict | None:
