@@ -39,6 +39,7 @@ RUNNING = ('starting', 'live', 'rotating', 'compaction')
 RESUMABLE = ('live', 'compaction')
 SHELL_BUSY = ('shell-not-alone', 'shell-line-not-empty')
 SHELL_NOT_READY = 'shell-not-ready'
+SUPERSEDED = ('wake', 'handoff', 'stop', 'interrupt')
 OWNERS_NOW = ('dialog', 'suspected-dialog', 'draft', 'occupant-changed', 'herdr-refused:agent_blocked')    # waiting cannot clear these
 HERDR_CLOSED = 'herdr-unavailable'
 DEFAULT_PROMPT = 'Read your inbox and commit a checkpoint.'
@@ -453,6 +454,13 @@ def start(port, herdr, spec, credential, guard, *, cfg) -> dict:
     return _launched(port, herdr, row, launcher, args, cfg)
 
 
+def _close_superseded(port, row):
+    """The shell shows alone, so the CLI these went to is gone and none of them can land."""
+    for write in ops_panes.open_writes(port.conn, row['id']):
+        if write['kind'] in SUPERSEDED:
+            ops_panes.finish_write(port.conn, write['id'], 'observed', 'superseded')
+
+
 def resume(port, herdr, row, spec, *, cfg, credential=None) -> dict:
     """Relaunch the recorded session in its pane, on a new row and with no brief. Seat and placement come from the row.
 
@@ -468,12 +476,13 @@ def resume(port, herdr, row, spec, *, cfg, credential=None) -> dict:
     current = ops_panes.by_pane(port.conn, row['pane_id'])
     if current is None or current['id'] != row['id']:
         raise AdmissionHeld('pane-not-resumable')
-    if ops_panes.open_writes(port.conn, row['id']):
-        raise AdmissionHeld('pane-open-write')
     if _terminal(herdr, row['pane_id']) != row['terminal_id']:
         raise AdmissionHeld('pane-occupant-changed')
     if _read_alone(herdr, row) is not True:
         raise AdmissionHeld('pane-agent-running')
+    _close_superseded(port, row)
+    if ops_panes.open_writes(port.conn, row['id']):
+        raise AdmissionHeld('pane-open-write')
     spec = dict(spec, backend=row['kind'], placement=row['placement'], seat=row['seat'], cwd=row['cwd'],
                 run_id=spec['run_id'] if credential else row['run_id'])
     seat, args = _prepare(spec, cfg, resume_id=row['session_id'])

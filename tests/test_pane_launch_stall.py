@@ -411,7 +411,8 @@ class Resume(Launching):
 
     def test_an_open_write_stops_a_resume(self):
         row = self.live()
-        ops_panes.note_write(self.conn, row['id'], 'stop', 'stop now')
+        self.fake.processes = LONE_SHELL
+        ops_panes.note_write(self.conn, row['id'], 'brief', 'a brief that may yet land')
         with self.assertRaises(AdmissionHeld) as caught:
             self.resume(row)
         self.assertEqual(str(caught.exception), 'pane-open-write')

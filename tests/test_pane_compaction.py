@@ -233,7 +233,7 @@ class Resume(Overnight):
         self.assertEqual(self.agent()['outcome'], 'resumed')
         self.assertEqual(self.writes().count(['pane', 'run', PANE, self.writes()[0][3]]), 1)
 
-    def test_open_stop_and_interrupt_writes_close_before_the_resume(self):
+    def test_an_open_stop_closes_before_the_resume(self):
         self.up()
         self.sleep.side_effect = lambda seconds: self.fake.screens.update({PANE: composing('stop now and more')})
         self.at(0)
@@ -369,7 +369,7 @@ class Failed(Overnight):
             self.at(900)
         self.assertEqual((self.agent()['outcome'], self.agent()['reason']), ('resume-failed', 'resume-error'))
 
-    def test_an_agent_that_never_takes_the_text_fails_at_the_deadline(self):
+    def test_an_agent_that_never_takes_the_text_is_flagged_at_the_deadline(self):
         self.up()
         self.at(0)
         self.comes_back()
@@ -377,12 +377,9 @@ class Failed(Overnight):
         self.at(900)
         self.assertIsNone(self.agent()['outcome'])
         self.at(900 + compaction_hold.RESUME_S)
-        self.assertEqual((self.agent()['outcome'], self.agent()['reason']), ('resume-failed', 'focused'))
-        self.assertEqual(self.new_row()['state'], 'failed')
-        self.released()
-        with mock.patch.object(pane_launch, 'start') as start:
-            self.tick()
-        start.assert_not_called()       # its agent is still in the pane, and two agents on a role is worse than a wait
+        self.assertEqual((self.agent()['outcome'], self.agent()['reason']), ('resumed-untold', 'focused'))
+        self.assertEqual(self.new_row()['state'], 'live')
+        self.assertTrue(self.outcome_is_open())
 
     def test_herdr_closed_is_one_flag_and_the_job_finishes(self):
         self.up()
@@ -394,9 +391,10 @@ class Failed(Overnight):
         self.assertTrue(self.answer['settled'])
         self.restarted()
         self.at(900)
-        self.assertEqual((self.agent()['outcome'], self.agent()['reason']), ('resume-failed', 'herdr-unavailable'))
+        self.at(900 + compaction_hold.RESUME_S)
+        self.assertEqual((self.agent()['outcome'], self.agent()['reason']), (None, 'herdr-unavailable'))
         self.assertTrue(self.answer['settled'])
-        self.assertEqual(self.outcome(), 'compaction-fresh')
+        self.assertTrue(self.outcome_is_open(), 'no read, so nothing ends')
         self.assertEqual(len(self.pane_notices()), 1)
 
     def test_herdr_closing_at_the_resume_is_noticed_there(self):
@@ -405,7 +403,7 @@ class Failed(Overnight):
         self.comes_back(boots=False)
         self.fake.closed = True
         self.at(900)
-        self.assertEqual((self.agent()['outcome'], self.agent()['reason']), ('resume-failed', 'herdr-unavailable'))
+        self.assertEqual((self.agent()['outcome'], self.agent()['reason']), (None, 'herdr-unavailable'))
         self.assertEqual(len(self.pane_notices()), 1)
 
     def test_a_row_a_hold_left_behind_is_ended_and_flagged(self):

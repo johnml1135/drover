@@ -340,7 +340,7 @@ class Lapsed(Case):
     def test_a_refused_resume_flags_the_pane_and_goes_to_a_fresh_one(self):
         self.launched()
         self.exited()
-        ops_panes.note_write(self.conn, self.row['id'], 'wake', 'a write that may yet land')
+        ops_panes.note_write(self.conn, self.row['id'], 'brief', 'a write that may yet land')
         self.time += DAY_AND_A_BIT
         self.tick()
         self.assertEqual(self.row_now()['state'], 'failed')

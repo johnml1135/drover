@@ -20,12 +20,13 @@ def paste(text, pane=PANE):
 class Typing(Stage):
     """A pane that takes what is typed: a paste sits in the composer, and its Enter starts a turn or, with `settles`, ends one."""
     settles = False
+    idle, working, compose = IDLE, WORKING, staticmethod(composing)
 
     def _answer(self, args):
         if args[:2] == ['pane', 'send-text'] and args[2] in self.screens:
-            self.screens[args[2]] = composing(args[3].removeprefix('\x1b[200~').removesuffix('\x1b[201~'))
+            self.screens[args[2]] = self.compose(args[3].removeprefix('\x1b[200~').removesuffix('\x1b[201~'))
         if args[:2] == ['pane', 'send-keys'] and args[3] == 'enter' and args[2] in self.agents:
-            self.screens[args[2]] = IDLE if self.settles else WORKING
+            self.screens[args[2]] = self.idle if self.settles else self.working
             self.agents[args[2]]['agent_status'] = 'idle' if self.settles else 'working'
         return super()._answer(args)
 

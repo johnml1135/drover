@@ -9,13 +9,16 @@ repeats it. A refusal is final: the agent gets no further input and its row wait
 ASK_S + INTERRUPT_S and not sooner. Only an idle read on a tick after the stop counts: on the tick that sent it the agent
 has not seen it yet.
 
-Resume: the recorded session comes back on a new row in the same pane, and "restart complete, keep going" follows once
-that pane passes every check. Any failure ends the row and the run as `compaction-fresh`, which spends no replacement,
-and signals the role. Launches wait for the release, so its next tick starts a fresh agent in a new pane from the repo,
-the ledger and the brief. The job's report flags the row with its seat and placement.
+Resume: a fenced or STOPped run comes first and stays stopped: no launch, no text, one notice. Otherwise the recorded
+session comes back on a new row in the same pane, and "restart complete, keep going" follows once that pane passes every
+check. A failure is settled by a read of the pane. No agent there: the row and the run end as `compaction-fresh`, which
+spends no replacement, the role is signalled, and as launches wait for the release its next tick starts a fresh agent in
+a new pane from the repo, the ledger and the brief. An agent there: it keeps its session and its row stays `live`, flagged
+as `resumed-untold`, and the wake route tells it. No read: nothing changes and the next tick reads again. The job's
+report flags each with its seat and placement.
 
 A hold that ends with a row still in `compaction` had no resume phase, as after a failed restart or a job that died, so
-such a row takes the same way out with a notice of its own.
+such a row is settled the same way with a notice of its own, once a clean read proves the hold is over.
 """
 import json
 import logging
@@ -34,9 +37,10 @@ EVENT = 'pane-compaction'
 FRESH_EVENT = 'pane-compaction-fresh'
 STOP, RESUME = 'stop', 'resume'
 ASKED, INTERRUPTED, LEFT = 'stopped-asked', 'stopped-interrupted', 'left-for-kill'
-RESUMED, RESUME_FAILED = 'resumed', 'resume-failed'
+RESUMED, RESUME_FAILED, UNTOLD, STAYED_STOPPED = 'resumed', 'resume-failed', 'resumed-untold', 'stayed-stopped'
 STOPPED = (ASKED, INTERRUPTED)
-OVER = (RESUMED, RESUME_FAILED)
+OVER = (RESUMED, RESUME_FAILED, UNTOLD, STAYED_STOPPED)
+MISSING_PANE = 'herdr-refused:pane_not_found'
 STOP_STEPS = ('hold', 'stop')       # once the job has moved past these, nothing reaches a pane before the resume
 PUBLIC = ('pane_id', 'seat', 'placement', 'session_id')
 RECORDED = (*PUBLIC, 'run_id', 'role_id')
@@ -155,32 +159,99 @@ def _stop_tick(night):
     return night.answer(STOP, deadline or moved_on or all(facts.get('outcome') in STOPPED for facts in night.agents.values()))
 
 
-def _end_row(service, pane_id, reason, *, notice):
-    current = ops_panes.by_pane(service.conn, pane_id)
-    if current and current['state'] in pane_launch.RUNNING:
-        pane_launch.expire(service.port, service.herdr, current, f'resume failed: {reason}', notice=notice,
+def _in_pane(service, row):
+    """What one read proves: True an agent is there, False none is, None nothing. Only a read may end anything."""
+    try:
+        return not pane_send.shell_alone(service.herdr, row)
+    except PaneRefused as refused:
+        if refused.reason == MISSING_PANE:
+            return False
+        if refused.reason == pane_launch.HERDR_CLOSED:
+            service.herdr_down()
+        return None
+
+
+def _fence(service, run_id):
+    """Why this run may not go on, or None. A pause starts nothing new but ends no resident's session, so it is no fence."""
+    run = service.conn.execute("SELECT spec,stop_action_id FROM director_runs WHERE run_id=? AND state<>'finished'", (run_id,)).fetchone()
+    if run is None:
+        return None
+    if run['stop_action_id']:
+        return 'stopped'
+    try:
+        DirectorRuntime(service.port, service, now=service.now)._guard(json.loads(run['spec']))
+    except AdmissionHeld as held:
+        return None if str(held) == roles.DISPATCH_PAUSED else str(held)
+    return None
+
+
+def _signal(service, row, reason):
+    if row.get('role_id'):
+        event = service.port.append_event(FRESH_EVENT, dict(role_id=row['role_id'], run_id=row.get('run_id'), reason=reason), actor='panes')
+        with tx(service.conn):
+            roles.signal(service.conn, row['role_id'], event)
+
+
+def _end_row(service, row, reason, *, notice):
+    if row['state'] in pane_launch.RUNNING:
+        pane_launch.expire(service.port, service.herdr, row, f'resume failed: {reason}', notice=notice,
                            outcome='A fresh agent starts in a new pane once this one shows none.')
 
 
-def _start_fresh(service, facts, reason):
-    """The run ends clean and the role is told. The wake goes after `finish`, which works the role's wake out again."""
-    if facts.get('run_id'):
-        DirectorRuntime(service.port, service, now=service.now).finish(facts['run_id'], dict(status=COMPACTION_FRESH, usage={}))
-    if facts.get('role_id'):
-        event = service.port.append_event(FRESH_EVENT, dict(role_id=facts['role_id'], run_id=facts.get('run_id'), reason=reason),
-                                          actor='panes')
-        with tx(service.conn):
-            roles.signal(service.conn, facts['role_id'], event)
+def _start_fresh(service, row, reason):
+    """Only on a read showing no agent. The run ends clean, and the wake goes after `finish`, which works it out again."""
+    if row.get('run_id'):
+        DirectorRuntime(service.port, service, now=service.now).finish(row['run_id'], dict(status=COMPACTION_FRESH, usage={}))
+    _signal(service, row, reason)
+
+
+def _keep_row(service, row):
+    """The agent is up, so its row is `live` again and nothing the hold wrote stands in the way of the next wake."""
+    for write in ops_panes.open_writes(service.conn, row['id']):
+        if write['kind'] in ('stop', 'interrupt', RESUME):
+            ops_panes.finish_write(service.conn, write['id'], 'observed', 'agent-kept')
+    if row['state'] == 'compaction':
+        ops_panes.update_agent(service.conn, row['id'], state='live')
+
+
+def _keep_agent(service, row, reason):
+    """It keeps its session. The wake route tells it, when the pane lets it."""
+    _keep_row(service, row)
+    _signal(service, row, reason)
+
+
+def _stay_stopped(service, row, why):
+    """No launch and no text: the runtime's stop path has the run. False until a read says what the pane holds."""
+    seen = _in_pane(service, row)
+    if seen is None:
+        return False
+    if seen:
+        _keep_row(service, row)
+    elif row['state'] in pane_launch.RUNNING:
+        ops_panes.update_agent(service.conn, row['id'], state='retired')
+    pane_launch.publish(service.port, f"pane-compaction-stopped:{row['id']}", 'A stopped director was not resumed',
+                        f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: {why}. It stays stopped after the compaction.")
+    return True
+
+
+def _newest(night, row_id):
+    """The row that speaks for this pane now: a resume gives it a second one."""
+    return ops_panes.by_pane(night.conn, night.agents[row_id]['pane_id']) or _row(night.conn, row_id)
 
 
 def _failed(night, row_id, reason):
     """Every effect here may run twice, so the note comes last and a crash is only ever repeated."""
-    facts = night.agents[row_id]
-    _end_row(night.service, facts['pane_id'], reason, notice=False)
-    if reason == pane_launch.HERDR_CLOSED:
-        night.service.herdr_down()
-    _start_fresh(night.service, facts, reason)
-    night.note(row_id, outcome=RESUME_FAILED, reason=reason)
+    row = _newest(night, row_id)
+    seen = _in_pane(night.service, row)
+    if seen is None:
+        return night.note(row_id, outcome=None, reason=reason, failure=reason)
+    if seen and row['state'] in pane_launch.RESUMABLE:
+        _keep_agent(night.service, row, reason)
+        return night.note(row_id, outcome=UNTOLD, reason=reason)
+    if not seen:
+        _end_row(night.service, row, reason, notice=False)
+        _start_fresh(night.service, night.agents[row_id], reason)
+    return night.note(row_id, outcome=RESUME_FAILED, reason=reason)
 
 
 def _row(conn, row_id):
@@ -193,22 +264,14 @@ def _spec(conn, run_id):
     return json.loads(row['spec']) if row else None
 
 
-def _close_stop_writes(night, row):
-    """The agent they went to died with WSL, and `pane_launch.resume` refuses a row with an open write."""
-    for write in ops_panes.open_writes(night.conn, row['id']):
-        if write['kind'] in ('stop', 'interrupt'):
-            ops_panes.finish_write(night.conn, write['id'], 'observed', 'compaction-closed')
-
-
 def _relaunch(night, row_id):
     """The session back on a new row: True when a live one holds it. One try, as a launch always is."""
     facts = night.agents[row_id]
     if facts.get('relaunched'):
-        return _failed(night, row_id, 'resume-cut-short')
+        return _failed(night, row_id, facts.get('failure') or 'resume-cut-short')
     row, spec = _row(night.conn, row_id), _spec(night.conn, facts.get('run_id'))
     if spec is None:
         return _failed(night, row_id, 'no-open-run')
-    _close_stop_writes(night, row)
     night.note(row_id, relaunched=True)
     try:
         fresh = pane_launch.resume(night.port, night.herdr, row, spec, cfg=night.service.cfg)
@@ -222,9 +285,14 @@ def _relaunch(night, row_id):
 
 def _resume_one(night, row_id, expired):
     facts = night.agents[row_id]
+    why = _fence(night.service, facts.get('run_id'))
+    if why:
+        if _stay_stopped(night.service, _newest(night, row_id), why):
+            night.note(row_id, outcome=STAYED_STOPPED, reason=why)
+        return None
     if 'fresh' not in facts:
         if expired:
-            return _failed(night, row_id, 'no-time-left')
+            return _failed(night, row_id, facts.get('failure') or 'no-time-left')
         if not _relaunch(night, row_id):
             return None
     try:
@@ -247,20 +315,36 @@ def _resume_tick(night):
     for row_id, facts in list(night.agents.items()):
         if facts.get('outcome') not in OVER and _guarded(_resume_one, night, row_id, expired):
             _guarded(_failed, night, row_id, 'resume-error')
-    return night.answer(RESUME, all(facts.get('outcome') in OVER for facts in night.agents.values()))
+    return night.answer(RESUME, expired or all(facts.get('outcome') in OVER for facts in night.agents.values()))
+
+
+def _leftover(service, row):
+    why = _fence(service, row['run_id'])
+    if why:
+        return _stay_stopped(service, row, why)
+    seen = _in_pane(service, row)
+    if seen:
+        _keep_agent(service, row, 'hold-ended')
+        return pane_launch.publish(service.port, f"pane-compaction-kept:{row['id']}", 'A director outlived a compaction',
+                                   f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: the hold ended with the agent "
+                                   'still in its pane. It keeps its session and hears by the next wake.')
+    if seen is False:
+        _end_row(service, row, 'hold-ended', notice=True)
+        _start_fresh(service, row, 'hold-ended')
+    return None
 
 
 def _leftovers(service):
-    """Rows a hold left in `compaction`: nothing else would ever end them, and the role stays taken until one does."""
-    for row in ops_panes.open_agents(service.conn):
-        if row['state'] == 'compaction':
-            _end_row(service, row['pane_id'], 'hold-ended', notice=True)
-            _start_fresh(service, row, 'hold-ended')
+    """Rows a hold left in `compaction`, once a clean read proves it over: nothing else would ever settle them."""
+    rows = [row for row in ops_panes.open_agents(service.conn) if row['state'] == 'compaction']
+    if rows and compaction_hold.over(config.state_dir(service.cfg)):
+        for row in rows:
+            _guarded(_leftover, service, row)
     return dict(id=None, phase=None, settled=True, agents=[])
 
 
 def tick(service, hold) -> dict:
-    """One step of the stop or the resume, with the answer saved for the job. With no hold, clear what the last one left."""
+    """One step of the stop or the resume, with the answer saved for the job. With no hold, settle what the last one left."""
     if not hold:
         return _leftovers(service)
     night = Night(service, hold)

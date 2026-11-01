@@ -29,7 +29,8 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
    session counts); a night with nobody logged on is not compacted, and a missed night is not made up.
    With `[panes] enabled`, the hub first stops Drover-started agents in WSL panes: "stop now", an interruption at 5 minutes, and the
    job's kill no sooner than 6. A pane showing a dialog or a draft gets no input and waits for the kill. After the restart the agents resume and
-   are told "restart complete, keep going"; a failed resume starts a fresh agent and the morning report flags its seat and placement.
+   are told "restart complete, keep going". A run you stopped stays stopped. When a resume fails, a fresh agent starts only if the pane
+   shows none; an agent still there keeps its session and hears by its next wake. The morning report flags each with seat and placement.
    Directors on Windows are untouched. Agents you started yourself in WSL get no stop message: the kill reaches them without notice.
 
 6. **Retire `HerdrDiskGuard` after 3 clean applied days:** three consecutive calendar days of successful applied daily reports for

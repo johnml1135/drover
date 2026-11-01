@@ -28,6 +28,7 @@ LOCK_POLL_S = 5
 PANE_ANSWER_S = 120             # a hub that is up answers within a few ticks; after this the job goes on without one
 PANE_STOP_WAIT_S = 420          # the hub's 5 minute ask, its 1 minute interruption and two dispatcher ticks
 PANE_RESUME_WAIT_S = 240        # compaction_hold.RESUME_S and two dispatcher ticks
+PANE_OVER = ('resumed', 'resume-failed', 'resumed-untold', 'stayed-stopped')
 
 
 def _panes_on(runtime):
@@ -173,8 +174,9 @@ def holder_dead(record):
 
 
 def _resume_failures(result):
-    return [f"{agent.get('seat')} ({agent.get('placement')}) did not resume: {agent.get('reason')}"
-            for agent in (result.get('panes') or {}).get('agents', []) if agent.get('outcome') == 'resume-failed']
+    told = {'resume-failed': 'did not resume', 'resumed-untold': 'is back but was not told to go on'}
+    return [f"{agent.get('seat')} ({agent.get('placement')}) {told[agent['outcome']]}: {agent.get('reason')}"
+            for agent in (result.get('panes') or {}).get('agents', []) if agent.get('outcome') in told]
 
 
 def report(state_dir, result, at):
@@ -242,7 +244,9 @@ def _pane_answer(result, action, runtime):
 def _flag_panes(result, reason):
     """Agents no resume reached. The hub ends their rows when the hold goes; the report has to name them."""
     for agent in (result.get('panes') or {}).get('agents', []):
-        if agent.get('outcome') not in ('resumed', 'resume-failed'):
+        if agent.get('outcome') is None:        # the hub's own word on why
+            agent.update(outcome='resume-failed', reason=agent.get('reason') or reason)
+        elif agent['outcome'] not in PANE_OVER:
             agent.update(outcome='resume-failed', reason=reason)
 
 

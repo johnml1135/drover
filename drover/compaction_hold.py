@@ -83,6 +83,17 @@ def active(state_dir=None):
     return record if live(record) else None
 
 
+def over(state_dir=None):
+    """True only on a read that proves no live hold. `read` says None for a file being replaced too, so it cannot say this."""
+    try:
+        record = json.loads(_file(HOLD_FILE, state_dir).read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and not live(record)
+
+
 def refuse_when_offline():
     record = active()
     if record and record.get('phase') == 'offline':

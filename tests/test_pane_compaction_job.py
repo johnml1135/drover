@@ -99,6 +99,24 @@ class Night(Job):
         notice, = self.outbox().values()
         self.assertIn('seat-x (wsl) did not resume: pane-agent-running', notice['notice']['body'])
 
+    def test_a_live_agent_the_resume_could_not_tell_is_flagged_as_back(self):
+        self.hub['resume'] = dict(id='h', phase='resume', settled=True, agents=[self.stopped('resumed-untold', 'focused')])
+        self.run_job()
+        notice, = self.outbox().values()
+        self.assertIn('seat-x (wsl) is back but was not told to go on: focused', notice['notice']['body'])
+
+    def test_a_row_the_hub_could_not_read_keeps_its_reason(self):
+        self.hub['resume'] = dict(id='h', phase='resume', settled=True, agents=[self.stopped(None, 'herdr-unavailable')])
+        answer = self.run_job()
+        self.assertEqual((answer['panes']['agents'][0]['outcome'], answer['panes']['agents'][0]['reason']),
+                         ('resume-failed', 'herdr-unavailable'))
+
+    def test_a_stayed_stopped_agent_is_not_a_failed_resume(self):
+        self.hub['resume'] = dict(id='h', phase='resume', settled=True, agents=[self.stopped('stayed-stopped', 'stopped')])
+        answer = self.run_job()
+        self.assertEqual(answer['panes']['agents'][0]['outcome'], 'stayed-stopped')
+        self.assertEqual(self.outbox(), {})
+
     def test_wsl_shutdown_step_is_unaffected(self):
         steps = []
 
