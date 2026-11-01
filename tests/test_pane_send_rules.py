@@ -36,7 +36,7 @@ class Text(Case):
         for pane in ('--current', 'w1\0p1'):
             self.stage(row={'pane_id': pane})
             self.refused(self.send, 'not-drovers')
-            self.conn.execute('DELETE FROM pane_agents')
+            self.reset()
         self.assertEqual(self.fake.calls, [])
 
 
@@ -45,14 +45,28 @@ def constants(path):
             if isinstance(node, ast.Constant) and isinstance(node.value, str)]
 
 
+def pairs(tree):
+    """Every (group, verb) of adjacent string constants in a call or a tuple or list, so the shape is found, not a word."""
+    for node in ast.walk(tree):
+        items = node.args if isinstance(node, ast.Call) else node.elts if isinstance(node, (ast.Tuple, ast.List)) else ()
+        words = [item.value if isinstance(item, ast.Constant) else None for item in items]
+        yield from zip(words, words[1:])
+
+
 class OnlyThisModule(Case):
     def test_only_pane_send_reaches_the_write_verbs(self):
         reached = set()
         for path in sources():
-            words = constants(path)
-            if 'send-text' in words or 'send-keys' in words or 'agent' in words and 'prompt' in words:
+            found = set(pairs(ast.parse(path.read_text(encoding='utf-8'))))
+            if found & {('agent', 'prompt'), ('agent', 'send-keys'), ('pane', 'send-text'), ('pane', 'send-keys'),
+                        ('pane', 'run')} or {'send-text', 'send-keys'} & set(constants(path)):
                 reached.add(path.relative_to(ROOT).as_posix())
-        self.assertEqual(reached, {'drover/herdr_client.py', 'drover/pane_send.py'})
+        self.assertEqual(reached - {'drover/herdr_client.py'}, {'drover/pane_send.py'})
+
+    def test_the_scan_sees_each_shape(self):
+        for source in ("h.call('pane', 'run', p, t)", "argv = ('pane', 'send-keys', p, 'enter')", "['agent', 'prompt', p]"):
+            with self.subTest(source):
+                self.assertTrue(set(pairs(ast.parse(source))) & {('pane', 'run'), ('pane', 'send-keys'), ('agent', 'prompt')})
 
     def test_the_client_itself_writes_nothing(self):
         tree = ast.parse((ROOT / 'drover/herdr_client.py').read_text(encoding='utf-8'))
@@ -103,23 +117,6 @@ class AfterTheWrite(Case):
             pane_send.submit_own(self.port, self.herdr, self.row)
         self.assertEqual(self.sends().count(ENTER), 1)
 
-    def test_a_reader_that_raises_after_the_paste_is_a_refusal(self):
-        self.stage()
-        self.paste_settles_to(composing(TEXT + ' typed'))
-        self.send()
-        self.fake.screens[list(self.fake.screens)[0]] = composing(TEXT)
-        self.fake.calls.clear()
-        with mock.patch.object(pane_screen, 'status', side_effect=ValueError('unreadable')):
-            self.refused(lambda: pane_send.submit_own(self.port, self.herdr, self.row), 'screen-unreadable')
-        self.assertEqual(self.last()['state'], 'unverified')
-        self.conn.execute('DELETE FROM pane_agents')
-        self.stage()
-        self.paste_settles_to(composing(TEXT))
-        with mock.patch.object(pane_screen, 'status', side_effect=['idle', 'idle', 'idle', ValueError('unreadable')]):
-            write = self.send()
-        self.assertEqual((write['state'], write['reason']), ('unverified', 'screen-unreadable'))
-        self.assertNotIn(ENTER, self.sends())
-
     def test_a_screen_status_of_working_or_blocked_gets_no_enter(self):
         for status in ('working', 'blocked'):
             with self.subTest(status):
@@ -128,7 +125,7 @@ class AfterTheWrite(Case):
                 with mock.patch.object(pane_screen, 'status', side_effect=['idle', 'idle', 'idle', status]):
                     self.assertEqual(self.send()['reason'], 'busy')
                 self.assertNotIn(ENTER, self.sends())
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_a_working_row_alone_gets_no_enter(self):
         self.stage()

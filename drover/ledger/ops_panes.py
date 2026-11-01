@@ -102,6 +102,14 @@ def finish_write(conn, write_id, state, reason=None) -> dict:
         return dict(row)
 
 
+def claim_enter(conn, write_id, state, reason) -> dict | None:
+    """Mark a write's Enter as pressed if the write is still as the caller read it, or None if another caller got there."""
+    with tx(conn):
+        row = conn.execute("UPDATE pane_writes SET reason='enter-pressed' WHERE id=? AND state=? AND "
+                           "coalesce(reason,'')=coalesce(?,'') RETURNING *", (write_id, state, reason)).fetchone()
+        return dict(row) if row else None
+
+
 def last_write(conn, agent_id, kind=None) -> dict | None:
     where, params = ('agent_id=?', (agent_id,)) if kind is None else ('agent_id=? AND kind=?', (agent_id, kind))
     row = conn.execute(f'SELECT * FROM pane_writes WHERE {where} ORDER BY id DESC LIMIT 1', params).fetchone()

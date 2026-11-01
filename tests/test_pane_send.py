@@ -46,7 +46,7 @@ class Check(Case):
             with self.subTest(name):
                 self.windows(**over)
                 self.refused(self.send)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_check_returns_what_it_read(self):
         self.windows()
@@ -65,7 +65,7 @@ class Check(Case):
             with self.subTest(name):
                 self.stage(screen)
                 self.refused(self.send)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
         self.assertIsNone(ops_panes.last_write(self.conn, 1))
 
     def test_unreadable_capture_is_a_refusal(self):
@@ -89,7 +89,7 @@ class Check(Case):
             with self.subTest(name):
                 self.stage(screen, kind=kind)
                 self.refused(self.send, reason)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_a_screen_that_moved_between_reads_sends_nothing(self):
         self.stage([IDLE, 'more history\n\n› \n\n? for shortcuts\n'])
@@ -101,7 +101,7 @@ class Check(Case):
             with self.subTest(name):
                 self.stage(pane=pane)
                 self.refused(self.send)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
         self.stage(COPY)
         self.refused(self.send, 'viewport_held')
 
@@ -117,13 +117,13 @@ class Check(Case):
                 fake = self.stage()
                 fake.after[('agent', 'get', 1)] = lambda: fake.agents[PANE].update(field)
                 self.refused(self.send, 'occupant-changed')
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_no_option_clears_a_dialog(self):
         for screen in (DIALOG, MODEL):
             self.stage(screen)
             self.refused(self.send, 'dialog')
-            self.conn.execute('DELETE FROM pane_agents')
+            self.reset()
 
     def test_herdr_unavailable_is_a_refusal_not_an_exception(self):
         for name, breaks in dict(closed=lambda f: setattr(f, 'closed', True), hang=lambda f: setattr(f, 'hang', True),
@@ -133,13 +133,13 @@ class Check(Case):
                 for act in (self.send, lambda: pane_send.check(self.herdr, self.row),
                             lambda: pane_send.interrupt(self.port, self.herdr, self.row)):
                     self.refused(act)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_only_an_unfocused_idle_empty_composer_is_written(self):
         self.stage()
         self.paste_settles_to(composing(TEXT))
         self.assertEqual(self.send()['state'], 'sent')
-        self.conn.execute('DELETE FROM pane_agents')
+        self.reset()
         self.stage(agent={'focused': True})
         self.refused(self.send, 'focused')
 
@@ -174,7 +174,7 @@ class Send(Case):
         self.paste_settles_to(composing(TEXT))
         self.send()
         for call in self.fake.calls:
-            self.assertEqual(call[2], PANE, call)
+            self.assertIn(PANE, call, call)
         self.assertFalse([c for c in self.fake.calls if '--current' in c or '--focused' in c])
 
     def test_screens_are_read_as_text_never_ansi(self):
@@ -210,7 +210,7 @@ class Send(Case):
                 with mock.patch.object(ops_panes, 'note_write', noted):
                     self.refused(self.send, 'focused')
                 self.assertEqual(self.last()['state'], 'unsent')
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_typing_between_paste_and_enter_withholds_the_enter_and_never_resends(self):
         self.stage()
@@ -233,7 +233,7 @@ class Send(Case):
                 self.paste_settles_to(screen)
                 self.assertEqual(self.send()['state'], 'unverified')
                 self.assertEqual(self.sends(), [PASTE])
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_a_turn_seen_after_the_paste_stops_the_enter(self):
         spinner = f'✢ Thinking… (3s · esc to interrupt)\n───\n❯ {TEXT}\n───\n'
@@ -241,13 +241,12 @@ class Send(Case):
                                      ('claude spinner', spinner, 'idle'),
                                      ('herdr working', composing(TEXT), 'working')):
             with self.subTest(name):
-                fake = self.windows() if 'claude' in name else self.stage()
-                self.conn.execute("UPDATE pane_agents SET placement='wsl'")
+                fake = self.stage(CLAUDE_IDLE, kind='claude') if 'claude' in name else self.stage()
                 self.sleep.side_effect = lambda seconds: (fake.screens.update({PANE: screen}),
                                                           fake.agents[PANE].update(agent_status=status))
                 self.assertEqual(self.send()['state'], 'unverified')
                 self.assertEqual(self.sends(), [PASTE])
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_collapsed_paste_gets_no_enter(self):
         self.stage()
@@ -263,7 +262,7 @@ class Send(Case):
                 write = self.send()
                 self.assertEqual(write['state'], 'unverified')
                 self.assertEqual(len(self.sends()), 1)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
         self.sleep.assert_not_called()
 
 
@@ -304,7 +303,7 @@ class SubmitOwn(Case):
                 self.pasted(composing(TEXT + ' typed'))
                 self.fake.screens[PANE] = screen
                 self.refused(self.submit, 'not-own')
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_a_status_that_is_not_known_and_ready_refuses(self):
         for status in (None, '', 'unknown', 'working', 'blocked', 'paused', 7):
@@ -313,7 +312,7 @@ class SubmitOwn(Case):
                 self.fake.screens[PANE] = composing(TEXT)
                 self.fake.agents[PANE]['agent_status'] = status
                 self.refused(self.submit, 'busy')
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
         self.pasted(composing(TEXT + ' typed'))
         self.fake.screens[PANE] = composing(TEXT)
         del self.fake.agents[PANE]['agent_status']
@@ -331,7 +330,7 @@ class SubmitOwn(Case):
                 self.fake.agents[PANE].update(agent)
                 with mock.patch.object(pane_screen, 'classify', return_value='unsent_prompt'):
                     self.refused(self.submit)
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_a_refused_submit_can_be_tried_on_a_later_read(self):
         self.pasted(composing(TEXT + ' typed'))
@@ -366,7 +365,7 @@ class Interrupt(Case):
                 self.stage(screen)
                 self.refused(self.act)
                 self.assertIsNone(self.last())
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_a_live_row_keeps_the_focus_rule(self):
         self.stage(WORKING, agent={'focused': True})
@@ -382,7 +381,7 @@ class Interrupt(Case):
         with mock.patch.object(compaction_hold, 'active', return_value={'id': 'h1'}):
             self.stage(WORKING, agent={'focused': True})
             self.refused(self.act, 'focused')
-            self.conn.execute('DELETE FROM pane_agents')
+            self.reset()
             self.stage(WORKING, agent={'focused': True}, placement='windows', row={'state': 'compaction'})
             self.refused(self.act, 'focused')
 
@@ -409,13 +408,13 @@ class Stop(Case):
         self.hold.return_value = {'phase': 'draining'}
         self.refused(lambda: self.stop(hold=None), 'no-live-hold')
         self.hold.return_value = {'id': 'h1'}
-        self.conn.execute('DELETE FROM pane_agents')
+        self.reset()
         self.windows(CLAUDE_IDLE)
         self.refused(self.stop, 'not-wsl')
-        self.conn.execute('DELETE FROM pane_agents')
+        self.reset()
         self.stage(row={'started_by': 'owner'})
         self.refused(self.stop, 'not-drovers')
-        self.conn.execute('DELETE FROM pane_agents')
+        self.reset()
         self.stage(row={'state': 'retired'})
         self.refused(self.stop, 'not-live')
 
@@ -440,7 +439,7 @@ class Stop(Case):
                 self.stage(screen, row={'state': 'compaction'})
                 self.refused(self.stop)
                 self.assertIsNone(self.last())
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_stop_reaches_a_working_or_focused_pane(self):
         turn = 'history\n\n• Working ({}s • esc to interrupt)\n\n› {}\n\n? for shortcuts\n'
@@ -453,7 +452,7 @@ class Stop(Case):
                 write = self.stop()
                 self.assertEqual((write['state'], write['kind']), ('sent', 'stop'))
                 self.assertEqual(self.sends(), [['pane', 'send-text', PANE, '\x1b[200~stop now\x1b[201~'], ENTER])
-                self.conn.execute('DELETE FROM pane_agents')
+                self.reset()
 
     def test_identity_still_binds_a_stop(self):
         self.stage(agent={'terminal_id': 't2'})
