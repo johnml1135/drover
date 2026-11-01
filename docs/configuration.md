@@ -31,6 +31,28 @@ Legacy `resources.toml` and legacy resource dictionaries are unsupported. Move l
 `[[trackers]]`, disk prefixes to named disk trackers, and GPU `vram_fallback_pct` to the vram tracker's
 `fallback_pct` before removing old operational files. No ledger migration is required.
 
+## Director panes
+
+`[director] handoff_tokens` (default 275000, at least 1) is the context size at which a director in a pane is asked to
+write its handoff file; a fresh session then continues from it. Native compaction stays the safety net above it.
+
+`[panes]` runs directors and agents in the owner's Herdr workspace. It is off by default, and Drover works unchanged with
+Herdr closed. `enabled` (default `false`) builds the pane service; `herdr_bin` (empty finds `herdr` on PATH); `socket`
+(empty uses Herdr's default socket); `workspace` (the Herdr workspace that holds Drover's tabs; empty uses the first one);
+`call_timeout_s` (default 10, 0.1 to 3600) bounds one Herdr call; `retry_unavailable_s` (default 60, 0.1 to 86400) is how
+long to wait before asking a closed Herdr again. A WSL director also needs `[hub] api_listen_wsl = true`.
+
+`[context]` limits the short decision files loaded into a fresh agent's brief: `file_limit_bytes` (default 6144) for one
+file and `total_limit_bytes` (default 12288, at least the file limit) for all of them. Whole files are dropped last to
+first before notes are trimmed.
+
+A director role's notification policy sets the wake windows: `wake_window_s` (default 600) groups wakes to at most one per
+window, `urgent_window_s` (default 60) applies while a critical notice is unacknowledged, and `wake_limit_per_hour`
+(default 6) caps wakes. Windows are whole seconds from 1 to 86400.
+
+Starting a director needs the owner's two ledger settings, `director_execution` (a role's adapter) and
+`director_execution_enabled` (default `false`); see [directors-rollout.md](operations/directors-rollout.md).
+
 ## Dispatch limits
 
 `capacity.parallel_cap` (default 40, range 1 to 64) is the owner's: stored policy values are ignored and the tuner never

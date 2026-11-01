@@ -6,10 +6,11 @@ A Windows hub owns the queue and dashboard; Windows and WSL workers do the work 
 Give Drover a backlog and stay in control of the decisions that need an owner:
 
 - **Headless workers:** Claude and Codex CLIs run without terminal panes, with live logs in the hub.
+- **Director panes:** an optional interactive director runs in a Herdr pane; Drover works unchanged with Herdr closed (see `docs/operations/directors-rollout.md`).
 - **Local decision models:** small judgement calls run through Ollama, with shadow comparisons and CPU model variants.
 - **Allowance-aware seats:** admission protects account reserves and considers available allowance and reset time.
-- **Owner approval:** imported tasks remain proposed until approved. Unknown gates and risky changes become questions.
-- **Self-tuning:** recorded outcomes guide routing, confidence thresholds, worker limits and landing batch sizes.
+- **Owner approval:** imported tasks remain proposed until approved. Unknown checks and risky changes become questions.
+- **Self-tuning:** recorded outcomes guide routing, confidence thresholds, worker limits and merge group sizes.
 - **Checked landing:** gates and reviews apply to exact commits. Work lands locally by default; pushing is a separate policy.
 
 Drover is a working prototype. Begin with a small task and inspect its gate, review and landing before admitting a backlog.

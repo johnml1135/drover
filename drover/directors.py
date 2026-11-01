@@ -3,8 +3,9 @@
 Adapters are trusted execution integrations, not role-supplied commands. A compatible
 adapter must enforce max_tokens, authenticate processing, and securely hand off the
 credential (returned once, valid until expiry/revocation). Its probe must verify the
-launch nonce; unknown never authorizes a replacement. No paid adapter is enabled by
-default. Notification projection, digests and local action effects need no adapter.
+launch nonce; unknown never authorizes a replacement. A resident adapter, the pane
+director's, is interactive and cannot enforce a token cap, so it declares none and
+reserves no tokens. No paid adapter is enabled by default. Notification projection, digests and local action effects need no adapter.
 """
 import json
 import logging

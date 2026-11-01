@@ -3,7 +3,7 @@
 The hub owns the ledger. Directors use `/api/v1/notifications` or
 `python -m drover.notifications`; the client never opens a database. Notification
 projection, personal digests and controls use no model calls. Automatic director
-execution remains disabled until a compatible supervised adapter is configured.
+execution remains disabled until `director_execution_enabled` is set and a compatible supervised adapter is configured.
 
 ## Owner setup
 
@@ -216,8 +216,12 @@ They implement `launch(spec, credential, guard)`, `probe(spec)` returning
 `alive`/`gone`/`unknown` for the exact nonce, `adopt(spec)`, and `stop(spec)`.
 An optional `verify_resume(previous_spec)` must positively verify compatibility
 before `mode=resume` is selected; otherwise a supported fresh run is required.
-Live offers are capability metadata; this increment makes no interactive push
-claim. An active invocation reads its durable inbox and coalesces new wakes.
+A live offer is a wake into a running director's pane. The pane adapter declares
+`live_offer`; when the pane is idle with an empty composer, the pane service types one
+fixed wake line, at most one per wake window. The line carries no mail: the director
+reads its durable inbox and coalesces new wakes. When the pane cannot safely take input
+the mail waits in the inbox. A resident adapter cannot enforce a token cap, so it
+declares `enforced_token_cap` false and reserves none.
 
 The credential is handed off once, separately from the durable spec; it remains
 a scoped bearer until expiry or revocation. A compatible adapter must enforce
@@ -234,7 +238,9 @@ implements `launch(launcher, spec, credential, guard)` and optional
 `verify_resume(launcher, previous_spec)`. Existing model CLI launchers do not
 provide verified hard token-cap/authenticated-processing integration; the default
 adapter therefore reports an explicit unsupported hold and does not launch.
-Enabling the setting alone cannot supply these missing capabilities.
+Enabling the setting alone cannot supply these missing capabilities. With `[panes] enabled`
+the default adapter is instead the pane director adapter, which launches the director in
+a Herdr pane; see `docs/operations/directors-rollout.md`.
 
 The supported default is durable HTTP/CLI consumption with deterministic
 projection, digests and local accepted actions. A consumer must save a checkpoint

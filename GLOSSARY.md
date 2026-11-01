@@ -13,7 +13,7 @@ The path of one change: task -> run -> checks -> review -> merge queue -> merge 
 The human who plans the work, makes decisions only a person may make, and authorizes installs, policy changes and pushes.
 
 **Director**:
-A named role responsible for a defined scope of work and its decisions, continuing across individual sessions and judgements. Several directors may work independently on separate scopes.
+A named role responsible for a defined scope of work and its decisions, continuing across individual sessions and judgements. Each director is one interactive session at a time, and several directors may work independently on separate scopes.
 
 **Owning director**:
 The one director responsible for an ordinary event and any response it needs. Other directors receive it only through an explicit broadcast or a separate event concerning their own work.
@@ -79,8 +79,20 @@ The owner's decision to return a yanked task's work to Drover: a new draft task 
 _Avoid_: Resume, re-queue
 
 **Compaction stop**:
-The escalating stop that clears the Linux side before overnight compaction: ask agents to stop, interrupt them, then kill what remains. Agents are told to continue once compaction is done.
+The escalating stop that clears the Linux side before overnight compaction: ask agents to stop, interrupt them, then kill what remains. Agents are told to continue once compaction is done, and a director's session is resumed where it stopped.
 _Avoid_: Drain, shutdown
+
+**Pane**:
+One terminal window in the owner's terminal workspace, in which Drover runs a director or an agent so the owner can watch and join it. Drover keeps working when the workspace is closed.
+_Avoid_: Lane, tab
+
+**Director pane**:
+The pane in which a director's session runs. Drover wakes the director there when it has work, and closes the pane once the session has been handed off.
+_Avoid_: Console, lane
+
+**Handoff file**:
+The written account of where a director's work stands, left when its context grows large so a fresh session can continue from it.
+_Avoid_: Receipt, handoff (unqualified)
 
 **Tracker**:
 One watched machine resource (memory, a disk, load, GPU memory, the Linux side) with its levels: warn, queue (no new work starts), hold (running work winds down) and critical (Drover pauses). A disk tracker measures the drive itself. A Tracker may also measure the space used inside WSL, which triggers cleanup on its own, whatever the drive has free.
@@ -99,7 +111,7 @@ A path in a worktree that can be deleted without losing work or hindering anyone
 _Avoid_: build output, temp, ephemeral
 
 **Ownership tag**:
-The record on a worktree of who owns it (a task, a lane or a session) and until when. A worktree without a current tag is an orphan: it is quarantined, then removed after a grace period if it is still clean.
+The record on a worktree of who owns it (a task, a worker or a session) and until when. A worktree without a current tag is an orphan: it is quarantined, then removed after a grace period if it is still clean.
 _Avoid_: Lease file, marker, claim
 
 **Side lock**:
@@ -338,6 +350,8 @@ _Avoid_: Garden deletion
 | landing queue, Landing tab | merge queue |
 | landed | merged, or on main |
 | HOLD, LAND (verdicts) | changes requested, approved |
+| READY (verdict) | checked |
+| lane | worker, or pane |
 | rung, tier, ladder | escalation level (unstick ladder: unstick escalation) |
 | replan hold, cascade | Waiting on <task title> |
 | needs-owner | Waiting on you |
