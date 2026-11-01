@@ -21,4 +21,47 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
    - A compaction stop ends the session and the director resumes where it stopped.
    - With Herdr closed, dispatch, review and merging carry on.
 
-To roll back, set `director_execution_enabled` to `false`, then `[panes] enabled = false`, and restart the hub.
+## Rolling back
+
+A pane director must be stopped before panes go off. With panes off, or on an older hub, nothing can read its run, so the
+hub never sees it end. Keep the hub running with panes on and Herdr open until step 5, and do not start during a compaction:
+a row in `compaction` reads as alive without asking Herdr.
+
+1. **Stop new launches.** Set `director_execution_enabled` to `false`. This starts nothing new and stops nothing: a running
+   director keeps working and keeps getting wakes.
+2. **Find what is open.** Run the check below. It only reads the ledger.
+3. **Close each pane listed.** Let the director commit first if it can, then close the pane in Herdr, or run
+   `herdr pane close <pane_id>`. `/exit` alone is not enough: the pane's shell stays, the hub reads that as unknown, and the
+   run stays open.
+4. **Wait for the run to end.** Run the check again until both lists are empty. The hub's next ticks do this,
+   and a tick needs Herdr open: with Herdr closed every pane reads unknown and nothing ends.
+5. **Turn panes off.** Set `[panes] enabled = false` and restart the hub. If step 4 was skipped, the hub raises one notice,
+   "A director is still in a pane": turn panes back on and start again from step 2.
+
+The check, in PowerShell, from the hub's checkout with the hub's Python, and with its `DROVER_HOME` if it has one:
+
+```powershell
+@'
+import sqlite3
+from drover import config
+ledger = sqlite3.connect(f"file:{config.state_path('ledger.db').as_posix()}?mode=ro", uri=True)
+print('runs:', ledger.execute("SELECT run_id, role_id FROM director_runs WHERE state<>'finished'").fetchall())
+print('panes:', ledger.execute("SELECT pane_id, state FROM pane_agents WHERE started_by='drover' "
+                               "AND state IN ('starting','live','rotating','compaction')").fetchall())
+'@ | python -
+```
+
+### What an older hub does to a resident run
+
+An older hub, like this one with panes off, has only the runner adapter. It opens the newer ledger without complaint and
+ignores the pane tables, so nothing warns you. Roll back as above before deploying one. Deployed over an open pane run:
+
+- The role is held on `consumer-liveness-uncertain`, because no runner status exists, and the run never finishes.
+- The agent keeps working in its pane on a credential valid for up to 24 hours, and gets no wakes.
+- When its session expires, the stop reaches no runner and the role sits at `termination-uncertain`.
+- The open run keeps one slot of `parallel_cap` and one load on its seat, and its `pane_agents` row stays open.
+- A compaction kills the agent and nothing resumes it.
+- An older hub reads the outcomes `rotated`, `revived` and `compaction-fresh` as failures and spends a replacement on each.
+
+To recover, deploy this hub again with `[panes] enabled = true`, follow the rollback above, and only then go back. Do not
+clear the ledger by hand: a pane that is open again is read and ended like any other.

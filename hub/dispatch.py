@@ -207,6 +207,8 @@ class DispatcherService:
         from drover import config
         from drover.directors import RunnerDirectorAdapter
         if not config.get()['panes']['enabled']:
+            from drover import pane_fault
+            pane_fault.left_running(port)
             return RunnerDirectorAdapter(launcher), None
         from drover.herdr_client import from_config
         from drover.panes import PaneDirectorAdapter, PaneService
