@@ -7,6 +7,7 @@ import hashlib
 import re
 
 from .pane_guard import (
+    QUEUE_HINT,
     blocking_dialog,
     bottom_region,
     decode_screen,
@@ -252,17 +253,21 @@ def queued_idle(screen):
 
 
 def _queue_entries(screen):
-    """Each `↳` row with the rows it wraps onto, read no further than the live composer: text there is not queued."""
+    """Each `↳` row with the rows it wraps onto, read no further than the queue's hint or the live composer."""
     start, end = queued_input_range(screen)
     entries = []
     for line in screen.splitlines()[start:end]:
-        if re.match(r'^\s*[›❯]', line):
+        if re.match(r'^\s*[›❯]', line) or QUEUE_HINT.match(line):
             break
         if re.match(r'^\s*↳\s', line):
             entries.append(line.strip()[1:])
         elif entries:
             entries[-1] += line
     return entries
+
+
+def _compact(text):
+    return re.sub(r'\s+', '', text)
 
 
 @_unknown(False)
@@ -272,15 +277,29 @@ def queued_prompt(screen, prompt):
         return False
     # The complete scope address identifies our wake; an opaque paste or another message does not.
     # Matched through the words after it: scope /x must not match scope /x2 or /x.y.
-    compact = lambda text: re.sub(r'\s+', '', text)
     head, addressed, _ = prompt.partition('. Check owned progress')
-    expected = compact(head + addressed if addressed else prompt)
+    expected = _compact(head + addressed if addressed else prompt)
     if not expected:
         return False
     marker = ' Worker completion reports ready for your review: '
-    reports = compact(prompt.split(marker, 1)[1]) if marker in prompt else ''
-    entries = [compact(entry) for entry in _queue_entries(screen)]
+    reports = _compact(prompt.split(marker, 1)[1]) if marker in prompt else ''
+    entries = [_compact(entry) for entry in _queue_entries(screen)]
     return any(entry.startswith(expected) and reports in entry if addressed else entry == expected for entry in entries)
+
+
+@_unknown(False)
+def queue_unclear(screen, prompt):
+    """A live queue that cannot be read as whole entries and may hold this prompt: no proof of it, and none against it.
+
+    No entry to read, an opaque paste, a row of no known shape joined to the prompt, or the start of the prompt cut short.
+    """
+    if not queued_input_range(screen) or viewport_held(screen):
+        return False
+    expected, entries = _compact(prompt), [_compact(entry) for entry in _queue_entries(screen)]
+    if expected in entries:
+        return False
+    return not entries or any('[PastedContent' in entry or expected in entry or
+                              entry.rstrip('….') and expected.startswith(entry.rstrip('….')) for entry in entries)
 
 
 def classify(agent, screen, item, now):

@@ -162,6 +162,12 @@ def open_writes(conn, agent_id) -> list[dict]:
                                               'ORDER BY id', (agent_id, *CLOSED_WRITES))]
 
 
+def role_writes(conn, role_id, kind) -> list[dict]:
+    """Every `kind` write of the role's rows, `gone` ones included, each with its row's state as `row_state`."""
+    return [dict(row) for row in conn.execute('SELECT w.*,a.state AS row_state FROM pane_writes w JOIN pane_agents a ON a.id=w.agent_id '
+                                              'WHERE a.role_id=? AND w.kind=? ORDER BY w.id', (role_id, kind))]
+
+
 def last_write(conn, agent_id, kind=None) -> dict | None:
     where, params = ('agent_id=?', (agent_id,)) if kind is None else ('agent_id=? AND kind=?', (agent_id, kind))
     row = conn.execute(f'SELECT * FROM pane_writes WHERE {where} ORDER BY id DESC LIMIT 1', params).fetchone()

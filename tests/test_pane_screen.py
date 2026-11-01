@@ -13,6 +13,7 @@ from drover.pane_screen import (
     prompt_fingerprint,
     queued_idle,
     queued_prompt,
+    queue_unclear,
     status,
     viewport_class,
     viewport_held,
@@ -318,6 +319,39 @@ class Queue(unittest.TestCase):
         self.assertFalse(queued_prompt('Queued follow-up inputs\n  ↳ note\n› ' + TEXT + '\n\n? for shortcuts\n', TEXT))
         self.assertFalse(queued_prompt('Queued follow-up inputs\n› ' + TEXT + '\n', TEXT))
         self.assertTrue(queued_prompt('Queued follow-up inputs\n↳ ' + TEXT + '\n› \n\n? for shortcuts\n', TEXT))
+
+    def test_any_shift_row_ends_the_queue(self):
+        for hint in ('shift+← edit last queu…', 'shift+← edit last\n    queued message', 'shift+…', '  shift+e to edit'):
+            self.assertTrue(queued_prompt('Queued follow-up inputs\n  ↳ ' + TEXT + '\n' + hint + '\n› \n', TEXT), hint)
+            self.assertTrue(queued_prompt('• Working (1m …)\n  ↳ ' + TEXT + '\n' + hint + '\n› \n', TEXT), hint)
+            self.assertFalse(queue_unclear('Queued follow-up inputs\n  ↳ ' + TEXT + '\n' + hint + '\n› \n', TEXT), hint)
+
+    def test_a_shift_row_ends_an_entry_wherever_the_queue_ends(self):
+        self.assertTrue(queued_prompt('Queued follow-up inputs\n↳ ' + TEXT + '\nshift+← edit\nshift+tab to cycle\n› \n', TEXT))
+
+    def test_a_shift_row_above_the_queue_does_not_hide_it(self):
+        self.assertTrue(queued_prompt('shift+tab to cycle\nQueued follow-up inputs\n↳ ' + TEXT + '\n› \n', TEXT))
+
+    def test_a_shift_row_alone_is_no_queue(self):
+        self.assertFalse(queued_idle('• Worked for 1m\nshift+tab to cycle\n› \n'))
+
+    def test_a_queue_that_may_hold_the_prompt_is_unclear(self):
+        for entry in (TEXT + '\n    a row of no known shape', 'Owner says: ' + TEXT, TEXT[:30] + '…', TEXT[:30] + '...', TEXT[:30],
+                      '[Pasted Content 1000 chars]'):
+            screen = 'Queued follow-up inputs\n  ↳ ' + entry + '\n› \n'
+            self.assertFalse(queued_prompt(screen, TEXT), entry)
+            self.assertTrue(queue_unclear(screen, TEXT), entry)
+        self.assertTrue(queue_unclear('Queued follow-up inputs\n› \n', TEXT))      # a queue with no entry to read
+
+    def test_a_readable_queue_or_no_queue_is_not_unclear(self):
+        self.assertFalse(queue_unclear('Queued follow-up inputs\n↳ ' + TEXT + '\n› \n', TEXT))
+        self.assertFalse(queue_unclear('Queued follow-up inputs\n↳ another task\n↳ ' + TEXT + '\n› \n', TEXT))
+        self.assertFalse(queue_unclear('Queued follow-up inputs\n↳ another task\n› \n', TEXT))
+        self.assertFalse(queue_unclear('Queued follow-up inputs\n↳ note\n› ' + TEXT + '\n', TEXT))
+        self.assertFalse(queue_unclear('• Worked for 1m\n› ' + TEXT + '\n', TEXT))
+        self.assertFalse(queue_unclear('Queued follow-up inputs\n↳ ' + TEXT + ' more\n' + HISTORICAL, TEXT))
+        self.assertFalse(queue_unclear('Queued follow-up inputs\n↳ …\n› \n', TEXT))
+        self.assertFalse(queue_unclear(b'\xff', TEXT))
 
     def test_a_scoped_prompt_must_open_its_entry(self):
         self.assertFalse(queued_prompt('Queued follow-up inputs\n↳ Owner says: ' + WAKE + '\n› \n', WAKE))

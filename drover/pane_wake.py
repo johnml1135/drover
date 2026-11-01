@@ -11,7 +11,8 @@ goes, until later ticks settle it:
 
     pending, unverified     may not have landed: only `pane_send.confirm_landed` moves them to `observed`
     sent                    landed: working or blocked activity moves it to `observed`
-    queued                  this exact text is in the agent's queue
+    queued                  this exact text is in the agent's queue, or a queue that cannot be read as whole entries may
+                            hold it. While either shows, no turn is this wake's and nothing is `acknowledged`.
     observed                a turn was seen; a higher checkpoint revision makes it `acknowledged`, the only delivered wake
     wake_unverified         past UNVERIFIED_S, with one notice, whichever of these it was. It stays open and refuses
                             every later send, while mail still flows, until the agent acts on the ledger or the row rotates
@@ -58,19 +59,28 @@ def _outstanding(write):
     return write is not None and write['state'] not in ('unsent', 'acknowledged') and write['reason'] not in (ACTED, ROTATED)
 
 
-def _settle(service, write, state, reason):
-    ops_panes.finish_write(service.conn, write['id'], state, reason)
+def _retract(service, write):
     for notice_id in (_unverified_id(write), _wedged_id(write)):
         disk_notices.retract(service.conn, notice_id, kind='pane.notice', actor='panes')
 
 
+def _settle(service, write, state, reason):
+    ops_panes.finish_write(service.conn, write['id'], state, reason)
+    _retract(service, write)
+
+
 def _close_rotated(service, row):
-    """A retired row gets no ticks of its own, so its role's next live row ends what it left open."""
-    for old in ops_panes.open_agents(service.conn):
-        if old['role_id'] == row['role_id'] and old['id'] != row['id'] and old['state'] not in pane_launch.RUNNING:
-            for write in ops_panes.open_writes(service.conn, old['id']):
-                if write['kind'] == 'wake':
-                    _settle(service, write, 'observed', ROTATED)
+    """A row that ended gets no ticks of its own, so its role's next live row ends what it left: every open wake, and every
+    wake notice, whatever closed the write. The row may be `gone`, and a failed launch closes writes itself.
+    """
+    noticed = {event['data']['notice']['id'] for event in service.port.events(kind='pane.notice')}
+    for write in ops_panes.role_writes(service.conn, row['role_id'], 'wake'):
+        if write['row_state'] in pane_launch.RUNNING:
+            continue
+        if write['state'] not in ops_panes.CLOSED_WRITES:
+            ops_panes.finish_write(service.conn, write['id'], 'observed', ROTATED)
+        if noticed & {_unverified_id(write), _wedged_id(write)}:
+            _retract(service, write)
 
 
 def _take_back(service, role_id, key):
@@ -130,12 +140,17 @@ def _confirmed(service, row, write):
         return write
 
 
+def _in_queue(screen):
+    return pane_screen.queued_prompt(screen, TEXT) or pane_screen.queue_unclear(screen, TEXT)
+
+
 def _progress(service, row, write, seen):
-    """What this read proves. A running turn with this wake still queued is some other turn."""
-    queued = pane_screen.queued_prompt(seen['screen'], TEXT)
+    """What this read proves. A running turn with this wake perhaps still queued is some other turn."""
+    queued = _in_queue(seen['screen'])
     _watch_queue(service, row, write, queued and pane_screen.queued_idle(seen['screen']))
     if queued:
-        if write['state'] == 'sent' or write['state'] in MAY_NOT_HAVE_LANDED:     # the queue proves it landed
+        proved = pane_screen.queued_prompt(seen['screen'], TEXT)    # only the whole text shows an unverified write landed
+        if write['state'] == 'sent' or (proved and write['state'] in MAY_NOT_HAVE_LANDED):
             return ops_panes.finish_write(service.conn, write['id'], 'queued')
         return write
     if not _active(seen, row):
@@ -148,14 +163,17 @@ def _progress(service, row, write, seen):
 
 
 def _verify(service, row, write, revision):
+    queued = False
     try:
-        write = _progress(service, row, write, pane_send.observe(service.herdr, row))
+        seen = pane_send.observe(service.herdr, row)
+        queued = _in_queue(seen['screen'])
+        write = _progress(service, row, write, seen)
     except PaneRefused:
         pass                        # an unread pane proves nothing, and the ledger below still counts
     base = service.port.get_setting(_revision_key(row))
     acted = base is not None and revision > int(base)
     late = pane_launch.age(write['at'], service.now()) >= UNVERIFIED_S
-    if acted and write['reason'] == TURN_SEEN:
+    if acted and write['reason'] == TURN_SEEN and not queued:
         _settle(service, write, 'acknowledged', TURN_SEEN)
     elif acted and late:
         _settle(service, write, 'observed', ACTED)

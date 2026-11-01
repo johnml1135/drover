@@ -2,7 +2,7 @@
 import unittest
 from unittest import mock
 
-from drover import pane_send, pane_wake
+from drover import pane_launch, pane_send, pane_wake
 from drover.ledger import ops_panes
 from drover.pane_wake import TEXT, WEDGED_S
 from tests.pane_send_support import CLAUDE_IDLE, DRAFT, IDLE, PANE, WORKING
@@ -176,15 +176,43 @@ class Unverified(Stage):
         self.assertEqual(self.open_notices(), 0)
         self.assertIsNone(ops_panes.last_write(self.conn, fresh['id'], 'wake'))
 
+    def moved_on(self, state):
+        """The role's next row runs, and this row ended as `state`."""
+        ops_panes.update_agent(self.conn, self.row['id'], state=state)
+        ops_panes.record_agent(self.conn, pane_id='w1:p2', terminal_id='t2', session_id='s2', kind='claude', seat='seat',
+                               placement='windows', started_by='drover', state='live', role_id=ROLE, run_id=2)
+        pane_wake.deliver(self.service, dict(run_id=2, role_id=ROLE))
+
+    def test_it_closes_when_the_row_went_gone_first(self):
+        self.overdue()
+        self.moved_on('gone')
+        self.assertEqual(self.wake_state(), ('observed', pane_wake.ROTATED))
+        self.assertEqual(self.open_notices(), 0)
+
+    def test_a_failed_launch_that_closed_the_write_takes_its_notice_with_it(self):
+        self.overdue()
+        ops_panes.finish_write(self.conn, self.last()['id'], 'observed', 'launch-failed')
+        self.moved_on('failed')
+        self.assertEqual(self.wake_state(), ('observed', 'launch-failed'))
+        self.assertEqual(self.open_notices(), 0)
+
+    def test_a_wedged_notice_goes_with_a_row_that_went_gone(self):
+        self.woken(IDLE, codex=True)
+        pane_launch.publish(self.port, pane_wake._wedged_id(self.last()), 'A wake is stuck in a queue', 'body')
+        self.moved_on('gone')
+        self.assertEqual(self.open_notices(), 0)
+
     def test_a_rotation_leaves_other_roles_and_other_writes_alone(self):
         self.overdue()
         other = ops_panes.record_agent(self.conn, pane_id='w1:p3', terminal_id='t3', kind='claude', seat='seat', placement='windows',
-                                       started_by='drover', state='retired', role_id='director:b', run_id=3)
+                                       started_by='drover', state='gone', role_id='director:b', run_id=3)
         theirs = ops_panes.note_write(self.conn, other['id'], 'wake', TEXT)
+        pane_launch.publish(self.port, pane_wake._unverified_id(theirs), 'A wake was not acted on', 'body')
         brief = ops_panes.note_write(self.conn, self.row['id'], 'brief', 'a brief')
         running = ops_panes.record_agent(self.conn, pane_id='w1:p4', terminal_id='t4', kind='claude', seat='seat', placement='windows',
                                          started_by='drover', state='compaction', role_id=ROLE, run_id=4)
         running_wake = ops_panes.note_write(self.conn, running['id'], 'wake', TEXT)
+        pane_launch.publish(self.port, pane_wake._unverified_id(running_wake), 'A wake was not acted on', 'body')
         ops_panes.update_agent(self.conn, self.row['id'], state='retired')
         ops_panes.record_agent(self.conn, pane_id='w1:p2', terminal_id='t2', kind='claude', seat='seat', placement='windows',
                                started_by='drover', state='live', role_id=ROLE, run_id=2)
@@ -192,6 +220,7 @@ class Unverified(Stage):
         self.assertEqual(ops_panes.last_write(self.conn, other['id'])['state'], theirs['state'])
         self.assertEqual({w['id'] for w in ops_panes.open_writes(self.conn, self.row['id'])}, {brief['id']})
         self.assertEqual(ops_panes.last_write(self.conn, running['id'])['state'], running_wake['state'])
+        self.assertEqual(self.open_notices(), 2)
 
 
 class Queued(Stage):
@@ -212,12 +241,89 @@ class Queued(Stage):
 
     def test_another_prompt_in_the_queue_does_not_hold_it(self):
         self.woken(IDLE, codex=True)
-        self.show(QUEUED.replace(TEXT, TEXT[:30]))
+        self.show(QUEUED.replace(TEXT, 'another task'))
         self.deliver()
         self.assertEqual(self.wake_state()[0], 'observed')      # a running turn, and no wake in the queue
         self.show(f'x {TEXT}')
         self.deliver()
         self.assertEqual(self.wake_state()[0], 'observed')
+
+    def test_a_cut_hint_under_a_running_turn_is_queued_and_a_commit_is_no_delivery(self):
+        self.woken(IDLE, codex=True)
+        self.show(QUEUED.replace('edit last queued message', 'edit last queu…'), 'working')
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('queued', None))
+        self.commit()
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('queued', None))
+
+    def test_a_cut_hint_under_an_idle_queue_is_wedged_and_no_second_wake_goes(self):
+        self.woken(IDLE, codex=True)
+        self.show(QUEUED_IDLE.replace('edit last queued message', 'edit last queu…'))
+        self.deliver()
+        self.time += WEDGED_S
+        self.mail()
+        self.deliver()
+        self.assertEqual(len(self.notices()), 1)
+        self.assertEqual(self.wake_state()[0], 'queued')
+        self.assertEqual(self.sends(), [])
+
+    def unreadable_queue(self, screen=None):
+        self.show(screen or QUEUED.replace('shift+← edit last queued message', 'some hint Drover has not met'), 'working')
+
+    def test_a_queue_that_cannot_be_read_whole_counts_as_queued(self):
+        self.woken(IDLE, codex=True)
+        self.unreadable_queue()
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('queued', None))
+        self.commit()
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('queued', None))
+        self.time += LATE
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('observed', pane_wake.ACTED))      # the agent acted, and no delivery is claimed
+
+    def test_an_unreadable_queue_idle_past_the_limit_is_wedged(self):
+        self.woken(IDLE, codex=True)
+        self.show(QUEUED_IDLE.replace('shift+← edit last queued message', 'some hint Drover has not met'))
+        self.deliver()
+        self.time += WEDGED_S
+        self.deliver()
+        self.assertEqual(len(self.notices()), 1)
+
+    def test_an_unreadable_queue_never_proves_an_unverified_write_landed(self):
+        self.scene(IDLE, codex=True)
+        self.mail()
+        with mock.patch.object(pane_send, '_enter', return_value=None):
+            self.deliver()
+        self.unreadable_queue()
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('unverified', 'pasted'))
+
+    def test_a_refused_read_shows_no_queue_so_a_seen_turn_and_a_commit_still_count(self):
+        self.woken(IDLE, codex=True)
+        self.show(WORKING, 'working')
+        self.deliver()
+        self.commit()
+        self.fake.agents[PANE]['agent_session'] = {'value': 'someone-else'}
+        self.deliver()
+        self.assertEqual(self.wake_state(), ('acknowledged', 'turn-seen'))
+
+    def test_a_turn_seen_earlier_is_no_delivery_while_a_queue_holds_the_wake(self):
+        for screen in (QUEUED, None):
+            with self.subTest(screen):
+                self.woken(IDLE, codex=True)
+                self.show(WORKING, 'working')
+                self.deliver()
+                self.unreadable_queue(screen)
+                self.commit()
+                self.deliver()
+                self.assertEqual(self.wake_state(), ('observed', 'turn-seen'))
+                self.show(WORKING, 'working')
+                self.deliver()
+                self.assertEqual(self.wake_state(), ('acknowledged', 'turn-seen'))
+                self.reset()
+                self.conn.execute('DELETE FROM director_budget_entries')
 
     def test_the_15_minutes_apply_to_a_queued_write(self):
         self.woken(IDLE, codex=True)

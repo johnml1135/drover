@@ -18,6 +18,7 @@ CODEX_TRUST = ('Trust this folder?', '› 1. Trust and continue', '2. Quit')
 ABOVE_COMPOSER = 12  # rows searched above the composer; bottom_region's own lookback stops at 8
 OPTION_ROW = re.compile(r'^(?:[›❯]\s*)?\d+[.)]\s')
 YES_NO = re.compile(r'[\[(]\s*y(?:es)?\s*/\s*no?\s*[\])]', re.I)
+QUEUE_HINT = re.compile(r'^\s*shift\+', re.I)   # any such row, as a narrow pane cuts or wraps the queue's own hint
 UNREADABLE = ('Cc', 'Cf', 'Cs', 'Zl', 'Zp')  # controls, invisible format marks and line breaks can hide a row's start
 
 
@@ -66,14 +67,14 @@ def bottom_region(screen):
 def queued_input_range(screen):
     lines = decode_screen(screen).splitlines()
     headings = [i for i, line in enumerate(lines) if re.match(r'^\s*Queued follow-up inputs\b', line, re.I)]
-    footers = [i for i, line in enumerate(lines) if re.match(r'^\s*shift\+.*edit last queued message', line, re.I)]
-    end = footers[-1] if footers else len(lines)
+    footers = [i for i, line in enumerate(lines) if QUEUE_HINT.match(line)]
     if headings:
-        return headings[-1], end
+        below = [i for i in footers if i > headings[-1]]
+        return headings[-1], below[-1] if below else len(lines)
     if footers:
-        entries = [i for i, line in enumerate(lines[:end]) if re.match(r'^\s*↳\s', line)]
+        entries = [i for i, line in enumerate(lines[:footers[-1]]) if re.match(r'^\s*↳\s', line)]
         if entries:
-            return entries[0], end
+            return entries[0], footers[-1]
     return None
 
 
