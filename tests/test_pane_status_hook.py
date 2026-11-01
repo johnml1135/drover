@@ -54,25 +54,44 @@ class PaneStatusHookTest(unittest.TestCase):
         for raw in ('{nope', '', '[1]'):
             self.assertEqual(call('x', raw=raw), (0, []))
 
-    def test_windows_binary_path_goes_through_wslpath(self):
+    def test_agent_path_spawns_no_subprocess_for_a_windows_binary(self):
         env = {**ENV, 'HERDR_BIN_PATH': r'C:\herdr\herdr.exe'}
+        with mock.patch.object(hook.subprocess, 'run') as run:
+            _, seen = call('Stop', env=env)
+        run.assert_not_called()
+        self.assertEqual(seen[0][0][0], r'C:\herdr\herdr.exe')
+
+    def test_windows_binary_path_goes_through_wslpath(self):
         done = mock.Mock(stdout='/mnt/c/herdr/herdr.exe\n')
         with mock.patch.object(hook.subprocess, 'run', return_value=done) as run:
-            _, seen = call('Stop', env=env)
-        run.assert_called_once()
-        self.assertEqual(run.call_args[0][0], ['wslpath', '-u', r'C:\herdr\herdr.exe'])
-        self.assertEqual(seen[0][0][0], '/mnt/c/herdr/herdr.exe')
+            hook.run_commands([[r'C:\herdr\herdr.exe', 'pane', 'x'], [r'C:\herdr\herdr.exe', 'pane', 'y']])
+        self.assertEqual([c.args[0] for c in run.call_args_list], [
+            ['wslpath', '-u', r'C:\herdr\herdr.exe'], ['/mnt/c/herdr/herdr.exe', 'pane', 'x'],
+            ['/mnt/c/herdr/herdr.exe', 'pane', 'y']])
 
-    def test_wslpath_failure_makes_no_call(self):
-        env = {**ENV, 'HERDR_BIN_PATH': r'C:\herdr\herdr.exe'}
-        with mock.patch.object(hook.subprocess, 'run', side_effect=OSError):
-            self.assertEqual(call('Stop', env=env), (0, []))
+    def test_wslpath_failure_makes_no_herdr_call(self):
+        with mock.patch.object(hook.subprocess, 'run', side_effect=OSError) as run:
+            hook.run_commands([[r'C:\herdr\herdr.exe', 'pane', 'x']])
+        run.assert_called_once()
 
     def test_linux_binary_path_is_used_as_is(self):
         with mock.patch.object(hook.subprocess, 'run') as run:
-            _, seen = call('Stop')
-        run.assert_not_called()
-        self.assertEqual(seen[0][0][0], '/usr/bin/herdr')
+            hook.run_commands([['/usr/bin/herdr', 'pane', 'x']])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ['/usr/bin/herdr', 'pane', 'x'])
+
+    def test_each_command_has_a_timeout_and_a_failure_does_not_stop_the_rest(self):
+        with mock.patch.object(hook.subprocess, 'run', side_effect=[hook.subprocess.TimeoutExpired('h', 10), None]) as run:
+            hook.run_commands([['/h', 'a'], ['/h', 'b']])
+        self.assertEqual(run.call_count, 2)
+        for c in run.call_args_list:
+            self.assertEqual(c.kwargs['timeout'], hook.TIMEOUT)
+            self.assertIs(c.kwargs['stdout'], hook.subprocess.DEVNULL)
+
+    def test_child_mode_runs_the_commands(self):
+        with mock.patch.object(hook.subprocess, 'run') as run:
+            self.assertEqual(hook.main(['--child', json.dumps([['/h', 'a']])]), 0)
+        self.assertEqual(run.call_args.args[0], ['/h', 'a'])
 
     def test_claude_and_codex_use_their_own_source(self):
         for agent, source in (('claude', 'herdr:claude-wsl'), ('codex', 'herdr:codex-wsl')):
@@ -88,16 +107,20 @@ class PaneStatusHookTest(unittest.TestCase):
         with mock.patch.object(hook.subprocess, 'Popen', side_effect=OSError):
             self.assertEqual(call('Stop', run=hook.detached)[0], 0)
 
-    def test_detached_discards_output_and_does_not_wait(self):
+    def test_detached_is_isolated_unwaited_and_discards_io(self):
         with mock.patch.object(hook.subprocess, 'Popen') as popen:
             hook.detached([['x']])
-        kw = popen.call_args.kwargs
-        self.assertIs(kw['stdout'], hook.subprocess.DEVNULL)
-        self.assertIs(kw['stderr'], hook.subprocess.DEVNULL)
+        argv, kw = popen.call_args.args[0], popen.call_args.kwargs
+        self.assertEqual(argv[:2], [sys.executable, '-I'])
+        self.assertIn('--child', argv)
+        for name in ('stdin', 'stdout', 'stderr'):
+            self.assertIs(kw[name], hook.subprocess.DEVNULL)
+        self.assertTrue(kw.get('start_new_session') or kw.get('creationflags'))
+        self.assertEqual(popen.return_value.mock_calls, [])
 
     def test_wslenv_names(self):
-        self.assertEqual(len(hook.WSLENV_NAMES), 6)
-        self.assertIn('HERDR_BIN_PATH', hook.WSLENV_NAMES)
+        self.assertEqual(hook.WSLENV_NAMES, ('HERDR_ENV', 'HERDR_PANE_ID', 'HERDR_SOCKET_PATH', 'HERDR_BIN_PATH',
+                                             'HERDR_WORKSPACE_ID', 'HERDR_TAB_ID'))
 
     def test_module_imports_only_the_standard_library(self):
         tree = ast.parse(Path(hook.__file__).read_text(encoding='utf-8'))
