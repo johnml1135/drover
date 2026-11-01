@@ -150,8 +150,8 @@ class Runtime(unittest.TestCase):
                     self.adapter.handles[run['run_id']].result = {'status': 'done', 'usage': {}}
                 self.tick()
 
-    def test_a_clean_outcome_waits_for_the_wake_window(self):
-        for outcome, launches in (('error', 2), ('rotated', 1), ('pane-gone', 1), ('compaction-fresh', 1)):
+    def test_a_clean_outcome_waits_for_the_wake_window_unless_it_rotated(self):
+        for outcome, launches in (('error', 2), ('rotated', 2), ('pane-gone', 1), ('compaction-fresh', 1)):
             with self.subTest(outcome):
                 self.setUp()
                 self.service.conn.execute("UPDATE director_roles SET policy=json_set(policy,'$.wake_window_s',600)")
