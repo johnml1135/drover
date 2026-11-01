@@ -354,7 +354,6 @@ def confirm_landed(port, herdr, row) -> dict:
     an idle pane, history text, either status alone, or a Claude screen, whose past prompts have no capture yet.
     """
     row = _current(port, row)
-    _owned(row, STOPPABLE)
     write = _newest_open(port, row)
     if write is None or write['kind'] not in TYPED_KINDS:
         raise PaneRefused('nothing-open')
