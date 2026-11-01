@@ -16,8 +16,8 @@ from .ledger.db import HubRequired, default_path, main_error
 from .tuner_routing import (PASS_OUTCOMES, _runs, _fit_rates, _cost, _is_worker, _by_task,
                             cost_per_landed, cost_per_landed_pass, route_stats, update_routes)
 from .tuner_metrics import (PROMOTE_MIN, SPOT_LABEL_MIN, NO_RULE, BATCH_RANGE, BATCH_OFF_GATE_S,
-                            GATE_MIN_N, CAP_RANGE, TUNER_EPIC, _policy, _dt, shadow_accuracy,
-                            _tuner_epic, proposals, tune_batch, landed_per_hour, tune_cap)
+                            GATE_MIN_N, TUNER_EPIC, _policy, _dt, shadow_accuracy,
+                            _tuner_epic, proposals, tune_batch, landed_per_hour)
 
 
 def __getattr__(name):   # the old constants stay importable; they follow the active config
@@ -25,14 +25,7 @@ def __getattr__(name):   # the old constants stay importable; they follow the ac
         return intervals_days()
     if name == "BATCH_DEFAULT":
         return _policy()["landing_batch_size"]
-    if name == "CAP_DEFAULT":
-        return _cap_default()
     raise AttributeError(name)
-
-
-def _cap_default():
-    from . import config
-    return config.get()["capacity"]["parallel_cap"]
 
 
 def intervals_days():
@@ -57,7 +50,7 @@ STATE_KEY = "tuner_state"
 
 def new_state():
     return {"step": 0, "last_pass": None, "last_run_id": 0, "new_runs": 0, "last_cpl": None, "models_sig": None,
-            "repos": [], "reset": False, "last_lph": None, "last_cap": None, "last_cap_dir": 0}
+            "repos": [], "reset": False, "last_lph": None}
 
 
 def load_state(conn):

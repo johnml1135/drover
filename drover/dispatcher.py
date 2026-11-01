@@ -243,8 +243,11 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         skip.update(tid for _, tid, _ in self.live.values())
         def hold_base(t):      # git runs here, outside any ledger transaction
             prog = self.pipeline.all_repos().get(str(t.get("repo") or "").lower())
-            return repos_mod.default_branch(prog) if prog else None
-        held = dispatch_hold.tick_holds(p, config_mod.get()["dispatch"], hold_base)
+            if not prog:
+                return None
+            base = repos_mod.default_branch(prog)      # a pushing repo lands on the remote ref, as ops_outside does
+            return f"refs/remotes/{repos_mod.remote_name(prog)}/{base}" if prog["landing"]["push"] else f"refs/heads/{base}"
+        held = dispatch_hold.tick_holds(p, config_mod.get()["dispatch"], hold_base) if slots > 0 else {}
         skip.update(held)
         skipped = {"conflict-hold": len(held)} if held else {}
         while slots > 0 and self._launch_allowed():

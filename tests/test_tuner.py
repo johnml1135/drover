@@ -307,25 +307,8 @@ class BatchAndCap(Base):
         self.gates(2000, n=2)
         self.assertEqual(tuner.tune_batch(self.conn, 3), 3)
 
-    def test_cap_hill_climb(self):
-        s = {"last_lph": 2.0, "last_cap": 4, "last_cap_dir": 1}
-        self.assertEqual(tuner.tune_cap(4, 3.0, s), (5, 1))
-        self.assertEqual(tuner.tune_cap(4, 1.0, s), (3, -1))
-        self.assertEqual(tuner.tune_cap(4, 2.0, s), (4, 0))
-        self.assertEqual(tuner.tune_cap(4, 3.0, {"last_lph": None}), (4, 0))
-        self.assertEqual(tuner.tune_cap(4, 3.0, {"last_lph": 2.0, "last_cap": 4, "last_cap_dir": 0}), (5, 1))
-        self.assertEqual(tuner.tune_cap(8, 3.0, {"last_lph": 2.0, "last_cap": 8, "last_cap_dir": 1}), (8, 1))
-        self.assertEqual(tuner.tune_cap(1, 3.0, {"last_lph": 2.0, "last_cap": 1, "last_cap_dir": -1}), (1, -1))
-
 
 class ColdStartAndPolicy(Base):
-    def test_cap_probes_from_cold_start(self):
-        st = tuner.new_state()
-        cap, d = tuner.tune_cap(4, 1.0, st)  # first sighting: record only
-        self.assertEqual((cap, d), (4, 0))
-        st.update(last_lph=1.0, last_cap=cap, last_cap_dir=d)
-        self.assertEqual(tuner.tune_cap(cap, 1.0, st), (5, 1))
-
     def test_tuner_leaves_the_cap_alone(self):
         self.fill(25)
         tuner.run_pass(self.conn, T0 + timedelta(days=1))

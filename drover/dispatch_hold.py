@@ -27,20 +27,39 @@ def _git(repo, *args):
     return done.stdout if done.returncode == 0 else None
 
 
-def _tip(git, repo, ref):
-    out = git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-    return out.strip() if out and out.strip() else None
+def branch_tips(repo, git=None):
+    """{refname: sha} for every ref in the repo, from one `git for-each-ref`; None when git fails."""
+    out = (git or _git)(repo, "for-each-ref", "--format=%(objectname) %(refname)")
+    if out is None:
+        return None
+    tips = {}
+    for line in out.splitlines():
+        sha, _, name = line.strip().partition(" ")
+        if sha and name:
+            tips[name] = sha
+    return tips
 
 
-def changed_files(repo, branch, base_ref, cache, git=None):
-    """Files the branch changed since it left base_ref (git diff base...branch), or None when unknown."""
+def changed_files(repo, branch, base_ref, cache, git=None, tips=None, seen=None):
+    """Files the branch changed since it left base_ref (git diff base...branch), or None when unknown.
+
+    base_ref is a full ref name (refs/heads/main, or refs/remotes/origin/main for a pushing repo). Tips come from
+    one for-each-ref per repo (pass `tips` to share it); git runs again only on a cache miss, keyed by
+    (repo, base tip, branch tip). A ref missing from the listing is unknown and costs no further git call.
+    """
     git = git or _git
     if not repo or not branch or not base_ref:
         return None
-    tip, base = _tip(git, repo, branch), _tip(git, repo, base_ref)
+    if tips is None:
+        tips = branch_tips(repo, git)
+    if not tips:
+        return None
+    tip, base = tips.get(f"refs/heads/{branch}"), tips.get(base_ref)
     if not tip or not base:
         return None
-    key = (repo, tip, base)
+    key = (repo, base, tip)
+    if seen is not None:
+        seen.add(key)
     if key not in cache:
         out = git(repo, "diff", "--name-only", f"{base}...{tip}")
         if out is None:
@@ -67,27 +86,36 @@ def reason(candidate_scope, other_files, patterns):
 
 
 def holds(ready, active, cfg, git=None, cache=None, base_of=None):
-    """{task id: reason} for ready tasks to hold. cfg is the [dispatch] table; base_of(task) names the base ref."""
+    """{task id: reason} for ready tasks to hold. cfg is the [dispatch] table; base_of(task) names the base ref.
+
+    Git runs lazily: not at all without a scoped ready task and an active branch in its repo; otherwise one
+    for-each-ref per repo, then a diff per uncached branch tip. The cache keeps only the keys seen this call.
+    """
     if not cfg.get("conflict_hold", True):
         return {}
     cache = _CACHE if cache is None else cache
     patterns = list(cfg.get("magnets", DEFAULT_MAGNETS))
-    base_of = base_of or (lambda task: "main")
-    files = {}
-    out = {}
-    for task in ready:
-        if not task.get("scope_files"):
-            continue
+    base_of = base_of or (lambda task: "refs/heads/main")
+    scoped = [t for t in ready if t.get("scope_files")]
+    if not scoped:
+        return {}
+    tips, files, seen, out = {}, {}, set(), {}
+    for task in scoped:
         for other in active:
             if other["id"] == task["id"] or other.get("repo") != task.get("repo") or not other.get("branch"):
                 continue
             if other["id"] not in files:
                 repo = other.get("repo_path") or task.get("repo_path")
-                files[other["id"]] = changed_files(repo, other["branch"], base_of(other), cache, git)
+                if repo not in tips:
+                    tips[repo] = branch_tips(repo, git) if repo else None
+                files[other["id"]] = changed_files(repo, other["branch"], base_of(other), cache, git,
+                                                   tips=tips[repo], seen=seen)
             why = reason(task["scope_files"], files[other["id"]], patterns)
             if why:
                 out[task["id"]] = f"held behind {other['id']}: {why}"
                 break
+    for key in [k for k in cache if k not in seen]:
+        del cache[key]
     return out
 
 
