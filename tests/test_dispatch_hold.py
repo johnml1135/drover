@@ -129,7 +129,7 @@ class InTick(Base):
         self.addCleanup(patch.stop)
         dispatch_hold._CACHE.clear()
         self.active = self.task(scope_files=["other/x"])
-        self.conn.execute("UPDATE tasks SET status='running', branch='b1', repo_path='/r' WHERE id=?", (self.active,))
+        self.conn.execute("UPDATE tasks SET status='gated', branch='b1', repo_path='/r' WHERE id=?", (self.active,))
 
     def beat(self):
         return json.loads(ops.get_setting(self.conn, "dispatcher_heartbeat")).get("not_dispatched")
