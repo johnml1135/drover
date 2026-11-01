@@ -24,7 +24,9 @@ INTEGRATION_TARGET = 20
 # 112 on main, whose own count had passed the 93 once pinned here, plus the dispatch phase's real git: the proof of an
 # outside landing has to run against git, and what could be faked was (ruling of the phase's final fix wave, reported
 # to the owner). The owner target is INTEGRATION_TARGET.
-INTEGRATION_CEILING = 205
+# 208: the three real Windows priority and affinity tests of test_disk_cpu_limit.RealWindows start child processes; they
+# are marked integration instead of faked, because the real API is what they prove (ruling recorded in the task-15 report).
+INTEGRATION_CEILING = 208
 
 # Files over MAX_LINES, pinned at their current line counts (wc -l). Shrink-only: never add a file.
 OVER = {

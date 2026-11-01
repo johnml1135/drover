@@ -95,7 +95,7 @@ class Combined(unittest.TestCase):
         config_ = cfg()
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, 'state_dir', return_value=Path(tmp)), \
                 mock.patch('drover.disk_cleanup.retry_notices'):
-            return disk.tick(config_, reader=lambda p: host, enqueue=lambda: None)
+            return disk.tick(config_, reader=lambda p: host, enqueue=lambda: None, wsl_used=lambda: None)
 
     def test_sticky_pause_is_per_side(self):
         self.assertFalse(self.tick(15)['pause'])      # H below critical 25 but above the floor: WSL work runs

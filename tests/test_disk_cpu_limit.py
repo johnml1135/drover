@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import config, disk_runtime, placement, placement_worker
+from tests.tiers import integration
 
 ROOT = Path(__file__).resolve().parents[1]
 EIGHT = range(8)
@@ -57,6 +58,7 @@ else:                                # the detached coordinator, up to the momen
 
 
 @unittest.skipUnless(os.name == 'nt', 'the real Windows calls')
+@integration
 class RealWindows(unittest.TestCase):
     """The API itself, which every other test here replaces. Only the child process changes."""
     BELOW_NORMAL = 0x4000
