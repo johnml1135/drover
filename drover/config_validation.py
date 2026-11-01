@@ -140,9 +140,7 @@ def _seat(raw, index):
     seat["codex_home"] = _scalar(seat["codex_home"], str, path + ["codex_home"])
     seat["sandbox"] = _choice(seat["sandbox"], ("read-only", "workspace-write"), path + ["sandbox"])
     if "director_reserve_pct" not in raw:
-        seat["director_reserve_pct"] = 25.0 if seat["backend"] == "claude" and seat["director"] else 0.0
-    if seat["director"] and seat["backend"] != "claude":
-        raise ConfigError(f"seat {seat['name']!r}: only a claude seat can be the director")
+        seat["director_reserve_pct"] = 25.0 if seat["director"] else 0.0
     if seat["backend"] == "codex" and seat["placement"] == "windows":
         raise ConfigError(f"seat {seat['name']!r}: codex must run in wsl (on Windows it corrupts the login registry; "
                           "ADR 0002)")

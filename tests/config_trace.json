@@ -22,8 +22,13 @@
   },
   "director": {
    "effort": "high",
+   "handoff_tokens": 275000,
    "model": "",
    "seat": ""
+  },
+  "context": {
+   "file_limit_bytes": 6144,
+   "total_limit_bytes": 12288
   },
   "disk_cleanup": {
    "caches": [],
@@ -128,6 +133,14 @@
     "M": 1,
     "S": 0
    }
+  },
+  "panes": {
+   "call_timeout_s": 10.0,
+   "enabled": false,
+   "herdr_bin": "",
+   "retry_unavailable_s": 60.0,
+   "socket": "",
+   "workspace": ""
   },
   "paths": {
    "repos_root": "/srv/repos",
@@ -254,7 +267,10 @@
   "decider.ollama_models": "default",
   "decider.timeout_s": "default",
   "decider.url": "default",
+  "context.file_limit_bytes": "default",
+  "context.total_limit_bytes": "default",
   "director.effort": "default",
+  "director.handoff_tokens": "default",
   "director.model": "default",
   "director.seat": "default",
   "disk_cleanup.caches": "default",
@@ -333,6 +349,12 @@
   "models.start.L": "default",
   "models.start.M": "default",
   "models.start.S": "default",
+  "panes.call_timeout_s": "default",
+  "panes.enabled": "default",
+  "panes.herdr_bin": "default",
+  "panes.retry_unavailable_s": "default",
+  "panes.socket": "default",
+  "panes.workspace": "default",
   "paths.repos_root": "machine:<home>/config.toml",
   "paths.state_dir": "machine:<home>/config.toml",
   "paths.worktrees": "default",

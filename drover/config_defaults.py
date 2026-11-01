@@ -78,7 +78,10 @@ DEFAULTS = {
               "wsl_worktrees": "~/work"},
     "seats": DEFAULT_SEATS,
     "seats_policy": {"waste_threshold_pct": 15.0},
-    "director": {"seat": "", "model": "", "effort": "high"},
+    "director": {"seat": "", "model": "", "effort": "high", "handoff_tokens": 275000},
+    "panes": {"enabled": False, "herdr_bin": "", "socket": "", "workspace": "", "call_timeout_s": 10.0,
+              "retry_unavailable_s": 60.0},
+    "context": {"file_limit_bytes": 6144, "total_limit_bytes": 12288},
     "models": {
         "ids": {"haiku-5.5": "claude-haiku-5-5", "sonnet-5.5": "claude-sonnet-5-5", "opus-5.5": "claude-opus-5-5"},
         "efforts": {"cheap": "xhigh", "mid": "high", "top": "high", "small_claude": "max", "small_codex": "xhigh"},
