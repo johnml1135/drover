@@ -1,4 +1,6 @@
 """A launch that stalled, the one start for a role, and `resume`: nothing is ever resent."""
+from unittest import mock
+
 from drover import pane_launch, pane_send
 from drover.launch import AdmissionHeld
 from drover.ledger import ops_panes
@@ -126,6 +128,24 @@ class ShellPrompt(Launching):
                 self.assertEqual(self.calls('pane', 'close'), [])
                 self.reset()
 
+    def test_a_refusal_waiting_cannot_clear_ends_at_once_and_keeps_the_tab(self):
+        fake = self.blank()
+        real = fake._tab_create
+
+        def focused(args):
+            answer = real(args)
+            fake.panes[PANE]['focused'] = True
+            return answer
+        fake._tab_create = focused
+        self.assertEqual(self.start()['state'], 'failed')
+        self.assertEqual((self.reason(), self.sleep.call_count, self.calls('pane', 'close')), ('focused', 0, []))
+
+    def test_only_a_shell_that_never_came_closes_the_tab(self):
+        self.blank()
+        with mock.patch.object(pane_send, 'MAX_TEXT', 5):
+            row = self.start()
+        self.assertEqual((row['state'], self.reason(), self.calls('pane', 'close')), ('failed', 'text-too-long', []))
+
     def test_a_close_that_fails_leaves_the_row_failed(self):
         self.blank().refuse[('pane', 'close')] = 'pane_busy'
         row = self.start()
@@ -142,6 +162,59 @@ class ShellPrompt(Launching):
         fake = self.scene(boots=False)
         row = self.start()
         self.assertEqual((row['state'], fake.panes[PANE]['pane_id'], self.calls('pane', 'close')), ('failed', PANE, []))
+
+
+class BlankTabGuards(Launching):
+    """The close's own reads: earlier guards hide them on the launch path, and a close cannot be taken back."""
+
+    def blank_row(self, **over):
+        fake = self.scene()
+        fake._tab_create(['tab', 'create', '--workspace', 'w1'])
+        fake.screens[PANE] = ''
+        self.row = ops_panes.record_agent(self.conn, **{'pane_id': PANE, 'terminal_id': 't1', 'kind': 'claude', 'seat': 'seat-c',
+                                                        'placement': 'windows', 'started_by': 'drover', **over})
+        return fake
+
+    def kept(self):
+        self.assertIs(pane_launch._close_blank(self.port, self.herdr, self.row), False)
+        self.assertEqual(self.calls('pane', 'close'), [])
+
+    def test_a_blank_first_row_closes(self):
+        self.blank_row()
+        self.assertIs(pane_launch._close_blank(self.port, self.herdr, self.row), True)
+        self.assertEqual(self.calls('pane', 'close'), [['pane', 'close', PANE]])
+
+    def test_a_write_that_never_went_out_does_not_keep_it(self):
+        self.blank_row()
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, self.row['id'], 'shell', 'x')['id'], 'unsent')
+        self.assertIs(pane_launch._close_blank(self.port, self.herdr, self.row), True)
+
+    def test_a_write_that_may_have_gone_out_keeps_it(self):
+        for state in ('sent', 'unverified', 'observed'):
+            with self.subTest(state):
+                self.blank_row()
+                ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, self.row['id'], 'shell', 'x')['id'], state)
+                self.kept()
+                self.reset()
+
+    def test_a_reused_pane_is_kept(self):
+        self.blank_row(state='gone')
+        self.row = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', kind='claude', seat='seat-c', placement='windows',
+                                          started_by='drover')
+        self.kept()
+
+    def test_focus_at_the_last_read_keeps_it(self):
+        for focused in (True, None):
+            with self.subTest(focused):
+                self.blank_row()
+                self.fake.panes[PANE]['focused'] = focused
+                self.kept()
+                self.reset()
+
+    def test_a_changed_terminal_keeps_it(self):
+        self.blank_row()
+        self.fake.panes[PANE]['terminal_id'] = 't2'
+        self.kept()
 
 
 class EchoedLaunchLine(Launching):
