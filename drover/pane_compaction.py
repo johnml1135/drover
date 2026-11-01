@@ -23,7 +23,7 @@ such a row is settled the same way with a notice of its own, once a clean read p
 import json
 import logging
 
-from . import compaction_hold, config, pane_launch, pane_screen, pane_send
+from . import compaction_hold, config, pane_launch, pane_read, pane_screen, pane_send
 from .directors import COMPACTION_FRESH, DirectorRuntime
 from .launch import AdmissionHeld
 from .ledger import ops_panes
@@ -105,7 +105,7 @@ def _guarded(action, *args):
 
 def _idle(night, row):
     seen = pane_send.observe(night.herdr, row)
-    return seen['agent'].get('agent_status') in pane_send.HERDR_READY and pane_screen.status(seen['screen'], row['kind']) == 'idle'
+    return seen['agent'].get('agent_status') in pane_read.HERDR_READY and pane_screen.status(seen['screen'], row['kind']) == 'idle'
 
 
 def _write(night, row, write):
