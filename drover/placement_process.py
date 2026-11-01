@@ -298,7 +298,7 @@ public static class DroverTok {
 '@
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,SessionId | ForEach-Object {
-    [pscustomobject]@{ProcessId=$_.ProcessId; Name=$_.Name; ExecutablePath=$_.ExecutablePath;
+    [pscustomobject]@{ProcessId=$_.ProcessId; ParentProcessId=$_.ParentProcessId; Name=$_.Name; ExecutablePath=$_.ExecutablePath;
                      CommandLine=$_.CommandLine; SessionId=$_.SessionId; OwnerSid=[DroverTok]::Owner([uint32]$_.ProcessId)}
 })
 @{sid=$sid; processes=$rows} | ConvertTo-Json -Compress -Depth 4
@@ -317,7 +317,7 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name
     # CIM hides elevated images even when a limited-query handle can read them.
     # Keep ownership/command-line uncertainty; only a verified image may qualify
     # for the owner's non-workspace helper policy.
-    return [dict(pid=d['ProcessId'], name=d.get('Name'), session_id=d.get('SessionId'),
+    return [dict(pid=d['ProcessId'], ppid=d.get('ParentProcessId'), name=d.get('Name'), session_id=d.get('SessionId'),
                  exe=d.get('ExecutablePath') or _windows_image_path(d['ProcessId']),
                  command_unreadable=d.get('CommandLine') is None,
                  same_user=d.get('OwnerSid') == data['sid'] if d.get('OwnerSid') else None,

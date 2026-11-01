@@ -1,20 +1,22 @@
 """Close a pane Drover started once its agent is retired and the pane has sat unchanged for an hour.
 
 A pane closes only when every gate holds. The pane is Drover's own: a `pane_agents` row that Drover started, whose state
-is `retired`, and the newest open row for that pane. Herdr reports the agent `done`, and its terminal is the recorded
-one. Its state_change_seq, revision, terminal and visible screen stay unchanged for MIN_IDLE_S; the agent list has no
-timestamp, so the clock starts at the first read and any change restarts it. The composer holds no draft, no dialog is
-open and the layout is recognised. It is not focused. Its checkout has no uncommitted or untracked changes, and no
-process outside the pane uses it. Whether the branch is merged or pushed is reported but does not block a close,
-because nothing here removes a checkout or branch.
+is `retired`, and the newest open row for that pane. Herdr reports the agent `done`, and its terminal and session are
+the recorded ones. Its state_change_seq, revision, terminal and visible screen stay unchanged for MIN_IDLE_S; the agent
+list has no timestamp, so the clock starts at the first read and any change restarts it. The composer holds no draft,
+nothing is queued against it, no dialog is open and the layout is recognised. It is not focused. Its checkout has no
+uncommitted or untracked changes, and no process outside the pane's own tree uses it. Whether the branch is merged or
+pushed is reported but does not block a close, because nothing here removes a checkout or branch.
 
 Anything unknown keeps the pane: Herdr closed, an unreadable screen, a checkout git cannot read, processes that cannot be
 listed. Another program's pane, an owner-started pane and a live agent are never candidates at all. Panes close by id
 through `pane close`; nothing is killed. The pane is re-read right before the close, and each close is a `pane-closed`
-ledger event naming the evidence and the reason, with the row moving to `gone`.
+ledger event naming the evidence and the reason, with the row moving to `gone`. The intent is saved before `pane close`;
+a close that Herdr never confirms is settled on the next tick from whether the pane is gone, with exactly one event.
 """
 import hashlib
 import json
+import logging
 
 from . import pane_guard, pane_screen, placement, placement_git
 from .herdr_client import HerdrRefused, HerdrUnavailable
@@ -22,12 +24,20 @@ from .ledger import ops_panes
 
 MIN_IDLE_S = 3600
 SETTING = 'pane_close_observed'
+PENDING = 'pane_close_pending'
 ACTOR = 'pane_close'
+log = logging.getLogger(__name__)
 
 
 def worktree_facts(cwd, run=None):
     """Facts about the checkout holding cwd, or None when it is not inside a readable git checkout."""
-    run = run or _git
+    try:
+        return _facts(cwd, run or _git)
+    except Exception:   # git timing out or failing in any way
+        return None     # a stuck or unreadable checkout is unknown, and unknown keeps the pane
+
+
+def _facts(cwd, run):
     rc, top = run(cwd, 'rev-parse', '--show-toplevel')
     if rc or not top:
         return None
@@ -73,9 +83,12 @@ def judge(row, agent, screen, facts, *, now, observed):
 
     if row.get('started_by') != 'drover' or row.get('state') != 'retired':
         return say('keep', 'not a retired Drover agent')
+    session = agent.get('agent_session')
+    session = session.get('value') if isinstance(session, dict) else None
     if agent.get('pane_id') != pane or not row.get('terminal_id') or agent.get('terminal_id') != row['terminal_id'] \
-            or agent.get('agent') not in (None, row.get('kind')):
-        return say('keep', 'the occupant is not the recorded agent, or it cannot be told')
+            or agent.get('agent') != row.get('kind') or not row.get('session_id') or session != row['session_id'] \
+            or agent.get('state_change_seq') is None or agent.get('revision') is None:
+        return say('keep', 'the occupant is not the recorded agent session, or it cannot be told')
     if agent.get('agent_status') != 'done':
         observed.pop(pane, None)    # leaving done restarts the clock
         return say('keep', 'not done (%s): idle and working panes never close' % agent.get('agent_status'))
@@ -88,9 +101,12 @@ def judge(row, agent, screen, facts, *, now, observed):
         return say('keep', 'focused, or focus unknown')
     try:
         pane_guard.refuse_dialog(screen)
+        queued = pane_guard.queued_input_range(screen)
     except ValueError as error:
-        return say('keep', 'dialog open: ' + str(error))
-    if pane_screen.status(screen, row['kind']) != 'idle':
+        return say('keep', 'dialog open, or the screen cannot be read: ' + str(error))
+    if queued is not None:
+        return say('keep', 'follow-up input is queued against the composer')
+    if pane_screen.status(screen, row['kind']) != 'idle' or not pane_screen.composer_empty(screen, row['kind']):
         return say('keep', 'composer holds a draft, or the layout is not recognised')
     if not isinstance(facts, dict):
         return say('keep', 'worktree unknown: not inside a readable git checkout')
@@ -115,7 +131,7 @@ def _snapshot(row):
 
 
 def _busy(herdr, row, pane, path, processes):
-    """Whether a process outside the pane uses `path`; None when that cannot be known."""
+    """Whether a process outside the pane's own tree uses `path`; None when that cannot be known."""
     try:
         info = herdr.call('pane', 'process-info', '--pane', pane)['process_info']
         own = {info['shell_pid'], *(p['pid'] for p in info.get('foreground_processes', []))}
@@ -124,20 +140,24 @@ def _busy(herdr, row, pane, path, processes):
         return None
     if proof is None or proof.unknown:
         return None
-    return bool(proof.busy_outside(path, own))
+    return proof.busy_outside(path, own)
+
+
+def _kept(row, reason):
+    return dict(pane=row['pane_id'], agent_id=row['id'], name=row.get('name'), status=None, idle_s=None,
+                fingerprint=None, worktree=None, verdict='keep', reason=reason)
 
 
 def assess(herdr, row, *, now, observed, run=None, processes=None):
-    """Read the pane and judge it. Herdr closed raises HerdrUnavailable; a pane Herdr refuses to show is kept."""
+    """Read the pane and judge it. Herdr closed raises HerdrUnavailable; a pane Herdr will not show is kept."""
     pane = row['pane_id']
     try:
         agent = herdr.call('agent', 'get', pane)['agent']
+        if not isinstance(agent, dict):
+            return _kept(row, 'agent unreadable')
         screen = herdr.text('pane', 'read', pane, '--source', 'visible') if agent.get('agent_status') == 'done' else ''
-    except (KeyError, TypeError):
-        return judge(row, {}, '', None, now=now, observed=observed)
-    except HerdrRefused:
-        out = judge(row, {}, '', None, now=now, observed=observed)
-        return dict(out, reason='pane or agent not readable')
+    except (KeyError, TypeError, HerdrRefused):
+        return _kept(row, 'pane or agent not readable')
     facts = None
     cwd = agent.get('foreground_cwd') or agent.get('cwd')
     if cwd:
@@ -147,14 +167,54 @@ def assess(herdr, row, *, now, observed, run=None, processes=None):
     return judge(row, agent, screen, facts, now=now, observed=observed)
 
 
-def _event(port, kind, result, row, reason):
-    data = dict(pane=result['pane'], agent_id=row['id'], name=row.get('name'), seat=row['seat'],
-                placement=row['placement'], evidence=result['fingerprint'], idle_s=result['idle_s'],
-                worktree=result['worktree'], reason=reason)
+def _event(port, kind, entry, row, reason):
+    data = dict(pane=entry['pane'], agent_id=row['id'], name=row.get('name'), seat=row['seat'],
+                placement=row['placement'], evidence=entry.get('fingerprint'), idle_s=entry.get('idle_s'),
+                worktree=entry.get('worktree'), reason=reason)
     port.append_event(kind, data, actor=ACTOR)
 
 
-def close_if_still_eligible(port, herdr, row, result, *, now, observed, run=None, processes=None):
+def _load(port, key):
+    """A dict of dicts from a ledger setting; anything else restarts empty, which only delays closes."""
+    try:
+        data = json.loads(port.get_setting(key) or '{}')
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) and all(isinstance(v, dict) for v in data.values()) else {}
+
+
+def _save(port, key, data):
+    port.set_setting(key, json.dumps(data, sort_keys=True))
+
+
+def _settle(port, pending, row):
+    pending.pop(str(row['id']), None)
+    _save(port, PENDING, pending)
+
+
+def _gone(port, row, pending, entry, reason):
+    """The pane is not there: one pane-closed event, the row to `gone`, the pending mark cleared."""
+    _event(port, 'pane-closed', entry, row, reason)
+    ops_panes.update_agent(port.conn, row['id'], state='gone')
+    _settle(port, pending, row)
+
+
+def reconcile(port, herdr, row, pending):
+    """A close that was not confirmed: ask Herdr whether the pane is gone and write exactly one event for it."""
+    entry = pending[str(row['id'])]
+    try:
+        herdr.call('pane', 'get', row['pane_id'])
+    except HerdrRefused as error:
+        if error.code != 'pane_not_found':
+            return _kept(row, 'close unconfirmed and the pane cannot be read: ' + error.code)
+        _gone(port, row, pending, entry, 'gone after an unconfirmed close; ' + str(entry.get('reason')))
+        return dict(_kept(row, entry.get('reason')), verdict='closed', fingerprint=entry.get('fingerprint'))
+    _event(port, 'pane-close-failed', entry, row, 'close_unconfirmed_and_the_pane_remains')
+    _settle(port, pending, row)
+    return dict(_kept(row, 'the close was not confirmed and the pane remains'), verdict='close-failed')
+
+
+def close_if_still_eligible(port, herdr, row, result, *, now, observed, pending, run=None, processes=None):
     """Re-read the row and the pane right before the mutation; only a fresh 'close' verdict reaches `pane close`."""
     if result['verdict'] != 'close':
         return result
@@ -164,37 +224,48 @@ def close_if_still_eligible(port, herdr, row, result, *, now, observed, run=None
     checked = assess(herdr, current, now=now, observed=observed, run=run, processes=processes)
     if checked['verdict'] != 'close':
         return dict(checked, reason='rechecked before close: ' + checked['reason'])
+    entry = dict(pane=checked['pane'], fingerprint=checked['fingerprint'], idle_s=checked['idle_s'],
+                 worktree=checked['worktree'], reason=checked['reason'])
+    pending[str(current['id'])] = entry     # written first: a crash or a late answer is settled by the next tick
+    _save(port, PENDING, pending)
     try:
         herdr.call('pane', 'close', current['pane_id'])
     except HerdrRefused as error:
-        _event(port, 'pane-close-failed', checked, current, error.code)
+        if error.code == 'pane_not_found':
+            _gone(port, current, pending, entry, 'the pane was already gone; ' + checked['reason'])
+            return dict(checked, verdict='closed')
+        _event(port, 'pane-close-failed', entry, current, error.code)
+        _settle(port, pending, current)
         return dict(checked, verdict='close-failed', reason=error.code)
-    _event(port, 'pane-closed', checked, current, checked['reason'])
-    ops_panes.update_agent(port.conn, current['id'], state='gone')
+    except HerdrUnavailable:
+        return dict(checked, verdict='keep', reason='close unconfirmed: the next tick settles it')
+    _gone(port, current, pending, entry, checked['reason'])
     return dict(checked, verdict='closed')
 
 
 def tick(port, herdr, now, *, apply=True, run=None, processes=None) -> list[dict]:
-    """Judge every retired Drover pane; with apply, close those that pass twice. Never raises on a closed Herdr."""
+    """Judge every retired Drover pane; with apply, close those that pass twice. No pane's failure skips the rest."""
     rows = [r for r in ops_panes.open_agents(port.conn) if r['state'] == 'retired']
-    try:
-        observed = json.loads(port.get_setting(SETTING) or '{}')
-    except ValueError:
-        observed = {}   # an unreadable baseline restarts every clock, which only delays closes
+    observed, pending = _load(port, SETTING), _load(port, PENDING)
     results = []
     for row in rows:
         try:
-            if ops_panes.by_pane(port.conn, row['pane_id'])['id'] != row['id']:
+            owner = ops_panes.by_pane(port.conn, row['pane_id'])
+            if owner is None or owner['id'] != row['id']:
                 continue    # a newer open row owns this pane: it is not retired
+            if str(row['id']) in pending:
+                results.append(reconcile(port, herdr, row, pending))
+                continue
             result = assess(herdr, row, now=now, observed=observed, run=run, processes=processes)
             if apply:
-                result = close_if_still_eligible(port, herdr, row, result, now=now, observed=observed, run=run,
-                                                 processes=processes)
+                result = close_if_still_eligible(port, herdr, row, result, now=now, observed=observed,
+                                                 pending=pending, run=run, processes=processes)
+            results.append(result)
         except HerdrUnavailable:
-            results.append(dict(pane=row['pane_id'], agent_id=row['id'], verdict='keep',
-                                reason='herdr unavailable: nothing is known about the pane'))
-            break
-        results.append(result)
+            results.append(_kept(row, 'herdr unavailable: nothing is known about the pane'))
+        except Exception as error:      # one pane's failure is that pane's keep, never the rest's
+            log.warning('pane %s kept: %s: %s', row.get('pane_id'), type(error).__name__, error)
+            results.append(_kept(row, 'not judged: %s' % type(error).__name__))
     present = {r['pane_id'] for r in rows} - {r['pane'] for r in results if r['verdict'] == 'closed'}
-    port.set_setting(SETTING, json.dumps({p: v for p, v in observed.items() if p in present}, sort_keys=True))
+    _save(port, SETTING, {p: v for p, v in observed.items() if p in present})
     return results

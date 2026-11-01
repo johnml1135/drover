@@ -3,9 +3,12 @@
 Herdr is tests/fake_herdr.py, git is a table of answers and the process list is a fake CIM snapshot: no test starts a
 process or reaches a real server.
 """
+import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from drover import pane_close
 from drover.ledger import ops_panes
@@ -89,7 +92,7 @@ class Candidates(Base8):
 
 
 class Clock(Base8):
-    def test_first_sighting_starts_the_clock_and_an_hour_unchanged_is_the_candidate(self):
+    def test_an_hour_unchanged_is_the_candidate(self):
         self.retired()
         herdr = self.herdr()
         self.assertEqual(self.verdict(herdr, 0), 'wait')
@@ -183,15 +186,15 @@ class Gates(Base8):
         self.assertFalse([a for a in self.git.calls if a[0] in ('checkout', 'branch', 'worktree', 'reset')])
 
     def test_a_live_process_outside_the_pane_keeps_the_checkout(self):
-        self.processes = snapshot((101, REPO), (4242, REPO))    # 101 is the pane's own CLI
+        self.processes = snapshot((101, REPO, 100), (4242, REPO))    # 101 is the pane's own CLI
         result = self.watch()
         self.assertEqual(result['verdict'], 'keep')
         self.assertIn('live process', result['reason'])
-        self.processes = snapshot((101, REPO), (4242, 'H:/repos/elsewhere'))
+        self.processes = snapshot((101, REPO, 100), (4242, 'H:/repos/elsewhere'))
         self.assertEqual(self.verdict(self.herdr(), 60), 'close')
 
     def test_unknown_process_visibility_keeps_the_pane(self):
-        for label, processes in (('snapshot unknown', snapshot((101, REPO), unknown=True)),
+        for label, processes in (('snapshot unknown', snapshot((101, REPO, 100), unknown=True)),
                                  ('no snapshot for this side', lambda row: None),
                                  ('broken', lambda row: (_ for _ in ()).throw(KeyError('x')))):
             with self.subTest(label):
@@ -202,7 +205,7 @@ class Gates(Base8):
                 self.assertIn('visibility unavailable', result['reason'])
                 self.assertEqual(self.fake.closes(), [])
         self.pids.clear()    # the pane's own processes cannot be listed
-        self.processes = snapshot((101, REPO))
+        self.processes = snapshot((101, REPO, 100))
         self.conn.execute('DELETE FROM pane_agents')
         self.assertEqual(self.watch()['verdict'], 'keep')
 
@@ -226,7 +229,7 @@ class Gates(Base8):
 
 
 class Closing(Base8):
-    def test_dry_run_is_the_default_writes_no_event_and_closes_nothing(self):
+    def test_dry_run_is_the_default(self):
         self.retired()
         herdr = self.herdr()
         self.verdict(herdr, 0)
@@ -247,7 +250,7 @@ class Closing(Base8):
         self.assertEqual([c for c in self.fake.calls if c[:2] == ['pane', 'close']], [['pane', 'close', 'w1:p1']])
         (event,) = self.events('pane-closed')
         self.assertEqual(event['actor'], 'pane_close')
-        data = event['data'] if isinstance(event['data'], dict) else __import__('json').loads(event['data'])
+        data = event['data'] if isinstance(event['data'], dict) else json.loads(event['data'])
         self.assertEqual((data['pane'], data['agent_id'], data['seat'], data['placement']),
                          ('w1:p1', row['id'], 'claude-main', 'windows'))
         self.assertEqual(data['evidence']['state_change_seq'], 10)
@@ -273,7 +276,8 @@ class Closing(Base8):
         for word in ('pkill', 'shell=True', 'taskkill', 'os.kill', 'terminate', 'Popen', 'subprocess'):
             self.assertNotIn(word, source)
         calls = set(re.findall(r"herdr\.(?:call|text)\('(\w+)', '([\w-]+)'", source))
-        self.assertEqual(calls, {('agent', 'get'), ('pane', 'read'), ('pane', 'process-info'), ('pane', 'close')})
+        self.assertEqual(calls, {('agent', 'get'), ('pane', 'get'), ('pane', 'read'), ('pane', 'process-info'),
+                         ('pane', 'close')})
         self.assertEqual(re.findall(r"herdr\.call\('pane', 'close', ([\w\[\]']+)\)", source), ["current['pane_id']"])
 
 

@@ -68,11 +68,18 @@ def cleanup_processes(*, proc_root=None, cim=None, windows=None, request=None):
     return proof
 
 
+def _parent(entry):
+    try:
+        return int((entry / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 class _CleanupProcesses:
     """One invoking-user snapshot. Unknown ownership fails closed; foreign argv still retains named paths."""
 
     def __init__(self, proc_root=None, windows=None, cim=None, request=None):
-        self.rows, self.pids, self.unreadable, self.out_of_scope, self.unknown = [], [], [], 0, False
+        self.rows, self.pids, self.ppids, self.unreadable, self.out_of_scope, self.unknown = [], [], [], [], 0, False
         self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
         self.budget = bool((request or {}).get('budget'))
@@ -174,7 +181,7 @@ class _CleanupProcesses:
                 # can be excluded; unknown ownership remains conservative.
                 cwd = None
             self._record(pid=int(entry.name), name=name, same_user=same_user, cwd=cwd, cmd=cmd,
-                         exe=exe, command_unreadable=command_unreadable)
+                         exe=exe, command_unreadable=command_unreadable, ppid=_parent(entry))
 
     def _image(self, name):
         image = re.split(r'[/\\]', name or '')[-1]
@@ -212,7 +219,8 @@ class _CleanupProcesses:
             row['owner_action'] = f'close {name} (pid {pid}) or add it to [disk_cleanup] process_ignore'
         self.unreadable.append(row)
 
-    def _record(self, *, pid, name, same_user, cwd, cmd, session_id=None, exe=None, command_unreadable=False):
+    def _record(self, *, pid, name, same_user, cwd, cmd, session_id=None, exe=None, command_unreadable=False,
+                ppid=None):
         command_unreadable = command_unreadable or cmd is None
         own_cwd = self._own_cwd(pid) if not cwd or same_user is None or command_unreadable else None
         if own_cwd:
@@ -234,6 +242,7 @@ class _CleanupProcesses:
             self._unreadable(pid, name, evidence='command_line')
         self.rows.append((cwd, cmd, exe))
         self.pids.append(pid)
+        self.ppids.append(ppid)
 
     def _own_cwd(self, pid):
         if not self.request.get('state_dir'):
@@ -314,9 +323,22 @@ class _CleanupProcesses:
         return sorted(paths)
 
     def busy_outside(self, worktree, pids):
-        """busy() without the processes in `pids`, such as a pane's own; unknown stays busy."""
+        """busy() without `pids` and everything they started, such as a pane's own tree. Unknown stays busy.
+
+        None when a parent link is missing: the tree cannot be walked, so nothing proves who is outside it."""
+        if any(ppid is None for ppid in self.ppids):
+            return None
+        children = {}
+        for pid, ppid in zip(self.pids, self.ppids):
+            children.setdefault(ppid, []).append(pid)
+        own, todo = set(), list(pids)
+        while todo:
+            pid = todo.pop()
+            if pid not in own:
+                own.add(pid)
+                todo.extend(children.get(pid, []))
         others = copy.copy(self)
-        others.rows = [row for row, pid in zip(self.rows, self.pids) if pid not in pids]
+        others.rows = [row for row, pid in zip(self.rows, self.pids) if pid not in own]
         others._indexed = -1
         return others.busy(worktree)
 

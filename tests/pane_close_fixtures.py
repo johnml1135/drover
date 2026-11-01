@@ -17,7 +17,7 @@ REPO = 'H:/repos/dip-fixture'
 
 def agent(pane, *, status='done', kind='claude', name='dir', seq=10, revision=1, terminal='t1', **fields):
     row = dict(pane_id=pane, agent=kind, agent_status=status, focused=False, name=name, cwd=REPO,
-               foreground_cwd=REPO, state_change_seq=seq, revision=revision, terminal_id=terminal)
+               foreground_cwd=REPO, agent_session={'value': 's1'}, state_change_seq=seq, revision=revision, terminal_id=terminal)
     row.update(fields)
     return row
 
@@ -69,9 +69,14 @@ class Fleet(FakeHerdr):
         return [c[2] for c in self.calls if c[:2] == ['pane', 'close']]
 
 
-def snapshot(*rows, unknown=False):
-    """A real placement proof over fake processes: (pid, cwd) pairs, all the invoking user's."""
-    cim = [dict(pid=pid, name='node.exe', same_user=True, cwd=cwd, cmd=['node.exe']) for pid, cwd in rows]
+def snapshot(*rows, unknown=False, system=False):
+    """A real placement proof over fake processes: (pid, cwd[, parent pid]) rows, all the invoking user's.
+
+    `system` adds what a real non-elevated listing always holds: csrss, whose owner and cwd cannot be read."""
+    cim = [dict(pid=r[0], name='node.exe', same_user=True, cwd=r[1], cmd=['node.exe'], ppid=r[2] if len(r) > 2 else 1)
+           for r in rows]
+    if system:
+        cim.append(dict(pid=1720, name='csrss.exe', same_user=None, cwd=None, cmd='', session_id=1, ppid=0))
     proof = placement_proof._CleanupProcesses(windows=True, cim=lambda: cim)
     proof.unknown = proof.unknown or unknown
     return lambda row: proof
@@ -83,11 +88,11 @@ class PaneCloseBase(Base):
         self.port = DirectPort(self.conn)
         self.git = Git()
         self.pids = {'w1:p1': dict(shell_pid=100, foreground_processes=[dict(pid=101)])}
-        self.processes = snapshot((101, REPO))
+        self.processes = snapshot((101, REPO, 100))
 
     def retired(self, pane='w1:p1', **over):
         fields = dict(pane_id=pane, kind='claude', seat='claude-main', placement='windows', started_by='drover',
-                      terminal_id='t1', cwd=REPO, name='dir', state='retired')
+                      terminal_id='t1', cwd=REPO, name='dir', session_id='s1', state='retired')
         fields.update(over)
         return ops_panes.record_agent(self.conn, **fields)
 
