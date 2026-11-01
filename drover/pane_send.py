@@ -16,7 +16,7 @@ row, so a launch is never resent. A Windows launch is one shell line for its env
 Text stays short and on one line, so a paste cannot collapse and the screen can prove it is Drover's. Longer text goes
 in a file, and the pane gets a short line naming the path.
 
-`close_pane` is the one way to `pane close`. Its callers read the pane first and keep to `close_enabled`, the owner's switch.
+`close_pane` is the one way to `pane close`. Its callers read the pane first. A retired pane also waits on `close_enabled`.
 
 `port` must hold a ledger connection, as DirectPort does. Herdr's `idle` and `done` both mean ready for input: `done`
 only says nobody has looked since the turn ended (references/cli.md:44 in the skill), and the hub never focuses a pane.
@@ -46,7 +46,7 @@ ENTER_PRESSED = 'enter-pressed'     # an Enter may have gone out: no second one,
 EXIT_TEXT = '/exit'
 EXITING = ('rotating',)     # the one write a row in this state may get, and the only state that write goes to
 SUPERSEDABLE = ('wake', 'handoff')  # what a forced exit may close, on the read that proves the pane empty
-CLOSE_ENABLED = 'pane_close_enabled'    # the owner's switch: without it `pane_close` only reports and no tab closes
+CLOSE_ENABLED = 'pane_close_enabled'    # the owner's switch: without it `pane_close` only reports
 TRUTHY = ('true', '1', 'yes', 'on')
 CLOSABLE = ('retired', 'starting')      # a finished agent's pane, or a new tab no agent ever reached
 

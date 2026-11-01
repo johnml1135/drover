@@ -78,14 +78,8 @@ class Stalled(Launching):
         self.assertEqual(len(self.notices()), 1)
 
 
-class ClosesOn(Launching):
-    def scene(self, *args, **kw):
-        self.port.set_setting('pane_close_enabled', 'true')
-        return super().scene(*args, **kw)
-
-
-class ShellPrompt(ClosesOn):
-    """A new tab draws its prompt when it is ready, so the launch waits for it, once, and with closes on leaves no blank tab."""
+class ShellPrompt(Launching):
+    """A new tab draws its prompt when it is ready, so the launch waits for it, once, and leaves no blank tab behind."""
 
     def blank(self):
         fake = self.scene()
@@ -171,7 +165,7 @@ class ShellPrompt(ClosesOn):
         self.assertEqual((row['state'], fake.panes[PANE]['pane_id'], self.calls('pane', 'close')), ('failed', PANE, []))
 
 
-class BlankTabGuards(ClosesOn):
+class BlankTabGuards(Launching):
     """The close's own reads: earlier guards hide them on the launch path, and a close cannot be taken back."""
 
     def blank_row(self, **over):

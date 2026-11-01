@@ -102,6 +102,12 @@ class Wiring(unittest.TestCase):
             self.built(True)
         looked.assert_not_called()
 
+    def test_a_failing_look_never_stops_the_dispatcher(self):
+        with mock.patch('drover.pane_fault.left_running', side_effect=OSError('C:/secret')), \
+                self.assertLogs('hub.dispatcher', 'WARNING') as logs:
+            self.assertIsNone(self.built(False).panes)
+        self.assertNotIn('secret', ''.join(logs.output))
+
     def test_the_runner_path_builds_no_client(self):
         with mock.patch('drover.herdr_client.from_config') as client:
             self.built(False)

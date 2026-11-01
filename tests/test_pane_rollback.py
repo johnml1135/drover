@@ -22,25 +22,28 @@ class Switch(Launching):
 
 
 class BlankTab(Launching):
-    """No text of the spec exempts a blank tab, and plan row 19 and ruling 23 make every close wait on the owner: off, it stays."""
+    """The owner's ruling leaves Drover's own never-used tab out of the switch: it closes either way, through `close_pane`."""
 
     def blank(self):
         fake = self.scene()
         fake.screens[PANE] = ''
         return fake
 
-    def test_with_closes_off_the_failed_launch_leaves_its_tab(self):
-        self.blank()
-        row = self.start()
-        self.assertEqual((row['state'], self.calls('pane', 'close')), ('failed', []))
-        self.assertEqual(self.reason(), 'shell-not-ready')
-        self.assertIn('Closing it frees the role.', self.notices()[0]['body'])
+    def test_it_closes_with_the_switch_off_or_on(self):
+        for value in ('false', 'true'):
+            with self.subTest(value):
+                self.port.set_setting('pane_close_enabled', value)
+                self.blank()
+                self.assertEqual(self.start()['state'], 'gone')
+                self.assertEqual(self.calls('pane', 'close'), [['pane', 'close', PANE]])
+                self.reset()
 
-    def test_with_closes_on_it_closes(self):
+    def test_a_used_tab_stays_with_the_switch_on(self):
         self.port.set_setting('pane_close_enabled', 'true')
-        self.blank()
-        self.assertEqual(self.start()['state'], 'gone')
-        self.assertEqual(self.calls('pane', 'close'), [['pane', 'close', PANE]])
+        fake = self.scene()
+        fake.screens[PANE] = PROMPT + 'git status'
+        self.assertEqual(self.start()['state'], 'failed')
+        self.assertEqual(self.calls('pane', 'close'), [])
 
 
 class ClosePane(Launching):

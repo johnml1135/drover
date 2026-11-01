@@ -207,8 +207,11 @@ class DispatcherService:
         from drover import config
         from drover.directors import RunnerDirectorAdapter
         if not config.get()['panes']['enabled']:
-            from drover import pane_fault
-            pane_fault.left_running(port)
+            try:
+                from drover import pane_fault
+                pane_fault.left_running(port)
+            except Exception as e:      # a notice never stands between the hub and its dispatcher
+                log.warning('pane left-running check failed: %s', type(e).__name__)
             return RunnerDirectorAdapter(launcher), None
         from drover.herdr_client import from_config
         from drover.panes import PaneDirectorAdapter, PaneService
