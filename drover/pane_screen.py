@@ -2,10 +2,20 @@
 
 `kind` is 'claude' or 'codex'. An unrecognised kind or layout reads as None, and None never permits input.
 """
+from functools import wraps
 import hashlib
 import re
 
-from .pane_guard import blocking_dialog, bottom_region, decode_screen, model_prompt, queued_input_range, strong_dialog, working
+from .pane_guard import (
+    blocking_dialog,
+    bottom_region,
+    decode_screen,
+    model_prompt,
+    queued_input_range,
+    strong_dialog,
+    suspected_dialog,
+    working,
+)
 
 STALE = 900
 WEDGE = 600  # Codex drains its follow-up queue when a turn ends; ten idle minutes with a queue is a wedge
@@ -14,14 +24,17 @@ WARNING_FOOTER = r'⚠\s*(?:\d+(?:\s+warnings?)?\s*·\s*f\d+(?:\s+to view)?|week
 # Current Codex uses friendly model labels; accept only these observed names with an effort.
 FRIENDLY_MODEL = r'gpt-6\.1\s+(?:terra|sol)'
 FRIENDLY_LOCATION = r'(?:~?/|[A-Z]:[\\/]|\\\\)[^\s·]*'
+# Narrower than the skill: text after a model row's "·" must be a path or a context reading, so owner text is no footer.
+MODEL_TAIL = (r'\s*·\s*(?:\d+% context left(?:\s*·\s*' + FRIENDLY_LOCATION + r')?|' +
+              FRIENDLY_LOCATION + r'(?:\s*·\s*[^·]+)?)')
 FOOTER = re.compile(
     r'(?:(?:← for agents\s*·\s*)?\? for shortcuts(?:\s+' + WARNING_FOOTER + r')?|\? fo(?:…|\.\.\.)|\?\s+⚠\s*\d+(?:\s*·\s*f\d+)?|'
     r'New activity\s*·\s*enter/esc latest(?:\s*·\s*\? (?:for )?shortcuts)?(?:\s+' + WARNING_FOOTER + r')?|'
     r'\d+% context left|' + FRIENDLY_MODEL + r'\s+(?:low|medium|high|xhigh)\s*·\s*' +
     FRIENDLY_LOCATION + r'(?:\s*·\s*[^·]+)?|'  # optional thread title / "Read briefs"
-    r'gpt-[\w.\-]+…?(?:\s+(?:low|medium|high|xhigh|[a-z]{1,5}…))?(?:\s*·.*)?|'
+    r'gpt-[\w.\-]+…|gpt-[\w.\-]+\s+[a-z]{1,5}…|gpt-[\w.\-]+\s+(?:low|medium|high|xhigh)' + MODEL_TAIL + r'|'
     + WARNING_FOOTER + r')', re.I)
-SEPARATOR = re.compile(r'[─━\- ]+')
+SEPARATOR = re.compile(r'\s*[─━]{3,}\s*')  # narrower than the skill: `-` and `---` are text an owner can type
 EMPTY_COMPOSER = ('', 'Ask Codex to do anything')
 PLACEHOLDER_MIN = 7  # a narrow pane cuts the placeholder to "Ask Cod"; shorter text may be an owner's draft
 VIEWPORT_CONTROL = re.compile(
@@ -30,7 +43,22 @@ VIEWPORT_CONTROL = re.compile(
 FOOTER_MODEL = re.compile(r'\b(' + FRIENDLY_MODEL + r'|gpt-[\w.\-]*\w)\s+(low|medium|high|xhigh)\b', re.I)
 CONTEXT_LEFT = re.compile(r'(?<![\d.])(\d{1,3})% context left', re.I)
 STUCK_CLASSES = ('rate_limit', 'model_prompt', 'approval', 'question', 'trust', 'usage_limit', 'unsent_prompt', 'stale_working',
-                 'error_turn', 'exited', 'wake_unverified', 'scope_stale', 'queued_wedged', 'viewport_held', 'viewport_unknown')
+                 'error_turn', 'exited', 'wake_unverified', 'scope_stale', 'queued_wedged', 'viewport_held', 'viewport_unknown',
+                 'screen_unknown')
+CLAUDE_BUSY_ROWS = 12
+
+
+def _unknown(result):
+    """An unreadable capture answers `result`, the reading that permits nothing."""
+    def wrap(read):
+        @wraps(read)
+        def guarded(screen, *args):
+            try:
+                return read(decode_screen(screen), *args)
+            except ValueError:
+                return result
+        return guarded
+    return wrap
 
 
 def empty_composer(text):
@@ -46,7 +74,8 @@ def is_footer(line):
 
 
 def _claude_footer(line):
-    return bool(not line.strip() or re.fullmatch(r'[─━\- ]+', line) or re.match(r'^\s*⏵⏵ auto mode on', line))
+    # Narrower than send-prompt.py:33: `---` and text after "auto mode on" may be the owner's.
+    return bool(not line.strip() or SEPARATOR.fullmatch(line) or re.fullmatch(r'\s*⏵⏵ auto mode on\s*', line))
 
 
 def _codex_idle(lines):
@@ -56,7 +85,10 @@ def _codex_idle(lines):
     index = prompts[-1]
     # A multiline owner draft can have an empty first line. Only the known footer,
     # blank rows and separators may follow the prompt; unknown text retains input.
-    return empty_composer(lines[index].strip()[1:].strip()) and all(is_footer(line) for line in lines[index + 1:])
+    text = lines[index].strip()[1:].strip()
+    # A cut placeholder counts only where a cut footer proves the pane is narrow: elsewhere those words are a draft.
+    narrow = any('…' in line for line in lines[index + 1:])
+    return (text in EMPTY_COMPOSER or narrow and empty_composer(text)) and all(is_footer(line) for line in lines[index + 1:])
 
 
 def _claude_idle(lines):
@@ -71,13 +103,42 @@ IDLE = dict(claude=_claude_idle, codex=_codex_idle)
 COMPOSER = dict(claude=(r'^\s*❯', _claude_footer), codex=(r'^\s*›', is_footer))
 
 
+def _composer_top(lines, index, kind):
+    """The first row of the composer ending at `index`: a mark above it means the last mark sits inside a draft.
+
+    Codex shows past prompts with the same mark, so its walk ends at the first blank row after content. Claude's
+    composer is fenced by a separator, so a blank row inside a draft does not end it.
+    """
+    top, content = index, False
+    for row in range(index - 1, -1, -1):
+        if re.fullmatch(r'\s*[─━-]{3,}\s*', lines[row]):
+            break
+        if not lines[row].strip():
+            if content and kind == 'codex':
+                break
+            continue
+        content = True
+        if re.match(COMPOSER[kind][0], lines[row]):
+            top = row
+    return top
+
+
+def _lone_composer(lines, kind):
+    """True only for a mark in the first column with no mark in the rows it continues: an indented mark is a draft row."""
+    prompts = [i for i, line in enumerate(lines) if re.match(COMPOSER[kind][0], line)]
+    if not prompts:
+        return False
+    return not lines[prompts[-1]][0].isspace() and _composer_top(lines, prompts[-1], kind) == prompts[-1]
+
+
+@_unknown(True)
 def viewport_held(screen):
     """A scroll/copy surface is owner UI, never evidence of the live turn/composer."""
-    lines = decode_screen(screen).splitlines()
-    prompts = [i for i, line in enumerate(lines) if re.match(r'^\s*›', line)]
+    lines = screen.splitlines()
+    prompts = [i for i, line in enumerate(lines) if re.match(r'^\s*[›❯]', line)]
     # Controls live below the composer or immediately above it. A quoted control
     # in transcript text is not an active viewport footer.
-    region = lines[max(0, prompts[-1] - 2):] if prompts else lines[-3:]
+    region = lines[max(0, prompts[-1] - 3):] if prompts else lines[-3:]
     return any(VIEWPORT_CONTROL.fullmatch(line.strip()) for line in region)
 
 
@@ -86,6 +147,10 @@ def viewport_class(pane, screen):
 
     `pane` is the parsed result of `pane get`: {'pane': {'scroll': {'offset_from_bottom': N}}}.
     """
+    try:
+        decode_screen(screen)
+    except ValueError:
+        return 'viewport_unknown'
     if viewport_held(screen):
         return 'viewport_held'
     try:
@@ -97,9 +162,9 @@ def viewport_class(pane, screen):
     return 'viewport_held' if offset else None
 
 
+@_unknown(None)
 def status(screen, kind):
     """'idle', 'working' or 'blocked' only from a recognizable screen, else None."""
-    screen = decode_screen(screen)
     if kind not in IDLE or viewport_held(screen):
         return None
     if strong_dialog(screen):
@@ -108,15 +173,23 @@ def status(screen, kind):
         return 'working'
     if blocking_dialog(screen):
         return 'blocked'
-    return 'idle' if IDLE[kind](screen.splitlines()) else None
+    lines = screen.splitlines()
+    # A Claude spinner can sit above the separator, out of the bottom region; it is never read as idle.
+    if kind == 'claude' and any('esc to interrupt' in line.lower()
+                                for line in [line for line in lines if line.strip()][-CLAUDE_BUSY_ROWS:]):
+        return None
+    if suspected_dialog(screen):
+        return None
+    return 'idle' if composer_empty(screen, kind) else None
 
 
+@_unknown(None)
 def composer_text(screen, kind):
     """All text held in the live composer, or None when no live composer is visible.
 
-    Blank rows and footers are skipped, not a stop: text under a blank row is still the owner's.
+    Only the unbroken run of footers at the bottom is dropped. A footer-shaped row with text below it stays in, so the
+    digest cannot match, and so does anything from a mark higher up that the last mark continues.
     """
-    screen = decode_screen(screen)
     if kind not in COMPOSER or viewport_held(screen):
         return None
     mark, footer = COMPOSER[kind]
@@ -124,15 +197,22 @@ def composer_text(screen, kind):
     prompts = [i for i, line in enumerate(lines) if re.match(mark, line)]
     if not prompts:
         return None
-    parts = [lines[prompts[-1]].strip()[1:].strip()]
-    parts += [line.strip() for line in lines[prompts[-1] + 1:] if not footer(line)]
+    first_column = [i for i in prompts if not lines[i][0].isspace()]
+    index = first_column[-1] if first_column else prompts[-1]
+    rows = lines[_composer_top(lines, index, kind):]
+    while len(rows) > 1 and footer(rows[-1]):
+        rows.pop()
+    parts = [rows[0].strip()[1:].strip()] + [line.strip() for line in rows[1:]]
     return ' '.join(part for part in parts if part)
 
 
+@_unknown(False)
 def composer_empty(screen, kind):
     """True only under the idle read's own composer rule; a dialog or a turn is for the other checks."""
-    screen = decode_screen(screen)
-    return kind in IDLE and not viewport_held(screen) and IDLE[kind](screen.splitlines())
+    if kind not in IDLE or viewport_held(screen):
+        return False
+    lines = screen.splitlines()
+    return IDLE[kind](lines) and _lone_composer(lines, kind)
 
 
 def normalize(text):
@@ -140,7 +220,9 @@ def normalize(text):
 
 
 def prompt_fingerprint(text):
-    text = normalize(decode_screen(text))
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode('utf-8')
+    text = normalize(text)
     return hashlib.sha256(text.encode('utf-8')).hexdigest(), text[:60]
 
 
@@ -152,27 +234,30 @@ def own_prompt(text, digest, sent_at, now):
     """
     if not digest or not text:
         return False
-    text = decode_screen(text)
+    try:
+        text = decode_screen(text)
+    except ValueError:
+        return False
     return '[Pasted Content' not in text and prompt_fingerprint(text)[0] == digest
 
 
+@_unknown(False)
 def queued_idle(screen):
     """A follow-up queue visible while no turn runs and no dialog holds it."""
-    screen = decode_screen(screen)
     return not viewport_held(screen) and bool(queued_input_range(screen)) and not working(screen) and not blocking_dialog(screen)
 
 
+@_unknown(False)
 def queued_prompt(screen, prompt):
     """True only when the queue shows this prompt's whole scope address, or the whole prompt when it has none."""
-    screen = decode_screen(screen)
     queued = queued_input_range(screen)
     if not queued or viewport_held(screen):
         return False
     body = '\n'.join(screen.splitlines()[queued[0]:queued[1]])
     # The complete scope address identifies our wake; an opaque paste or another message does not.
-    # The closing stop is part of it: scope /x must not match scope /x2.
+    # Matched through the words after it: scope /x must not match scope /x2 or /x.y.
     head, addressed, _ = prompt.partition('. Check owned progress')
-    expected = head + '.' if addressed else prompt
+    expected = head + addressed if addressed else prompt
     compact = lambda text: re.sub(r'\s+', '', text)
     if not compact(expected) or compact(expected) not in compact(body):
         return False
@@ -184,7 +269,10 @@ def classify(agent, screen, item, now):
     """Name why an agent is stuck, or None. 'owner_draft' means typed input: leave it alone."""
     if agent is None:
         return 'exited'
-    screen = decode_screen(screen)
+    try:
+        screen = decode_screen(screen)
+    except ValueError:
+        return 'screen_unknown'
     if viewport_held(screen):
         return 'viewport_held'
     kind = agent.get('agent')
@@ -208,9 +296,12 @@ def classify(agent, screen, item, now):
         return 'approval'
     if re.search(r'\d+ questions?|shift\+.*answer', dialog, re.I):
         return 'question'
+    if current == 'blocked':
+        return 'question'  # refuse_dialog refuses this screen, so no composer text may read as sendable
     text = composer_text(screen, kind)
-    if text is not None and not (text == '' or kind == 'codex' and empty_composer(text)):
-        return 'unsent_prompt' if own_prompt(text, item.get('last_prompt_digest'), item.get('last_prompt_at'), now) else 'owner_draft'
+    if text and not composer_empty(screen, kind):
+        ours = own_prompt(text, item.get('last_prompt_digest'), item.get('last_prompt_at'), now)
+        return 'unsent_prompt' if ours and not suspected_dialog(screen) else 'owner_draft'
     # Tool output often says 'error:' or 'failed'; only Codex's own turn-error markers count.
     if current == 'idle' and any(re.search(r'stream disconnected|^\s*■', l, re.I) for l in tail):
         return 'error_turn'
@@ -227,11 +318,12 @@ def classify(agent, screen, item, now):
 
 def _footer_lines(screen):
     """Footer rows under the last Codex composer; a row that is not a known footer gives no reading."""
-    lines = decode_screen(screen).splitlines()
+    lines = screen.splitlines()
     prompts = [i for i, line in enumerate(lines) if re.match(r'^\s*›', line)]
     return [line for line in lines[prompts[-1] + 1:] if is_footer(line)] if prompts else []
 
 
+@_unknown(None)
 def footer_model(screen):
     """(model, effort) from the footer under the last composer, or None when cut off or absent."""
     for line in _footer_lines(screen):
@@ -241,6 +333,7 @@ def footer_model(screen):
     return None
 
 
+@_unknown(None)
 def context_left(screen):
     """The footer's `N% context left` as an int from 0 to 100, or None when it cannot be read."""
     if viewport_held(screen):

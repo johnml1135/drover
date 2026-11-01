@@ -1,8 +1,10 @@
 """Blocking dialogs on a pane screen. Pure text rules: this module never talks to Herdr.
 
-Herdr's output may arrive as bytes; every public function reads it as UTF-8.
+Herdr's output may arrive as bytes; every public function reads it as strict UTF-8. A capture that cannot be read
+exactly raises ValueError here, because a bool from these rules would say "no dialog" about a screen nobody read.
 """
 import re
+import unicodedata
 
 MODEL_PROMPT = r'enter\s+select\s*[·•]\s*esc\s+back|Switch\s+to\s+gpt-'
 STRONG_DIALOG = (MODEL_PROMPT + r'|enter\s+select|esc\s+back|allow once|allow always|trust this folder|'
@@ -11,15 +13,24 @@ STRONG_DIALOG = (MODEL_PROMPT + r'|enter\s+select|esc\s+back|allow once|allow al
           r'(?m:^\s*(?:[›❯]\s*)?\d+[.)]\s+(?:Switch to gpt-\S+|Keep current model.*|Allow (?:once|always).*|Deny(?:[,.].*)?|Yes(?:[,.].*)?|No(?:[,.].*)?|Trust (?:this|and).*|Continue(?:[,.].*)?)\s*$)')
 DIALOG = STRONG_DIALOG + r'|\d+ questions?|shift\+.*answer|press enter to|update available'
 SELECTED_OPTION = re.compile(r'^\s*[›❯]\s*\d+[.)]\s+')
+# The only screen the standing trust rule answers, row for row. Task 15 replaces it with a real capture.
+CODEX_TRUST = ('Trust this folder?', '› 1. Trust and continue', '2. Quit')
+ABOVE_COMPOSER = 12  # rows searched above the composer; bottom_region's own lookback stops at 8
+OPTION_ROW = re.compile(r'^(?:[›❯]\s*)?\d+[.)]\s')
+YES_NO = re.compile(r'[\[(]\s*y(?:es)?\s*/\s*no?\s*[\])]', re.I)
+UNREADABLE = ('Cc', 'Cf', 'Cs', 'Zl', 'Zp')  # controls, invisible format marks and line breaks can hide a row's start
 
 
 def decode_screen(screen):
-    """The screen as text. Anything that is not a screen is refused, so a failed read never reads as clear."""
+    """The screen as text, or ValueError. Anything not read exactly is refused, so a bad read never reads as clear."""
     if isinstance(screen, (bytes, bytearray)):
-        return bytes(screen).decode('utf-8', errors='replace')
-    if isinstance(screen, str):
-        return screen
-    raise ValueError('pane screen unavailable; preserve the pane')
+        screen = bytes(screen).decode('utf-8')
+    if not isinstance(screen, str):
+        raise ValueError('pane screen unavailable; preserve the pane')
+    screen = screen.replace('\r\n', '\n')
+    if any(c == '\ufffd' or (c not in '\n\t' and unicodedata.category(c) in UNREADABLE) for c in screen):
+        raise ValueError('pane screen unreadable; preserve the pane')
+    return screen
 
 
 def bottom_region(screen):
@@ -66,14 +77,18 @@ def queued_input_range(screen):
     return None
 
 
-def working(screen):
-    screen = decode_screen(screen)
-    queued = queued_input_range(screen)
-    surface = '\n'.join(screen.splitlines()[:queued[0]]) if queued else screen
+def _shows_working(surface):
     region = bottom_region(surface)
     return bool(re.search(r'esc to interrupt', region, re.I) or
                 any(re.match(r'^\s*•\s*Working\b', line) for line in
                     [line for line in region.splitlines() if line.strip()][-8:]))
+
+
+def working(screen):
+    """The rows above a queue, or the whole screen: a row that only looks like a queue must not hide a live turn."""
+    screen = decode_screen(screen)
+    queued = queued_input_range(screen)
+    return _shows_working(screen) or bool(queued) and _shows_working('\n'.join(screen.splitlines()[:queued[0]]))
 
 
 def model_prompt(screen):
@@ -84,29 +99,54 @@ def strong_dialog(screen):
     return bool(re.search(STRONG_DIALOG, bottom_region(screen), re.I))
 
 
+def _above_composer(screen):
+    lines = decode_screen(screen).splitlines()
+    composers = [i for i, line in enumerate(lines)
+                 if re.match(r'^\s*[›❯]', line) and not SELECTED_OPTION.match(line)]
+    return lines[max(0, composers[-1] - ABOVE_COMPOSER):composers[-1]] if composers else []
+
+
+def _separator(line):
+    return bool(re.fullmatch(r'\s*[─━-]{3,}\s*', line))
+
+
+def adjacent_dialog(screen):
+    """A dialog word anywhere in the rows over the composer, joined so a wrapped or look-alike word still matches.
+
+    A separator still ends the search: scrollback above it stays scrollback (rule 12).
+    """
+    rows = _above_composer(screen)
+    cuts = [i for i, row in enumerate(rows) if _separator(row)]
+    text = unicodedata.normalize('NFKC', ' '.join(rows[cuts[-1] + 1:] if cuts else rows))
+    return bool(re.search(DIALOG, ' '.join(text.split()), re.I))
+
+
+def suspected_dialog(screen):
+    """No dialog word, but the last row over the composer is shaped like a choice: not a dialog, and not idle either."""
+    rows = [row for row in _above_composer(screen) if row.strip() and not _separator(row)]
+    if not rows:
+        return False
+    last = unicodedata.normalize('NFKC', rows[-1]).strip()
+    return bool(OPTION_ROW.match(last) or last.endswith('?') or YES_NO.search(last))
+
+
 def blocking_dialog(screen):
-    return strong_dialog(screen) or (not working(screen) and
-                                    bool(re.search(DIALOG, bottom_region(screen), re.I)))
+    if strong_dialog(screen):
+        return True
+    return not working(screen) and (bool(re.search(DIALOG, bottom_region(screen), re.I)) or adjacent_dialog(screen))
 
 
 def startup_keys(screen, fresh_pane=False, kind=None):
-    """The one key that answers Codex folder trust in Drover's own new pane, or None.
+    """The one key that answers exactly Codex's folder trust dialog in Drover's own new pane, or None.
 
-    `kind` must name Codex: Claude's folder trust and every update dialog stay with the owner.
+    A positive match on the whole screen: every other dialog, wording or selected row stays with the owner. Whether
+    the repo is trusted is the caller's check. An unreadable screen gets no key.
     """
-    region = bottom_region(screen)
-    if kind != 'codex' or not fresh_pane or working(screen) or model_prompt(screen):
+    try:
+        rows = tuple(line.strip() for line in decode_screen(screen).splitlines() if line.strip())
+    except ValueError:
         return None
-    # Never let a concurrent approval/question modal inherit startup consent.
-    if re.search(r'allow once|allow always|requires approval|waiting for approval|'
-                 r'would you like to run|\d+ questions?|shift\+.*answer', region, re.I):
-        return None
-    # Nor a hook review or an update: Enter would answer a dialog the standing rule does not cover.
-    if re.search(r'new hook - review required|update available|skip until next version', region, re.I):
-        return None
-    if re.search(r'trust this folder|trust and continue|do you trust', region, re.I):
-        return ('enter',)
-    return None
+    return ('enter',) if kind == 'codex' and fresh_pane and rows == CODEX_TRUST else None
 
 
 def refuse_dialog(screen, target=None):

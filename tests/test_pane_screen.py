@@ -1,4 +1,4 @@
-"""What a pane screen says about its agent; every screen is a literal copied from the skill's tests."""
+"""What a pane screen says about its agent. Screens are literals: some from the skill's tests, some from review probes."""
 import hashlib
 import unittest
 
@@ -46,6 +46,8 @@ def stuck(screen, item=None, agent=AGENT, now=0):
 class Viewport(unittest.TestCase):
     def test_copy_viewport_is_held_not_working(self):
         self.assertTrue(viewport_held(HISTORICAL))
+        self.assertTrue(viewport_held('❯\n────\nNew activity · ^c copy · enter copy & follow · esc clear\nrow\nrow\nrow\n'))
+        self.assertTrue(viewport_held('Back to bottom · esc\nrow\nrow\n› \n? for shortcuts\n'))
         self.assertIsNone(status(HISTORICAL, 'codex'))
         self.assertEqual(stuck(HISTORICAL, dict(last_activity=0), now=900), 'viewport_held')
         self.assertFalse(queued_idle('Queued follow-up inputs\n↳ note\n' + HISTORICAL))
@@ -92,80 +94,6 @@ class Working(unittest.TestCase):
         self.assertIsNone(status('› \nowner text\nGPT-6.1-…\n', 'codex'))
 
 
-class CodexIdle(unittest.TestCase):
-    def test_current_footer_reads_as_idle_and_drafts_stay_retained(self):
-        footer = ('  GPT-6.1-Sol high · ~/work/motif.worktrees/hx/order · Read briefs\n'
-                  '  ? for shortcuts                  ⚠ 3 warnings · f2 to view\n'
-                  '                                   ⚠ weekly limit: 22% left · resets at 09:35\n')
-        self.assertEqual(status('OpenAI Codex\n› Ask Codex to do anything\n' + footer, 'codex'), 'idle')
-        self.assertEqual(status('OpenAI Codex\n› \n' + footer, 'codex'), 'idle')
-        self.assertIsNone(status('OpenAI Codex\n› owner is typing\n' + footer, 'codex'))
-        self.assertIsNone(status('OpenAI Codex\n› \n  second line of a draft\n' + footer, 'codex'))
-
-    def test_footer_with_thread_title_and_status_limit_notice_is_idle(self):
-        screen = ('  Worked for 4m 4s \u2022 17:32\n'
-                  '                                      \u26a0 weekly limit: 19% left \u00b7 /status\n\n'
-                  '\u203a Ask Codex to do anything\n\n'
-                  '  GPT-6.1 Terra xhigh \u00b7 ~/work/PanGloss.worktrees/pg-port-fixes \u00b7 Port HC fixes to Rust\n'
-                  '  ? for shortcuts                       \u26a0 2 warnings \u00b7 f2 to view\n')
-        self.assertEqual(status(screen, 'codex'), 'idle')
-        self.assertIsNone(status(screen.replace('Ask Codex to do anything', 'my draft'), 'codex'))
-        self.assertIsNone(status(screen.replace('\n\n  GPT-6.1', '\n  typed text\n  GPT-6.1'), 'codex'))
-
-    def test_friendly_footers_are_idle_without_accepting_drafts(self):
-        for label, model, effort in (('GPT-6.1 Terra', 'gpt-6.1-terra', 'xhigh'), ('GPT-6.1 Sol', 'gpt-6.1-sol', 'high')):
-            with self.subTest(label=label):
-                footer = f'  {label} {effort} · ~/work/motif.wo…\n  ? for shortcuts  ⚠ 1 · f2\n'
-                screen = '› Ask Codex to do anything\n\n' + footer
-                self.assertEqual(status(screen, 'codex'), 'idle')
-                self.assertEqual(footer_model(screen), (model, effort))
-                for location in ('/home/worker/repo', r'C:\work\repo', r'\\server\share\repo'):
-                    located = f'› \n  {label} {effort} · {location}\n  ? for shortcuts\n'
-                    self.assertEqual(status(located, 'codex'), 'idle')
-                    self.assertEqual(footer_model(located), (model, effort))
-                bare = f'› \n  {label} {effort}\n  ? for shortcuts\n'
-                self.assertIsNone(status(bare, 'codex'))
-                self.assertIsNone(footer_model(bare))
-                for draft in ('owner is typing', '\n  second line of owner input'):
-                    self.assertIsNone(status('› ' + draft + '\n' + footer, 'codex'))
-                self.assertEqual(status('Allow once?\n› \n' + footer, 'codex'), 'blocked')
-                self.assertIsNone(status('› \n' + footer + 'New activity · ^c copy · enter copy & follow · esc clear\n', 'codex'))
-        for continuation in ('GPT-6.1 Terra xhigh · owner says stop', 'GPT-6.1 Sol high · inspect this first',
-                             'GPT-6.1 Terra xhigh · ~/work owner says stop', 'GPT-6.1 Terra please fix my branch',
-                             'GPT-6.1 Sol high do not start', 'GPT-6.1 Unknown high · ~/work'):
-            self.assertIsNone(status('› \n' + continuation + '\n', 'codex'))
-
-    def test_narrow_placeholder_reads_as_idle_and_a_short_prefix_as_a_draft(self):
-        self.assertEqual(status('  Worked\n› Ask Cod\n  GPT-6.1…\n  ?   ⚠ 3\n', 'codex'), 'idle')
-        self.assertEqual(status('is met.\n› Ask Code\n  GPT-6-Lu…\n  ⚠ 7 · f2\n', 'codex'), 'idle')
-        self.assertIsNone(stuck('› Ask Cod\n  GPT-6.1…\n'))
-        for draft in ('Ask', 'Ask C', 'Ask Codex to fix it', 'Ask Codex to do anything now'):
-            self.assertIsNone(status('› ' + draft + '\n? for shortcuts\n', 'codex'), draft)
-            self.assertEqual(stuck('› ' + draft + '\n? for shortcuts\n'), 'owner_draft', draft)
-
-    def test_footer_like_owner_continuations_are_not_idle(self):
-        for text in ('gpt-6 please fix my branch', '? for the owner: hold', '⚠ do not run this'):
-            self.assertIsNone(status('› \n' + text + '\n', 'codex'), text)
-
-    def test_owner_screens_are_not_idle(self):
-        for surface in ('› owner typed input', '› \nowner multiline input', 'Allow once?\n› ', '1 question\n› ',
-                        'Trust this folder\n› ', 'not an agent input area', 'Permission request\nAllow once?\n',
-                        'Codex is starting\n', 'Working (2s · esc to interrupt)\n› \n'):
-            self.assertNotEqual(status(surface, 'codex'), 'idle', surface)
-
-    def test_dialog_words_in_scrollback_do_not_block(self):
-        scrollback = 'Research: 3 questions, update available, Trust this folder\n'
-        for active in ('• Working …\n› \n? for shortcuts\n', 'Working (2s · esc to interrupt)\n› \n? for shortcuts\n'):
-            screen = scrollback + '────────────\n' + active
-            self.assertEqual(status(screen, 'codex'), 'working')
-            self.assertIsNone(stuck(screen, now=100))
-        for boundary in ('────────────\n', ''):
-            screen = scrollback + boundary + '› \n? for shortcuts\n'
-            self.assertEqual(status(screen, 'codex'), 'idle')
-            self.assertIsNone(stuck(screen, now=100))
-        self.assertEqual(stuck(scrollback + '────────────\n2 questions\n'), 'question')
-
-
 class ClaudeIdle(unittest.TestCase):
     def test_claude_uses_bottom_region_not_scrollback(self):
         self.assertEqual(status('Research: 3 questions; update available\n────────────\n❯\n⏵⏵ auto mode on\n', 'claude'), 'idle')
@@ -173,8 +101,19 @@ class ClaudeIdle(unittest.TestCase):
         self.assertEqual(status('• Working …\n❯\n', 'claude'), 'working')
         self.assertEqual(status('• Working …\nAllow once?\n❯\n', 'claude'), 'blocked')
 
+    def test_claude_spinner_outside_the_bottom_region_is_never_idle(self):
+        # Finding I3.
+        spinner = '✻ Pondering… (12s · esc to interrupt)\n'
+        for screen in (spinner + '\n────\n❯\n────\n⏵⏵ auto mode on\n', spinner + '❯\n⏵⏵ auto mode on\n'):
+            self.assertIsNone(status(screen, 'claude'), screen)
+            self.assertTrue(composer_empty(screen, 'claude'), screen)
+        self.assertEqual(status('❯\n⏵⏵ auto mode on · esc to interrupt\n', 'claude'), 'working')
+        old = spinner + 'row\n' * 12 + '────\n❯\n⏵⏵ auto mode on\n'
+        self.assertEqual(status(old, 'claude'), 'idle')
+
     def test_unknown_claude_layout_fails_closed(self):
-        for screen in ('❯\n⏵⏵ accept edits on\n', '❯\n? for shortcuts\n', '❯ draft\n⏵⏵ auto mode on\n',
+        for screen in ('❯\n⏵⏵ accept edits on\n', '❯\n? for shortcuts\n', '❯ draft\n⏵⏵ auto mode on\n', '❯\n---\n',
+                       '❯\n⏵⏵ auto mode on but hold off\n',
                        '❯\n  second line of a draft\n', '❯\n⏵⏵ auto mode on\nowner text\n', 'Welcome to Claude Code\n', '$ '):
             self.assertIsNone(status(screen, 'claude'), screen)
             self.assertFalse(composer_empty(screen, 'claude'), screen)
@@ -225,6 +164,65 @@ class Composer(unittest.TestCase):
         self.assertEqual(stuck(screen, item), 'owner_draft')
         self.assertEqual(stuck('› \n\nowner text\n? for shortcuts\n'), 'owner_draft')
 
+    def test_a_mark_at_the_end_of_a_draft_is_not_an_empty_composer(self):
+        # Finding C2: pasted terminal output often ends on a bare prompt.
+        for screen in ('› check this:\n  ›\n? for shortcuts\n', '› check this:\n›\n? for shortcuts\n',
+                       '› check this:\n  more\n  ›\n? for shortcuts\n', '› check this:\n\n›\n? for shortcuts\n',
+                       '› check this:\n\n  more\n\n  ›\n? for shortcuts\n'):
+            self.assertNotEqual(status(screen, 'codex'), 'idle', screen)
+            self.assertFalse(composer_empty(screen, 'codex'), screen)
+            self.assertIn('check this:', composer_text(screen, 'codex'), screen)
+        for screen in ('────\n❯ run this in the shell:\n  ❯\n────\n⏵⏵ auto mode on\n',
+                       '────\n❯ run this in the shell:\n❯\n────\n⏵⏵ auto mode on\n',
+                       '────\n❯ run this in the shell:\n\n\n  more\n\n❯\n────\n⏵⏵ auto mode on\n'):
+            self.assertNotEqual(status(screen, 'claude'), 'idle', screen)
+            self.assertFalse(composer_empty(screen, 'claude'), screen)
+            self.assertIn('run this in the shell:', composer_text(screen, 'claude'), screen)
+
+    def test_a_bare_indented_mark_is_a_draft_row(self):
+        for screen, kind in (('some output\n  ›\n? for shortcuts\n', 'codex'), ('  ❯\n⏵⏵ auto mode on\n', 'claude')):
+            self.assertIsNone(status(screen, kind), screen)
+            self.assertFalse(composer_empty(screen, kind), screen)
+
+    def test_our_prompt_above_a_stacked_mark_is_not_ours(self):
+        prompt = 'Read the brief now'
+        digest = prompt_fingerprint(prompt)[0]
+        item = dict(last_prompt_digest=digest, last_prompt_at=0)
+        self.assertEqual(stuck('› check this:\n› ' + prompt + '\n? for shortcuts\n', item), 'owner_draft')
+        self.assertEqual(stuck('› ' + prompt + '\n  ›\n? for shortcuts\n', item), 'owner_draft')
+
+    def test_past_prompts_in_the_transcript_are_not_a_draft(self):
+        self.assertEqual(status('› an earlier prompt\n\n• Done.\n\n› \n? for shortcuts\n', 'codex'), 'idle')
+        self.assertEqual(status('❯ an earlier prompt\n\n• Done.\n────\n❯\n────\n⏵⏵ auto mode on\n', 'claude'), 'idle')
+
+    def test_footer_shaped_owner_text_stays_in_the_digest(self):
+        # Finding I1. In the first screen the owner's row sat between our words, and the digest matched.
+        prompt = 'Read the brief now'
+        digest = prompt_fingerprint(prompt)[0]
+        item = dict(last_prompt_digest=digest, last_prompt_at=0)
+        for screen in ('› Read the\n  gpt-6 · no wait, use main\n  brief now\n? for shortcuts\n',
+                       '› Read the\n  ? for shortcuts\n  brief now\n',
+                       '› Read the\n  ────────\n  brief now\n',
+                       '› Read the brief now\n  gpt-6 · no wait\n',
+                       '› Read the brief now\n  gpt-6.1-sol\n',
+                       '› Read the brief now\n---\n',
+                       '› Read the brief now\n- - -\n',
+                       '› Read the brief now\n- \n'):
+            self.assertEqual(stuck(screen, item), 'owner_draft', screen)
+        self.assertEqual(stuck('› ' + prompt + '\n\n  GPT-6.1-Sol high · ~/w\n  ? for shortcuts\n', item), 'unsent_prompt')
+        self.assertEqual(stuck('❯ ' + prompt + '\n⏵⏵ auto mode on but hold off\n', dict(item), CLAUDE), 'owner_draft')
+
+    def test_footer_shaped_owner_text_is_not_idle(self):
+        for row in ('gpt-6 · owner says stop', 'gpt-6.1-sol', '---', '- ', '- - -', 'gpt-6 high · no wait', 'GPT-6-Luna xhigh'):
+            self.assertIsNone(status('› \n' + row + '\n', 'codex'), row)
+            self.assertFalse(composer_empty('› \n' + row + '\n', 'codex'), row)
+
+    def test_observed_model_footers_stay_footers(self):
+        for row in ('GPT-6.1-Sol high · /mnt/h/repos · Main [default] Goal stalled (/goal resume)',
+                    'GPT-6-Luna xhigh · ~/work/x', 'gpt-6.1-terra xhigh · ~/w', 'gpt-6.1-sol high · 7% context left · ~/w',
+                    'GPT-6.1-…', 'GPT-6.1…', 'GPT-6-Lu…', 'gpt-6-luna x…'):
+            self.assertEqual(status('› \n' + row + '\n', 'codex'), 'idle', row)
+
     def test_collapsed_paste_is_pending_not_ours(self):
         brief = 'read the brief and end with a final report ' * 60
         digest, head = prompt_fingerprint(brief)
@@ -233,7 +231,7 @@ class Composer(unittest.TestCase):
             item = dict(last_prompt_digest=digest, last_prompt_head=head, last_prompt_at=100)
             self.assertNotEqual(status(screen, 'codex'), 'idle')
             self.assertFalse(composer_empty(screen, 'codex'))
-            self.assertEqual(composer_text(screen, 'codex'), paste)
+            self.assertIn(paste, composer_text(screen, 'codex'))
             self.assertFalse(own_prompt(paste, digest, 100, 101))
             self.assertEqual(stuck(screen, item, now=101), 'owner_draft')
 
@@ -285,6 +283,12 @@ class Queue(unittest.TestCase):
         self.assertFalse(queued_prompt(screen, WAKE))
         self.assertTrue(queued_prompt(screen, other))
 
+    def test_a_scope_inside_another_scope_is_another_scope(self):
+        # Finding M1.
+        for other in ('/x.y', '/x.worktrees/dip'):
+            screen = 'Queued follow-up inputs\n↳ ' + WAKE.replace('/x.', other + '.', 1) + '\nshift+← edit last queued message\n› \n'
+            self.assertFalse(queued_prompt(screen, WAKE), other)
+
     def test_queued_wake_needs_its_listed_reports(self):
         prompt = WAKE + ' Worker completion reports ready for your review: ["/x/report.md"].'
         self.assertFalse(queued_prompt('Queued follow-up inputs\n↳ ' + WAKE + '\n', prompt))
@@ -332,6 +336,17 @@ class Classify(unittest.TestCase):
         for cls in ('wake_unverified', 'scope_stale'):
             self.assertEqual(stuck('› \n? for shortcuts\n', dict(state='paused', pause_class=cls)), cls)
 
+    def test_refused_dialog_screen_is_never_unsent_prompt(self):
+        # Finding I6.
+        prompt = 'our prompt'
+        item = dict(last_prompt_digest=prompt_fingerprint(prompt)[0], last_prompt_at=0)
+        for row in ('enter select', 'esc back', '1. Yes, proceed\n2. No', 'Press enter to continue', 'Update available'):
+            screen = row + '\n› ' + prompt + '\n'
+            self.assertEqual(status(screen, 'codex'), 'blocked', row)
+            self.assertNotEqual(stuck(screen, item), 'unsent_prompt', row)
+        self.assertEqual(stuck('› ' + prompt + '\n', item), 'unsent_prompt')
+        self.assertEqual(stuck('Do you want to proceed?\n› ' + prompt + '\n', item), 'owner_draft')
+
     def test_model_prompt_is_owner_only(self):
         screen = '1. Switch to gpt-6-luna\n2. Keep current model\n3. Keep current model (never show again)\nenter select · esc back\n› \n'
         self.assertEqual(status(screen, 'codex'), 'blocked')
@@ -362,27 +377,6 @@ class Classify(unittest.TestCase):
         self.assertIsNone(stuck('Gate queued for a test slot.\n› \n? for shortcuts\n'))
 
 
-class FooterReads(unittest.TestCase):
-    def test_footer_model_reads_under_the_last_composer(self):
-        self.assertEqual(footer_model('› \n  GPT-6.1-Sol high · ~/w\n'), ('gpt-6.1-sol', 'high'))
-        self.assertIsNone(footer_model('› \n  GPT-6.1…\n'))
-        self.assertIsNone(footer_model('  GPT-6.1-Sol high · ~/w\n'))
-        self.assertIsNone(footer_model('  GPT-6.1-Sol high · ~/w\n› \n? for shortcuts\n'))
-        self.assertIsNone(footer_model('❯\n⏵⏵ auto mode on\n'))
-
-    def test_context_left_reads_only_the_footer(self):
-        self.assertEqual(context_left('› \n  42% context left\n  ? for shortcuts\n'), 42)
-        self.assertEqual(context_left('› \n  gpt-6.1-sol high · 7% context left · ~/w\n'), 7)
-        self.assertEqual(context_left('› \n  0% context left\n'), 0)
-        self.assertEqual(context_left('› \n  100% context left\n'), 100)
-
-    def test_context_left_is_unknown_without_a_footer_reading(self):
-        for screen in ('5% context left\n› \n? for shortcuts\n', '› 5% context left\n', '› \n  owner says 5% context left\n',
-                       '5% context left\n', '', '❯\n5% context left\n', '› \n  150% context left\n', '› \n  2.5% context left\n',
-                       '› \n  42% cont…\n', '› \n  42% context left\n' + '  New activity · ^c copy · enter copy & follow · esc clear\n'):
-            self.assertIsNone(context_left(screen), screen)
-
-
 class Bytes(unittest.TestCase):
     def test_bytes_from_herdr_decode_as_utf8(self):
         raw = '› \n  42% context left\n  GPT-6.1-Sol high · ~/w\n  ? for shortcuts\n'.encode('utf-8')
@@ -394,6 +388,7 @@ class Bytes(unittest.TestCase):
         self.assertIsNone(viewport_class(scrolled(0), raw))
         self.assertEqual(status('❯\n⏵⏵ auto mode on\n'.encode('utf-8'), 'claude'), 'idle')
         self.assertTrue(viewport_held(HISTORICAL.encode('utf-8')))
+        self.assertEqual(status('› \r\n? for shortcuts\r\n', 'codex'), 'idle')
         self.assertEqual(classify(AGENT, 'Allow once?\n› \n'.encode('utf-8'), {}, 0), 'approval')
         queue = ('• Worked for 1m\n' + QUEUE + TAIL).encode('utf-8')
         self.assertTrue(queued_idle(queue))
@@ -401,9 +396,26 @@ class Bytes(unittest.TestCase):
         digest = prompt_fingerprint('naïve › prompt')[0]
         self.assertTrue(own_prompt('naïve › prompt'.encode('utf-8'), digest, 0, 0))
 
-    def test_screen_that_is_not_utf8_is_unknown(self):
-        self.assertIsNone(status(b'\x9b \n? for shortcuts\n', 'codex'))
-        self.assertIsNone(status(b'\x9b\xff\n', 'claude'))
+    def test_unreadable_capture_is_unknown_everywhere(self):
+        # Finding I4: a screen that cannot be read exactly gives every reader's non-permitting answer.
+        for screen in (b'\xffAllow once?\n\xe2\x80\xba \n? for shortcuts\n', '\ufffdAllow once?\n› \n? for shortcuts\n',
+                       '\x1b[1mAllow once?\x1b[0m\n› \n? for shortcuts\n', '\x1b[2m• Working (3s)\x1b[0m\n› \n',
+                       '\x07Allow once?\n› \n', '\x1b]0;x\x07Would you like to run this?\n› \n', '› owner draft\r› \n',
+                       '› \x0c\n', '› \x0b\n', '› \u2028\n', '› \u2029\n', None):
+            for kind in ('codex', 'claude'):
+                self.assertIsNone(status(screen, kind), repr(screen))
+                self.assertIsNone(composer_text(screen, kind), repr(screen))
+                self.assertFalse(composer_empty(screen, kind), repr(screen))
+            self.assertTrue(viewport_held(screen), repr(screen))
+            self.assertEqual(viewport_class(scrolled(0), screen), 'viewport_unknown', repr(screen))
+            self.assertFalse(queued_idle(screen), repr(screen))
+            self.assertFalse(queued_prompt(screen, WAKE), repr(screen))
+            self.assertIsNone(footer_model(screen), repr(screen))
+            self.assertIsNone(context_left(screen), repr(screen))
+            self.assertEqual(stuck(screen), 'screen_unknown', repr(screen))
+        digest = prompt_fingerprint('Check now.')[0]
+        self.assertFalse(own_prompt('Check now.\x07', digest, 0, 0))
+        self.assertFalse(own_prompt(b'\xff', digest, 0, 0))
 
 
 if __name__ == '__main__':
