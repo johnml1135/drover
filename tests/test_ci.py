@@ -386,6 +386,34 @@ class PolicyCITests(unittest.TestCase):
         self.assertEqual(result['steps'][0]['command'],
                          ['git', '-c', 'core.whitespace=-blank-at-eol', 'diff', '--check', 'main...' + commit])
 
+    def test_a_gate_the_compaction_stopped_runs_again_at_no_retrys_cost(self):
+        prog = self.configure()
+        commit = self.change()
+        conn = self.conn()
+        finish = self.launcher.finish
+
+        def stopped(spec):      # what the real runner leaves after a stop file with this reason
+            runner.write_json_atomic(runner.run_dir(self.runs, spec['run_id']) / runner.STATUS_FILE,
+                                     dict(state='killed', reason=ci.COMPACTION_STOP, exit_code=None, nonce=spec['nonce'],
+                                          run_id=spec['run_id']))
+            return dict(status='error', returncode=None, record=None, text='', handoff=None, timeout=None, usage={})
+        self.launcher.finish = stopped
+        with self.assertRaises(ci.CIDeferred) as raised:       # landing queues this; a retry is not spent
+            self.service.run(prog, self.repo.repo, commit, conn=conn, platforms=['wsl'])
+        self.assertEqual((raised.exception.detail['outcome'], raised.exception.detail['sha']), ('deferred', commit))
+        requests = list(self.runs.glob('ci-*.json'))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual({'context', 'execution', 'ticket', 'held_reason'} & json.loads(requests[0].read_text()).keys(), set())
+        self.assertEqual(slots.lease_queue(conn), [])
+        self.assertEqual(ci.active_wsl(self.runs), {})          # the next compaction has nothing to wait for
+        self.launcher.finish = finish
+        resumed = ci.CI(self.runs, self.launcher, poll_s=0, resource_check=resources_go)
+        resumed.resume(prog, self.repo.repo, conn=conn)
+        self.assertTrue(resumed.run(prog, self.repo.repo, commit, conn=conn, platforms=['wsl'])['passed'])
+        first, second = self.launcher.specs
+        self.assertNotEqual(first['run_id'], second['run_id'])
+        self.assertFalse(list(self.runs.glob('ci-*.json')))
+
     def test_heartbeat_failure_keeps_the_live_runner_for_adoption(self):
         prog = self.configure()
         commit = self.change()

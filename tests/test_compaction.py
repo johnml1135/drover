@@ -1,7 +1,10 @@
 """The overnight WSL compaction: every command goes through a fake runner, so WSL and the VHDX are never touched."""
+import csv
+import gc
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -949,6 +952,44 @@ class DiedUnderARunningHub(Draining):
         self.assertEqual([notice['kind'] for notice in notices], ['compaction'])
         self.assertIn('the job died at step compact', notices[0]['body'])
 
+    def identity_of_a_child(self):
+        """A real process that reports the birth it would claim a hold with. The job is never this process."""
+        code = ('import sys,time;sys.path.insert(0,sys.argv[1]);from drover import placement;'
+                'print(placement.cleanup_identity()["birth"],flush=True);sys.stdin.read()')
+        child = subprocess.Popen([sys.executable, '-c', code, str(Path(__file__).resolve().parents[1])],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(child.stdout.close)
+        return child, child.stdout.readline().strip()
+
+    def claim_as(self, pid, birth):
+        record = self.hold()
+        record.update(pid=pid, birth=birth)
+        disk_state.save_file(self.state, compaction_hold.HOLD_FILE, record)
+        return record
+
+    def test_a_real_job_in_another_process_keeps_its_hold_until_it_is_gone(self):
+        child, birth = self.identity_of_a_child()
+        record = self.claim_as(child.pid, birth)
+        self.d.tick()
+        self.assertEqual(compaction_hold.read(self.state)['id'], record['id'])
+        child.communicate('')
+        del child                                               # Windows keeps a process visible while a handle is open
+        gc.collect()
+        self.d.tick()
+        self.assertIsNone(compaction_hold.read(self.state))
+
+    def test_a_live_process_the_hub_may_not_open_is_not_taken_for_dead(self):
+        if os.name != 'nt':
+            self.skipTest('the protected process is a Windows one')
+        rows = subprocess.run(['tasklist', '/fi', 'IMAGENAME eq lsass.exe', '/fo', 'csv', '/nh'],
+                              capture_output=True, text=True, check=True).stdout
+        pid = int(next(csv.reader(rows.splitlines()))[1])
+        if placement.cleanup_identity(pid)['birth']:
+            self.skipTest('this session is elevated, so nothing here is denied')
+        record = self.claim_as(pid, 'recorded')
+        self.d.tick()
+        self.assertEqual(compaction_hold.read(self.state)['id'], record['id'])
+
     def test_a_report_that_cannot_be_written_does_not_stop_the_tick(self):
         with self.die(), mock.patch.object(compaction, 'report', side_effect=OSError('disk full')):
             self.assertNotIn('compaction', self.d.tick())
@@ -1033,18 +1074,13 @@ class LandingGate(Draining):
         self.assertEqual(self.ack()['killed'], [self.rid, self.GATE])
 
     def result(self, reason):
-        """What the landing service makes of the runner's ending, from the saved files."""
+        """What the landing service makes of a stop that was not the compaction's, from the saved files."""
         self.gate_status('killed', reason)
         gate = ci.CI(self.runs, launcher=mock.Mock())
         spec = dict(run_id=self.GATE, nonce=self.NONCE, placement='wsl')
         runner.write_json_atomic(runner.run_dir(str(self.runs), self.GATE) / 'plan.json',
                                  dict(run_id=self.GATE, nonce=self.NONCE, platform='wsl', sha='a' * 40, kind='full'))
         return gate._classify(spec, dict(status='error', returncode=None), dict(kind='full'), self.request, 'a' * 40, 0)
-
-    def test_a_gate_the_compaction_stopped_spends_no_infrastructure_retry(self):
-        with self.assertRaises(ci.CIDeferred):      # landing queues this, which leaves the recovery count alone
-            self.result(ci.COMPACTION_STOP)
-        self.assertFalse(self.request.exists())
 
     def test_a_gate_stopped_for_any_other_reason_still_counts(self):
         self.assertEqual(self.result('requested')['outcome'], 'infrastructure-failed')

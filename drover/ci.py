@@ -355,6 +355,12 @@ class CI:
                         following = False
                         raise
                 execution = self._supervise(handle, spec, conn, port, ticket, saved, bool(status), commit)
+                if self._stopped_for_compaction(spec):
+                    # It says nothing about the host or the commit. Keep the request and spend no retry: without the
+                    # killed run's context the next pass prepares this placement afresh, in the checkout landing kept.
+                    for spent in ('context', 'execution', 'held_reason'):
+                        saved.pop(spent, None)
+                    defer(CIDeferred('CI stopped for the overnight WSL compaction'))
                 done = self._classify(spec, execution, saved, request, commit, i)
                 if done is not None:
                     return done
@@ -382,6 +388,10 @@ class CI:
             raise CIError('saved platform receipts do not match the full CI plan')
         request.unlink(missing_ok=True)
         return result
+
+    def _stopped_for_compaction(self, spec):
+        status = runner.read_status(self.runs_dir, spec['run_id']) or {}
+        return status.get('nonce') == spec['nonce'] and (status.get('state'), status.get('reason')) == ('killed', COMPACTION_STOP)
 
     def _supervise(self, handle, spec, conn, port, ticket, saved, was_following, commit):
         next_scan, missed = time.monotonic() + (0 if was_following else 30), 0
@@ -421,11 +431,6 @@ class CI:
             time.sleep(self.poll_s)
 
     def _classify(self, spec, execution, saved, request, commit, i):
-        status = runner.read_status(self.runs_dir, spec['run_id']) or {}
-        if status.get('nonce') == spec['nonce'] and (status.get('state'), status.get('reason')) == ('killed', COMPACTION_STOP):
-            # It says nothing about the host or the commit: the gate runs again after the window, at no retry's cost.
-            request.unlink(missing_ok=True)
-            raise CIDeferred('CI stopped for the overnight WSL compaction')
         evaluated = self.result(spec['run_id'], execution, spec)
         receipt = evaluated['receipt']
         if receipt is not None:
