@@ -35,6 +35,24 @@ class Watch(unittest.TestCase):
         landing.record_batch(self.conn, dict(batch=[], outcome='held', tip='x', gates=gates, gate_s=[1] * gates, red=red,
                                               bisect_gates=0, decisions=0, dropped=[], landed=[]))
 
+    def clear(self, start, resources=GO):      # three intervals with the condition gone
+        for i in range(3):
+            ids = watch.tick(self.conn, CFG, resources, start + i * 700)
+        return ids
+
+    def test_flapping_condition_keeps_one_notice(self):
+        for i in range(8):
+            watch.tick(self.conn, CFG, HOLD if i % 2 == 0 else GO, NOW + i * 700)
+        self.assertEqual(len(ops.events(self.conn, kind='watch.notice')), 1)
+        self.assertEqual(len(self.open_questions()), 1)
+
+    def test_old_red_gates_do_not_hold_the_notice(self):
+        self.batch(6, 6)
+        self.assertEqual([n['id'] for n in watch.velocity(self.conn, CFG['watch'], NOW)], ['velocity:red-rate'])
+        for _ in range(20):
+            self.batch(1, 0)
+        self.assertEqual(watch.velocity(self.conn, CFG['watch'], NOW), [])
+
     def test_hold_verdict_opens_a_warden_notice(self):
         ids = watch.tick(self.conn, CFG, HOLD, NOW)
         self.assertEqual(ids, ['warden:hold'])
@@ -42,7 +60,7 @@ class Watch(unittest.TestCase):
 
     def test_clear_verdict_retracts_it(self):
         watch.tick(self.conn, CFG, HOLD, NOW)
-        ids = watch.tick(self.conn, CFG, GO, NOW + 700)
+        ids = self.clear(NOW + 700)
         self.assertEqual(ids, [])
         self.assertEqual(self.open_questions(), [])
 
@@ -71,8 +89,8 @@ class Watch(unittest.TestCase):
 
     def test_recurring_condition_opens_a_new_notice(self):
         watch.tick(self.conn, CFG, HOLD, NOW)
-        watch.tick(self.conn, CFG, GO, NOW + 700)
-        self.assertEqual(watch.tick(self.conn, CFG, HOLD, NOW + 1400), ['warden:hold#1'])
+        self.clear(NOW + 700)
+        self.assertEqual(watch.tick(self.conn, CFG, HOLD, NOW + 3000), ['warden:hold#1'])
         self.assertEqual(len(self.open_questions()), 1)
         self.assertEqual(len(ops.events(self.conn, kind='watch.notice')), 2)
 

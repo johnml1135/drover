@@ -10,11 +10,13 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from . import landing_batch
 from .ledger import disk_notices, ops
 
 KIND, EPIC, ACTOR = 'watch.notice', 'Watch', 'watch'
 STATE_KEY = 'watch_state'
+CLEAR_INTERVALS = 3      # a notice closes after its condition has been absent this many intervals in a row
+RECENT_BATCHES = 20      # the red rate looks at the gates of this many latest landing batches
+PER_ITEM = ('context:', 'velocity:stalled:')
 CHECKS = ('warden', 'velocity', 'context')      # the id prefix of each check's notices
 log = logging.getLogger(__name__)
 
@@ -45,10 +47,12 @@ def velocity(conn, cfg, now):
             found.append({'id': f"velocity:stalled:{row['id']}", 'title': f"Reviewed {int(hours)} h ago and not landed: {row['title']}",
                           'body': f"Task {row['id']} has been reviewed for {int(hours)} hours without landing. "
                                   'Land the ready subset now and stop adding to the batch.'})
-    v = landing_batch.velocity(conn)
+    recent = conn.execute('SELECT COALESCE(SUM(gates), 0) AS gates, COALESCE(SUM(red), 0) AS red FROM '
+                          '(SELECT gates, red FROM landing_batches ORDER BY id DESC LIMIT ?)', (RECENT_BATCHES,)).fetchone()
+    v = {'gates': recent['gates'], 'red_gates': recent['red'], 'red_rate': recent['red'] / recent['gates'] if recent['gates'] else None}
     if v['gates'] >= cfg['min_gates'] and v['red_rate'] is not None and v['red_rate'] > cfg['red_rate']:
         found.append({'id': 'velocity:red-rate', 'title': 'Most landing gates are coming up red',
-                      'body': f"{v['red_gates']} of {v['gates']} gates were red ({v['red_rate']:.0%}). "
+                      'body': f"{v['red_gates']} of the last {v['gates']} gates were red ({v['red_rate']:.0%}). "
                               'Require the full default suite green before READY, and split the batch.'})
     return found
 
@@ -67,7 +71,8 @@ def _state(conn):
         state = json.loads(ops.get_setting(conn, STATE_KEY, '{}'))
     except ValueError:
         state = {}
-    return {'at': state.get('at'), 'open': list(state.get('open') or []), 'episodes': dict(state.get('episodes') or {})}
+    return {'at': state.get('at'), 'open': list(state.get('open') or []), 'episodes': dict(state.get('episodes') or {}),
+            'absent': dict(state.get('absent') or {})}
 
 
 def tick(conn, cfg, resources, now, runs=()):
@@ -87,13 +92,22 @@ def tick(conn, cfg, resources, now, runs=()):
             log.exception('watch check %s failed', name)
     episodes = state['episodes']
     pid = lambda base: base if not episodes.get(base) else f'{base}#{episodes[base]}'
+    absent, opened_before = state['absent'], set(state['open'])
     keep = [i for i in state['open'] if i.split(':', 1)[0] in failed]
     for ident in state['open']:
         base = ident.split('#', 1)[0]
-        if ident in keep or (base in wanted and pid(base) == ident):
+        if ident in keep:
+            continue
+        if base in wanted and pid(base) == ident:
+            absent.pop(ident, None)
+            continue
+        absent[ident] = absent.get(ident, 0) + 1
+        if absent[ident] < CLEAR_INTERVALS:      # a condition that flaps keeps its one notice
+            keep.append(ident)
             continue
         try:
             disk_notices.retract(conn, ident, kind=KIND, actor=ACTOR)
+            absent.pop(ident, None)
             episodes[base] = episodes.get(base, 0) + 1      # if the condition returns it is a new notice
         except Exception:
             keep.append(ident)
@@ -102,10 +116,15 @@ def tick(conn, cfg, resources, now, runs=()):
     for base, notice in wanted.items():
         ident = pid(base)
         try:
-            disk_notices.publish(conn, {**notice, 'id': ident}, kind=KIND, epic_title=EPIC, actor=ACTOR)
+            if ident not in opened_before:
+                disk_notices.publish(conn, {**notice, 'id': ident}, kind=KIND, epic_title=EPIC, actor=ACTOR)
             opened.append(ident)
         except Exception:
             log.exception('watch could not publish %s', ident)
     ids = list(dict.fromkeys(keep + opened))
-    ops.set_setting(conn, STATE_KEY, json.dumps({'at': now, 'open': ids, 'episodes': episodes}))
+    live = {i.split('#', 1)[0] for i in ids} | set(wanted)
+    for base in [b for b in episodes if b not in live and b.startswith(PER_ITEM)]:
+        del episodes[base]      # a run or task id does not come back as the same condition
+    absent = {i: n for i, n in absent.items() if i in ids}
+    ops.set_setting(conn, STATE_KEY, json.dumps({'at': now, 'open': ids, 'episodes': episodes, 'absent': absent}))
     return ids
