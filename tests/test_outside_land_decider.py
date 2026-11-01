@@ -117,6 +117,29 @@ class ShadowAndLiveTests(DeciderCase):
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
+    def two_runs(self):
+        """A task whose first run changed f.txt and whose second, on the same branch, changed g.txt."""
+        tid = self.task()
+        first = self.r.branch('feat', {'f.txt': 'x'})
+        self.r.git('checkout', '-q', 'feat')
+        second = self.r.commit('g.txt', 'y')
+        self.r.git('checkout', '-q', 'main')
+        self.worker_done(tid, first, run=1)
+        self.worker_done(tid, second, run=2, base=first)
+        return tid
+
+    def test_live_citation_reads_the_files_of_the_newest_run(self):
+        tid = self.two_runs()
+        commit = self.r.commit('g.txt', 'hand', msg='hand work')
+        with patch.object(outside_land, 'ambiguous', return_value=[commit]):
+            self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
+
+    def test_live_citation_of_only_an_earlier_runs_files_asks_the_owner(self):
+        tid = self.two_runs()
+        commit = self.r.commit('f.txt', 'hand', msg='hand work')
+        self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [])
+        self.assertEqual((self.status(tid), len(ops.open_questions(self.conn))), (states.NEEDS_OWNER, 1))
+
     def test_live_citation_of_a_merge_commit_reads_its_whole_change(self):
         tid = self.task()
         self.worker_done(tid, self.r.branch('feat', {'f.txt': 'x'}))
@@ -267,6 +290,15 @@ class QuietTests(DeciderCase):
         self.worker_done(tid, tip, base='b' * 40)
         self.r.commit('f.txt', msg='hand work')
         self.scan()
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_pruned_later_point_still_reaches_the_question(self):
+        tid = self.task()
+        tip = self.r.branch('feat', {'g.txt': 'y'})
+        self.worker_done(tid, 'c' * 40, run=1)
+        self.worker_done(tid, tip, run=2, base='d' * 40)
+        self.r.commit('f.txt', msg='hand work')
+        self.assertEqual(self.scan()['landed'], [])
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
     def test_no_git_inside_a_transaction(self):
@@ -688,6 +720,10 @@ class AmbiguousTests(GitCase):
         named = self.r.commit('other.txt', msg="Merge branch 'feat-x'")
         tagged = self.r.commit('more.txt', msg='T-1: done by hand')
         self.assertEqual(self.ambiguous(self.task(branch='feat-x')), [tagged, named])
+
+    def test_the_list_candidates_gives_starts_at_its_first_base(self):
+        hit = self.r.commit('f.txt')
+        self.assertEqual(self.ambiguous(self.task(start=[self.fork, 'a' * 40, None])), [hit])
 
     def test_nothing_overlaps(self):
         self.r.commit('other.txt')

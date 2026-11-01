@@ -97,11 +97,16 @@ def _survives(repo, base, start, sha):
                for point in dict.fromkeys(point for point in (first, *later) if point == first or point != sha))
 
 
+def _points(start):
+    """`start` as a list: the one base a caller named, or what `candidates` gives."""
+    return [start] if isinstance(start, str) else list(start or ())
+
+
 def _proof(repo, branch, base_ref, commits, start):
     if not commits or not _commit(repo, commits[-1]):
         return None           # a pruned commit is a real no, though the checks below would fail on it
     recorded = commits[-1]    # an earlier attempt on the base says nothing about the task's final output
-    start = start and _commit(repo, start)
+    start = [point and _commit(repo, point) for point in _points(start)]    # a pruned point leaves None: no proof
     tip = _out(repo, 'rev-parse', '--verify', '-q', f'refs/heads/{branch}^{{commit}}')
     base = _out(repo, 'rev-parse', '--verify', '-q', f'{base_ref}^{{commit}}')
     if not tip or not base:
@@ -169,7 +174,8 @@ def _log(repo, *args):
 def _fork(repo, task, base_ref):
     """Where the task left the base: from its first run's start, or else from its branch or recorded commits, since a
     branch that reached the base has moved its own merge base past the task's work."""
-    for name in filter(None, (task.get('start'), f"refs/heads/{task['branch']}", *reversed(task.get('commits') or ()))):
+    first = next(iter(_points(task.get('start'))), None)
+    for name in filter(None, (first, f"refs/heads/{task['branch']}", *reversed(task.get('commits') or ()))):
         if _commit(repo, name):
             fork = _out(repo, 'merge-base', base_ref, name)
             if fork:
@@ -231,12 +237,16 @@ def _changed(repo, old, new):
 
 
 def _recorded_files(repo, task):
-    """The files the task's newest recorded commit changed, from its run's start. None recorded means none known."""
+    """The files the task's newest recorded commit changed since the latest point before it that the repo still has,
+    the base of the run that made it if that is known. None recorded means none known."""
     recorded = task['commits'][-1] if task['commits'] else None
     if not recorded or not _commit(repo, recorded):
         return set()
-    start = (task['start'] and _commit(repo, task['start'])) or _commit(repo, f'{recorded}^')
-    return _changed(repo, start, recorded) if start else set()
+    for point in (*reversed(_points(task['start'])), f'{recorded}^'):
+        start = point and _commit(repo, point)
+        if start:
+            return _changed(repo, start, recorded)
+    return set()
 
 
 def _holds(repo, task, sha, ref, name):
