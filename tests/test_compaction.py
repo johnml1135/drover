@@ -953,13 +953,14 @@ class DiedUnderARunningHub(Draining):
         self.assertIn('the job died at step compact', notices[0]['body'])
 
     def identity_of_a_child(self):
-        """A real process that reports the birth it would claim a hold with. The job is never this process."""
+        """A real process that reports the identity it would claim a hold with. Under a venv Popen.pid is only a launcher."""
         code = ('import sys,time;sys.path.insert(0,sys.argv[1]);from drover import placement;'
-                'print(placement.cleanup_identity()["birth"],flush=True);sys.stdin.read()')
+                'me=placement.cleanup_identity();print(me["pid"],me["birth"],flush=True);sys.stdin.read()')
         child = subprocess.Popen([sys.executable, '-c', code, str(Path(__file__).resolve().parents[1])],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.addCleanup(child.stdout.close)
-        return child, child.stdout.readline().strip()
+        pid, birth = child.stdout.readline().split()
+        return child, int(pid), birth
 
     def claim_as(self, pid, birth):
         record = self.hold()
@@ -968,8 +969,8 @@ class DiedUnderARunningHub(Draining):
         return record
 
     def test_a_real_job_in_another_process_keeps_its_hold_until_it_is_gone(self):
-        child, birth = self.identity_of_a_child()
-        record = self.claim_as(child.pid, birth)
+        child, pid, birth = self.identity_of_a_child()
+        record = self.claim_as(pid, birth)
         self.d.tick()
         self.assertEqual(compaction_hold.read(self.state)['id'], record['id'])
         child.communicate('')
