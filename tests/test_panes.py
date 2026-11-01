@@ -179,12 +179,18 @@ class Probe(Resident):
         self.assertEqual(self.adapter.probe(self.spec_), 'alive')
         self.assertEqual(self.fake.calls, [])
 
-    def test_an_agent_that_left_its_pane_is_gone_and_the_row_retires(self):
+    def test_an_agent_that_left_its_pane_changes_no_row_until_the_pane_closes(self):
         self.launched()
         del self.fake.agents[PANE]
         self.fake.processes = LONE_SHELL
-        self.assertEqual(self.adapter.probe(self.spec_), 'gone')
-        self.assertEqual(self.row_now()['state'], 'retired')
+        for _ in range(2):
+            self.assertEqual(self.adapter.probe(self.spec_), 'unknown')
+        self.assertEqual(self.row_now()['state'], 'live')
+        self.assertEqual(len([n for n in self.notices() if n['id'] == f"pane-agent-left:{self.row['id']}"]), 1)
+        del self.fake.panes[PANE]
+        self.tick()
+        self.assertEqual(self.outcome(), 'pane-gone')
+        self.assertEqual(self.role()['replacements_used'], 0)
 
     def test_a_forgotten_agent_with_a_process_stays_alive(self):
         self.launched()

@@ -2,7 +2,8 @@
 
 A read decides a row's fate, and only a clear read may. Herdr unreachable, or any refusal but the missing-pane code,
 changes no row: that is `unknown`, and unknown never spends a replacement. `gone` needs Herdr up and the pane missing or
-its terminal changed. A `live` agent has left when Herdr has no agent there and the shell stands alone; the row retires.
+its terminal changed. A `live` agent that left its pane is not `gone` either: the row stays, its session is left to
+expire, and one notice says closing the pane frees the role.
 
 A `starting` row outlives its launch only if the hub died, so past its deadline it ends `failed`. A `failed` row frees
 its role only when its pane is gone or, once any late launch line has had time to land, holds no agent; such a pane
@@ -23,7 +24,7 @@ from .notifications import Notifications, roles
 from .pane_send import PaneRefused
 
 ALIVE, GONE, UNKNOWN = 'alive', 'gone', 'unknown'
-CHANGED, EMPTY = 'changed', 'empty'
+CHANGED, EMPTY, LEFT = 'changed', 'empty', 'left'
 MISSING_PANE = 'pane_not_found'
 SESSION_TTL = 86400
 RENEW_BELOW_S = SESSION_TTL / 2
@@ -115,12 +116,12 @@ class PaneService:
         if row is None or row['state'] == 'retired':
             return GONE
         seen = self.inspect(row)
-        return {CHANGED: ALIVE, EMPTY: GONE}.get(seen, seen)
+        return {CHANGED: ALIVE, EMPTY: GONE, LEFT: UNKNOWN}.get(seen, seen)
 
     def inspect(self, row):
-        """What one read proves about a row: ALIVE, GONE, UNKNOWN, CHANGED (not the recorded agent) or EMPTY (a failed
-        row whose pane holds no agent). The moves a read proves are made here, except EMPTY's, which `sweep` makes after
-        the run has seen how its row ended.
+        """What one read proves about a row: ALIVE, GONE, UNKNOWN, CHANGED (not the recorded agent), LEFT (a live row's
+        agent has exited) or EMPTY (a failed row whose pane holds no agent). The moves a read proves are made here, except
+        EMPTY's, which `sweep` makes after the run has seen how its row ended.
         """
         if row['state'] == 'compaction':
             return ALIVE
@@ -177,9 +178,10 @@ class PaneService:
             return UNKNOWN
         if not alone:
             return ALIVE
-        ops_panes.update_agent(self.conn, row['id'], state='retired')
-        self._event('pane-retired', row, 'agent-left')
-        return GONE
+        pane_launch.publish(self.port, f"pane-agent-left:{row['id']}", 'A director left its pane',
+                            f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: the agent has exited. "
+                            'Closing the pane frees the role.')
+        return LEFT
 
     def _compare(self, row, pane, agent):
         session, kind = pane_launch.session_of(agent), agent.get('agent')

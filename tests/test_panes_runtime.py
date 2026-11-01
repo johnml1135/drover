@@ -6,7 +6,7 @@ from drover import compaction_hold, config, pane_close, pane_files, pane_handoff
 from drover.directors import DirectorRuntime
 from drover.ledger import ops_panes
 from drover.notifications import roles
-from tests.pane_launch_support import SECRET
+from tests.pane_launch_support import LONE_SHELL, SECRET
 from tests.pane_send_support import CLAUDE_IDLE, PANE
 from tests.panes_support import ROLE, Resident
 
@@ -62,6 +62,15 @@ class Sessions(Resident):
         self.panes.maintain(self.run_row)
         self.assertEqual(self.expiry(), first)
 
+
+    def test_an_agent_that_left_is_not_renewed(self):
+        self.launched()
+        first = self.expiry()
+        del self.fake.agents[PANE]
+        self.fake.processes = LONE_SHELL
+        self.time += 50000
+        self.panes.maintain(self.run_row)
+        self.assertEqual(self.expiry(), first)
 
     def test_a_failed_row_is_not_renewed(self):
         self.launched()
