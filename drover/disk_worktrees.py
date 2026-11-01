@@ -106,11 +106,16 @@ def status(path, *, expand=True):
     return dirty, ignored
 
 
-def task_facts(request, path, tag):
+def fresh_snapshot(request):
+    """The task snapshot when it is recent enough to trust, else None."""
     snapshot = request.get('tasks') or {}
     at = snapshot.get('at')
-    fresh = type(at) in (float, int) and 0 <= request['now'] - at <= 900
-    if not fresh:
+    return snapshot if type(at) in (float, int) and 0 <= request['now'] - at <= 900 else None
+
+
+def task_facts(request, path, tag):
+    snapshot = fresh_snapshot(request)
+    if snapshot is None:
         return bool(tag and tag['owner'].startswith('drover:')), False
     live = any(placement.cleanup_parts(p) == placement.cleanup_parts(path)
                for p in snapshot.get('active_worktrees', []))
@@ -127,6 +132,19 @@ def task_facts(request, path, tag):
     if tag and tag['owner'].startswith('drover:') and not found:
         live = True
     return live, terminal
+
+
+CLOSED_IDLE_S = 3 * 86400
+
+
+def needs_idle_gate(request, tag):
+    """True when the tag's task is closed without landing (yanked, abandoned, handed back): its tree may hold
+    undecided work, so it goes only once quiet for three days. Anything unclear is not a reason to hurry."""
+    snapshot = fresh_snapshot(request)
+    if snapshot is None or not tag:
+        return False
+    return any(tag['owner'] == 'drover:' + str(t.get('id')) and t.get('state') != 'landed'
+               for t in snapshot.get('tasks', []))
 
 
 def merged(machine, head):
@@ -189,6 +207,9 @@ def inspect(request, machine, entry):
     row.update(head=head, gitdir=gitdir_at(path))
     row.update(facts(path, request['now'], request=request))
     lease = bool(tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now'])
+    # A task closed without landing may still hold undecided work: three quiet days first; the branch always stays.
+    if terminal and needs_idle_gate(request, tag) and row['age_s'] < CLOSED_IDLE_S:
+        terminal = False
     observed['settlement'] = dict(live=live, terminal=terminal,
                                  merged=merged(machine, head) if lease and not terminal else False)
     return decision()
