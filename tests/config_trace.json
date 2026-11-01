@@ -64,6 +64,26 @@
    "worker_timeout_s": 900,
    "worktree_output_idle_s": 7200
   },
+  "dispatch": {
+   "conflict_hold": true,
+   "magnets": [
+    "*expected-findings*",
+    "*expected_findings*",
+    "*work-list*",
+    "*worklist*",
+    "*WORKLIST*",
+    "*golden*",
+    "*.golden.*",
+    "*test-shard-weights*",
+    "*shard-weights*",
+    "*/Help/Content/*/commands.json",
+    "*terms.json",
+    "*release-pathways*",
+    "*registry*",
+    "*Registry*",
+    "*.lock.json"
+   ]
+  },
   "hub": {
    "allowed_logins": [],
    "api_listen_wsl": false,
@@ -212,7 +232,14 @@
     "warn_gb": 200.0,
     "wsl_combined": false
    }
-  ]
+  ],
+  "watch": {
+   "interval_s": 600,
+   "stalled_hours": 24,
+   "context_tokens": 300000,
+   "red_rate": 0.5,
+   "min_gates": 6
+  }
  },
  "sources": {
   "capacity.parallel_cap": "machine:<home>/config.toml",
@@ -263,6 +290,22 @@
   "disk_cleanup.wsl_purge_gb": "default",
   "disk_cleanup.wsl_stop_gb": "default",
   "disk_cleanup.wsl_target_gb": "default",
+  "dispatch.conflict_hold": "default",
+  "dispatch.magnets.0": "default",
+  "dispatch.magnets.1": "default",
+  "dispatch.magnets.2": "default",
+  "dispatch.magnets.3": "default",
+  "dispatch.magnets.4": "default",
+  "dispatch.magnets.5": "default",
+  "dispatch.magnets.6": "default",
+  "dispatch.magnets.7": "default",
+  "dispatch.magnets.8": "default",
+  "dispatch.magnets.9": "default",
+  "dispatch.magnets.10": "default",
+  "dispatch.magnets.11": "default",
+  "dispatch.magnets.12": "default",
+  "dispatch.magnets.13": "default",
+  "dispatch.magnets.14": "default",
   "hub.allowed_logins": "default",
   "hub.api_listen_wsl": "default",
   "hub.api_port": "default",
@@ -367,6 +410,11 @@
   "trackers.wsl-up.hold_mem_pct": "default",
   "trackers.wsl-up.kind": "default",
   "trackers.wsl-up.name": "default",
-  "trackers.wsl-up.queue_mem_pct": "default"
+  "trackers.wsl-up.queue_mem_pct": "default",
+  "watch.interval_s": "default",
+  "watch.stalled_hours": "default",
+  "watch.context_tokens": "default",
+  "watch.red_rate": "default",
+  "watch.min_gates": "default"
  }
 }

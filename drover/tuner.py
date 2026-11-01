@@ -16,8 +16,8 @@ from .ledger.db import HubRequired, default_path, main_error
 from .tuner_routing import (PASS_OUTCOMES, _runs, _fit_rates, _cost, _is_worker, _by_task,
                             cost_per_landed, cost_per_landed_pass, route_stats, update_routes)
 from .tuner_metrics import (PROMOTE_MIN, SPOT_LABEL_MIN, NO_RULE, BATCH_RANGE, BATCH_OFF_GATE_S,
-                            GATE_MIN_N, CAP_RANGE, TUNER_EPIC, _policy, _dt, shadow_accuracy,
-                            _tuner_epic, proposals, tune_batch, landed_per_hour, tune_cap)
+                            GATE_MIN_N, TUNER_EPIC, _policy, _dt, shadow_accuracy,
+                            _tuner_epic, proposals, tune_batch, landed_per_hour)
 
 
 def __getattr__(name):   # the old constants stay importable; they follow the active config
@@ -25,14 +25,7 @@ def __getattr__(name):   # the old constants stay importable; they follow the ac
         return intervals_days()
     if name == "BATCH_DEFAULT":
         return _policy()["landing_batch_size"]
-    if name == "CAP_DEFAULT":
-        return _cap_default()
     raise AttributeError(name)
-
-
-def _cap_default():
-    from . import config
-    return config.get()["capacity"]["parallel_cap"]
 
 
 def intervals_days():
@@ -48,7 +41,7 @@ TAU_QUESTIONS = ("retry_or_escalate", "plan_wrong")
 MIN_AUDIT = 3
 SMALL_DIFF_LINES = 20
 TIER = {"haiku": 0, "luna": 0, "sonnet": 1, "sol": 1, "opus": 2, "fable": 3}
-AUTO_KEYS = ("routes", "leaders", "tau", "batch_size", "parallel_cap")  # the only policy keys the tuner writes
+AUTO_KEYS = ("routes", "leaders", "tau", "batch_size")  # the only policy keys the tuner writes
 STATE_KEY = "tuner_state"
 
 
@@ -57,7 +50,7 @@ STATE_KEY = "tuner_state"
 
 def new_state():
     return {"step": 0, "last_pass": None, "last_run_id": 0, "new_runs": 0, "last_cpl": None, "models_sig": None,
-            "repos": [], "reset": False, "last_lph": None, "last_cap": None, "last_cap_dir": 0}
+            "repos": [], "reset": False, "last_lph": None}
 
 
 def load_state(conn):
@@ -176,7 +169,6 @@ def current_policy(conn):
     for q in TAU_QUESTIONS:
         p["tau"][q] = min(TAU_RANGE[1], max(TAU_RANGE[0], p["tau"].get(q, _policy()["tau"])))
     p.setdefault("batch_size", _policy()["landing_batch_size"])
-    p.setdefault("parallel_cap", _cap_default())
     return p
 
 
@@ -254,11 +246,8 @@ def _pass(conn, now, state, runs):
     if batch != policy["batch_size"]:
         material.append(f"batch_size: {policy['batch_size']} -> {batch}")
     lph = landed_per_hour(new)
-    cap, cap_dir = tune_cap(policy["parallel_cap"], lph, state)
-    if cap != policy["parallel_cap"]:
-        material.append(f"parallel_cap: {policy['parallel_cap']} -> {cap}")
 
-    policy.update(routes=routes, leaders=leaders, tau={**tau, **tau_new}, batch_size=batch, parallel_cap=cap)
+    policy.update(routes=routes, leaders=leaders, tau={**tau, **tau_new}, batch_size=batch)
     version = None
     if json.dumps({k: policy.get(k) for k in AUTO_KEYS}, sort_keys=True) != before:
         version = _new_version(conn)
@@ -273,10 +262,10 @@ def _pass(conn, now, state, runs):
     advance(state, adopted=bool(material), reset=bool(triggers))
     state.update(last_pass=now.strftime("%Y-%m-%dT%H:%M:%SZ"), last_run_id=max(r["id"] for r in runs), new_runs=0,
                  last_cpl=cpl if cpl is not None else state["last_cpl"], models_sig=sig, repos=progs, reset=False,
-                 last_lph=lph if lph is not None else state["last_lph"], last_cap=cap, last_cap_dir=cap_dir)
+                 last_lph=lph if lph is not None else state["last_lph"])
     save_state(conn, state)
     return {"ran": True, "version": version, "changes": material, "audit": aud, "tau": tau_new, "batch_size": batch,
-            "parallel_cap": cap, "cost_per_landed": cpl, "proposals": made, "resets": sorted(set(triggers)),
+            "cost_per_landed": cpl, "proposals": made, "resets": sorted(set(triggers)),
             "step": state["step"], "shadow": acc}
 
 

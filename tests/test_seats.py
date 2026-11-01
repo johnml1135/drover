@@ -192,13 +192,13 @@ class Dispatching(test_dispatcher.Base):
             self.task(size="S")
         self.assertEqual(len(self.d.tick()["launched"]), 2)
 
-    def test_the_policy_cap_still_beats_config(self):
+    def test_the_config_cap_beats_stored_policy(self):
         self.use(capacity={"parallel_cap": 2})
         ops = test_dispatcher.ops
         ops.add_policy_version(self.conn, "v1", {"parallel_cap": 3})
         for _ in range(5):
             self.task(size="S")
-        self.assertEqual(len(self.d.tick()["launched"]), 3)
+        self.assertEqual(len(self.d.tick()["launched"]), 2)
 
     def test_retry_waits_for_its_backend_seat_instead_of_overfilling_it(self):
         self.use(seats=[{**CLAUDE, "max_workers": 1, "priority": 0}, CODEX])

@@ -11,6 +11,8 @@
 {% else %}
 <article class="task-page">
 <h2>{{ task.id }} · {{ task.title }}</h2>
+{% if task.status == 'ready' and dispatch_mode == 'director' %}<p>{% if task.picked_at %}{{ badge('Picked by ' ~ task.picked_by, 'ok') }}{% else %}{{ badge('Awaiting director pick', 'warn') }}
+<form method="post" action="/tasks/{{ task.id }}/pick" class="inline"><button class="btn" type="submit">Pick</button></form>{% endif %}</p>{% endif %}
 {% if task.requires_explicit_approval %}<p>{{ badge('Requires explicit approval', 'warn') }}</p>{% endif %}
 <p><span class="pill status status-{{ task.status }}">{{ task.status | label }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
 {% if task.reason %}<p class="task-reason">{{ task.reason }}</p>{% endif %}
@@ -31,6 +33,14 @@
 <h2>Events</h2><ol class="thread">{% for event in events %}<li><time>{{ event.at }}</time> · {{ event.kind }} · {{ event.actor }}<pre>{{ event.data|tojson(indent=2) }}</pre></li>{% else %}<li>No events.</li>{% endfor %}</ol>
 <details class="card"><summary>All ledger fields</summary><dl class="kv task-fields">{% for key, value in task.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details>
 {% if task.status in ('proposed', 'draft', 'needs-owner') %}{{ decide('task', task.id, 'Accept findings' if task.can_accept_findings else 'Approve') }}{% else %}{{ comment_btn('task', task.id) }}{% endif %}
+{% if task.status == 'yanked' %}<section class="card"><h2>Yanked</h2>
+<p>Taken outside Drover. It stays closed until it is detected as merged or you settle it.</p>
+<form method="post" action="/tasks/{{ task.id }}/abandon"><button class="btn">Abandon</button></form>
+<form method="post" action="/tasks/{{ task.id }}/handback"><button class="btn ok">Hand back</button></form>
+</section>{% elif task.status not in ('landed', 'cancelled') %}<details class="card"><summary>Yank</summary>
+<p>Stops the run, leaves files alone and closes the task, so Drover no longer dispatches it.</p>
+<form method="post" action="/tasks/{{ task.id }}/yank"><label>Reason<input type="text" name="reason"></label><button class="btn">Yank</button></form>
+</details>{% endif %}
 <details class="card"><summary>Edit task</summary>
 <form method="post" action="/tasks/{{ task.id }}/edit" hx-post="/tasks/{{ task.id }}/edit" hx-target="#content">
   <label>Title<input type="text" name="title" value="{{ task.title }}" required></label>

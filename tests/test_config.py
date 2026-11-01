@@ -133,7 +133,7 @@ class Defaults(unittest.TestCase):
 
     def test_defaults_equal_todays_values(self):
         c = load()
-        self.assertEqual(c["capacity"]["parallel_cap"], 4)
+        self.assertEqual(c["capacity"]["parallel_cap"], 40)
         self.assertEqual(c["policy"], {"tau": 0.8, "landing_batch_size": 3, "tuner_cadence_days": [1, 1, 2, 3, 5, 7],
                                        "push": False})
         self.assertEqual(c["models"]["ids"], {"haiku-5.5": "claude-haiku-5-5", "sonnet-5.5": "claude-sonnet-5-5",

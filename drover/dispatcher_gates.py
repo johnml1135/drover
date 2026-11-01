@@ -113,6 +113,9 @@ class GateSteps:
             return False
         if self.ci_runners.reserve(task, platform=platform) is None:
             return False                                     # waiting for a gate slot
+        if self._is_closed(tid):                             # the ledger refuses worker runs only
+            self.ci_runners.release(tid)
+            return False
         gate_run = p.start_run(tid, "gate", "local", "gate")
         nonce = None
         if hasattr(p, "set_run_context"):
@@ -171,6 +174,8 @@ class GateSteps:
         if (evaluated.get('outcome') == 'termination-unknown' or evaluated.get('nonce') != spec.get('nonce')
                 or evaluated.get('run_id') != run_id):
             return 'termination-unknown'
+        if self._end_if_yanked(run_id, task_id, tokens_in=0, tokens_out=0, tokens_cached=0):
+            return
         expected = {'sha': sha, 'kind': info.get('kind'), 'platform': info.get('platform')}
         passed = evaluated["passed"] and not ci_common.validate_receipt(receipt, expected)
         excerpt = None if passed else evaluated["excerpt"]

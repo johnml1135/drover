@@ -108,6 +108,10 @@ class RunnerHandle:
             self.last_status = st
         return st
 
+    def context_tokens(self):
+        """The context size of the latest request so far; None before any reading."""
+        return self._usage.context or None
+
     def terminal(self):
         st = self.status()
         return st if st and st.get("state") in TERMINAL else None

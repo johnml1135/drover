@@ -59,6 +59,10 @@ def batches(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM landing_batches ORDER BY id")]
 
 
+def yanked(conn, task_id):
+    return conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()['status'] == 'yanked'
+
+
 def last_outcome(conn):
     row = conn.execute("SELECT outcome FROM landing_batches ORDER BY id DESC LIMIT 1").fetchone()
     return row[0] if row else None

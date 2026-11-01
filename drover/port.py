@@ -17,7 +17,7 @@ class LedgerPort(Protocol):
     def require_admission(self, epoch=None, task_id=None): ...
     def claim_next(self, worker=None, exclude=()): ...
     def get_task(self, task_id): ...
-    def list_tasks(self, status=None): ...
+    def list_tasks(self, status=None, include_archived=False): ...
     def dependents(self, task_id): ...
     def list_runs(self, task_id): ...
     def start_run(self, task_id, role, backend, model=None, effort=None): ...
@@ -67,8 +67,8 @@ class DirectPort:
     def get_task(self, task_id):
         return ops.get_task(self.conn, task_id)
 
-    def list_tasks(self, status=None):
-        return ops.list_tasks(self.conn, status=status)
+    def list_tasks(self, status=None, include_archived=False):
+        return ops.list_tasks(self.conn, status=status, include_archived=include_archived)
 
     def dependents(self, task_id):
         return ops.dependents_of(self.conn, task_id)
@@ -169,12 +169,11 @@ class DirectPort:
         return ops.get_question(self.conn, qid)
 
     def get_policy(self):
-        """{'version', 'data', 'parallel_cap'}; the cap comes from policy data, then the ledger setting, then config capacity.parallel_cap (4)."""
+        """{'version', 'data', 'parallel_cap'}; the cap is the owner's: always config capacity.parallel_cap (40), never stored policy."""
         version = ops.current_policy(self.conn)
         row = self.conn.execute("SELECT data FROM policy_versions WHERE version=?", (version,)).fetchone()
         data = json.loads(row[0]) if row else {}
-        cap = data.get("parallel_cap", ops.get_setting(self.conn, "parallel_cap", config.get()["capacity"]["parallel_cap"]))
-        return {"version": version, "data": data, "parallel_cap": int(cap)}
+        return {"version": version, "data": data, "parallel_cap": int(config.get()["capacity"]["parallel_cap"])}
 
 class HttpPort:
     """Stub: the hub API client arrives with the hub slice."""

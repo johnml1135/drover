@@ -1,4 +1,5 @@
 """Ledger operations."""
+from . import ops_dispatch
 from .ops_common import (
     NOTE_MAX,
     NotFound,
@@ -15,6 +16,7 @@ from .ops_common import (
     json,
     scopes,
     stamp,
+    states,
     tx,
 )
 from .ops_tasks import (
@@ -35,7 +37,7 @@ def _active_scopes(conn, repo):
 def _candidates(conn, repo=None, repo_path=None):
     q = ("SELECT t.*, COALESCE(e.rank, 1e18) AS epic_rank, "
          "(SELECT COUNT(*) FROM task_deps d JOIN tasks x ON x.id=d.task_id WHERE d.depends_on=t.id "
-         " AND x.status NOT IN ('landed','cancelled')) AS dependents "
+         " AND x.status NOT IN ('landed','cancelled','yanked')) AS dependents "
          "FROM tasks t LEFT JOIN epics e ON e.id=t.epic_id WHERE t.status='ready' AND t.archived=0 "
          "AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.subject_kind='task' AND w.subject_key=t.id AND w.released_event IS NULL) "
          "AND NOT EXISTS (SELECT 1 FROM task_groups g WHERE g.parent_id=t.id AND g.ready=0) "
@@ -89,6 +91,8 @@ def claim_next(conn, worker=None, now=None, exclude=()):
         for cand in ready_tasks(conn, worker.get("repo"), worker.get("repo_path"), now):
             if cand["id"] in skip or not dispatch_repos.permits(allow, cand["repo"]):
                 continue
+            if not cand.get("picked_at") and ops_dispatch.mode_of(conn, cand) == ops_dispatch.DIRECTOR:
+                continue                   # a director's epic: the task waits for an explicit pick
             if not task_admission(conn, cand['id'])['allowed']:
                 continue
             runs = waiting.replan_runs() if runs is None else runs     # one snapshot per call (inside tx)
@@ -115,6 +119,8 @@ def start_run(conn, task_id, role, backend, model=None, effort=None, policy_vers
         t = get_task(conn, task_id)
         if role == 'director' or role.startswith('director:') or t.get('internal'):
             raise PermissionError('director runs require the supervised runtime')
+        if role == 'worker' and t['status'] in states.CLOSED:  # claimed, then closed before the launch reached here
+            raise states.IllegalTransition(f"{task_id} is {t['status']}; no worker may start")
         from ..notifications.controls import task_admission
         control = task_admission(conn, task_id)
         if not control['allowed']:

@@ -62,7 +62,9 @@ on the owner's instruction. The yank stops the run, leaves files alone and write
 closing ledger entry, so the task is not dispatched again. After that Drover does not
 watch or report on it, except cleanup: its builds are purged on the idle rule and its
 worktree is removed when all committed, nothing running, 3 days idle, branch kept.
-Handback is explicit and treated as new work.
+Handback is explicit and treated as new work. A yanked task stays closed in a `yanked`
+state until it is detected as landed or the owner abandons it, because tasks that depend
+on it need that answer.
 
 **Landing.** The merge queue is the only route to main; direct landing is Bypass only.
 Landings made outside Drover are detected in order: git (ancestor, patch-equivalent, or a

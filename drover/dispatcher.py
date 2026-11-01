@@ -13,6 +13,7 @@ claims and launches nothing, but still reaps, adopts and recovers.
 """
 from . import placement, repos
 import json
+import logging
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ from dataclasses import dataclass, field
 
 from . import compaction, compaction_hold
 from . import dispatch_repos
+from . import dispatch_hold
 from . import task_access
 from . import brief as brief_mod
 from . import config as config_mod
@@ -36,6 +38,7 @@ from . import route as route_mod
 from datetime import datetime, timezone
 
 from . import launch as launch_mod
+from . import outside_land
 from .launch import RunnerLauncher
 from .ledger import states
 from .pipeline import WorktreeRefused, truthy
@@ -107,6 +110,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         self.last_verdict = None
         self._stats_hour, self._stats_resources = None, {}
         self.last_resources = {}             # the newest resources.check result: its `wsl` part gates WSL work only
+        self._outside_at = None              # when landings outside Drover were last scanned
 
     def _begin_review(self, task, runs, policy, admitted):
         p, pl, tid = self.port, self.pipeline, task["id"]
@@ -148,6 +152,34 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         return self._spawn(task, route, policy, placement, task["worktree"], b, "review",
                            {"sha": sha, "worker_run": worker["id"]}) is not None
 
+    def _watch_tick(self, res):
+        """Hub trackers raise Inbox notices on the [watch] interval_s clock, paused or not; a failure never stops dispatch."""
+        try:
+            from . import watch
+            def reading(handle):
+                try:
+                    return handle.context_tokens()
+                except AttributeError:      # a handle that keeps no usage: no reading, no notice
+                    return None
+            runs = [{'run_id': rid, 'task_id': tid, 'context': reading(h)} for rid, (h, tid, _) in list(self.live.items())]
+            watch.tick(self.port.conn, config_mod.get(), res, self.now(), runs)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('watch tick failed')
+
+    def _detect_outside_landings(self):
+        """At most once per interval, even after a failure; a detection failure never stops dispatch."""
+        now = self.now()
+        try:
+            cfg = config_mod.get()
+            if self._outside_at is not None and now - self._outside_at < outside_land.interval_s(cfg):
+                return
+            self._outside_at = now
+            outside_land.tick(self.port.conn, cfg)
+        except Exception:
+            self._outside_at = now
+            logging.getLogger(__name__).exception('outside landing detection failed')
+
     def tick(self):
         self._control_epoch = self.port.admission()['epoch']
         self._seat_tick()
@@ -184,6 +216,8 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         if hold:
             out['compaction'] = self._compaction_drain(hold)
         self.check_stale()
+        if not hold:                                       # its git must not wake WSL during a compaction
+            self._detect_outside_landings()
         from .ledger.waiting import DEADLINE
         p.waiting.expire(self.now())
         if any(r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down' for r in p.waiting.pending()) and self.launcher.wsl_up():
@@ -196,6 +230,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             for token in res.get('critical_tokens', []):
                 # Tokens are consumed only after the sticky ledger pause commits.
                 (config_mod.state_dir(config_mod.get()) / 'disk' / token).unlink(missing_ok=True)
+        self._watch_tick(res)
         if self.directors is not None:
             def director_slots():
                 return max(0, min(policy['parallel_cap'] - in_use(), res.get('slots', 0)))
@@ -206,6 +241,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             service_tick(p, self.now)
         if p.get_setting('admission_hold'):
             self._admission_report()
+        out['yanked'] = self._stop_yanked()
         control = p.admission(epoch=self._control_epoch)
         if not control['allowed']:
             self._stop_for_control(control['epoch'])
@@ -240,23 +276,37 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             skip.update(t["id"] for t in p.list_tasks("ready") if self._wsl_window(t))
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
-        skipped = {}
+        def hold_base(t):      # git runs here, outside any ledger transaction
+            prog = self.pipeline.all_repos().get(str(t.get("repo") or "").lower())
+            if not prog:
+                return None
+            base = repos_mod.default_branch(prog)      # a pushing repo lands on the remote ref, as ops_outside does
+            return f"refs/remotes/{repos_mod.remote_name(prog)}/{base}" if prog["landing"]["push"] else f"refs/heads/{base}"
+        held = dispatch_hold.tick_holds(p, config_mod.get()["dispatch"], hold_base) if slots > 0 else {}
+        skip.update(held)
+        skipped = {"conflict-hold": len(held)} if held else {}
         while slots > 0 and self._launch_allowed():
             task = p.claim_next({}, exclude=skip)
             if task is None:
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            got = self._admit(task, policy, admitted)
+            got = self._unless_closed(task["id"], self._admit, task, policy, admitted)
+            if got is None:
+                continue
             if isinstance(got, str):
                 skipped[got] = skipped.get(got, 0) + 1
                 continue
             route, placement, wt = got
-            if self._launch(task, route, policy, placement, cwd=wt) is not None \
+            if self._unless_closed(task["id"], self._launch, task, route, policy, placement, cwd=wt) is not None \
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1
         out['paused'] = not truthy(p.get_setting('dispatch_enabled', 'false'))
+        from .ledger import ops_dispatch
+        waiting_on_director = ops_dispatch.awaiting_pick(p.conn)    # ready, in a director's epic, not yet picked
+        if waiting_on_director:
+            skipped["awaiting-director"] = waiting_on_director
         return report(skipped, "no-slots" if slots <= 0 else "")
 
 

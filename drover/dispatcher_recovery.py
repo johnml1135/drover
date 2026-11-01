@@ -10,11 +10,12 @@ from .dispatcher_admission import _epoch, ORPHAN_SCANS, CLAIM_STALE_S
 
 class RecoverySteps:
     def _open_runs(self):
-        """[(task, run)] for every open run of a running or claimed task that this dispatcher is not following."""
+        """[(task, run)] for every open run of a task in flight or yanked that this dispatcher is not following."""
         live_tasks = {tid for _, tid, _ in self.live.values()}
         out = []
-        for status in ("running", "claimed", "gated"):      # a gated task may have a review in flight
-            for t in self.port.list_tasks(status):
+        # A gated task may have a review in flight; a yanked task's run must close even if the task is archived.
+        for status in ("running", "claimed", "gated", "yanked"):
+            for t in self.port.list_tasks(status, include_archived=status == "yanked"):
                 if t["id"] not in live_tasks:
                     out += [(t, r) for r in self.port.list_runs(t["id"]) if r["ended"] is None]
         seen = {r['id'] for _, r in out}
@@ -148,7 +149,8 @@ class RecoverySteps:
                     stop(rid, nonce)                  # ask again; the task stays where it is
                 continue
             del self.cancelling[rid]
-            self.ci_runners.release(tid)
+            if rid not in self.live:                  # a followed run gives its slot back when it is reaped
+                self.ci_runners.release(tid)
             p = self.port
             p.append_event("launch-cancel-cleared", {"run": rid}, tid)
             if p.get_task(tid)["status"] == "running" and not any(r["ended"] is None for r in p.list_runs(tid)):
@@ -176,6 +178,8 @@ class RecoverySteps:
         if spec.get('role') == 'planner':
             self.replanning.finish(run_id, {'status': contract.ORPHANED, 'text': '', 'usage': {}}, now=self.now())
             return task_id
+        if self._end_if_yanked(run_id, task_id):
+            return task_id
         p.finish_run(run_id, "orphaned", note="runner gone with no terminal status")
         if spec.get("role") in ("gate", "review"):
             self.ci_runners.release(task_id)               # the gate or review is derived again from the ledger next tick
@@ -183,6 +187,33 @@ class RecoverySteps:
         if not any(r["ended"] is None for r in p.list_runs(task_id)) and p.get_task(task_id)["status"] in ("running", "claimed"):
             p.set_status(task_id, "ready", reason="orphaned run recovered")
         return task_id
+
+    def _is_yanked(self, task_id):
+        return self.port.get_task(task_id)['status'] == 'yanked'
+
+    def _is_closed(self, task_id):
+        return self.port.get_task(task_id)['status'] in ('yanked', 'cancelled', 'landed')
+
+    def _end_if_yanked(self, run_id, task_id, release=True, **usage):
+        """True when the owner yanked the task: its run ends `yanked` whatever it reported, and the task stays put. Every
+        path that moves a task after a run ends asks here first. A retried finish finds the run already ended."""
+        p = self.port
+        if not self._is_yanked(task_id):
+            return False
+        if any(r['id'] == run_id and r['ended'] is None for r in p.list_runs(task_id)):
+            p.finish_run(run_id, contract.YANKED, note='stopped by a yank', **usage)
+        if release:
+            self.ci_runners.release(task_id)
+        return True
+
+    def _unless_closed(self, task_id, step, *args, **kw):
+        """Run a claim's admission or launch step; None when a closed task refused its status move or its run."""
+        try:
+            return step(*args, **kw)
+        except ValueError:
+            if not self._is_closed(task_id):
+                raise
+            return None
 
     def _wsl_window(self, task):
         """True while a compaction holds WSL and this task's worktree is inside it, so its git would wake WSL."""

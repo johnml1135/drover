@@ -21,6 +21,7 @@ def __getattr__(name):   # DEFAULT_SIZE stays importable; it follows the active 
         return default_size()
     raise AttributeError(name)
 ORIGIN_OBSERVE_INTERVAL_S = 120
+GIT_TIMED_OUT = 124   # the exit code landing_batch.git gives a timed-out command
 def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None, land_stage):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
@@ -108,6 +109,9 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         base_sha = git(repo, 'rev-parse', base_ref).stdout.strip()
         tip, tasks, conflicts = build_tip(repo, work, base_sha, tasks)
         for tid in conflicts:
+            if storage.yanked(conn, tid):
+                result['dropped'][tid] = 'yanked'
+                continue
             result['dropped'][tid] = 'rebase conflict'
             ops.set_status(conn, tid, states.NEEDS_OWNER, actor='landing', reason='rebase conflict')
         if not tasks:
@@ -127,6 +131,9 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             stopped.set()
             if observe:
                 watcher.join(FETCH_TIMEOUT_S + 1)
+        if _drop_yanked(conn, tasks, result):
+            tasks = [t for t in tasks if t['id'] not in result['dropped']]
+            continue                         # what is left must pass on a tip of its own
         if red and observe:
             if moved.is_set():
                 result['outcome'] = 'stale-base'
@@ -143,6 +150,9 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
                 result.update(outcome='refused', error='Landing requires exact-SHA full CI on every required platform')
                 return
             _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push, repo_name, land_stage=land_stage)
+            if result['outcome'] == 'yanked':
+                tasks = [t for t in tasks if t['id'] not in result['dropped']]
+                continue
             if result['outcome'] == 'stale-base' and stale_retries < 2:
                 stale_retries += 1
                 result.pop('error', None)
@@ -162,9 +172,16 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             culprit = bisect(tasks, red_at)
             how = 'bisect'
         result['dropped'][culprit] = how
-        requeue(conn, culprit, failures, how)
+        if not storage.yanked(conn, culprit):
+            requeue(conn, culprit, failures, how)
         tasks = [t for t in tasks if t['id'] != culprit]
-    result['outcome'] = 'red'
+    result['outcome'] = 'yanked' if set(result['dropped'].values()) == {'yanked'} else 'red'
+def _drop_yanked(conn, tasks, result):
+    """Record every yanked task as dropped from the batch. Nothing moves it. True when there was one."""
+    gone = [t['id'] for t in tasks if storage.yanked(conn, t['id'])]
+    for tid in gone:
+        result['dropped'][tid] = 'yanked'
+    return bool(gone)
 def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=False, repo_name=None, *, land_stage):
     result['tip'] = tip
     for t in tasks:
@@ -177,6 +194,9 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
     sync_result = sync_main(conn, repo, remote, branch, repo_name, control_epoch=epoch)
     if sync_result:
         result.update(sync_result)
+        return
+    if _drop_yanked(conn, tasks, result):      # the last read before main moves; after it the landing is recorded
+        result.update(outcome='yanked', tip=None)
         return
     try:
         local_fast_forward(conn, repo, work, branch, tip, receipt, control_epoch=epoch,
@@ -206,3 +226,48 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
                              options=[{'label': 'Acknowledged'}], actor='landing')
 def land_sha(conn, task_id):
     return storage.land_sha(conn, task_id)
+def timed_git(repo, *args, timeout, **kw):
+    """`git` with check off, where a timeout raises TimeoutExpired: it is neither a yes nor a no."""
+    import subprocess
+    result = git(repo, *args, check=False, timeout=timeout, **kw)
+    if result.returncode == GIT_TIMED_OUT:
+        raise subprocess.TimeoutExpired(args, timeout)
+    return result
+def contained(repo, branch, main_sha, timeout=None):
+    """True when every commit of `branch` is in `main_sha`: an ancestor, or (replayed commits) all patch-equivalent."""
+    if timed_git(repo, 'rev-parse', '--verify', '-q', f'{branch}^{{commit}}', timeout=timeout).returncode:
+        return False
+    if timed_git(repo, 'merge-base', '--is-ancestor', branch, main_sha, timeout=timeout).returncode == 0:
+        return True
+    cherry = timed_git(repo, 'cherry', main_sha, branch, timeout=timeout)
+    return cherry.returncode == 0 and not any(line.startswith('+') for line in cherry.stdout.splitlines())
+def verify_manual_land(repo, branch, main_sha, default_branch):
+    """The full main_sha, once it is on `default_branch` (ancestor or equal) and holds all of `branch`'s commits."""
+    if not branch:
+        raise ValueError('the task has no branch, so its commits cannot be checked')
+    full = git(repo, 'rev-parse', '--verify', '-q', f'{main_sha}^{{commit}}', check=False)
+    if full.returncode or not full.stdout.strip():
+        raise ValueError(f'{main_sha} is not a commit in the repo')
+    full = full.stdout.strip()
+    if git(repo, 'merge-base', '--is-ancestor', full, default_branch, check=False).returncode:
+        raise ValueError(f'{full[:12]} is not on {default_branch}')
+    if not contained(repo, branch, full):
+        raise ValueError(f'commits of {branch!r} are not all contained in {full[:12]}')
+    return full
+def base_holds(conn):
+    """Each repo whose merge queue waits on the owner for a red base: repo, base sha and the open question."""
+    from .ledger.waiting import BASE, Waiting
+    rows = [r for r in Waiting(conn).pending() if r['kind'] == BASE and r['question_id'] and r['cause_state'] == 'open']
+    return list({r['cause']: {'repo': r['data']['repo'], 'sha': r['data']['sha'], 'question': r['question_id']}
+                 for r in rows}.values())
+def clear_hold(conn, repo, actor='owner'):
+    """Owner action, for one repo: forget each held base's gate result and answer its question Retry."""
+    if actor != 'owner':
+        raise PermissionError(f'only the owner may clear a landing hold (actor {actor!r})')
+    with ops.tx(conn):
+        holds = [hold for hold in base_holds(conn) if hold['repo'] == repo]
+        for hold in holds:
+            storage.forget_base(conn, hold['repo'], hold['sha'])
+            ops.answer_question(conn, hold['question'], RETRY, actor=actor)
+            ops.event(conn, 'landing-hold-cleared', actor, hold)
+    return {'cleared': bool(holds), 'holds': holds}

@@ -78,6 +78,14 @@
       "type": "noul",
       "criteria_version": 1,
       "instructions": "Is this unmerged branch superseded or obsolete, so that deleting it loses nothing of value?"
+    },
+    "landed_outside": {
+      "type": "choice",
+      "criteria_version": 1,
+      "dynamic": true,
+      "mode": "shadow",
+      "instructions": "Git could not prove that this task landed. Cite a commit only if it carries all of the task's accepted work: a commit that touches the same files, or does part of the work, is not enough. If no one commit carries all of it, or you cannot tell, answer not_landed. Criteria are supplied per call: one label per candidate commit, keyed by full SHA, plus not_landed.",
+      "criteria": {}
     }
   }
 }

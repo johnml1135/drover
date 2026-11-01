@@ -2,7 +2,7 @@ import json
 import threading
 import time
 
-from drover import config, decisions, stats, usage
+from drover import config, decisions, landing, stats, usage
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
@@ -148,7 +148,32 @@ class Store:
         return {"results": results}
 
     @_translate
+    def set_epic_dispatch(self, eid, mode):
+        """Owner action. The caller must have authenticated the owner."""
+        e = ops.set_epic_mode(self.conn, eid, mode, actor="owner")
+        self._changed("epic.dispatch", id=eid, mode=mode)
+        return e
+
+    def get_default_dispatch(self):
+        return ops.default_mode(self.conn)
+
+    @_translate
+    def set_default_dispatch(self, mode):
+        """Owner action. The caller must have authenticated the owner."""
+        mode = ops.set_default_mode(self.conn, mode, actor="owner")
+        self._changed("dispatch.default", mode=mode)
+        return mode
+
+    @_translate
+    def pick(self, tid, actor):
+        t = ops.pick(self.conn, tid, actor)
+        self._changed("task.picked", id=tid)
+        return t
+
+    @_translate
     def set_status(self, tid, status, actor, reason=None):
+        if status == "yanked":  # every yank writes its bypass record, whichever route it came by
+            return self.yank_task(tid, reason or "", actor)
         t = ops.set_status(self.conn, tid, status, actor=actor, reason=reason)
         self._changed("task.status", id=tid, status=status)
         return t
@@ -166,12 +191,48 @@ class Store:
         return t
     @_translate
     def record_external_landing(self, tid, sha, base_ref, gate, review):
-        with tx(self.conn):
-            old = ops.get_task(self.conn, tid)['status']
-            t = ops.record_external_landing(self.conn, tid, sha, base_ref, gate, review, actor='owner')
+        old = ops.get_task(self.conn, tid)['status']
+        t = ops.record_external_landing(self.conn, tid, sha, base_ref, gate, review, actor='owner')
         if old != t['status']:
             self._changed('task.status', id=tid, status=t['status'])
         return t
+
+    def base_holds(self):
+        return landing.base_holds(self.conn)
+
+    @_translate
+    def clear_hold(self, repo):
+        """The authenticated owner clears one repo's landing hold and answers its question Retry."""
+        result = landing.clear_hold(self.conn, repo, actor='owner')
+        for hold in result['holds']:
+            self._changed('question.answered', id=hold['question'])
+        return result
+
+    @_translate
+    def yank_task(self, tid, reason="", actor="owner"):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.yank(self.conn, tid, actor=actor, reason=reason)
+        self._changed("task.status", id=tid, status=t["status"])
+        return t
+
+    @_translate
+    def abandon_task(self, tid):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.abandon(self.conn, tid, actor="owner")
+        self._changed("task.status", id=tid, status=t["status"])
+        return t
+
+    @_translate
+    def handback_task(self, tid):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        with tx(self.conn):
+            explicit = self.get_task(tid)["requires_explicit_approval"]
+            t = ops.handback(self.conn, tid, actor="owner")
+            self.set_explicit_approval(t["id"], explicit)
+        self._changed("task.status", id=tid, status="cancelled")
+        self._changed("task.created", id=t["id"])
+        return t
+
     @_translate
     def claim_next(self, worker):
         t = ops.claim_next(self.conn, dict(worker))

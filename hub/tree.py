@@ -45,7 +45,7 @@ def tree_data(conn):
         tasks[t['id']] = t
         group = groups.get(t['epic_id'], no_epic)
         group['counts'][t['status']] += 1
-        group['open'] |= t['status'] not in ('landed', 'closed', 'cancelled', 'abandoned')
+        group['open'] |= t['status'] not in ('landed', 'closed', 'cancelled', 'yanked', 'abandoned')
     for t in tasks.values():
         group = groups.get(t['epic_id'], no_epic)
         parent = tasks.get(t['parent_id'])

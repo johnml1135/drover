@@ -250,7 +250,18 @@ def run_tail(rid: str, request: Request, store=Depends(get_store)):
 def landing(request: Request, store=Depends(get_store)):
     data = _call(store, "landing", default={}) or {}
     return _tab(request, "landing", store, queue=data.get("queue", []), batch=data.get("batch"),
-                gate=data.get("gate") or {}, repos=data.get("repos") or [])
+                gate=data.get("gate") or {}, repos=data.get("repos") or [],
+                holds=_call(store, "base_holds", default=[]))
+
+
+@router.post("/landing/clear-hold")
+async def clear_landing_hold(request: Request, store=Depends(get_store)):
+    """Owner-only through the UI auth and CSRF middleware; never exposed on the API."""
+    repo = _one(await _form(request), "repo").strip()
+    if not repo:
+        raise HTTPException(422, "name the repo to clear")
+    store.clear_hold(repo)
+    return RedirectResponse("/landing", status_code=303)
 
 
 @router.post("/repos/{name}/push-main")
@@ -339,6 +350,22 @@ def dispatch_confirm(request: Request, store=Depends(get_store)):
     return _render(request, "dispatch_confirm.html", store, tab="health", partial=False)
 
 
+@router.post("/epics/{eid}/dispatch")
+async def epic_dispatch(eid: str, request: Request, store=Depends(get_store)):
+    """Owner-only (the UI port only serves the owner): who picks this epic's next task."""
+    mode = _one(await _form(request), "mode")
+    if mode not in ("drover", "director"):
+        raise HTTPException(422, "mode must be drover or director")
+    store.set_epic_dispatch(eid, mode)
+    return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/tasks/{tid}/pick")
+async def pick_task(tid: str, request: Request, store=Depends(get_store)):
+    store.pick_task(tid)
+    return RedirectResponse(f"/tasks/{tid}", status_code=303)
+
+
 @router.post("/dispatch/toggle")
 async def dispatch_toggle(request: Request, store=Depends(get_store)):
     """Owner-only (the UI port only serves the owner). Pausing is immediate; turning dispatch on needs confirm=yes."""
@@ -418,3 +445,18 @@ async def delete_task(tid: str, request: Request, store=Depends(get_store)):
     form = await _form(request)
     store.delete_task(tid, confirm=_one(form, "confirm") == "1")
     return RedirectResponse("/plan", status_code=303)
+
+@router.post("/tasks/{tid}/yank")
+async def yank_task(tid: str, request: Request, store=Depends(get_store)):
+    form = await _form(request)
+    store.yank_task(tid, _one(form, "reason"))
+    return RedirectResponse(f"/tasks/{tid}", status_code=303)
+
+@router.post("/tasks/{tid}/abandon")
+def abandon_task(tid: str, store=Depends(get_store)):
+    store.abandon_task(tid)
+    return RedirectResponse(f"/tasks/{tid}", status_code=303)
+
+@router.post("/tasks/{tid}/handback")
+def handback_task(tid: str, store=Depends(get_store)):
+    return RedirectResponse(f"/tasks/{store.handback_task(tid)['id']}", status_code=303)

@@ -18,7 +18,7 @@ TaskSize = Literal["S", "M", "L"]
 TaskRisk = Literal["low", "high"]
 NewTaskStatus = Literal["proposed", "draft"]
 TaskStatus = Literal["proposed", "draft", "ready", "claimed", "running", "gated", "reviewed",
-                     "landed", "blocked", "failed", "needs-owner", "cancelled"]
+                     "landed", "blocked", "failed", "needs-owner", "cancelled", "yanked"]
 
 public = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth.require_api)])
@@ -321,6 +321,32 @@ def approve(tid: str, request: Request, who: str = Depends(auth.require_api)):
     return guard(_store(request).approve, tid)
 
 
+class DispatchModeIn(Loose):
+    mode: Literal["drover", "director"]
+
+
+@router.get("/dispatch/default")
+def get_dispatch_default(request: Request):
+    return {"mode": _store(request).get_default_dispatch()}
+
+
+@router.post("/dispatch/default")
+def set_dispatch_default(body: DispatchModeIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return {"mode": guard(_store(request).set_default_dispatch, body.mode)}
+
+
+@router.post("/epics/{eid}/dispatch")
+def set_epic_dispatch(eid: str, body: DispatchModeIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).set_epic_dispatch, eid, body.mode)
+
+
+@router.post("/tasks/{tid}/pick")
+def pick_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
+    return guard(_store(request).pick, tid, actor(who))
+
+
 @router.post("/runs", status_code=201)
 def start_run(body: RunStart, request: Request, who: str = Depends(auth.require_api)):
     if body.role == "director" or body.role.startswith("director:"):
@@ -340,7 +366,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "bypass", "handback", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)

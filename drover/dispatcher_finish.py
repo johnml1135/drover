@@ -165,8 +165,9 @@ class FinishSteps:
             except Exception as error:
                 self._safe_event('replan-recovery-needed', {'run': run_id, 'error': repr(error)[:300]}, task_id)
             return
-        for fn in (lambda: p.finish_run(run_id, "error", note=f"finish failed: {exc!r}"[:300]),
-                   lambda: p.set_status(task_id, "needs-owner", reason=f"could not finish run {run_id}: {exc!r}"[:300])):
+        yanked = lambda: self._end_if_yanked(run_id, task_id)
+        for fn in (lambda: yanked() or p.finish_run(run_id, "error", note=f"finish failed: {exc!r}"[:300]),
+                   lambda: yanked() or p.set_status(task_id, "needs-owner", reason=f"could not finish run {run_id}: {exc!r}"[:300])):
             try:
                 fn()
             except Exception as e:
@@ -186,6 +187,9 @@ class FinishSteps:
         if result.get("tail_error"):
             p.append_event("tail-error", {"run": run_id, "error": result["tail_error"]}, task_id)
         role = spec.get("role", "worker")
+        # A planner settles its batch in the ledger; a gate must first prove its runner has stopped (_finish_gate).
+        if role not in ('gate', 'planner') and self._end_if_yanked(run_id, task_id, **usage):
+            return
         if self._compaction_killed(run_id, result):
             return self._compaction_stopped(run_id, task_id, role, usage)
         if role != 'gate' and result.get('infrastructure_error') and st in ('error', 'no-record', 'timeout'):
