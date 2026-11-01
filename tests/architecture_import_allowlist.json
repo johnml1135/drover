@@ -1969,8 +1969,8 @@
     {"file": "drover/notifications/core.py", "class": "Notifications", "base": "ReplayMixin", "count": 1},
     {"file": "drover/notifications/core_ownership.py", "class": "OwnershipMixin", "base": "definition", "count": 1},
     {"file": "drover/notifications/core_replay.py", "class": "ReplayMixin", "base": "definition", "count": 1},
-    {"file": "hub/notifications.py", "class": "Submit", "base": "Input", "count": 1},
-    {"file": "hub/notifications.py", "class": "Submit", "base": "TaskIn", "count": 1}
+    {"file": "hub/notification_models.py", "class": "Submit", "base": "Input", "count": 1},
+    {"file": "hub/notification_models.py", "class": "Submit", "base": "TaskIn", "count": 1}
   ],
   "dependencies": {"project": ["fastapi>=0.135.0", "uvicorn>=0.30", "jinja2>=3.1", "PyYAML==6.0.3"], "optional": {}, "groups": {"dev": ["httpx2"]}},
   "locked_packages": ["annotated-doc", "annotated-types", "anyio", "click", "drover-hub", "fastapi", "h11", "httpcore2", "httpx2", "httpx2-jsfetch", "idna", "jinja2", "markupsafe", "opentelemetry-api", "pydantic", "pydantic-core", "pyyaml", "starlette", "truststore", "typing-extensions", "typing-inspection", "uvicorn"]
