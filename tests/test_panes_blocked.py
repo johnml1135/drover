@@ -115,6 +115,28 @@ class Blocked(Case):
             self.conn.commit()
         self.assertEqual(len(self.notes('herdr-no-workspace')), 2)
 
+    def after_the_first_list(self, event):
+        self.fake.after[('workspace', 'list', self.fake.seen.get(('workspace', 'list'), 0) + 1)] = event
+
+    def test_herdr_closing_at_the_workspace_read_is_the_outage_notice(self):
+        self.build()
+        self.wake()
+        before = self.spent()
+        self.after_the_first_list(lambda: setattr(self.fake, 'closed', True))
+        self.ticks(1)
+        self.assertEqual(self.spent(), before)
+        self.assertEqual(self.notes(), [])
+        self.assertEqual(len([n for n in self.notices() if n['id'].startswith('pane-herdr-closed:')]), 1)
+
+    def test_a_refused_workspace_read_is_a_cause(self):
+        self.build()
+        self.wake()
+        before = self.spent()
+        self.after_the_first_list(lambda: self.fake.refuse.update({('workspace', 'list'): 'server_busy'}))
+        self.ticks(1)
+        self.assertEqual(self.spent(), before)
+        self.assertEqual(len(self.notes('herdr-refused:server_busy')), 1)
+
     def test_a_closed_herdr_is_the_outage_notice_alone(self):
         self.build()
         self.fake.closed = True
