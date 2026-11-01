@@ -243,6 +243,8 @@ def _failed(night, row_id, reason):
     """Every effect here may run twice, so the note comes last and a crash is only ever repeated."""
     row = _newest(night, row_id)
     seen = _in_pane(night.service, row)
+    if seen is False and row['id'] != row_id and pane_launch.age(row['updated'], night.service.now()) < pane_launch.STARTUP_S:
+        seen = None                 # a launch line that stalled may still land
     if seen is None:
         return night.note(row_id, outcome=None, reason=reason, failure=reason)
     if seen and row['state'] in pane_launch.RESUMABLE:
@@ -283,18 +285,24 @@ def _relaunch(night, row_id):
     return True
 
 
+def _fenced(night, row_id):
+    why = _fence(night.service, night.agents[row_id].get('run_id'))
+    if why and _stay_stopped(night.service, _newest(night, row_id), why):
+        night.note(row_id, outcome=STAYED_STOPPED, reason=why)
+    return bool(why)
+
+
 def _resume_one(night, row_id, expired):
     facts = night.agents[row_id]
-    why = _fence(night.service, facts.get('run_id'))
-    if why:
-        if _stay_stopped(night.service, _newest(night, row_id), why):
-            night.note(row_id, outcome=STAYED_STOPPED, reason=why)
-        return None
     if 'fresh' not in facts:
+        if _fenced(night, row_id):
+            return None
         if expired:
             return _failed(night, row_id, facts.get('failure') or 'no-time-left')
         if not _relaunch(night, row_id):
             return None
+    if _fenced(night, row_id):      # a launch takes its time, and a STOP can land in it
+        return None
     try:
         written = pane_send.send(night.port, night.herdr, _row(night.conn, facts['fresh']), RESUME_TEXT, RESUME)
     except PaneRefused as refused:      # it may still be coming up, so only the deadline makes this a failure

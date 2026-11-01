@@ -1,6 +1,7 @@
 """What the compaction must not undo: a fence, a live agent's session, and a hold it cannot read. Herdr is always the fake."""
 import json
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -56,14 +57,11 @@ class Fenced(Case):
         self.at(900)
         self.assertEqual((self.agent()['outcome'], self.sends()), ('stayed-stopped', []))
 
-    def test_a_stop_while_the_agent_comes_up_gets_it_no_text(self):
+    def test_a_stop_while_the_agent_boots_gets_it_no_text(self):
         self.stopped_tonight()
         self.comes_back()
-        self.fake.after[('pane', 'run', 2)] = lambda: (self.boot(), self.fake.agents[PANE].update(agent_status='working'))
+        self.fake.after[('pane', 'run', 2)] = lambda: (self.boot(), self.notifications.stop('owner', 'stop'))
         self.at(900)
-        self.notifications.stop('owner', 'stop')
-        self.settle()
-        self.at(920)
         self.assertEqual(self.agent()['outcome'], 'stayed-stopped')
         self.assertNotIn(RESUME, self.sends())
         self.assertEqual(self.new_row()['state'], 'live')
@@ -107,6 +105,53 @@ class Fenced(Case):
         self.comes_back()
         self.at(900)
         self.assertEqual(self.agent()['outcome'], 'resumed')
+
+
+class LaunchOnItsWay(Case):
+    """Ledger stamps run on the test's clock here, so a row's age is what the test says it is."""
+
+    def setUp(self):
+        super().setUp()
+        stamp = lambda: datetime.fromtimestamp(self.time, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        patcher = mock.patch.object(ops_panes, '_stamp', stamp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def failed_launch(self):
+        self.stopped_tonight()
+        self.comes_back(boots=False)
+        self.at(900)
+
+    def test_a_lone_shell_just_after_a_relaunch_proves_nothing(self):
+        self.failed_launch()
+        self.assertEqual(self.new_row()['state'], 'failed')
+        self.assertIsNone(self.agent()['outcome'])
+        self.assertTrue(self.outcome_is_open())
+        self.assertEqual(self.sessions(), 1)
+
+    def test_a_launch_that_lands_late_keeps_its_session(self):
+        self.failed_launch()
+        self.boot()
+        self.at(900 + pane_launch.STARTUP_S - 1)
+        self.assertEqual(self.agent()['outcome'], 'resume-failed')
+        self.assertTrue(self.outcome_is_open())
+        self.assertEqual(self.sessions(), 1)
+
+    def test_a_shell_still_alone_after_the_wait_starts_fresh(self):
+        self.failed_launch()
+        self.at(900 + pane_launch.STARTUP_S - 1)
+        self.assertTrue(self.outcome_is_open())
+        self.at(900 + pane_launch.STARTUP_S)
+        self.assertEqual(self.outcome(), 'compaction-fresh')
+
+    def test_a_resume_refused_before_any_launch_line_needs_no_wait(self):
+        self.up()
+        self.killed()
+        self.restarted()
+        with mock.patch.object(pane_launch, 'resume', side_effect=pane_launch.AdmissionHeld('pane-open-write')):
+            self.at(900)
+        self.assertEqual(self.agent()['outcome'], 'resume-failed')
+        self.assertEqual(self.outcome(), 'compaction-fresh')
 
 
 class Kept(Case):
