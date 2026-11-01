@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.ledger_fixture import stage
+
 try:
     from fastapi.testclient import TestClient
     from hub.app import create_app
@@ -64,6 +66,31 @@ class BypassHubTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["status"], "draft")
         self.assertEqual(self.status(tid), "cancelled")
+
+    def refused_while_stopping(self, verb, post):
+        tid = self.task()
+        run = stage(self.store.conn, tid, "running")
+        self.store.yank_task(tid, "")
+        r = post(tid, verb)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn(f"run {run} is still stopping", r.json()["detail"])
+        self.assertEqual(self.status(tid), "yanked")
+        return tid
+
+    def test_the_api_refuses_to_abandon_while_the_run_is_stopping(self):
+        self.refused_while_stopping("abandon", self.api)
+
+    def test_the_api_refuses_to_hand_back_while_the_run_is_stopping(self):
+        self.refused_while_stopping("handback", self.api)
+
+    def form(self, tid, verb):
+        return self.owner.post(f"/tasks/{tid}/{verb}", headers=SAME)
+
+    def test_the_task_page_refuses_to_abandon_while_the_run_is_stopping(self):
+        self.refused_while_stopping("abandon", self.form)
+
+    def test_the_task_page_refuses_to_hand_back_while_the_run_is_stopping(self):
+        self.refused_while_stopping("handback", self.form)
 
     def test_handback_keeps_read_only_and_explicit_approval(self):
         tid = self.store.create_task("A", kind="research", write=False, scope_files=["fixture/a"],

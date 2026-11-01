@@ -13,8 +13,9 @@ class RecoverySteps:
         """[(task, run)] for every open run of a task in flight or yanked that this dispatcher is not following."""
         live_tasks = {tid for _, tid, _ in self.live.values()}
         out = []
-        for status in ("running", "claimed", "gated", "yanked"):      # a gated task may have a review in flight
-            for t in self.port.list_tasks(status):
+        # A gated task may have a review in flight; a yanked task's run must close even if the task is archived.
+        for status in ("running", "claimed", "gated", "yanked"):
+            for t in self.port.list_tasks(status, include_archived=status == "yanked"):
                 if t["id"] not in live_tasks:
                     out += [(t, r) for r in self.port.list_runs(t["id"]) if r["ended"] is None]
         seen = {r['id'] for _, r in out}

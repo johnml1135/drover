@@ -193,7 +193,7 @@ class AdmissionSteps:
         """Ask every open run of a yanked task to stop, whatever the controls say. Asked once: watch_runs asks again
         while a scan finds the runner, and launch-cancel carries the request across a restart. Returns the run ids."""
         p = self.port
-        runs = [(task, run) for task in p.list_tasks('yanked') for run in p.list_runs(task['id'])
+        runs = [(task, run) for task in p.list_tasks('yanked', include_archived=True) for run in p.list_runs(task['id'])
                 if run['ended'] is None]
         if not runs:
             return []

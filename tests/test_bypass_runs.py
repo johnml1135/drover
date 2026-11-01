@@ -81,6 +81,30 @@ class StoppingTheRun(YankBase):
         self.assertTrue(out['paused'])
         self.assertEqual(self.fl.cancelled, [(rid, self.nonce(rid))])
 
+    def archive(self, tid):
+        """The archive refuses a task with an open run, so this is a planner's run or older data."""
+        self.conn.execute('UPDATE tasks SET archived=1 WHERE id=?', (tid,))
+
+    def test_an_archived_yanked_task_is_stopped_too(self):
+        tid, rid = self.start()
+        self.yank(tid)
+        self.archive(tid)
+        self.assertEqual(self.d._stop_yanked(), [rid])
+        self.assertEqual(self.fl.cancelled, [(rid, self.nonce(rid))])
+
+    def test_an_archived_yanked_task_is_adopted_and_closed_after_a_restart(self):
+        tid, rid = self.start()
+        self.yank(tid)
+        self.archive(tid)
+        d2 = self.restart()
+        d2.tick()
+        self.assertIn(rid, d2.live)
+        self.assertEqual(self.fl.cancelled, [(rid, self.nonce(rid))])
+        self.found.clear()
+        d2.tick()
+        d2.tick()
+        self.assert_stopped(tid, rid)
+
     def test_a_task_with_no_run_asks_for_nothing(self):
         tid = self.task()
         self.yank(tid)

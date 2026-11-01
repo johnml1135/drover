@@ -182,24 +182,37 @@ class YankTests(BypassBase):
         self.assertFalse(entry['live'])
         self.assertEqual(active, [])
 
-    def test_snapshot_stays_live_when_a_yanked_task_is_settled_with_a_run_open(self):
+    def test_snapshot_stays_live_while_a_cancelled_task_has_a_run_open(self):
+        tid = self.task()['id']
+        ledger_fixture.stage(self.conn, tid, 'running')
+        with ops.tx(self.conn):
+            self.conn.execute("UPDATE tasks SET worktree=? WHERE id=?", (f'H:/wt/{tid}', tid))
+        yank(self.conn, tid)
+        ops.set_status(self.conn, tid, states.CANCELLED, actor='owner')      # abandon and handback refuse this now
+        self.assertEqual(self.status(tid), states.CANCELLED)
+        state = Path(self.tmp.name) / 'state'
+        with mock.patch('drover.config.state_dir', return_value=state):
+            disk_notices.replay(self.conn, {}, 1000)
+        snapshot = json.loads((state / 'disk' / 'tasks.json').read_text())
+        entry = next(t for t in snapshot['tasks'] if t['id'] == tid)
+        self.assertFalse(entry['terminal'])
+        self.assertTrue(entry['live'])
+        self.assertIn(f'H:/wt/{tid}', snapshot['active_worktrees'])
+
+    def test_a_yanked_task_cannot_be_settled_while_its_run_is_stopping(self):
         for settle in (abandon, handback):
             with self.subTest(settle=settle.__name__):
                 tid = self.task()['id']
-                ledger_fixture.stage(self.conn, tid, 'running')
-                with ops.tx(self.conn):
-                    self.conn.execute("UPDATE tasks SET worktree=? WHERE id=?", (f'H:/wt/{tid}', tid))
+                run = ledger_fixture.stage(self.conn, tid, 'running')
                 yank(self.conn, tid)
+                before = len(ops.list_tasks(self.conn))
+                with self.assertRaisesRegex(ValueError, f'run {run} is still stopping'):
+                    settle(self.conn, tid)
+                self.assertEqual(self.status(tid), states.YANKED)
+                self.assertEqual(len(ops.list_tasks(self.conn)), before)
+                ops.finish_run(self.conn, run, 'yanked')
                 settle(self.conn, tid)
                 self.assertEqual(self.status(tid), states.CANCELLED)
-                state = Path(self.tmp.name) / 'state'
-                with mock.patch('drover.config.state_dir', return_value=state):
-                    disk_notices.replay(self.conn, {}, 1000)
-                snapshot = json.loads((state / 'disk' / 'tasks.json').read_text())
-                entry = next(t for t in snapshot['tasks'] if t['id'] == tid)
-                self.assertFalse(entry['terminal'])
-                self.assertTrue(entry['live'])
-                self.assertIn(f'H:/wt/{tid}', snapshot['active_worktrees'])
 
     def test_start_run_refused_after_yank(self):
         tid = self.task()['id']

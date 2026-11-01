@@ -16,6 +16,9 @@ def _yanked(conn, task_id, action):
     task = get_task(conn, task_id)
     if task['status'] != states.YANKED:
         raise states.IllegalTransition(f"only a yanked task can be {action}; {task_id} is {task['status']}")
+    run = conn.execute('SELECT id FROM runs WHERE task_id=? AND ended IS NULL ORDER BY id LIMIT 1', (task_id,)).fetchone()
+    if run:
+        raise ValueError(f"{task_id} cannot be {action} yet: run {run[0]} is still stopping")
     return task
 
 
