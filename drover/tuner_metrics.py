@@ -13,7 +13,6 @@ NO_RULE = ("note_admit", "harness_pick")
 BATCH_RANGE = (1, 5)
 BATCH_OFF_GATE_S = 600
 GATE_MIN_N = 5
-CAP_RANGE = (1, 8)
 TUNER_EPIC = "tuner_epic"
 
 
@@ -127,19 +126,3 @@ def landed_per_hour(new_runs):
     end = max(_dt(r["ended"]) for r in new_runs)
     hours = max(1.0, (end - start).total_seconds() / 3600)
     return len({r["task_id"] for r in new_runs if r["task_status"] == "landed"}) / hours
-
-
-def tune_cap(cap, lph, state):
-    """Hill-climb by one: probe +1 from a cold start, keep moving while landed-per-hour improves, reverse on a drop."""
-    prev, last_dir, last_cap = state.get("last_lph"), state.get("last_cap_dir", 0), state.get("last_cap")
-    if lph is None or prev is None or (last_cap is not None and last_cap != cap):
-        return cap, 0
-    if last_dir == 0:
-        d = 1
-    elif lph > prev * 1.05:
-        d = last_dir
-    elif lph < prev * 0.95:
-        d = -last_dir
-    else:
-        d = 0
-    return min(CAP_RANGE[1], max(CAP_RANGE[0], cap + d)), d

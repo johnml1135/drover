@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from . import compaction, compaction_hold
 from . import dispatch_repos
+from . import dispatch_hold
 from . import task_access
 from . import brief as brief_mod
 from . import config as config_mod
@@ -240,7 +241,15 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             skip.update(t["id"] for t in p.list_tasks("ready") if self._wsl_window(t))
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
-        skipped = {}
+        def hold_base(t):      # git runs here, outside any ledger transaction
+            prog = self.pipeline.all_repos().get(str(t.get("repo") or "").lower())
+            if not prog:
+                return None
+            base = repos_mod.default_branch(prog)      # a pushing repo lands on the remote ref, as ops_outside does
+            return f"refs/remotes/{repos_mod.remote_name(prog)}/{base}" if prog["landing"]["push"] else f"refs/heads/{base}"
+        held = dispatch_hold.tick_holds(p, config_mod.get()["dispatch"], hold_base) if slots > 0 else {}
+        skip.update(held)
+        skipped = {"conflict-hold": len(held)} if held else {}
         while slots > 0 and self._launch_allowed():
             task = p.claim_next({}, exclude=skip)
             if task is None:

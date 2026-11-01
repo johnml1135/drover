@@ -307,32 +307,17 @@ class BatchAndCap(Base):
         self.gates(2000, n=2)
         self.assertEqual(tuner.tune_batch(self.conn, 3), 3)
 
-    def test_cap_hill_climb(self):
-        s = {"last_lph": 2.0, "last_cap": 4, "last_cap_dir": 1}
-        self.assertEqual(tuner.tune_cap(4, 3.0, s), (5, 1))
-        self.assertEqual(tuner.tune_cap(4, 1.0, s), (3, -1))
-        self.assertEqual(tuner.tune_cap(4, 2.0, s), (4, 0))
-        self.assertEqual(tuner.tune_cap(4, 3.0, {"last_lph": None}), (4, 0))
-        self.assertEqual(tuner.tune_cap(4, 3.0, {"last_lph": 2.0, "last_cap": 4, "last_cap_dir": 0}), (5, 1))
-        self.assertEqual(tuner.tune_cap(8, 3.0, {"last_lph": 2.0, "last_cap": 8, "last_cap_dir": 1}), (8, 1))
-        self.assertEqual(tuner.tune_cap(1, 3.0, {"last_lph": 2.0, "last_cap": 1, "last_cap_dir": -1}), (1, -1))
-
 
 class ColdStartAndPolicy(Base):
-    def test_cap_probes_from_cold_start(self):
-        st = tuner.new_state()
-        cap, d = tuner.tune_cap(4, 1.0, st)  # first sighting: record only
-        self.assertEqual((cap, d), (4, 0))
-        st.update(last_lph=1.0, last_cap=cap, last_cap_dir=d)
-        self.assertEqual(tuner.tune_cap(cap, 1.0, st), (5, 1))
-
-    def test_cap_moves_across_real_passes(self):
+    def test_tuner_leaves_the_cap_alone(self):
         self.fill(25)
         tuner.run_pass(self.conn, T0 + timedelta(days=1))
-        self.assertEqual(tuner.current_policy(self.conn)["parallel_cap"], 4)
         self.fill(25)
         r = tuner.run_pass(self.conn, T0 + timedelta(days=2))
-        self.assertEqual(r["parallel_cap"], 5)
+        self.assertNotIn("parallel_cap", r)
+        self.assertNotIn("parallel_cap", tuner.current_policy(self.conn))
+        self.assertNotIn("parallel_cap", tuner.AUTO_KEYS)
+        self.assertFalse([c for c in r["changes"] if "parallel_cap" in c])
 
     def seed_policy(self, **extra):
         data = {"routes": {}, "tau": {"retry_or_escalate": 0.8, "plan_wrong": 0.8}, **extra}

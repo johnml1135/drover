@@ -169,12 +169,11 @@ class DirectPort:
         return ops.get_question(self.conn, qid)
 
     def get_policy(self):
-        """{'version', 'data', 'parallel_cap'}; the cap comes from policy data, then the ledger setting, then config capacity.parallel_cap (4)."""
+        """{'version', 'data', 'parallel_cap'}; the cap is the owner's: always config capacity.parallel_cap (40), never stored policy."""
         version = ops.current_policy(self.conn)
         row = self.conn.execute("SELECT data FROM policy_versions WHERE version=?", (version,)).fetchone()
         data = json.loads(row[0]) if row else {}
-        cap = data.get("parallel_cap", ops.get_setting(self.conn, "parallel_cap", config.get()["capacity"]["parallel_cap"]))
-        return {"version": version, "data": data, "parallel_cap": int(cap)}
+        return {"version": version, "data": data, "parallel_cap": int(config.get()["capacity"]["parallel_cap"])}
 
 class HttpPort:
     """Stub: the hub API client arrives with the hub slice."""

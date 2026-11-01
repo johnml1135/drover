@@ -61,14 +61,18 @@ class Admission(Base):
 
 
 class Cap(Base):
-    def test_default_cap_four(self):
+    def test_default_cap_is_forty_and_slots_limit_first(self):
         for _ in range(6):
             self.task()
+        self.verdict = {"verdict": "go", "slots": 4, "reasons": []}
         self.assertEqual(len(self.d.tick()["launched"]), 4)
-        self.assertEqual(len(self.d.tick()["launched"]), 0)
 
-    def test_policy_cap_and_resource_slots(self):
-        ops.add_policy_version(self.conn, "v1", {"parallel_cap": 2})
+    def test_config_cap_and_resource_slots(self):
+        from drover import config
+        old = config.get()
+        self.addCleanup(config.use, old)
+        config.use(config.validate({"capacity": {"parallel_cap": 2}}))
+        ops.add_policy_version(self.conn, "v1", {"parallel_cap": 9})     # stored values are ignored
         for _ in range(5):
             self.task()
         self.assertEqual(len(self.d.tick()["launched"]), 2)
