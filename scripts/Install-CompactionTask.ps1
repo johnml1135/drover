@@ -1,7 +1,8 @@
 <#
 Registers the scheduled task \DroverCompaction: the overnight WSL compaction, nightly at 03:30, elevated, as this user.
-It runs as this user because the VHDX path comes from HKCU and the state directory from this profile. A night missed
-stays missed: a catch-up run at a daytime boot would stop live work. Run this once, elevated. The owner runs it; the
+It runs as this user because the VHDX path comes from HKCU and the state directory from this profile. -LogonType Interactive
+means it runs only while the owner is logged on: a night with nobody logged on is not compacted. A night missed stays
+missed: a catch-up run at a daytime boot would stop live work. Run this once, elevated. The owner runs it; the
 build slice does not. -Root is the deployed checkout: elevated code must not run from a worktree agents can write to.
 #>
 param(

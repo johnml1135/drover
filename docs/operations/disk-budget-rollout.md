@@ -25,8 +25,11 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
 5. **Register the overnight compaction.** From an **elevated** PowerShell:
    `powershell -File <repos>/drover.deploy/scripts/Install-CompactionTask.ps1`
    The task `\DroverCompaction` runs nightly at 03:30 with `<Root>\hub\.venv\Scripts\python.exe` (override with `-Python`), so it does
-   not depend on PATH. Do this only after Phase 3 lands, or if you accept that interactive WSL agents get no stop message yet:
-   until then the job stops them without notice when the hold begins.
+   not depend on PATH. The task is registered with `-LogonType Interactive`, so it runs only while you are logged on (a locked
+   session counts); a night with nobody logged on is not compacted, and a missed night is not made up.
+   Do this only after Phase 3 of the spec lands (directors in panes, which adds the pane stop that sends "stop now" to agents in
+   WSL panes), or if you accept that interactive WSL agents get no stop message yet: until then the job kills them without notice
+   at its kill step, as soon as the hub has drained its own runs. `compaction.pane_stop` is the empty hook for it.
 
 6. **Retire `HerdrDiskGuard` after 3 clean applied days:** three consecutive calendar days of successful applied daily reports for
    the same scope, with no cleanup errors or protected mutations. A missing, failed or scope-changed day restarts the count.
