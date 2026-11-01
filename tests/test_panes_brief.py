@@ -216,6 +216,7 @@ class Brief(Case):
         del self.fake.panes[PANE]['terminal_id']
         self.later(pane_launch.STARTUP_S + 1)
         self.assertEqual(self.row_now()['state'], 'live')
+        self.assertEqual(self.briefs(), [], 'an unknown read grants no write')
 
     def advance(self, seconds):
         return pane_launch.advance(self.port, self.herdr, self.row_now(), self.spec_, lambda: None, self.time + seconds, cfg=self.cfg)

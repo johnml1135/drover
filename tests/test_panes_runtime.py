@@ -340,7 +340,7 @@ class Sweep(Resident):
 
     def test_only_a_retired_row_is_read(self):
         self.retired('wsl', '/home/me/repo')
-        ops_panes.update_agent(self.conn, self.row['id'], state='failed')
+        ops_panes.update_agent(self.conn, self.row['id'], state='live')
         running, tick = self.closing(False)
         running.assert_not_called()
         tick.assert_called_once()
