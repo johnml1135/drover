@@ -141,10 +141,17 @@ def check(herdr, row) -> dict:
     return seen
 
 
-def _turn_visible(seen):
-    """`status` cannot speak for a full composer, and a Claude spinner can sit out of `working`'s reach."""
-    rows = [line for line in seen['screen'].splitlines() if line.strip()][-BUSY_ROWS:]
-    return pane_guard.working(seen['screen']) or any('esc to interrupt' in line.lower() for line in rows)
+def _turn_visible(seen, row):
+    """Any reader that sees a turn or a block. `status` says None of a full composer, so None here proves nothing,
+    and a Claude spinner can sit out of `working`'s reach, so the last rows are searched as `status` searches them.
+    """
+    screen = seen['screen']
+    rows = [line for line in screen.splitlines() if line.strip()][-BUSY_ROWS:]
+    try:
+        return pane_guard.working(screen) or pane_screen.status(screen, row['kind']) in ('working', 'blocked') or \
+            any('esc to interrupt' in line.lower() for line in rows)
+    except ValueError:
+        raise PaneRefused('screen-unreadable') from None
 
 
 def _live_hold(hold_id):
@@ -160,7 +167,7 @@ def _own_unsent(herdr, row, write, hold_id):
         seen = _safe(herdr, row, STOPPABLE, focus=False, idle=False)
     else:
         seen = _safe(herdr, row, LIVE)
-        if _turn_visible(seen):
+        if _turn_visible(seen, row):
             raise PaneRefused('busy')
     if not pane_screen.own_prompt(pane_screen.composer_text(seen['screen'], row['kind']), write['digest'], write['at'], None):
         raise PaneRefused('not-own')
@@ -231,7 +238,7 @@ def submit_own(port, herdr, row) -> dict:
     row = _current(port, row)
     _owned(row, LIVE)
     write = ops_panes.last_write(port.conn, row['id'])
-    if write is None or write['state'] != 'unverified' or write['reason'] == ENTER_PRESSED:
+    if write is None or write['state'] != 'unverified' or write['reason'] == ENTER_PRESSED or write['kind'] == 'interrupt':
         raise PaneRefused('nothing-unsent')
     done = _enter(port, herdr, row, write)
     if done['state'] != 'sent' and done['reason'] != ENTER_PRESSED:

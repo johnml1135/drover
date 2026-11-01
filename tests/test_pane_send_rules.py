@@ -1,7 +1,8 @@
 """What may reach a pane at all: the text gate, and which modules hold the write verbs."""
 import ast
+from unittest import mock
 
-from drover import pane_send
+from drover import pane_screen, pane_send
 from drover.pane_send import PaneRefused
 from tests.pane_send_support import Case, ENTER, PASTE, ROOT, TEXT, composing, sources
 
@@ -101,3 +102,46 @@ class AfterTheWrite(Case):
         with self.assertRaises(PaneRefused):
             pane_send.submit_own(self.port, self.herdr, self.row)
         self.assertEqual(self.sends().count(ENTER), 1)
+
+    def test_a_reader_that_raises_after_the_paste_is_a_refusal(self):
+        self.stage()
+        self.paste_settles_to(composing(TEXT + ' typed'))
+        self.send()
+        self.fake.screens[list(self.fake.screens)[0]] = composing(TEXT)
+        self.fake.calls.clear()
+        with mock.patch.object(pane_screen, 'status', side_effect=ValueError('unreadable')):
+            self.refused(lambda: pane_send.submit_own(self.port, self.herdr, self.row), 'screen-unreadable')
+        self.assertEqual(self.last()['state'], 'unverified')
+        self.conn.execute('DELETE FROM pane_agents')
+        self.stage()
+        self.paste_settles_to(composing(TEXT))
+        with mock.patch.object(pane_screen, 'status', side_effect=['idle', 'idle', 'idle', ValueError('unreadable')]):
+            write = self.send()
+        self.assertEqual((write['state'], write['reason']), ('unverified', 'screen-unreadable'))
+        self.assertNotIn(ENTER, self.sends())
+
+    def test_a_screen_status_of_working_or_blocked_gets_no_enter(self):
+        for status in ('working', 'blocked'):
+            with self.subTest(status):
+                self.stage()
+                self.paste_settles_to(composing(TEXT))
+                with mock.patch.object(pane_screen, 'status', side_effect=['idle', 'idle', 'idle', status]):
+                    self.assertEqual(self.send()['reason'], 'busy')
+                self.assertNotIn(ENTER, self.sends())
+                self.conn.execute('DELETE FROM pane_agents')
+
+    def test_a_working_row_alone_gets_no_enter(self):
+        self.stage()
+        self.paste_settles_to(composing(TEXT).replace('history', '• Working (2s)'))
+        with mock.patch.object(pane_screen, 'status', side_effect=['idle', 'idle', 'idle', None]):
+            self.assertEqual(self.send()['reason'], 'busy')
+        self.assertNotIn(ENTER, self.sends())
+
+    def test_a_stalled_interrupt_never_makes_the_composer_ours(self):
+        fake = self.stage()
+        fake.hang = {('pane', 'send-keys')}
+        pane_send.interrupt(self.port, self.herdr, self.row)
+        fake.hang = False
+        fake.screens[list(fake.screens)[0]] = composing('ctrl+c')
+        fake.calls.clear()
+        self.refused(lambda: pane_send.submit_own(self.port, self.herdr, self.row), 'nothing-unsent')
