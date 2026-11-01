@@ -270,6 +270,13 @@ class Failure(Job):
         self.assertEqual(self.run_job(Stuck)['status'], 'failed')
         self.assertEqual(self.report()['status'], 'failed')
 
+    def test_a_report_that_cannot_be_written_is_a_returned_error(self):
+        with mock.patch.object(compaction, 'report', side_effect=OSError('disk full')):
+            result = self.run_job()
+        self.assertEqual(result['status'], 'compacted')
+        self.assertEqual(result['errors'], ['the report was not written: OSError: disk full'])
+        self.assertIsNone(self.hold())
+
     def test_a_compacted_night_with_errors_raises_a_notice(self):
         self.fake.answers['ps -eo'] = done('', 1)
         self.assertEqual(self.run_job()['status'], 'compacted')
@@ -941,6 +948,11 @@ class DiedUnderARunningHub(Draining):
         notices = [row['notice'] for row in disk_state.read(self.state).get('outbox', {}).values()]
         self.assertEqual([notice['kind'] for notice in notices], ['compaction'])
         self.assertIn('the job died at step compact', notices[0]['body'])
+
+    def test_a_report_that_cannot_be_written_does_not_stop_the_tick(self):
+        with self.die(), mock.patch.object(compaction, 'report', side_effect=OSError('disk full')):
+            self.assertNotIn('compaction', self.d.tick())
+        self.assertIsNone(compaction_hold.read(self.state))
 
     def test_a_live_job_keeps_its_hold(self):
         record = self.hold()

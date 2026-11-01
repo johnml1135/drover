@@ -160,6 +160,14 @@ def report(state_dir, result, at):
             time.sleep(1)
 
 
+def _reported(state_dir, result, at):
+    """Write the report. A report that cannot be written does not stop the job or the hub tick that called it."""
+    try:
+        report(state_dir, result, at)
+    except Exception as error:
+        result['errors'].append(f'the report was not written: {type(error).__name__}: {error}')
+
+
 def _step(runtime, record, name, phase=None):
     record.update(step=name, at=runtime.clock(), phase=phase or record['phase'], steps=[*record['steps'], name])
     runtime.save(record)
@@ -254,7 +262,7 @@ def run(cfg=None, *, runtime=None, now=None) -> dict:
                 runtime.unlock(lock)
             except Exception as error:      # a stale lock is reclaimed once this process is gone
                 result['errors'].append(f'the cleanup lock was not released: {type(error).__name__}: {error}')
-    report(config.state_dir(cfg), result, at)
+    _reported(config.state_dir(cfg), result, at)
     return result
 
 
@@ -271,7 +279,7 @@ def recover(cfg=None):
     if compaction_hold.mounted(state_dir):
         result['errors'].append('the disk may still be mounted; the next run dismounts it')
     compaction_hold.release(state_dir, record['id'])
-    report(state_dir, result, record.get('since', record.get('at', time.time())))
+    _reported(state_dir, result, record.get('since', record.get('at', time.time())))
     return result
 
 
