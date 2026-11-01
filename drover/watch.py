@@ -67,7 +67,7 @@ def _state(conn):
         state = json.loads(ops.get_setting(conn, STATE_KEY, '{}'))
     except ValueError:
         state = {}
-    return {'at': state.get('at'), 'open': list(state.get('open') or [])}
+    return {'at': state.get('at'), 'open': list(state.get('open') or []), 'episodes': dict(state.get('episodes') or {})}
 
 
 def tick(conn, cfg, resources, now, runs=()):
@@ -85,21 +85,27 @@ def tick(conn, cfg, resources, now, runs=()):
         except Exception:
             failed.add(name)
             log.exception('watch check %s failed', name)
+    episodes = state['episodes']
+    pid = lambda base: base if not episodes.get(base) else f'{base}#{episodes[base]}'
     keep = [i for i in state['open'] if i.split(':', 1)[0] in failed]
     for ident in state['open']:
-        if ident not in wanted and ident not in keep:
-            try:
-                disk_notices.retract(conn, ident, kind=KIND, actor=ACTOR)
-            except Exception:
-                keep.append(ident)
-                log.exception('watch could not retract %s', ident)
-    opened = []
-    for ident, notice in wanted.items():
+        base = ident.split('#', 1)[0]
+        if ident in keep or (base in wanted and pid(base) == ident):
+            continue
         try:
-            disk_notices.publish(conn, notice, kind=KIND, epic_title=EPIC, actor=ACTOR)
+            disk_notices.retract(conn, ident, kind=KIND, actor=ACTOR)
+            episodes[base] = episodes.get(base, 0) + 1      # if the condition returns it is a new notice
+        except Exception:
+            keep.append(ident)
+            log.exception('watch could not retract %s', ident)
+    opened = []
+    for base, notice in wanted.items():
+        ident = pid(base)
+        try:
+            disk_notices.publish(conn, {**notice, 'id': ident}, kind=KIND, epic_title=EPIC, actor=ACTOR)
             opened.append(ident)
         except Exception:
             log.exception('watch could not publish %s', ident)
     ids = list(dict.fromkeys(keep + opened))
-    ops.set_setting(conn, STATE_KEY, json.dumps({'at': now, 'open': ids}))
+    ops.set_setting(conn, STATE_KEY, json.dumps({'at': now, 'open': ids, 'episodes': episodes}))
     return ids

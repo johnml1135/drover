@@ -69,6 +69,21 @@ class Watch(unittest.TestCase):
         self.assertEqual(len(self.open_questions()), 1)
         self.assertEqual(len(ops.events(self.conn, kind='watch.notice')), 1)
 
+    def test_recurring_condition_opens_a_new_notice(self):
+        watch.tick(self.conn, CFG, HOLD, NOW)
+        watch.tick(self.conn, CFG, GO, NOW + 700)
+        self.assertEqual(watch.tick(self.conn, CFG, HOLD, NOW + 1400), ['warden:hold#1'])
+        self.assertEqual(len(self.open_questions()), 1)
+        self.assertEqual(len(ops.events(self.conn, kind='watch.notice')), 2)
+
+    def test_owner_acknowledged_open_condition_is_not_republished(self):
+        watch.tick(self.conn, CFG, HOLD, NOW)
+        q = self.open_questions()[0]['id']
+        ops.answer_question(self.conn, q, choice='Acknowledge', actor='owner')
+        self.assertEqual(watch.tick(self.conn, CFG, HOLD, NOW + 700), ['warden:hold'])
+        self.assertEqual(len(ops.events(self.conn, kind='watch.notice')), 1)
+        self.assertEqual(self.open_questions(), [])
+
     def test_interval_is_honoured(self):
         watch.tick(self.conn, CFG, GO, NOW)
         self.assertEqual(watch.tick(self.conn, CFG, HOLD, NOW + 599), [])
