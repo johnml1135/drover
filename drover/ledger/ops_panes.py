@@ -94,6 +94,12 @@ def reused_pane(conn, row) -> bool:
     return conn.execute('SELECT 1 FROM pane_agents WHERE pane_id=? AND id<? LIMIT 1', (row['pane_id'], row['id'])).fetchone() is not None
 
 
+def session_acted(conn, session_id) -> bool:
+    """A director session has taken a lease or committed. Only its own agent can, so that agent has had a turn."""
+    return conn.execute('SELECT 1 FROM director_leases WHERE session_id=? UNION ALL '
+                        'SELECT 1 FROM director_processing WHERE session_id=? LIMIT 1', (session_id, session_id)).fetchone() is not None
+
+
 def ran_on_pane(conn, pane_id, terminal_id) -> set:
     """The digest of every line the shell in this terminal took from Drover, on any row of the pane, old ones included.
 

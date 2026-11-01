@@ -3,39 +3,43 @@
 A read decides a row's fate, and only a clear read may. Herdr unreachable, or any refusal but the missing-pane code,
 changes no row: that is `unknown`, and unknown never spends a replacement. `gone` needs Herdr up and the pane missing or
 its terminal changed. A `live` agent that left its pane is not `gone` either: the row stays, its session is left to
-expire, and one notice says closing the pane frees the role.
+expire, and one notice says closing the pane frees the role. Unknown with Herdr answering is a doubt that may not last:
+past `UNKNOWN_LIMIT_S` it is one notice and one role question, and the session is left to expire.
 
 A `starting` row outlives its launch only if the hub died, so past its deadline it ends `failed`. A `failed` row frees
 its role only when its pane is gone or, once any late launch line has had time to land, holds no agent; such a pane
 retires. A role whose failed pane holds an agent stays held for the owner.
 
-A run that has ended is never resumed here: a fresh agent starts from the repo, the ledger and the brief. Only the
-compaction stop resumes a session, on the run it interrupted (Task 13).
+A session that lapsed, or that a lifted STOP fenced, comes back on its own pane: a new run resumes it on a new row once
+the pane's shell shows alone, with a new credential. Until then no interrupt reaches the agent and one notice says what
+frees the pane. Ctrl+c ends a turn and not the CLI, so a pane holding an agent never gets a second one beside it; any
+other refusal ends the row `failed`, flagged, and a fresh agent starts from the repo, the ledger and the brief.
 """
 import logging
 import time
-from datetime import datetime
 
 from . import compaction_hold, config, pane_close, pane_handoff, pane_launch, pane_send, pane_wake, placement
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .launch import AdmissionHeld
 from .ledger import disk_notices, ops_panes
-from .notifications import Notifications, roles
+from .notifications import Conflict, Notifications, roles
 from .pane_send import PaneRefused
+from .resources import wsl_running
 
 ALIVE, GONE, UNKNOWN = 'alive', 'gone', 'unknown'
 CHANGED, EMPTY, LEFT = 'changed', 'empty', 'left'
 MISSING_PANE = 'pane_not_found'
 SESSION_TTL = 86400
 RENEW_BELOW_S = SESSION_TTL / 2
+UNKNOWN_LIMIT_S = 1800
 OUTAGE = 'pane_herdr_outage'            # the open outage's notice id, so a hub restart does not publish it again
 CLOSE_ENABLED = 'pane_close_enabled'    # the owner's switch: without it `pane_close` only reports
 TRUTHY = ('true', '1', 'yes', 'on')
 log = logging.getLogger(__name__)
 
 
-def _age(stamp, now):
-    return now - datetime.fromisoformat(stamp).timestamp()
+def _unknown_id(row, since):
+    return f"pane-unknown:{row['id']}:{since}"
 
 
 def _same_folder(one, other):
@@ -57,10 +61,10 @@ class PaneService:
     def cfg(self):
         return config.get() if self._cfg is None else self._cfg
 
-    def maintain(self, run) -> None:
+    def maintain(self, run, guard) -> None:
         """Keep one run. Nothing leaves this: a step that fails is logged, without its text, and the rest still run."""
         self._step(self.sweep)
-        self._step(self._keep, run)
+        self._step(self._keep, run, guard)
 
     def _step(self, action, *args):
         try:
@@ -69,16 +73,73 @@ class PaneService:
             log.warning('pane maintenance step failed: %s', type(error).__name__)
             return None
 
-    def _keep(self, run):
+    def _keep(self, run, guard):
         row = ops_panes.by_run(self.conn, run['run_id'])
         if row is None or row['state'] not in pane_launch.RUNNING or run.get('stop_action_id') or self._stale(run):
             return
+        paused = False
+        try:
+            guard()
+        except AdmissionHeld as held:   # a pause starts nothing new; any other fence is `recover`'s to act on
+            if str(held) != roles.DISPATCH_PAUSED:
+                return
+            paused = True
         seen = self.inspect(row)
-        if seen in (ALIVE, UNKNOWN):
+        lasting = self._lasting(row, seen)
+        if seen == ALIVE or (seen == UNKNOWN and not lasting):
             self._step(self._renew, run)
-        if seen == ALIVE and row['state'] == 'live':
+        if seen not in (ALIVE, LEFT) or row['state'] != 'live':
+            return
+        launched = self._step(lambda: pane_launch.advance(self.port, self.herdr, row, run['spec'], guard, self.now(), cfg=self.cfg))
+        if launched and seen == ALIVE and not paused:
             self._step(pane_wake.deliver, self, run)
             self._step(pane_handoff.maintain, self, run)
+
+    def _lasting(self, row, seen):
+        """True past the limit of unknown reads with Herdr answering. An outage has its own notice, so it does not count."""
+        key = f"pane_unknown:{row['id']}"
+        since = self.port.get_setting(key)
+        doubt = seen == UNKNOWN and row['state'] == 'live' and not self.port.get_setting(OUTAGE)
+        if not doubt:
+            if since:
+                self.port.set_setting(key, '')
+                disk_notices.retract(self.conn, _unknown_id(row, since), kind='pane.notice', actor='panes')
+            return False
+        if not since:
+            self.port.set_setting(key, str(int(self.now())))
+            return False
+        if self.now() - float(since) < UNKNOWN_LIMIT_S:
+            return False
+        pane_launch.publish(self.port, _unknown_id(row, since), 'A director cannot be read',
+                            f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: Herdr answers but says nothing that "
+                            'proves the agent. It gets no wakes and its session is left to expire.')
+        return True
+
+    def overdue(self, spec):
+        """Whether a run's unknown has lasted, as `_lasting` last found it: the role question follows the notice."""
+        row = ops_panes.by_run(self.conn, spec['run_id'])
+        since = row and self.port.get_setting(f"pane_unknown:{row['id']}")
+        return bool(since) and self.now() - float(since) >= UNKNOWN_LIMIT_S
+
+    def revivable(self, spec):
+        """A lapsed run may end for a resume only when a read shows its pane's shell alone. Otherwise the owner hears why not."""
+        row = ops_panes.by_run(self.conn, spec['run_id'])
+        if row is None or row['state'] != 'live' or self.inspect(row) not in (ALIVE, CHANGED, LEFT):
+            return False
+        try:
+            roles.admission(self.notifications, spec['role_id'])
+            alone = pane_send.shell_alone(self.herdr, row)
+        except (Conflict, PaneRefused):
+            return False                # a pause starts no new agent, and a failed read proves nothing
+        if not alone:
+            pane_launch.publish(self.port, f"pane-lapsed:{row['id']}", 'A director lost its session',
+                                f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: the agent has no session now and gets "
+                                'no wakes. Drover resumes it here once it has exited; closing the pane frees the role.')
+        return alone
+
+    def orphan(self, role_id):
+        """The role's `live` row while no run holds it: only a lapsed run leaves one, and a resume takes it up."""
+        return next((row for row in ops_panes.open_agents(self.conn) if row['role_id'] == role_id and row['state'] == 'live'), None)
 
     def _stale(self, run):
         return self.notifications.role_state(run['role_id'])['generation'] != run['generation']
@@ -96,8 +157,14 @@ class PaneService:
         for row in ops_panes.open_agents(self.conn):
             if row['started_by'] == 'drover' and row['state'] in ('starting', 'failed'):
                 self._step(self._reconcile, row)
-        if not compaction_hold.active():    # a checkout on the WSL side must not wake it
+        if not compaction_hold.active() and self._wsl_safe():
             pane_close.tick(self.port, self.herdr, self.now(), apply=self._close_enabled(), cfg=self._cfg)
+
+    def _wsl_safe(self):
+        """Judging a pane reads its checkout, and one on the WSL side must not wake it."""
+        reads = any(row['state'] == 'retired' and row['cwd'] and placement.routes_through_wsl(row['cwd'])
+                    for row in ops_panes.open_agents(self.conn))
+        return not reads or wsl_running(placement.distro(self.cfg['paths']['wsl_distro']))
 
     def _close_enabled(self):
         return str(self.port.get_setting(CLOSE_ENABLED, 'false')).lower() in TRUTHY
@@ -140,7 +207,7 @@ class PaneService:
         if row['terminal_id'] and terminal != row['terminal_id']:
             return self._end(row, 'terminal-changed')
         if row['state'] == 'starting':
-            if _age(row['created'], self.now()) < pane_launch.START_DEADLINE_S:
+            if pane_launch.age(row['created'], self.now()) < pane_launch.START_DEADLINE_S:
                 return UNKNOWN
             row = pane_launch.expire(self.port, self.herdr, row)
         if row['state'] == 'failed':
@@ -153,7 +220,7 @@ class PaneService:
         return GONE
 
     def _failed(self, row):
-        if _age(row['updated'], self.now()) < pane_launch.STARTUP_S:
+        if pane_launch.age(row['updated'], self.now()) < pane_launch.STARTUP_S:
             return UNKNOWN              # a launch line that stalled may still land
         try:
             return EMPTY if pane_send.shell_alone(self.herdr, row) else UNKNOWN
@@ -238,10 +305,45 @@ class PaneDirectorAdapter:
     def __init__(self, service):
         self.service = service
 
+    def ready(self) -> bool:
+        """Whether a launch may be tried. No costs nothing: Herdr may be closed, and no launch may stand in a compaction's way."""
+        service = self.service
+        if compaction_hold.active():
+            return False
+        if service.herdr.available():
+            service.herdr_up()
+            return True
+        service.herdr_down()
+        return False
+
+    def overdue(self, spec):
+        return self.service.overdue(spec)
+
+    def revivable(self, spec):
+        return self.service.revivable(spec)
+
+    def _resume(self, spec, credential, guard):
+        """The pane a lapsed run left, taken up again. False sends the launch to a fresh pane, past `start`'s own read."""
+        service = self.service
+        row = service.orphan(spec['role_id'])
+        if row is None:
+            return False
+        guard()
+        try:
+            pane_launch.resume(service.port, service.herdr, row, spec, cfg=service.cfg, credential=credential)
+        except AdmissionHeld as held:
+            if str(held) == pane_launch.HERDR_CLOSED or not service.herdr.available():
+                raise AdmissionHeld(pane_launch.HERDR_CLOSED) from None
+            pane_launch.expire(service.port, service.herdr, row, f'resume refused: {held}',
+                               outcome='A fresh agent starts in a new pane once this one shows none.')
+            return False
+        return True
+
     def launch(self, spec, credential, guard):
         service = self.service
         try:
-            pane_launch.start(service.port, service.herdr, spec, credential, guard, cfg=service.cfg)
+            if spec.get('mode') != 'resume' or not self._resume(spec, credential, guard):
+                pane_launch.start(service.port, service.herdr, spec, credential, guard, cfg=service.cfg)
         except AdmissionHeld as held:
             if str(held) == 'herdr-unavailable':
                 service.herdr_down()
@@ -250,8 +352,8 @@ class PaneDirectorAdapter:
         return PaneHandle(service, spec)
 
     def verify_resume(self, spec):
-        """Never for an ended run: its session has no credential now, so the module's rule stands."""
-        return False
+        """True while a `live` row outlives its run: that pane is where the role's next run belongs."""
+        return self.service.orphan(spec['role_id']) is not None
 
     def probe(self, spec):
         return self.service.probe(spec)
@@ -260,19 +362,25 @@ class PaneDirectorAdapter:
         return PaneHandle(self.service, spec)
 
     def stop(self, spec):
-        """One interrupt, as a request. A refusal is no request, so the runtime asks again on a later tick."""
+        """One interrupt, as a request. A refusal is no request, so the runtime asks again on a later tick.
+
+        Ctrl+c ends a turn and not the CLI, so the agent stays until it exits, and the owner hears that either way.
+        """
         service = self.service
         row = ops_panes.by_run(service.conn, spec['run_id'])
         if row is None:
             return False
+        pane_launch.publish(service.port, f"pane-stopped:{row['id']}", 'A director was told to stop',
+                            f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: it gets no wakes now. Drover resumes "
+                            'it here once it has exited and work may go on; closing the pane frees the role.')
         try:
             pane_send.interrupt(service.port, service.herdr, row)
         except PaneRefused:
             return False
         return True
 
-    def maintain(self, run):
-        self.service.maintain(run)
+    def maintain(self, run, guard):
+        self.service.maintain(run, guard)
 
     def sweep(self):
         self.service.sweep()

@@ -19,7 +19,12 @@ from .ledger.db import tx
 from .notifications import Conflict, Notifications
 from .notifications import roles
 
-CLEAN_OUTCOMES = ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', 'compaction-fresh')  # none spends the replacement
+REVIVED = 'revived'
+CLEAN_OUTCOMES = ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', 'compaction-fresh', REVIVED)  # none spends the replacement
+LAPSED = ('director-session-expired', 'control-epoch-changed')      # a resident's run outlasted its session or its fence
+HERDR_CLOSED = 'herdr-unavailable'
+LIVENESS_HOLDS = ('consumer-liveness-uncertain', 'consumer-observation-uncertain', 'adoption-uncertain',
+                  'launch-effect-unknown', HERDR_CLOSED)     # an alive run answers these, and no others
 FINITE_PROMPT = 'Process the authenticated director inbox and save a checkpoint before exiting.'
 RESIDENT_PROMPT = 'Read your inbox with python -m drover.notifications inbox, act on it, and commit a checkpoint.'
 log = logging.getLogger(__name__)
@@ -152,15 +157,15 @@ class DirectorRuntime:
         control = self.service.admission(role_id=spec['role_id'], generation=spec['generation'], epoch=spec['control_epoch'])
         if not control['allowed']:
             raise AdmissionHeld(control['reason'])
-        try:
-            roles.admission(self.service, spec['role_id'])
-        except Conflict as error:
-            raise AdmissionHeld(str(error)) from error
         row = self.conn.execute('SELECT * FROM director_sessions WHERE role_id=? AND session_id=? '
                                 'AND generation=? AND expires>?', (spec['role_id'], spec['session_id'],
                                 spec['generation'], self.now())).fetchone()
         if not row:
             raise AdmissionHeld('director-session-expired')
+        try:
+            roles.admission(self.service, spec['role_id'])
+        except Conflict as error:
+            raise AdmissionHeld(str(error)) from error
 
     def _config(self, role_id):
         configured = json.loads(self.port.get_setting('director_execution', '{}')).get(role_id)
@@ -253,13 +258,23 @@ class DirectorRuntime:
         return dict(run_id=run_id, launched=True)
 
     def _uncertain(self, run):
-        """Unknown liveness. A resident pane tells the owner itself, once, so it raises no second question on the role."""
+        """Unknown liveness. A resident pane tells the owner itself, once, so it raises a question only when that doubt lasts."""
         reason = 'consumer-liveness-uncertain'
-        if not self._resident():
+        if not self._resident() or self.adapter.overdue(run['spec']):
             return self._record_hold(run['role_id'], reason, run['run_id'])
         with tx(self.conn):
             self.conn.execute('UPDATE director_runs SET held_reason=? WHERE run_id=?', (reason, run['run_id']))
         return dict(role_id=run['role_id'], accepted=False, held=True, reason=reason)
+
+    def _revive(self, run, out):
+        """End a lapsed run so a new one resumes its pane, once the adapter says it may: no interrupt reaches it either way."""
+        if not self.adapter.revivable(run['spec']):
+            return out['held'].append(self._uncertain(run))
+        self.finish(run['run_id'], dict(status=REVIVED, usage={}))
+        for action_id in (run['launch_action_id'], run['stop_action_id']):
+            if action_id and actions._action(self.conn, action_id)['state'] == 'pending':
+                actions.complete(self.conn, action_id, dict(run_id=run['run_id'], reconciled=REVIVED))
+        return out['finished'].append(run['run_id'])
 
     def _maintain(self):
         """Upkeep before any launch, so a failed launch is read by `recover` first. Nothing here reaches the tick."""
@@ -268,7 +283,7 @@ class DirectorRuntime:
         runs = self.active_runs()
         for run in runs:
             try:
-                self.adapter.maintain(run)
+                self.adapter.maintain(run, lambda: self._guard(run['spec']))
             except Exception as error:      # no exception text, as with a launch
                 log.warning('director run %s maintenance failed: %s', run['run_id'], type(error).__name__)
         try:
@@ -292,6 +307,9 @@ class DirectorRuntime:
                 try:
                     self._guard(spec)
                 except AdmissionHeld as held:
+                    if self._resident() and str(held) in LAPSED and self.service.admission(role_id=run['role_id'])['allowed']:
+                        self._revive(run, out)
+                        continue
                     # Pausing dispatch starts no new work; it does not end a resident director's session.
                     if not (self._resident() and str(held) == roles.DISPATCH_PAUSED):
                         out['held'].append(self._stop_one(run, self.service.admission(role_id=run['role_id'])['epoch']))
@@ -335,7 +353,8 @@ class DirectorRuntime:
                     continue
                 with tx(self.conn):
                     self.conn.execute("UPDATE director_runs SET state='running',held_reason=NULL WHERE run_id=?", (run_id,))
-                    roles._clear_role_hold(self.service, run['role_id'])
+                    if self.service.role_state(run['role_id'])['held_reason'] in LIVENESS_HOLDS:
+                        roles._clear_role_hold(self.service, run['role_id'])
                     if actions._action(self.conn, run['launch_action_id'])['state'] == 'pending':
                         actions.complete(self.conn, run['launch_action_id'], dict(run_id=run_id, nonce=run['nonce'], issued=True))
         return out
@@ -407,13 +426,17 @@ class DirectorRuntime:
             role_id = row['role_id']
             state = self.service.role_state(role_id)
             role_epoch = self.service.admission(role_id=role_id)['epoch']
-            if role_id in active or not state['pending_wake']:
-                continue
+            if resident and state['held_reason'] == HERDR_CLOSED and self.adapter.ready():
+                with tx(self.conn):
+                    roles._clear_role_hold(self.service, role_id)
             # Replacing a director whose latest run on this generation failed is recovery, not a new wake.
             last = self.conn.execute('SELECT d.generation,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
                                      'WHERE d.role_id=? ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
+            revived = bool(last and last['outcome'] == REVIVED)
+            if role_id in active or not (state['pending_wake'] or revived):
+                continue
             recovering = bool(last and last['generation'] == state['generation'] and last['outcome'] not in CLEAN_OUTCOMES)
-            if not recovering and not roles.wake_due(self.service, role_id):
+            if not recovering and not revived and not roles.wake_due(self.service, role_id):
                 continue  # Grouped: the wake stays pending and no budget is reserved.
             if callable(available):
                 slots = min(slots, available())
@@ -427,6 +450,8 @@ class DirectorRuntime:
                 reason = 'unsupported:' + ','.join(missing)
             if reason is None and resident and any(run['role_id'] != role_id for run in self.active_runs()):
                 reason = 'multi-director-parked'
+            if reason is None and resident and not self.adapter.ready():
+                continue  # Closed Herdr is a normal state: the mail waits, and nothing is spent or asked.
             if reason is None and slots <= 0:
                 reason = 'capacity-unavailable'
             try:

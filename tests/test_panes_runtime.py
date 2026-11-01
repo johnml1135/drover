@@ -43,7 +43,7 @@ class Sessions(Resident):
         self.launched()
         first = self.expiry()
         self.time += 50000
-        self.panes.maintain(dict(self.run_row, stop_action_id=1))
+        self.panes.maintain(dict(self.run_row, stop_action_id=1), self.guard)
         self.assertEqual(self.expiry(), first)
 
     def test_a_changed_occupant_is_not_renewed(self):
@@ -51,7 +51,7 @@ class Sessions(Resident):
         first = self.expiry()
         self.fake.agents[PANE]['agent_session'] = {'value': 'someone-else'}
         self.time += 50000
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         self.assertEqual(self.expiry(), first)
 
     def test_a_stale_generation_is_not_renewed(self):
@@ -59,7 +59,7 @@ class Sessions(Resident):
         self.notifications.issue_session(ROLE, 'owner-replacement')
         first = self.expiry()
         self.time += 50000
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         self.assertEqual(self.expiry(), first)
 
 
@@ -69,7 +69,7 @@ class Sessions(Resident):
         del self.fake.agents[PANE]
         self.fake.processes = LONE_SHELL
         self.time += 50000
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         self.assertEqual(self.expiry(), first)
 
     def test_a_failed_row_is_not_renewed(self):
@@ -77,7 +77,7 @@ class Sessions(Resident):
         first = self.expiry()
         ops_panes.update_agent(self.conn, self.row['id'], state='failed')
         self.time += 50000
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         self.assertEqual(self.expiry(), first)
 
     def test_renewing_needs_the_current_session(self):
@@ -152,13 +152,13 @@ class HerdrClosed(Resident):
             self.tick()
         self.assertEqual(len([n for n in self.notices() if n['id'].startswith('pane-herdr-closed:')]), 2)
 
-    def test_a_launch_with_herdr_closed_is_held_with_one_notice(self):
+    def test_a_launch_with_herdr_closed_starts_nothing_with_one_notice(self):
         self.build()
         self.fake.closed = True
         self.wake()
         self.tick()
         self.assertEqual(self.runtime.active_runs(), [])
-        self.assertEqual(self.role()['held_reason'], 'herdr-unavailable')
+        self.assertIsNone(self.role()['held_reason'])
         self.assertEqual(self.calls('tab', 'create'), [])
         self.assertEqual(len([n for n in self.notices() if n['id'].startswith('pane-herdr-closed:')]), 1)
 
@@ -204,18 +204,18 @@ class Maintenance(Resident):
         boom = mock.Mock(side_effect=OSError('secret text'))
         for module, name in ((pane_wake, 'deliver'), (pane_handoff, 'maintain'), (pane_close, 'tick')):
             with self.subTest(name), mock.patch.object(module, name, boom):
-                self.panes.maintain(self.run_row)
+                self.panes.maintain(self.run_row, self.guard)
         with mock.patch.object(ops_panes, 'by_run', boom):
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
         with mock.patch.object(ops_panes, 'open_agents', boom):
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
 
     def test_one_failing_step_leaves_the_others(self):
         self.launched()
         wake, handoff = self.hooks()
         wake.side_effect = OSError('secret text')
         with self.assertLogs('drover.panes', 'WARNING') as logs:
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
         handoff.assert_called_once()
         self.assertNotIn('secret text', ''.join(logs.output))
 
@@ -223,18 +223,18 @@ class Maintenance(Resident):
         self.launched()
         wake, handoff = self.hooks()
         ops_panes.update_agent(self.conn, self.row['id'], state='compaction')
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         wake.assert_not_called()
         handoff.assert_not_called()
 
     def test_pane_close_stays_dry_unless_the_owner_enables_it(self):
         self.launched()
         with mock.patch.object(pane_close, 'tick', return_value=[]) as tick:
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
             self.port.set_setting('pane_close_enabled', 'true')
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
             self.port.set_setting('pane_close_enabled', 'no')
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
         self.assertEqual([c.kwargs['apply'] for c in tick.call_args_list], [False, True, False])
 
     def test_pane_close_runs_on_a_tick_with_no_active_run(self):
@@ -266,14 +266,6 @@ class Maintenance(Resident):
         self.launched()
         self.fake.screens[PANE], self.fake.agents[PANE]['agent_status'] = CLAUDE_IDLE, 'idle'
         self.notifications.stop('owner', 'stop')
-        self.tick()
-        self.assertEqual(self.calls('pane', 'send-keys'), [['pane', 'send-keys', PANE, 'ctrl+c']])
-
-    def test_an_expired_session_still_stops_a_resident_pane(self):
-        self.launched()
-        self.fake.screens[PANE], self.fake.agents[PANE]['agent_status'] = CLAUDE_IDLE, 'idle'
-        self.conn.execute('DELETE FROM director_sessions')
-        self.conn.commit()
         self.tick()
         self.assertEqual(self.calls('pane', 'send-keys'), [['pane', 'send-keys', PANE, 'ctrl+c']])
 

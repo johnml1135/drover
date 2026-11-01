@@ -185,7 +185,7 @@ class Startup(Launching):
         def boot():
             self.boot()
             fake.agents[PANE]['agent_status'] = 'working'
-            fake.screens[PANE] = [CLAUDE_WORKING] * 6 + [CLAUDE_IDLE]
+            fake.screens[PANE] = [CLAUDE_WORKING] * 2 + [CLAUDE_IDLE]
         fake.after[('agent', 'start', 1)] = boot
         real = fake._answer
         seen = []

@@ -132,7 +132,7 @@ class Runtime(unittest.TestCase):
         self.service.broadcast('owner', [ROLE], 'work', urgency='urgent')
 
     def test_every_clean_outcome_keeps_the_replacement(self):
-        self.assertEqual(CLEAN_OUTCOMES, ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', 'compaction-fresh'))
+        self.assertEqual(CLEAN_OUTCOMES, ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', 'compaction-fresh', 'revived'))
         for outcome in CLEAN_OUTCOMES:
             with self.subTest(outcome):
                 self.time += 601

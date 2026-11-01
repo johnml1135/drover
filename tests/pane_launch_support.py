@@ -1,5 +1,6 @@
 """What the pane_launch tests share: a config and spec, private files kept in memory, and an agent that boots on cue."""
 import itertools
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -9,6 +10,8 @@ from drover.ledger import ops_panes
 from tests.pane_send_support import CLAUDE_IDLE, IDLE, PANE, Case, Stage, WORKING, composing, running
 
 SECRET = 'cred-0123456789-do-not-leak'
+ADVANCES = 12
+TICK_S = 30
 PROMPT = 'PS C:\\repos> '
 LONE_SHELL = {'shell_pid': 1, 'foreground_processes': [{'pid': 1, 'name': 'pwsh.exe'}]}
 TRUST = '\n'.join(pane_guard.CODEX_TRUST) + '\n'
@@ -77,7 +80,16 @@ class Launching(Case):
             if seconds == pane_launch.pane_send.PASTE_SETTLE_S else None
 
     def start(self, spec=None, guard=lambda: None):
-        return pane_launch.start(self.port, self.herdr, spec or self.spec(), SECRET, guard, cfg=self.cfg)
+        """A whole launch, as later ticks finish it: past its deadlines if nothing moves."""
+        spec = spec or self.spec()
+        row = pane_launch.start(self.port, self.herdr, spec, SECRET, guard, cfg=self.cfg)
+        when = time.time()
+        for _ in range(ADVANCES):
+            current = ops_panes.by_pane(self.conn, row['pane_id']) or row
+            if current['state'] != 'live' or pane_launch.advance(self.port, self.herdr, current, spec, guard, when, cfg=self.cfg):
+                return current
+            when += TICK_S
+        return ops_panes.by_pane(self.conn, row['pane_id'])
 
     def writes(self, row=None):
         return [dict(r) for r in self.conn.execute('SELECT * FROM pane_writes WHERE agent_id=? ORDER BY id', ((row or self.row)['id'],))]

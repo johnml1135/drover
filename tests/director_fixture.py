@@ -64,8 +64,18 @@ class ResidentAdapter(ControlledAdapter):
         super().__init__(service)
         self.maintained, self.swept = [], 0
         self.fail_maintain = False
+        self.up = True
 
-    def maintain(self, run):
+    def ready(self):
+        return self.up
+
+    def revivable(self, spec):
+        return False
+
+    def overdue(self, spec):
+        return False
+
+    def maintain(self, run, guard):
         self.maintained.append(run['run_id'])
         if self.fail_maintain:
             raise OSError('lost pane')

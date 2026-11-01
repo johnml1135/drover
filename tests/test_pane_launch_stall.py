@@ -1,10 +1,11 @@
 """A launch that stalled, the one start for a role, and `resume`: nothing is ever resent."""
+from pathlib import Path
 from unittest import mock
 
 from drover import pane_launch, pane_send
 from drover.launch import AdmissionHeld
 from drover.ledger import ops_panes
-from tests.pane_launch_support import LONE_SHELL, PROMPT, Launching
+from tests.pane_launch_support import LONE_SHELL, PROMPT, SECRET, Launching
 from tests.pane_send_support import IDLE, PANE, running
 
 
@@ -353,6 +354,14 @@ class Resume(Launching):
         old = self.live('claude')
         self.resume(old)
         self.assertIn('exec claude --resume sess-1 ', self.sh())
+
+    def test_a_credential_takes_the_pane_into_the_new_run(self):
+        old = self.live()
+        row = pane_launch.resume(self.port, self.herdr, old, self.spec('codex', 'wsl', run_id=99), cfg=self.cfg, credential=SECRET)
+        self.assertEqual((row['run_id'], row['pane_id']), (99, old['pane_id']))
+        path, text, side = self.private[-1]
+        self.assertEqual((Path(path).name, text, side), ('run-99.credential', SECRET, 'wsl'))
+        self.assertFalse(any(SECRET in str(call) for call in self.fake.calls))
 
     def test_claude_on_windows_resumes_through_agent_start(self):
         old = self.live('claude', 'windows')

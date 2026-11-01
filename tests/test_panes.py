@@ -37,12 +37,12 @@ class Rules(Resident):
     def test_stale_generation_gets_no_pane_write(self):
         self.launched()
         wake, handoff = self.hooks()
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         wake.assert_called_once_with(self.panes, self.run_row)
         handoff.assert_called_once_with(self.panes, self.run_row)
         wake.reset_mock(), handoff.reset_mock()
         self.notifications.issue_session(ROLE, 'owner-replacement')
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         wake.assert_not_called()
         handoff.assert_not_called()
 
@@ -51,7 +51,7 @@ class Rules(Resident):
         session = self.notifications.issue_session(ROLE, 'owner-session')
         self.notifications.acquire(ROLE, session['session_id'])
         wake, handoff = self.hooks()
-        self.panes.maintain(dict(run_id=99, role_id=ROLE, generation=session['generation'], spec={}))
+        self.panes.maintain(dict(run_id=99, role_id=ROLE, generation=session['generation'], spec={}), lambda: None)
         wake.assert_not_called()
         handoff.assert_not_called()
         with self.assertRaises(PaneRefused) as caught:
@@ -65,7 +65,7 @@ class Rules(Resident):
         self.fake.agents[PANE]['agent_session'] = {'value': 'someone-else'}
         for _ in range(2):
             self.assertEqual(self.adapter.probe(self.spec_), 'alive')
-            self.panes.maintain(self.run_row)
+            self.panes.maintain(self.run_row, self.guard)
         wake.assert_not_called()
         handoff.assert_not_called()
         self.assertEqual(self.row_now()['state'], 'live')
@@ -77,7 +77,7 @@ class Rules(Resident):
         self.launched()
         wake, _ = self.hooks()
         self.fake.agents[PANE]['agent'] = 'codex'
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         wake.assert_not_called()
 
     def test_herdr_restart_renames_by_pane_and_cwd(self):
@@ -111,8 +111,8 @@ class Rules(Resident):
         self.assertEqual(len(self.calls('agent', 'start')), 1)
         self.assertEqual(ops_panes.open_agents(self.conn)[0]['state'], 'failed')
         self.assertIn('multi-director-parked', str(result['held']))
-        limit = pane_launch.SHELL_PROMPT_S + pane_launch.SHELL_BACK_S + pane_launch.STARTUP_S + pane_launch.FIRST_TURN_S
-        self.assertLessEqual(self.sleep.call_count, limit)
+        self.assertLessEqual(self.sleep.call_count * pane_launch.POLL_S, pane_launch.SHELL_PROMPT_S + pane_launch.SHELL_BACK_S +
+                             pane_launch.STARTUP_S)
 
     def test_only_the_hub_constructs_a_herdr_client(self):
         found = {path.relative_to(ROOT).as_posix() for top in ('drover', 'hub') for path in (ROOT / top).rglob('*.py')
@@ -131,7 +131,7 @@ class Rules(Resident):
         self.fake.screens[owner] = CLAUDE_IDLE
         self.fake.calls.clear()
         self.tick()
-        self.panes.maintain(self.run_row)
+        self.panes.maintain(self.run_row, self.guard)
         self.assertIsNone(ops_panes.by_pane(self.conn, owner))
         self.assertEqual([c for c in self.fake.calls if owner in c], [])
 
@@ -253,9 +253,12 @@ class Handle(Resident):
         ops_panes.update_agent(self.conn, self.row['id'], state='gone')
         self.assertEqual(handle.poll(), dict(status='pane-gone', usage={}))
 
-    def test_a_finished_session_is_never_resumed_here(self):
+    def test_only_a_live_row_is_a_pane_to_resume(self):
         self.launched()
-        self.assertIs(self.adapter.verify_resume(self.spec_), False)
+        self.assertIs(self.adapter.verify_resume(self.spec_), True)
+        for state in ('retired', 'failed', 'gone'):
+            ops_panes.update_agent(self.conn, self.row['id'], state=state)
+            self.assertIs(self.adapter.verify_resume(self.spec_), False)
 
     def test_capabilities_are_as_declared(self):
         self.build()

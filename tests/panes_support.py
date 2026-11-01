@@ -52,9 +52,13 @@ class Resident(Launching):
         self.rid, = self.tick()['launched']
         self.run_row = self.runtime.active_runs()[0]
         self.spec_ = self.run_row['spec']
+        self.tick()                 # the brief goes on the tick after `live`
         self.row = ops_panes.by_run(self.conn, self.rid)
         self.assertEqual(self.row['state'], 'live')
         return self.row
+
+    def guard(self):
+        self.runtime._guard(self.spec_)
 
     def died_starting(self):
         """The hub died inside `start`: a `starting` row, and a run the runtime could not account for."""
