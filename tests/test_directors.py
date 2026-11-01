@@ -294,6 +294,52 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertEqual(self.service.role_state('director:a')['tokens_reserved'], 0)
         self.assertGreater(len(self.service.receive('director:a')), 0)
 
+    def default_limit(self, **policy):
+        """Re-register the role with the library defaults for the wake limit and windows."""
+        row = self.conn.execute("SELECT policy FROM director_roles WHERE role_id='director:a'").fetchone()
+        current = json.loads(row['policy'])
+        current.pop('wake_limit_per_hour')
+        current.update(token_budget=10**6, **policy)
+        self.conn.execute("UPDATE director_roles SET policy=? WHERE role_id='director:a'", (json.dumps(current),))
+        self.conn.commit()
+
+    def finish_all(self):
+        for spec in self.adapter.started:
+            self.adapter.states[spec['nonce']] = 'gone'
+            self.adapter.handles[spec['run_id']].result = {'status': 'done', 'usage': {}}
+
+    def test_burst_of_events_gives_one_wake_per_window(self):
+        self.default_limit()
+        for _ in range(5):
+            self.wake()
+        r = self.tick(); self.assertEqual(len(r['launched']), 1, r)
+        for _ in range(5):
+            self.time += 100
+            self.wake()
+            self.finish_all()
+            self.assertEqual(self.tick()['launched'], [])
+        self.assertTrue(self.service.role_state('director:a')['pending_wake'])
+        self.time += 100
+        r = self.tick(); self.assertEqual(len(r["launched"]), 1, r)
+        self.assertEqual(len(self.adapter.started), 2)
+
+    def test_burst_urgent_and_cap_keep_the_wake_pending_with_one_question(self):
+        self.default_limit()
+        for minute in range(120):
+            self.time += 30
+            if minute % 6 == 0 and minute < 120:
+                self.wake()
+            if self.time == 1000. + 30 * 60:
+                self.service.broadcast('owner', ['director:a'], 'critical', urgency='urgent')
+            self.finish_all()
+            self.tick()
+        # 20 events and one critical delivery over the hour, on one clock.
+        self.assertLessEqual(len(self.adapter.started), 6)
+        self.assertGreaterEqual(len(self.adapter.started), 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM questions WHERE target_kind='director' "
+                                           "AND status='open'").fetchone()[0], 1)
+        self.assertEqual(self.service.role_state('director:a')['pending_wake'], 1)
+
     def test_capacity_and_allowance_refusal_preserve_wake_and_budget(self):
         self.wake()
         for capacity, reason in (({'slots': 0, 'admit': lambda spec: None}, 'capacity'),
@@ -318,6 +364,7 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertIn('uncertain', str(self.tick()))
         self.assertEqual(len(self.adapter.started), 1)
         self.adapter.states[first['nonce']] = 'gone'
+        self.time += 600
         self.tick()
         self.assertEqual(len(self.adapter.started), 2)
         self.assertEqual(self.adapter.started[1]['generation'], first['generation'] + 1)
@@ -327,10 +374,12 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertEqual(ops.get_task(self.conn, child['id'])['attempts'], 1)
         second = self.adapter.started[1]
         self.adapter.states[second['nonce']] = 'gone'
+        self.time += 600
         self.runtime = DirectorRuntime(self.port, self.adapter, now=lambda: self.time)
         self.assertIn('replacement-budget-exhausted', str(self.tick()))
         self.assertEqual(len(self.adapter.started), 2)
         self.wake()
+        self.time += 600
         self.runtime = DirectorRuntime(self.port, self.adapter, now=lambda: self.time)
         self.assertIn('replacement-budget-exhausted', str(self.tick()))
         self.assertEqual(len(self.adapter.started), 2)
@@ -342,6 +391,7 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.adapter.states[original['nonce']] = 'gone'
         self.adapter.capabilities = {**ControlledAdapter.capabilities, 'verified_resume': True, 'fresh_start': False}
         self.adapter.verify_resume = lambda spec: spec['nonce'] == original['nonce']
+        self.time += 600  # the next wake is grouped into a new window
         self.tick()
         resumed = self.adapter.started[1]
         self.assertEqual(resumed['mode'], 'resume')

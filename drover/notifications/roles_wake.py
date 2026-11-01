@@ -8,6 +8,10 @@ from .core_evidence import coalesce_issue, issue_key
 from .roles_base import _artifact, _runtime, canonical, hashed
 from .roles_auth import admission
 
+DEFAULT_WAKE_LIMIT = 6
+DEFAULT_WAKE_WINDOW_S = 600
+DEFAULT_URGENT_WINDOW_S = 60
+
 def signal(conn, role_id, event_id):
     """Called in the source transaction; an active consumer never clears arrivals."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='director_runtime'").fetchone():
@@ -79,6 +83,29 @@ def validate_policy(policy):
                          ('wake_limit_per_hour', 1000), ('token_budget', 10**12)):
         if key in policy and (isinstance(policy[key], bool) or not isinstance(policy[key], int) or not 0 <= policy[key] <= maximum):
             raise ValueError(f'{key} must be a nonnegative integer no greater than {maximum}')
+    for key in ('wake_window_s', 'urgent_window_s'):
+        if key in policy and (isinstance(policy[key], bool) or not isinstance(policy[key], int) or not 1 <= policy[key] <= 86400):
+            raise ValueError(f'{key} must be a whole number of seconds from 1 to 86400')
+
+def wake_due(service, role_id):
+    """True when the grouping window since the last real wake has passed.
+
+    The window is the short urgent one while a critical delivery is unacknowledged.
+    No history means due at once. Held and coalesced entries carry wakes=0 and do not count.
+    """
+    conn = service.conn
+    last = conn.execute('SELECT MAX(created) FROM director_budget_entries WHERE role_id=? AND wakes>0',
+                        (role_id,)).fetchone()[0]
+    if last is None:
+        return True
+    policy = json.loads(_role(conn, role_id)['policy'])
+    window = policy.get('wake_window_s', DEFAULT_WAKE_WINDOW_S)
+    for row in conn.execute('SELECT envelope FROM notification_inbox WHERE role_id=? AND acknowledged_at IS NULL '
+                            'AND resolved=0', (role_id,)):
+        if json.loads(row['envelope']).get('severity') == 'critical':
+            window = policy.get('urgent_window_s', DEFAULT_URGENT_WINDOW_S)
+            break
+    return service.now() - last >= window
 
 def _hold_role(service, role_id, reason):
     runtime = _runtime(service.conn, role_id)
@@ -139,7 +166,7 @@ def reserve_wake(service, role_id, request_key, tokens=0, model=None):
         wakes = conn.execute('SELECT COALESCE(SUM(wakes),0) FROM director_budget_entries WHERE role_id=? AND created>?',
                               (role_id, service.now() - 3600)).fetchone()[0]
         total = conn.execute('SELECT COALESCE(SUM(tokens),0) FROM director_budget_entries WHERE role_id=?', (role_id,)).fetchone()[0]
-        if reason is None and wakes >= policy.get('wake_limit_per_hour', 4):
+        if reason is None and wakes >= policy.get('wake_limit_per_hour', DEFAULT_WAKE_LIMIT):
             reason = 'wake-budget-exhausted'
         if reason is None and total + tokens > policy.get('token_budget', 0):
             reason = 'token-budget-exhausted'

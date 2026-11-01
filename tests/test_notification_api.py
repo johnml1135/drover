@@ -126,6 +126,15 @@ class _NotificationBase(unittest.TestCase):
 
 
 class NotificationApiTests(_NotificationBase):
+    def test_hub_policy_default_is_6(self):
+        from hub.notifications import Policy
+        self.assertEqual(Policy().wake_limit_per_hour, 6)
+        self.assertEqual(Policy(wake_window_s=30, urgent_window_s=5).wake_window_s, 30)
+        for bad in (0, 86401, True):
+            with self.assertRaises(Exception):
+                Policy(wake_window_s=bad)
+        self.role('windowed', wake_window_s=90, urgent_window_s=20)
+
     def test_open_receive_releases_subscription_if_response_headers_fail(self):
         from hub.notifications import events
         a = self.role()

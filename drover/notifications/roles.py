@@ -13,4 +13,5 @@ from .roles_auth import issue_session, authenticate, admission, acquire, validat
 from .roles_commit import (role_state, get_checkpoint, _acknowledge, commit, _issue, claim_issue,
                            validate_issue, _hold_issue, hold_issue)
 from .roles_wake import (signal, refresh_wake, validate_policy, _hold_role, _clear_role_hold,
-                         reserve_wake, replace)
+                         reserve_wake, replace, wake_due, DEFAULT_WAKE_LIMIT,
+                         DEFAULT_WAKE_WINDOW_S, DEFAULT_URGENT_WINDOW_S)

@@ -76,7 +76,9 @@ class Policy(Input):
     allowed_models: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(default_factory=list)
     recovery_attempt_limit: int = Field(default=2, ge=0, le=2, strict=True)
     replacement_limit: int = Field(default=1, ge=0, le=1, strict=True)
-    wake_limit_per_hour: int = Field(default=4, ge=0, le=1000, strict=True)
+    wake_limit_per_hour: int = Field(default=6, ge=0, le=1000, strict=True)
+    wake_window_s: int = Field(default=600, ge=1, le=86400, strict=True)
+    urgent_window_s: int = Field(default=60, ge=1, le=86400, strict=True)
     token_budget: int = Field(default=0, ge=0, le=10**12, strict=True)
 
 

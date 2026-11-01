@@ -37,7 +37,7 @@ Nested role policy and notification preferences reject unknown fields and invali
 types before calling the ledger. Supported policy fields are `notifications`,
 `max_pending_routine`, `max_pending_actionable`, `broadcast_summary`,
 `action_allowlist`, `allowed_models`, `recovery_attempt_limit`, `replacement_limit`,
-`wake_limit_per_hour`, and `token_budget`. Runtime configuration must use its
+`wake_limit_per_hour`, `wake_window_s`, `urgent_window_s`, and `token_budget`. Runtime configuration must use its
 declared configuration seam; future policy fields require an explicit schema
 extension.
 
@@ -71,7 +71,8 @@ Defaults for a newly registered role and its subscriptions:
 | Pending routine/actionable limits | 1,000 / 10,000 per role |
 | Processing session / lease lifetime | 3,600 / 60 seconds |
 | Task action allowlist / allowed models | Empty / empty |
-| Wake / model token budget | 4 wakes per hour / 0 tokens |
+| Wake / model token budget | 6 wakes per hour / 0 tokens |
+| Wake grouping window / urgent window | At most one wake per 600 seconds / 60 seconds while a critical delivery is unacknowledged |
 | Issue recovery / automatic replacement limit | At most 2 attempts / 1 replacement |
 
 The normal profile sends issues and decisions immediately. It sends accepted

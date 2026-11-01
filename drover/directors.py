@@ -359,6 +359,8 @@ class DirectorRuntime:
             role_epoch = self.service.admission(role_id=role_id)['epoch']
             if role_id in active or not state['pending_wake']:
                 continue
+            if not roles.wake_due(self.service, role_id):
+                continue  # Grouped: the wake stays pending and no budget is reserved.
             if callable(available):
                 slots = min(slots, available())
             reason = current['reason'] if not current['allowed'] else None
