@@ -1,4 +1,5 @@
 """Placement proof operations."""
+import copy
 import os
 import re
 import subprocess
@@ -71,7 +72,7 @@ class _CleanupProcesses:
     """One invoking-user snapshot. Unknown ownership fails closed; foreign argv still retains named paths."""
 
     def __init__(self, proc_root=None, windows=None, cim=None, request=None):
-        self.rows, self.unreadable, self.out_of_scope, self.unknown = [], [], 0, False
+        self.rows, self.pids, self.unreadable, self.out_of_scope, self.unknown = [], [], [], 0, False
         self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
         self.budget = bool((request or {}).get('budget'))
@@ -232,6 +233,7 @@ class _CleanupProcesses:
             self.unknown = True
             self._unreadable(pid, name, evidence='command_line')
         self.rows.append((cwd, cmd, exe))
+        self.pids.append(pid)
 
     def _own_cwd(self, pid):
         if not self.request.get('state_dir'):
@@ -310,6 +312,13 @@ class _CleanupProcesses:
             elif is_linux_native(value):
                 paths.add(value)
         return sorted(paths)
+
+    def busy_outside(self, worktree, pids):
+        """busy() without the processes in `pids`, such as a pane's own; unknown stays busy."""
+        others = copy.copy(self)
+        others.rows = [row for row, pid in zip(self.rows, self.pids) if pid not in pids]
+        others._indexed = -1
+        return others.busy(worktree)
 
     def busy(self, worktree):
         if self.unknown:
