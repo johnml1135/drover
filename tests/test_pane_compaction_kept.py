@@ -112,6 +112,7 @@ class LaunchOnItsWay(Case):
 
     def setUp(self):
         super().setUp()
+        self.time = float(int(self.time))       # stamps drop fractions, and the wait's edge is tested to the second
         stamp = lambda: datetime.fromtimestamp(self.time, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         patcher = mock.patch.object(ops_panes, '_stamp', stamp)
         patcher.start()
