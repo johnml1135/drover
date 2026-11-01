@@ -48,8 +48,27 @@ class Exited(unittest.TestCase):
         self.assertTrue(result.unknown)
         taken.assert_not_called()
 
+    def real_path(self, answer, alive):
+        """The real route (no injected listing): a native list, then the CIM answer, then the fresh list."""
+        request = dict(paths={'process_ignore': []}, clear_ignored=True)
+        with mock.patch.object(placement_proof, '_windows_processes', side_effect=alive),                 mock.patch.object(placement_proof, '_cleanup_cim', return_value=answer),                 mock.patch.object(placement_proof, '_cim_rows', return_value=[]):
+            return placement_proof._CleanupProcesses(windows=True, request=request)
+
     def test_a_failed_query_is_never_cleared(self):
-        result, _ = proof([], [{}], clear_ignored=True)
+        born = ['git.exe', 5]
+        row = dict(pid=7001, name='git.exe', same_user=None, cwd=None, cmd='', session_id=1, ppid=1, exe=None)
+        answer = dict(rows=[row], identities={'7001': born}, reason_code='process_visibility_unavailable')
+        result = self.real_path(answer, [{'7001': born}, {}])      # the row has exited by the fresh list
+        self.assertTrue(result.rows)
+        self.assertTrue(result.query_failure)
+        self.assertTrue(result.unknown)
+        self.assertEqual([r['pid'] for r in result.unreadable], [7001])
+
+    def test_a_snapshot_that_listed_nothing_is_never_cleared(self):
+        answer = dict(rows=[], identities={})
+        result = self.real_path(answer, [{'7001': ['git.exe', None]}, {}, {}])
+        self.assertEqual(result.rows, [])
+        self.assertTrue(result.unreadable)
         self.assertTrue(result.unknown)
 
     def test_a_new_creation_time_drops_the_row_and_an_unknown_one_keeps_it(self):
