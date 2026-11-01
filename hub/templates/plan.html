@@ -44,6 +44,13 @@
       <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"epic","id":e.id|string,"move":"up"}|tojson|forceescape }}' data-move="epic:{{ e.id }}:up" hx-target="#content" aria-label="Move epic {{ e.title }} up">Move up</button>
       <button class="btn" hx-post="/plan/reorder" hx-vals='{{ {"kind":"epic","id":e.id|string,"move":"down"}|tojson|forceescape }}' data-move="epic:{{ e.id }}:down" hx-target="#content" aria-label="Move epic {{ e.title }} down">Move down</button>
       {{ comment_btn('epic', e.id) }}
+      {% if e.id %}<form method="post" action="/epics/{{ e.id }}/dispatch" class="inline">
+        <label>Dispatch <select name="mode" aria-label="Who picks the next task of {{ e.title }}">
+          <option value="drover"{% if e.dispatch == 'drover' %} selected{% endif %}>Drover</option>
+          <option value="director"{% if e.dispatch == 'director' %} selected{% endif %}>Director</option>
+        </select></label>
+        <button class="btn" type="submit">Set</button>
+      </form>{% endif %}
     </div>
     <ul class="tasks sortable" data-kind="task">{% for t in e.tasks %}{{ task_li(t, not filters) }}{% endfor %}</ul>
     <span class="grip epic-grip" role="img" aria-label="Drag epic handle">&#8942;&#8942;</span>

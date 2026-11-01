@@ -69,6 +69,7 @@ from .ops_tasks import (
 )
 from .ops_stages import read_only_result, accept_read_only
 from .ops_outside import record_external_landing
+from .ops_dispatch import set_epic_mode, set_default_mode, pick, awaiting_pick, mode_of, default_mode
 from .ops_execution import (
     _active_scopes,
     _candidates,

@@ -321,6 +321,32 @@ def approve(tid: str, request: Request, who: str = Depends(auth.require_api)):
     return guard(_store(request).approve, tid)
 
 
+class DispatchModeIn(Loose):
+    mode: Literal["drover", "director"]
+
+
+@router.get("/dispatch/default")
+def get_dispatch_default(request: Request):
+    return {"mode": _store(request).get_default_dispatch()}
+
+
+@router.post("/dispatch/default")
+def set_dispatch_default(body: DispatchModeIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return {"mode": guard(_store(request).set_default_dispatch, body.mode)}
+
+
+@router.post("/epics/{eid}/dispatch")
+def set_epic_dispatch(eid: str, body: DispatchModeIn, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).set_epic_dispatch, eid, body.mode)
+
+
+@router.post("/tasks/{tid}/pick")
+def pick_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
+    return guard(_store(request).pick, tid, actor(who))
+
+
 @router.post("/runs", status_code=201)
 def start_run(body: RunStart, request: Request, who: str = Depends(auth.require_api)):
     if body.role == "director" or body.role.startswith("director:"):

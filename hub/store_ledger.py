@@ -148,6 +148,29 @@ class Store:
         return {"results": results}
 
     @_translate
+    def set_epic_dispatch(self, eid, mode):
+        """Owner action. The caller must have authenticated the owner."""
+        e = ops.set_epic_mode(self.conn, eid, mode, actor="owner")
+        self._changed("epic.dispatch", id=eid, mode=mode)
+        return e
+
+    def get_default_dispatch(self):
+        return ops.default_mode(self.conn)
+
+    @_translate
+    def set_default_dispatch(self, mode):
+        """Owner action. The caller must have authenticated the owner."""
+        mode = ops.set_default_mode(self.conn, mode, actor="owner")
+        self._changed("dispatch.default", mode=mode)
+        return mode
+
+    @_translate
+    def pick(self, tid, actor):
+        t = ops.pick(self.conn, tid, actor)
+        self._changed("task.picked", id=tid)
+        return t
+
+    @_translate
     def set_status(self, tid, status, actor, reason=None):
         t = ops.set_status(self.conn, tid, status, actor=actor, reason=reason)
         self._changed("task.status", id=tid, status=status)

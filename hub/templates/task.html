@@ -11,6 +11,8 @@
 {% else %}
 <article class="task-page">
 <h2>{{ task.id }} · {{ task.title }}</h2>
+{% if task.status == 'ready' and dispatch_mode == 'director' %}<p>{% if task.picked_at %}{{ badge('Picked by ' ~ task.picked_by, 'ok') }}{% else %}{{ badge('Awaiting director pick', 'warn') }}
+<form method="post" action="/tasks/{{ task.id }}/pick" class="inline"><button class="btn" type="submit">Pick</button></form>{% endif %}</p>{% endif %}
 {% if task.requires_explicit_approval %}<p>{{ badge('Requires explicit approval', 'warn') }}</p>{% endif %}
 <p><span class="pill status status-{{ task.status }}">{{ task.status | label }}</span> {{ badge(task.kind) }} {{ badge('write' if task.write else 'read-only') }} {{ badge(task.priority ~ ' / ' ~ task.size ~ ' / ' ~ task.risk) }}</p>
 {% if task.reason %}<p class="task-reason">{{ task.reason }}</p>{% endif %}

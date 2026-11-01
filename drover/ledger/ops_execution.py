@@ -1,4 +1,5 @@
 """Ledger operations."""
+from . import ops_dispatch
 from .ops_common import (
     NOTE_MAX,
     NotFound,
@@ -89,6 +90,8 @@ def claim_next(conn, worker=None, now=None, exclude=()):
         for cand in ready_tasks(conn, worker.get("repo"), worker.get("repo_path"), now):
             if cand["id"] in skip or not dispatch_repos.permits(allow, cand["repo"]):
                 continue
+            if not cand.get("picked_at") and ops_dispatch.mode_of(conn, cand) == ops_dispatch.DIRECTOR:
+                continue                   # a director's epic: the task waits for an explicit pick
             if not task_admission(conn, cand['id'])['allowed']:
                 continue
             runs = waiting.replan_runs() if runs is None else runs     # one snapshot per call (inside tx)

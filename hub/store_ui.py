@@ -146,6 +146,7 @@ class UiView:
             for other, kind in entries:
                 connections.append(dict(self.s.get_task(other), relation=label, link_kind=kind))
         return dict(task=task, connections=connections, runs=self.s.list_runs(tid),
+                    dispatch_mode=ops.mode_of(self.c, task),
                     events=self.s.list_events(task_id=tid, limit=100000))
 
     def edit_task(self, tid, **fields):
@@ -226,7 +227,7 @@ class UiView:
         for t in tasks:
             by_epic.setdefault(t["epic_id"], []).append(
                 {**self._task_view(t, configured), "low": "1" if t["id"] in low else None})
-        out = [{"id": e["id"], "title": e["title"], "tasks": by_epic.pop(e["id"], [])}
+        out = [{"id": e["id"], "title": e["title"], "dispatch": e["dispatch"], "tasks": by_epic.pop(e["id"], [])}
                for e in self.s.list_epics()]
         if by_epic.get(None):
             out.append({"id": "", "title": "(no epic)", "tasks": by_epic[None]})
@@ -442,6 +443,12 @@ class UiView:
         except ValueError:
             repos = ["INVALID: all blocked"]
         return {"enabled": on, "label": "RUNNING" if on else "PAUSED", "repos": repos}
+    def set_epic_dispatch(self, eid, mode):
+        return self.s.set_epic_dispatch(eid, mode)
+
+    def pick_task(self, tid):
+        return self.s.pick(tid, "owner")
+
     def set_dispatch(self, enabled):
         return self.s.set_dispatch_enabled(enabled, actor="owner")
     # -- run detail ------------------------------------------------------

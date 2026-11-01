@@ -339,6 +339,22 @@ def dispatch_confirm(request: Request, store=Depends(get_store)):
     return _render(request, "dispatch_confirm.html", store, tab="health", partial=False)
 
 
+@router.post("/epics/{eid}/dispatch")
+async def epic_dispatch(eid: str, request: Request, store=Depends(get_store)):
+    """Owner-only (the UI port only serves the owner): who picks this epic's next task."""
+    mode = _one(await _form(request), "mode")
+    if mode not in ("drover", "director"):
+        raise HTTPException(422, "mode must be drover or director")
+    store.set_epic_dispatch(eid, mode)
+    return RedirectResponse("/plan", status_code=303)
+
+
+@router.post("/tasks/{tid}/pick")
+async def pick_task(tid: str, request: Request, store=Depends(get_store)):
+    store.pick_task(tid)
+    return RedirectResponse(f"/tasks/{tid}", status_code=303)
+
+
 @router.post("/dispatch/toggle")
 async def dispatch_toggle(request: Request, store=Depends(get_store)):
     """Owner-only (the UI port only serves the owner). Pausing is immediate; turning dispatch on needs confirm=yes."""

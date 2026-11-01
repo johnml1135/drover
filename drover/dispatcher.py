@@ -257,6 +257,10 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
                 out["launched"].append(task["id"])
                 slots -= 1
         out['paused'] = not truthy(p.get_setting('dispatch_enabled', 'false'))
+        from .ledger import ops_dispatch
+        waiting_on_director = ops_dispatch.awaiting_pick(p.conn)    # ready, in a director's epic, not yet picked
+        if waiting_on_director:
+            skipped["awaiting-director"] = waiting_on_director
         return report(skipped, "no-slots" if slots <= 0 else "")
 
 
