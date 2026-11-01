@@ -12,7 +12,7 @@ import time
 import uuid
 
 from . import config as config_mod
-from . import stats
+from . import handoff, stats
 from .launch import AdmissionHeld, RunnerLauncher
 from .ledger import actions, ops
 from .ledger.db import tx
@@ -225,6 +225,7 @@ class DirectorRuntime:
                         mode=mode, effort=None, wall_s=600, idle_s=120,
                         user_prompt=RESIDENT_PROMPT if resident else FINITE_PROMPT,
                         task={'id': task_id, 'title': 'Director ' + role_id})
+            spec.update(handoff.for_launch(self.port, role_id, config['placement'], mode))
             if mode == 'resume':
                 spec['resume_from'] = dict(run_id=previous['run_id'], nonce=previous['nonce'], session_id=previous['session_id'])
             source = ops.event(self.conn, 'director.launch-intent', 'dispatcher', dict(role_id=role_id, run_id=run_id,
@@ -432,7 +433,7 @@ class DirectorRuntime:
             # Replacing a director whose latest run on this generation failed is recovery, not a new wake.
             last = self.conn.execute('SELECT d.generation,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
                                      'WHERE d.role_id=? ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
-            revived = bool(last and last['outcome'] == REVIVED)
+            revived = bool(last and last['outcome'] == REVIVED) or handoff.owed(self.port, role_id, CLEAN_OUTCOMES)
             if role_id in active or not (state['pending_wake'] or revived):
                 continue
             recovering = bool(last and last['generation'] == state['generation'] and last['outcome'] not in CLEAN_OUTCOMES)

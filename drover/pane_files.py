@@ -89,10 +89,12 @@ def repo_trusted(cwd, seat, *, read=None) -> bool:
 
 
 def agent_args(spec, *, model, effort, settings=None, resume=None) -> list:
-    """The agent's own flags: model, effort, compaction and a Codex seat's sandbox. A bypass raises ValueError."""
+    """The agent's flags: model, effort, compaction, a Codex seat's sandbox, the folders it may also write. A bypass raises ValueError."""
+    roots = spec.get('run_config', {}).get('sandbox_writable_roots', [])
     if spec['backend'] == 'claude':
         args = ['--resume', resume] if resume else []
         args += ['--model', model, '--effort', effort, '--autocompact', f'{NATIVE_COMPACT // 1000}k']
+        args += [item for root in roots for item in ('--add-dir', root)]
         if settings:
             args += ['--settings', settings]
     else:
@@ -103,6 +105,7 @@ def agent_args(spec, *, model, effort, settings=None, resume=None) -> list:
         if sandbox and sandbox not in SANDBOXES:
             raise ValueError('sandbox is not a seat setting')
         args += ['-s', sandbox] if sandbox else []
+        args += ['-c', f'sandbox_workspace_write.writable_roots={json.dumps(roots)}'] if roots and sandbox == 'workspace-write' else []
     _reject_permission_bypass(args)
     return args
 

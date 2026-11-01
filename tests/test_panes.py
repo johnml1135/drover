@@ -3,7 +3,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from drover import pane_handoff, pane_launch, pane_send, pane_wake
+from drover import pane_launch, pane_send
 from drover.ledger import ops_panes
 from drover.pane_send import PaneRefused
 from tests.pane_launch_support import LONE_SHELL
@@ -283,9 +283,6 @@ class Handle(Resident):
         self.build()
         self.assertEqual(self.panes.compaction_tick(dict(id='h1', phase='stop')),
                          dict(id='h1', phase='stop', settled=True, agents=[]))
-
-    def test_the_task_12_hook_is_empty(self):
-        self.assertIsNone(pane_handoff.maintain(None, None))
 
 
 if __name__ == '__main__':

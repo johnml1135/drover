@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from drover import config, watch
-from drover.ledger import connect, disk_notices, ops, landing
+from drover.ledger import connect, disk_notices, ops, ops_panes, landing
 
 NOW = 1_800_000_000.0
 CFG = {'watch': dict(config.DEFAULTS['watch'])}
@@ -75,6 +75,31 @@ class Watch(unittest.TestCase):
         self.assertEqual(watch.velocity(self.conn, CFG['watch'], NOW), [])
         self.batch(1, 0)      # six gates, 5 red
         self.assertEqual([n['id'] for n in watch.velocity(self.conn, CFG['watch'], NOW)], ['velocity:red-rate'])
+
+    def director_row(self, tokens, *, state='live', started_by='drover'):
+        return ops_panes.record_agent(self.conn, pane_id='w1:p1', terminal_id='t1', kind='claude', seat='s', placement='windows',
+                                      started_by=started_by, state=state, role_id='director:a', run_id=71, context_tokens=tokens)
+
+    def context_notices(self):
+        self.conn.execute('DELETE FROM settings WHERE key=?', (watch.STATE_KEY,))
+        return [n for n in watch.tick(self.conn, CFG, None, NOW) if n.startswith('context:')]
+
+    def test_a_director_over_300k_opens_the_context_notice(self):
+        self.director_row(300001)
+        self.assertEqual(self.context_notices(), ['context:71'])
+
+    def test_a_director_at_or_under_300k_or_unread_opens_nothing(self):
+        for tokens in (300000, None):
+            self.conn.execute('DELETE FROM pane_agents')
+            self.director_row(tokens)
+            self.assertEqual(self.context_notices(), [])
+
+    def test_only_a_live_drover_row_counts(self):
+        self.director_row(400000, state='retired')
+        self.assertEqual(self.context_notices(), [])
+        self.conn.execute('DELETE FROM pane_agents')
+        self.director_row(400000, started_by='owner')
+        self.assertEqual(self.context_notices(), [])
 
     def test_run_over_300k_opens_context_notice(self):
         runs = [{'run_id': 'r1', 'task_id': 't1', 'context': 300001}, {'run_id': 'r2', 'task_id': 't2', 'context': 299999},

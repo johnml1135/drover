@@ -94,6 +94,10 @@ def wake_due(service, role_id):
     No history means due at once. Held and coalesced entries carry wakes=0 and do not count.
     """
     conn = service.conn
+    newest = conn.execute('SELECT r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id WHERE d.role_id=? '
+                          'ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
+    if newest and newest['outcome'] == 'rotated':
+        return True     # a session handed over is not a wake to group: the role has no agent until the next one starts
     # A launch that never reached running (still launching, or admission-held) does not start the window.
     last = conn.execute('SELECT MAX(b.created) FROM director_budget_entries b WHERE b.role_id=? AND b.wakes>0 '
                         "AND NOT EXISTS (SELECT 1 FROM director_runs d JOIN runs r ON r.id=d.run_id "

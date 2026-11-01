@@ -75,7 +75,11 @@ class PaneService:
 
     def _keep(self, run, guard):
         row = ops_panes.by_run(self.conn, run['run_id'])
-        if row is None or row['state'] not in pane_launch.RUNNING or run.get('stop_action_id') or self._stale(run):
+        if row is None or row['state'] not in pane_launch.RUNNING:
+            return
+        if row['state'] == pane_handoff.ROTATING:       # it was told to leave, so no fence or stop has more to say to it
+            return self._step(pane_handoff.follow_exit, self, run)
+        if run.get('stop_action_id') or self._stale(run):
             return
         paused = False
         try:
@@ -159,6 +163,11 @@ class PaneService:
     def orphan(self, role_id):
         """The role's `live` row while no run holds it: only a lapsed run leaves one, and a resume takes it up."""
         return next((row for row in ops_panes.open_agents(self.conn) if row['role_id'] == role_id and row['state'] == 'live'), None)
+
+    def rotated(self, role_id):
+        """The pane a rotated agent left, while nothing has taken it."""
+        return next((row for row in reversed(ops_panes.open_agents(self.conn))
+                     if row['role_id'] == role_id and row['state'] == 'retired' and row['handoff_state'] == 'rotated'), None)
 
     def _stale(self, run):
         return self.notifications.role_state(run['role_id'])['generation'] != run['generation']
@@ -262,7 +271,7 @@ class PaneService:
             alone = pane_send.shell_alone(self.herdr, row)
         except PaneRefused:
             return UNKNOWN
-        if not alone:
+        if not alone or row['state'] == pane_handoff.ROTATING:    # leaving is what a rotating agent was asked to do
             return ALIVE
         pane_launch.publish(self.port, f"pane-agent-left:{row['id']}", 'A director left its pane',
                             f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: the agent has exited. "
@@ -370,10 +379,28 @@ class PaneDirectorAdapter:
             return False
         return True
 
+    def _rotate(self, spec, credential, guard):
+        """The pane a rotated agent left, for its fresh session. False sends the launch to a fresh pane, flagged if this one refused."""
+        service = self.service
+        row = service.rotated(spec['role_id']) if spec.get('handoff') else None
+        if row is None:
+            return False
+        guard()
+        try:
+            pane_launch.rotate(service.port, service.herdr, row, spec, cfg=service.cfg, credential=credential)
+        except AdmissionHeld as held:
+            if str(held) == pane_launch.HERDR_CLOSED:
+                raise
+            pane_launch.publish(service.port, f"pane-rotation-moved:{row['id']}", 'A rotated director moved to a new pane',
+                                f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: {held}. The new session starts in a "
+                                'fresh pane, and this one is left for you to close.')
+            return False
+        return True
+
     def launch(self, spec, credential, guard):
         service = self.service
         try:
-            if spec.get('mode') != 'resume' or not self._resume(spec, credential, guard):
+            if not (self._resume if spec.get('mode') == 'resume' else self._rotate)(spec, credential, guard):
                 pane_launch.start(service.port, service.herdr, spec, credential, guard, cfg=service.cfg)
         except AdmissionHeld as held:
             if str(held) == 'herdr-unavailable':
