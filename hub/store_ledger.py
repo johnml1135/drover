@@ -2,7 +2,7 @@ import json
 import threading
 import time
 
-from drover import config, decisions, stats, usage
+from drover import config, decisions, landing, stats, usage
 from drover.ledger import board as ledger_board
 from drover.ledger import connect, ops, tx
 from drover.ledger.ops import NotFound as LedgerNotFound
@@ -191,12 +191,22 @@ class Store:
         return t
     @_translate
     def record_external_landing(self, tid, sha, base_ref, gate, review):
-        with tx(self.conn):
-            old = ops.get_task(self.conn, tid)['status']
-            t = ops.record_external_landing(self.conn, tid, sha, base_ref, gate, review, actor='owner')
+        old = ops.get_task(self.conn, tid)['status']
+        t = ops.record_external_landing(self.conn, tid, sha, base_ref, gate, review, actor='owner')
         if old != t['status']:
             self._changed('task.status', id=tid, status=t['status'])
         return t
+
+    def base_holds(self):
+        return landing.base_holds(self.conn)
+
+    @_translate
+    def clear_hold(self, repo):
+        """The authenticated owner clears one repo's landing hold and answers its question Retry."""
+        result = landing.clear_hold(self.conn, repo, actor='owner')
+        for hold in result['holds']:
+            self._changed('question.answered', id=hold['question'])
+        return result
 
     @_translate
     def yank_task(self, tid, reason="", actor="owner"):

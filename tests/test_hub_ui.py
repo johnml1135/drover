@@ -92,6 +92,30 @@ class UiTests(unittest.TestCase):
                 self.assertFalse(any(args[0] == 'push' for args in calls), calls)
                 self.assertFalse(any(args[0] == 'update-ref' for args in calls), calls)
 
+    def test_clear_landing_hold_button_is_owner_post(self):
+        from drover import landing
+        from drover.ledger import landing as landing_storage
+        self.assertNotIn('Clear merge hold', self.c.get('/landing').text)
+        landing_storage.record_base(self.st.conn, 'acme', 'a' * 40, 'red')
+        landing.base_red(self.st.conn, {}, 'a' * 40, [], 'acme')
+        landing.base_red(self.st.conn, {}, 'b' * 40, [], 'beta')
+        page = self.c.get('/landing').text
+        self.assertEqual(page.count('Clear merge hold'), 2)
+        self.assertIn('aaaaaaaaaaaa', page)
+        self.assertIn('name="repo" value="acme"', page)
+        body = {'repo': 'acme'}
+        api = TestClient(self.app, base_url='http://testserver:8766')
+        self.assertEqual(api.post('/landing/clear-hold', data=body, headers={**SAME, 'Authorization': 'Bearer tok'}).status_code, 403)
+        self.assertEqual(self.c.post('/landing/clear-hold', data=body, headers={'Sec-Fetch-Site': 'cross-site'}).status_code, 403)
+        self.assertEqual(self.c.post('/landing/clear-hold', data={}, headers=SAME).status_code, 422)
+        self.assertEqual(self.c.get('/landing').text.count('Clear merge hold'), 2)
+        self.assertEqual(self.c.post('/landing/clear-hold', data=body, headers=SAME).status_code, 303)
+        page = self.c.get('/landing').text
+        self.assertEqual(page.count('Clear merge hold'), 1)
+        self.assertIn('name="repo" value="beta"', page)
+        answered = [q for q in self.st.list_questions() if q['answer_choice'] == landing.RETRY]
+        self.assertEqual(len(answered), 1)
+
     def epic(self, title):
         return self.st.create_epic("p", title)["id"]
 

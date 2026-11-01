@@ -250,7 +250,18 @@ def run_tail(rid: str, request: Request, store=Depends(get_store)):
 def landing(request: Request, store=Depends(get_store)):
     data = _call(store, "landing", default={}) or {}
     return _tab(request, "landing", store, queue=data.get("queue", []), batch=data.get("batch"),
-                gate=data.get("gate") or {}, repos=data.get("repos") or [])
+                gate=data.get("gate") or {}, repos=data.get("repos") or [],
+                holds=_call(store, "base_holds", default=[]))
+
+
+@router.post("/landing/clear-hold")
+async def clear_landing_hold(request: Request, store=Depends(get_store)):
+    """Owner-only through the UI auth and CSRF middleware; never exposed on the API."""
+    repo = _one(await _form(request), "repo").strip()
+    if not repo:
+        raise HTTPException(422, "name the repo to clear")
+    store.clear_hold(repo)
+    return RedirectResponse("/landing", status_code=303)
 
 
 @router.post("/repos/{name}/push-main")

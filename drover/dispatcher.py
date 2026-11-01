@@ -13,6 +13,7 @@ claims and launches nothing, but still reaps, adopts and recovers.
 """
 from . import placement, repos
 import json
+import logging
 import os
 import re
 import sys
@@ -37,6 +38,7 @@ from . import route as route_mod
 from datetime import datetime, timezone
 
 from . import launch as launch_mod
+from . import outside_land
 from .launch import RunnerLauncher
 from .ledger import states
 from .pipeline import WorktreeRefused, truthy
@@ -108,6 +110,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         self.last_verdict = None
         self._stats_hour, self._stats_resources = None, {}
         self.last_resources = {}             # the newest resources.check result: its `wsl` part gates WSL work only
+        self._outside_at = None              # when landings outside Drover were last scanned
 
     def _begin_review(self, task, runs, policy, admitted):
         p, pl, tid = self.port, self.pipeline, task["id"]
@@ -164,6 +167,19 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             import logging
             logging.getLogger(__name__).exception('watch tick failed')
 
+    def _detect_outside_landings(self):
+        """At most once per interval, even after a failure; a detection failure never stops dispatch."""
+        now = self.now()
+        try:
+            cfg = config_mod.get()
+            if self._outside_at is not None and now - self._outside_at < outside_land.interval_s(cfg):
+                return
+            self._outside_at = now
+            outside_land.tick(self.port.conn, cfg)
+        except Exception:
+            self._outside_at = now
+            logging.getLogger(__name__).exception('outside landing detection failed')
+
     def tick(self):
         self._control_epoch = self.port.admission()['epoch']
         self._seat_tick()
@@ -200,6 +216,8 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         if hold:
             out['compaction'] = self._compaction_drain(hold)
         self.check_stale()
+        if not hold:                                       # its git must not wake WSL during a compaction
+            self._detect_outside_landings()
         from .ledger.waiting import DEADLINE
         p.waiting.expire(self.now())
         if any(r['kind'] == DEADLINE and r['data']['reason_code'] == 'wsl-down' for r in p.waiting.pending()) and self.launcher.wsl_up():
