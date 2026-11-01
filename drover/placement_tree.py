@@ -89,6 +89,15 @@ if IS_WINDOWS:
     _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     _k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    # Untyped, the pseudo-handle comes back as a c_int and goes in cut to 32 bits: error 6, and nothing changes.
+    _k32.GetCurrentProcess.restype = wintypes.HANDLE
+    _k32.GetCurrentProcess.argtypes = []
+    _k32.SetPriorityClass.restype = wintypes.BOOL
+    _k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _k32.SetProcessAffinityMask.restype = wintypes.BOOL
+    _k32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+    _k32.GetProcessAffinityMask.restype = wintypes.BOOL
+    _k32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
     JOB_BASIC_AND_IO_ACCOUNTING_CLASS = 8
     JOB_EXTENDED_LIMIT_CLASS = 9

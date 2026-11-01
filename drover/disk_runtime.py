@@ -169,11 +169,20 @@ def cleanup_call(side: str, request: dict) -> dict:
     return dict(items=[], errors=[evidence], reclaimed_bytes=0)
 
 
+def run_detached(cfg, apply):
+    """The detached coordinator: low priority and the CPU cap before any work, as every worker it starts has."""
+    from .disk_cleanup import run
+    placement.lower_priority()
+    cap = cfg.get('disk_cleanup', {}).get('cpu_limit')
+    if cap:
+        placement.limit_cpus(cap)
+    return run(cfg, mode='triggered', apply=apply)
+
+
 def cleanup_enqueue(cfg, claim):
     """Detached fixed cleanup entry point pinned independently of the hub cwd."""
     code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
-            'from drover.disk_cleanup import run;from drover.placement import lower_priority;lower_priority();'
-            'run(json.loads(sys.argv[2]),mode="triggered",apply=sys.argv[3]=="1")')
+            'from drover.disk_runtime import run_detached;run_detached(json.loads(sys.argv[2]),sys.argv[3]=="1")')
     argv = [sys.executable, '-c', code, str(Path(__file__).resolve().parents[1]),
             json.dumps(cfg), '1' if claim['applied'] else '0', claim['id']]
     log = Path(config.state_dir(cfg)) / 'disk' / 'cleanup.log'

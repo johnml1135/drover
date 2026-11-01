@@ -179,42 +179,58 @@ CLEANUP_NICE = 10
 
 
 def lower_priority(windows=None, set_class=None):
-    """Run this process, and so its children, at BelowNormal (Windows) or nice 10 (WSL/Linux). Best effort."""
+    """Run this process, and so its children, at BelowNormal (Windows) or nice 10 (WSL/Linux). Best effort: returns
+    whether it took."""
     windows = IS_WINDOWS if windows is None else windows
     try:
         if windows:
             if set_class is None:
                 def set_class(value):
-                    _k32.SetPriorityClass(_k32.GetCurrentProcess(), value)
+                    if not _k32.SetPriorityClass(_k32.GetCurrentProcess(), value):
+                        raise ctypes.WinError(ctypes.get_last_error())
             set_class(BELOW_NORMAL_PRIORITY_CLASS)
         else:
             os.nice(CLEANUP_NICE)
     except (OSError, AttributeError):
-        pass
+        return False
+    return True
+
+
+def _allowed_cpus(windows):
+    """The CPUs this process may run on now, ascending. An inherited affinity is not always 0..N-1."""
+    if not windows:
+        return sorted(os.sched_getaffinity(0))
+    mask, system = ctypes.c_size_t(), ctypes.c_size_t()
+    if not _k32.GetProcessAffinityMask(_k32.GetCurrentProcess(), ctypes.byref(mask), ctypes.byref(system)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return [cpu for cpu in range(mask.value.bit_length()) if mask.value >> cpu & 1]
 
 
 def limit_cpus(count, *, windows=None, set_mask=None, available=None):
-    """Pin this process, and so its children, to the first `count` CPUs. Best effort.
+    """Pin this process, and so its children, to the first `count` of the CPUs it may use. Best effort.
 
-    Returns the number of CPUs in effect: the smaller of `count` and those available, or all of them if pinning failed."""
+    `available` is those CPUs by number. Returns how many are in effect: the smaller of `count` and those available, or
+    all of them if pinning failed."""
     windows = IS_WINDOWS if windows is None else windows
     if available is None:
         try:
-            available = len(os.sched_getaffinity(0))
+            available = _allowed_cpus(windows)
         except (OSError, AttributeError):
-            available = os.cpu_count() or 1
-    limit = max(1, min(count, available))
-    if limit >= available:
-        return available
+            available = range(os.cpu_count() or 1)
+    available = sorted(available)
+    limit = max(1, min(count, len(available)))
+    if limit >= len(available):
+        return len(available)
+    chosen = available[:limit]
     try:
         if windows:
             if set_mask is None:
                 def set_mask(mask):
-                    if not _k32.SetProcessAffinityMask(_k32.GetCurrentProcess(), ctypes.c_size_t(mask)):
+                    if not _k32.SetProcessAffinityMask(_k32.GetCurrentProcess(), mask):
                         raise ctypes.WinError(ctypes.get_last_error())
-            set_mask((1 << limit) - 1)
+            set_mask(sum(1 << cpu for cpu in chosen))
         else:
-            (set_mask or (lambda cpus: os.sched_setaffinity(0, cpus)))(set(range(limit)))
+            (set_mask or (lambda cpus: os.sched_setaffinity(0, cpus)))(set(chosen))
     except (OSError, AttributeError, OverflowError):
-        return available
+        return len(available)
     return limit
