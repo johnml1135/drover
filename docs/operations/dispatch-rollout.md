@@ -43,8 +43,8 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
   branch with no commits of its own, or one sitting at the base, is never a merge. A yanked task with no candidate
   commits is not watched and asks nothing; a task whose branch was deleted but which has candidates is asked about.
   A question retracts itself if git later proves the merge. A question offers at most eight commits, newest first, and
-  says how many older ones it leaves out. A repo left out of `dispatch_repos` is not scanned at all, and a machine
-  without its checkout asks nothing about it.
+  says how many older ones it leaves out. A repo left out of `dispatch_repos` is not scanned at all, and when git cannot
+  answer, or WSL is down for a WSL repo, nothing is asked and a later scan tries again.
 - **Closed tasks keep their worktree for three days.** Cleanup now waits three days of quiet before removing the
   worktree of any closed task except a merged one. This is stricter for ordinary cancelled tasks than before. The branch
   is always kept, a dirty worktree is kept, and a yanked task needs no approval beyond the same rule.
