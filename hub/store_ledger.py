@@ -172,6 +172,29 @@ class Store:
         if old != t['status']:
             self._changed('task.status', id=tid, status=t['status'])
         return t
+
+    @_translate
+    def yank_task(self, tid, reason=""):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.yank(self.conn, tid, actor="owner", reason=reason)
+        self._changed("task.status", id=tid, status=t["status"])
+        return t
+
+    @_translate
+    def abandon_task(self, tid):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.abandon(self.conn, tid, actor="owner")
+        self._changed("task.status", id=tid, status=t["status"])
+        return t
+
+    @_translate
+    def handback_task(self, tid):
+        """Owner Bypass. The caller must have authenticated the owner."""
+        t = ops.handback(self.conn, tid, actor="owner")
+        self._changed("task.status", id=tid, status="cancelled")
+        self._changed("task.created", id=t["id"])
+        return t
+
     @_translate
     def claim_next(self, worker):
         t = ops.claim_next(self.conn, dict(worker))

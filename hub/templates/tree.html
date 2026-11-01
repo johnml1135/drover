@@ -1,6 +1,6 @@
 {% extends "_partial.html" if partial else "base.html" %}
 {% macro task_row(t) %}
-<details class="tree-task{% if t.status in ('landed', 'closed', 'cancelled', 'abandoned') %} tree-dim{% endif %}" data-id="{{ t.id }}" data-search="{{ t.id }} {{ t.title }}">
+<details class="tree-task{% if t.status in ('landed', 'closed', 'cancelled', 'yanked', 'abandoned') %} tree-dim{% endif %}" data-id="{{ t.id }}" data-search="{{ t.id }} {{ t.title }}">
   <summary class="tree-row">
     <a class="tree-id" href="/tasks/{{ t.id }}">{{ t.id }}</a>
     <span class="pill status tree-status-{{ t.status }}">{{ t.status }}</span>

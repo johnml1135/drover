@@ -321,6 +321,28 @@ def approve(tid: str, request: Request, who: str = Depends(auth.require_api)):
     return guard(_store(request).approve, tid)
 
 
+class YankIn(BaseModel):
+    reason: str = ""
+
+
+@router.post("/tasks/{tid}/yank")
+def yank_task(tid: str, request: Request, body: YankIn | None = None, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).yank_task, tid, body.reason if body else "")
+
+
+@router.post("/tasks/{tid}/abandon")
+def abandon_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).abandon_task, tid)
+
+
+@router.post("/tasks/{tid}/handback")
+def handback_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
+    owner_only(who)
+    return guard(_store(request).handback_task, tid)
+
+
 @router.post("/runs", status_code=201)
 def start_run(body: RunStart, request: Request, who: str = Depends(auth.require_api)):
     if body.role == "director" or body.role.startswith("director:"):
@@ -340,7 +362,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "bypass", "handback", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)

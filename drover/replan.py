@@ -86,7 +86,7 @@ class Replanning:
             if allow is not None and not allow(task):
                 continue                             # the owner limited dispatch to other repos
             if (request['state'] != contract.REPLAN_QUEUED or request['active_run'] or task['archived']
-                    or task['status'] in (*states.ACTIVE, *states.TERMINAL)
+                    or task['status'] in (*states.ACTIVE, *states.CLOSED)
                     or any(r['kind'] != REPLAN for r in request['pending']) or p.waiting.replan_busy(task['id'], runs)):
                 continue
             if task['id'] in inspected and isinstance(inspected[task['id']], Exception):

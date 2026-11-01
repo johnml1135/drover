@@ -189,7 +189,7 @@ def evaluate(service, group_id):
                 _, proof_failure = _read_only_acceptance(conn, member['child_id'])
                 if proof_failure:
                     attention = f"child-{proof_failure}:{member['child_id']}"
-            if task is None or task['status'] in ('cancelled', 'failed', 'needs-owner'):
+            if task is None or task['status'] in ('cancelled', 'yanked', 'failed', 'needs-owner'):
                 failure = f"child-{task['status'] if task else 'deleted'}:{member['child_id']}"
                 if task is None or task['status'] != 'failed':
                     attention = failure

@@ -35,7 +35,7 @@ def _active_scopes(conn, repo):
 def _candidates(conn, repo=None, repo_path=None):
     q = ("SELECT t.*, COALESCE(e.rank, 1e18) AS epic_rank, "
          "(SELECT COUNT(*) FROM task_deps d JOIN tasks x ON x.id=d.task_id WHERE d.depends_on=t.id "
-         " AND x.status NOT IN ('landed','cancelled')) AS dependents "
+         " AND x.status NOT IN ('landed','cancelled','yanked')) AS dependents "
          "FROM tasks t LEFT JOIN epics e ON e.id=t.epic_id WHERE t.status='ready' AND t.archived=0 "
          "AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.subject_kind='task' AND w.subject_key=t.id AND w.released_event IS NULL) "
          "AND NOT EXISTS (SELECT 1 FROM task_groups g WHERE g.parent_id=t.id AND g.ready=0) "

@@ -34,8 +34,8 @@ def replay(conn, cfg, now):
     from . import states
     tasks = []
     for task in ops.list_tasks(conn, include_archived=True):
-        live = task['status'] not in states.TERMINAL
-        tasks.append(dict(id=task['id'], state=task['status'], terminal=task['status'] in states.TERMINAL,
+        live = task['status'] not in states.CLOSED
+        tasks.append(dict(id=task['id'], state=task['status'], terminal=task['status'] in states.CLOSED,
                           live=live, worktree=task.get('worktree'), owner='drover:' + task['id']))
         try:
             if live and task.get('worktree') and ownership.owned_by(task['worktree'], 'drover:' + task['id']):
