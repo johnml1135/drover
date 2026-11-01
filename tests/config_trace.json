@@ -232,7 +232,14 @@
     "warn_gb": 200.0,
     "wsl_combined": false
    }
-  ]
+  ],
+  "watch": {
+   "interval_s": 600,
+   "stalled_hours": 24,
+   "context_tokens": 300000,
+   "red_rate": 0.5,
+   "min_gates": 6
+  }
  },
  "sources": {
   "capacity.parallel_cap": "machine:<home>/config.toml",
@@ -403,6 +410,11 @@
   "trackers.wsl-up.hold_mem_pct": "default",
   "trackers.wsl-up.kind": "default",
   "trackers.wsl-up.name": "default",
-  "trackers.wsl-up.queue_mem_pct": "default"
+  "trackers.wsl-up.queue_mem_pct": "default",
+  "watch.interval_s": "default",
+  "watch.stalled_hours": "default",
+  "watch.context_tokens": "default",
+  "watch.red_rate": "default",
+  "watch.min_gates": "default"
  }
 }

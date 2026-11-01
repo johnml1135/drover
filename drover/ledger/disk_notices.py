@@ -5,27 +5,28 @@ import json
 from . import ops, tx
 
 
-def publish(conn, notice: dict) -> int:
+def publish(conn, notice: dict, *, kind='disk.notice', epic_title='Disk space', actor='disk') -> int:
+    """Put a notice into the Inbox once per notice id; each kind finds or creates its own epic."""
     with tx(conn):
-        for event in ops.events(conn, kind='disk.notice'):
+        prior = ops.events(conn, kind=kind)
+        for event in prior:
             if event['data']['notice']['id'] == notice['id']:
                 return event['data']['question']
-        prior = ops.events(conn, kind='disk.notice')
-        epic = prior[0]['epic_id'] if prior else ops.create_epic(conn, '', 'Disk space', actor='disk')['id']
+        epic = prior[0]['epic_id'] if prior else ops.create_epic(conn, '', epic_title, actor=actor)['id']
         title = notice.get('title') or ('Repository disk budget exceeded' if notice['kind'] == 'budget' else 'Disk cleanup exhausted')
         question = ops.ask_question(conn, 'epic', epic, title, body=notice.get('body', ''),
-                                    options=[dict(label='Acknowledge')], allow_text=False, actor='disk')
-        ops.event(conn, 'disk.notice', 'disk', dict(notice=notice, question=question), epic_id=epic)
+                                    options=[dict(label='Acknowledge')], allow_text=False, actor=actor)
+        ops.event(conn, kind, actor, dict(notice=notice, question=question), epic_id=epic)
         return question
 
 
-def retract(conn, notice_id: str) -> None:
+def retract(conn, notice_id: str, *, kind='disk.notice', actor='disk') -> None:
     """Close the Inbox question of a notice whose cause has cleared."""
-    for event in ops.events(conn, kind='disk.notice'):
+    for event in ops.events(conn, kind=kind):
         if event['data']['notice']['id'] == notice_id:
             question = ops.get_question(conn, event['data']['question'])
             if question['status'] == 'open':
-                ops.answer_question(conn, question['id'], choice='Acknowledge', actor='disk')
+                ops.answer_question(conn, question['id'], choice='Acknowledge', actor=actor)
 
 
 def replay(conn, cfg, now):

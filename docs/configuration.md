@@ -39,6 +39,15 @@ repository has branch changes (`git diff base...branch`, cached by tip) on a fil
 file matching the same `[dispatch] magnets` pattern (the Herdr skill's list by default). The task stays ready and
 the heartbeat counts it as `conflict-hold`. An unknown branch or a git failure holds nothing.
 
+## Watch notices
+
+The hub watches for three conditions and raises each as an Inbox notice (epic "Watch"), once, and closes it when the
+condition clears. `[watch] interval_s` (default 600) is how often it looks. A machine `hold` verdict opens a warden
+notice. A task reviewed for `stalled_hours` (24) without landing, or a landing gate red rate over `red_rate` (0.5)
+once `min_gates` (6) gates have run, opens a velocity notice. A live run whose context passed `context_tokens`
+(300000) opens a context notice. A reading that needs a stopped WSL gives no notice; the hub never starts WSL to look.
+A check that fails is logged and skipped, and dispatch carries on, paused or not.
+
 ## Repository key reference
 
 Every repository key is listed below. Tables must have the documented shape; unlisted keys and registration facts

@@ -89,6 +89,7 @@ DEFAULTS = {
     },
     "capacity": {"parallel_cap": 40},
     "dispatch": {"magnets": DEFAULT_MAGNETS, "conflict_hold": True},
+    "watch": {"interval_s": 600, "stalled_hours": 24, "context_tokens": 300000, "red_rate": 0.5, "min_gates": 6},
     "trackers": DEFAULT_TRACKERS,
     "policy": {"tau": 0.8, "landing_batch_size": 3, "tuner_cadence_days": [1, 1, 2, 3, 5, 7], "push": False},
     "decider": {"commercial_use": False,"url": "", "models": {"primary": "nimble-v3", "shadow": "nimble", "long_state": "nimble"},

@@ -149,6 +149,21 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         return self._spawn(task, route, policy, placement, task["worktree"], b, "review",
                            {"sha": sha, "worker_run": worker["id"]}) is not None
 
+    def _watch_tick(self, res):
+        """Hub trackers raise Inbox notices on the [watch] interval_s clock, paused or not; a failure never stops dispatch."""
+        try:
+            from . import watch
+            def reading(handle):
+                try:
+                    return handle.context_tokens()
+                except AttributeError:      # a handle that keeps no usage: no reading, no notice
+                    return None
+            runs = [{'run_id': rid, 'task_id': tid, 'context': reading(h)} for rid, (h, tid, _) in list(self.live.items())]
+            watch.tick(self.port.conn, config_mod.get(), res, self.now(), runs)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('watch tick failed')
+
     def tick(self):
         self._control_epoch = self.port.admission()['epoch']
         self._seat_tick()
@@ -197,6 +212,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             for token in res.get('critical_tokens', []):
                 # Tokens are consumed only after the sticky ledger pause commits.
                 (config_mod.state_dir(config_mod.get()) / 'disk' / token).unlink(missing_ok=True)
+        self._watch_tick(res)
         if self.directors is not None:
             def director_slots():
                 return max(0, min(policy['parallel_cap'] - in_use(), res.get('slots', 0)))

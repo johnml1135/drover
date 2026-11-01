@@ -160,6 +160,13 @@ magnets = ["*expected-findings*", "*expected_findings*", "*work-list*", "*workli
            "*release-pathways*", "*registry*", "*Registry*", "*.lock.json"]
 conflict_hold = true        # false starts likely collisions at once
 
+[watch]
+interval_s = 600            # how often the hub looks for stalled work, red gates, big contexts and a machine hold
+stalled_hours = 24          # a reviewed task that has not landed after this long raises a notice
+context_tokens = 300000     # a live run past this many context tokens raises a notice
+red_rate = 0.5              # a landing gate red rate over this raises a notice ...
+min_gates = 6               # ... once this many gates have run
+
 # Trackers: resource checks before new work starts. queue = start nothing new, hold = stop everything. A [[trackers]]
 # entry with the name of a built-in one overrides just the keys you give; a new name adds a tracker; enabled = false
 # switches one off. Unknown facts never block. Legacy resources.toml is ignored; migrate its thresholds

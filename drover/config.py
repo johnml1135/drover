@@ -87,6 +87,9 @@ def validate(raw):
     cfg["capacity"] = _check_table(raw.get("capacity", {}), DEFAULTS["capacity"], ["capacity"],
                                    {"parallel_cap": (1, 64)})
     cfg["dispatch"] = _check_table(raw.get("dispatch", {}), DEFAULTS["dispatch"], ["dispatch"])
+    cfg["watch"] = _check_table(raw.get("watch", {}), DEFAULTS["watch"], ["watch"],
+                                {"interval_s": (1, 86400), "stalled_hours": (1, 8760), "context_tokens": (1000, 10 ** 7),
+                                 "red_rate": (0, 1), "min_gates": (1, 1000)})
     cfg["trackers"] = _trackers(raw.get("trackers", []))
     cfg["disk_cleanup"] = _cleanup_policy(raw.get("disk_cleanup", {}))
     cfg["policy"] = _check_table(raw.get("policy", {}), DEFAULTS["policy"], ["policy"],
