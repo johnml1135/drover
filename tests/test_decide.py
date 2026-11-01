@@ -71,7 +71,7 @@ class TestRegistry(unittest.TestCase):
     def test_all_questions_present_and_shadow(self):
         names = {"gate_failure_class", "retry_or_escalate", "task_size", "task_risk", "harness_pick",
                  "note_admit", "lane_stuck", "plan_wrong", "landed_diff_stale", "batch_culprit",
-                 "branch_superseded"}
+                 "branch_superseded", "landed_outside"}
         self.assertEqual(set(decide.questions()), names)
         for n in names:
             q = decide.get_question(n)
@@ -81,6 +81,13 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(list(decide.get_question("gate_failure_class")["criteria"]), CHOICES)
         self.assertEqual(decide.get_question("task_size")["criteria"], ["S", "M", "L"])
         self.assertEqual(decide.get_question("task_risk")["criteria"], ["low", "high"])
+
+    def test_landed_outside_defaults_to_shadow(self):
+        q = decide.get_question("landed_outside")
+        self.assertEqual((q["mode"], q["type"], q["dynamic"], q["criteria"]), ("shadow", "choice", True, {}))
+        self.assertIn("all of the task's accepted work", q["instructions"])
+        with mock.patch.object(decide, "_config_defaults", return_value={**decide.load_criteria()["defaults"], "mode": "live"}):
+            self.assertEqual(decide.get_question("landed_outside")["mode"], "shadow")
 
 
 class TestTypes(Base):
