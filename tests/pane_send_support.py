@@ -52,13 +52,14 @@ class Stage(FakeHerdr):
         return answer
 
     def __call__(self, argv, **kwargs):
-        done = super().__call__(argv, **kwargs)
-        key = tuple(argv[1:3])
-        self.seen[key] = self.seen.get(key, 0) + 1
-        hook = self.after.get((*key, self.seen[key]))
-        if hook:
-            hook()
-        return done
+        try:
+            return super().__call__(argv, **kwargs)
+        finally:        # a call that hung may still have landed
+            key = tuple(argv[1:3])
+            self.seen[key] = self.seen.get(key, 0) + 1
+            hook = self.after.get((*key, self.seen[key]))
+            if hook:
+                hook()
 
 
 class Case(Base):

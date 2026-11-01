@@ -1,7 +1,8 @@
 """The agents in panes and what Drover wrote to them. Nothing here reaches Herdr.
 
-A row's pane may still exist until the row is `gone`: `retired` panes wait for their close. A `gone` row is history, so
-it grants nothing and never comes back. Seat, placement and who started the agent are written once.
+A row's pane may still exist until the row is `gone`: `retired` panes wait for their close, and a `failed` launch leaves
+its pane to the owner, perhaps with an agent in it. A `gone` row is history, so it grants nothing and never comes back.
+Seat, placement and who started the agent are written once.
 
 A write keeps a digest and a short head, never the text. The digest hashes the text with its whitespace collapsed,
 exactly as `pane_screen.prompt_fingerprint` does, because that is what a composer is compared with.
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 
 from .db import tx
 
-AGENT_STATES = ('starting', 'live', 'rotating', 'compaction', 'retired', 'gone')
+AGENT_STATES = ('starting', 'live', 'rotating', 'compaction', 'retired', 'failed', 'gone')
 HEAD_MAX = 60
 CLOSED_WRITES = ('sent', 'unsent', 'observed', 'acknowledged')    # any other state may still be acting on the pane
 _REQUIRED = ('pane_id', 'kind', 'seat', 'placement', 'started_by')
@@ -79,6 +80,11 @@ def by_pane(conn, pane_id) -> dict | None:
     row = conn.execute("SELECT * FROM pane_agents WHERE pane_id=? AND state<>'gone' ORDER BY id DESC LIMIT 1",
                        (pane_id,)).fetchone()
     return dict(row) if row else None
+
+
+def reused_pane(conn, row) -> bool:
+    """Any earlier row, gone or not, held this pane. Only a pane's first row is in the launcher's own new pane."""
+    return conn.execute('SELECT 1 FROM pane_agents WHERE pane_id=? AND id<? LIMIT 1', (row['pane_id'], row['id'])).fetchone() is not None
 
 
 def _note(conn, agent_id, kind, text):

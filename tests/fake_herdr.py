@@ -78,7 +78,8 @@ class FakeHerdr:
         workspace = _option(args, '--workspace', 'w1')
         tab = {'tab_id': f'{workspace}:t{self._opened}', 'workspace_id': workspace}
         pane = {'pane_id': f'{workspace}:p{self._opened}', 'tab_id': tab['tab_id'], 'workspace_id': workspace,
-                'cwd': _option(args, '--cwd', ''), 'focused': False}
+                'cwd': _option(args, '--cwd', ''), 'focused': False, 'terminal_id': f't{self._opened}',
+                'scroll': {'offset_from_bottom': 0}}
         self.panes[pane['pane_id']] = pane
         return _result({'tab': tab, 'root_pane': pane})
 

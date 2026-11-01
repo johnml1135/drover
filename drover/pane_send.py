@@ -10,7 +10,8 @@ Herdr ends `unsent` only for the codes in NOTHING_WENT_OUT; the rest may follow 
 Every path needs proof the agent is the pane's foreground process, because a shell prompt can look like a composer.
 Herdr sees only wsl.exe for a WSL agent, so a WSL pane must also show something only the agent draws.
 
-The new pane's writes each go once per row, claimed in the ledger: Task 9 must close a stalled one itself.
+The new pane's writes each go once per row, claimed in the ledger. pane_launch closes a stalled one itself and ends the
+row, so a launch is never resent. A Windows launch is one shell line for its environment, then `agent start`.
 
 Text stays short and on one line, so a paste cannot collapse and the screen can prove it is Drover's. Longer text goes
 in a file, and the pane gets a short line naming the path.
@@ -424,6 +425,22 @@ def _shell_line_empty(herdr, row):
             raise PaneRefused('shell-line-not-empty')
 
 
+def shell_alone(herdr, row) -> bool:
+    """True only when Herdr shows the shell alone in the foreground. A read that fails is a PaneRefused."""
+    try:
+        _lone_shell(herdr, row)
+    except PaneRefused as refused:
+        if refused.reason != 'shell-not-alone':
+            raise
+        return False
+    return True
+
+
+def observe(herdr, row) -> dict:
+    """The pane as read now, with its occupant proved unchanged. Grants no write."""
+    return _occupied(herdr, row)
+
+
 def _launched(port, row):
     """The row's own launch went out, so the agent in this `starting` row is the one Drover put here."""
     return any((ops_panes.last_write(port.conn, row['id'], kind) or {}).get('state') == 'sent' for kind in LAUNCHES)
@@ -435,7 +452,7 @@ def answer_startup(port, herdr, row, *, trusted=False) -> dict:
         raise PaneRefused('not-trusted')
     row = _current(port, row)
     _refuse_open_write(port, row)
-    if not _launched(port, row):
+    if not _launched(port, row) or ops_panes.reused_pane(port.conn, row):
         raise PaneRefused('not-fresh')
 
     def read():
@@ -458,7 +475,10 @@ def start_in_shell(port, herdr, row, command) -> dict:
 
 
 def start_agent(port, herdr, row, name, args=()) -> dict:
-    """`agent start`, once for a row, under the same guards. `args` go after `--`, so they may be flags."""
+    """`agent start`, once for a row, under the same guards. `args` go after `--`, so they may be flags.
+
+    It may follow the row's one shell line, which only sets the environment; nothing may follow it.
+    """
     _check_text(name)
     if not isinstance(args, (list, tuple)):
         raise PaneRefused('text-refused')
@@ -471,4 +491,4 @@ def start_agent(port, herdr, row, name, args=()) -> dict:
     read = lambda: _shell_line_empty(herdr, row)
     read()
     argv = ('agent', 'start', name, '--kind', row['kind'], '--pane', row['pane_id'], '--', *args)
-    return _write(port, herdr, row, 'start', name, read, argv, once=LAUNCHES)
+    return _write(port, herdr, row, 'start', name, read, argv, once=('start',))

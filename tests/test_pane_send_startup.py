@@ -293,3 +293,60 @@ class Launch(Base):
         ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
         self.refused(self.agent, 'last-write-pending')
         self.assertEqual(self.fake.calls, [])
+
+    def test_a_windows_row_runs_its_environment_line_then_starts_its_agent(self):
+        self.fresh(placement='windows', kind='claude')
+        self.run_one()
+        self.assertEqual(self.agent()['state'], 'sent')
+        self.assertEqual([call[:2] for call in self.sends()], [['pane', 'run'], ['agent', 'start']])
+
+    def test_nothing_follows_an_agent_start_on_any_order(self):
+        self.fresh(placement='windows', kind='claude')
+        self.run_one()
+        self.agent()
+        self.fake.calls.clear()
+        self.refused(self.agent, 'already-started')
+        self.refused(self.run_one, 'already-started')
+
+    def test_a_stalled_environment_line_stops_the_agent_start(self):
+        fake = self.fresh(placement='windows', kind='claude')
+        fake.hang = {('pane', 'run')}
+        self.assertEqual(self.run_one()['state'], 'unverified')
+        fake.hang = False
+        fake.calls.clear()
+        self.refused(self.agent, 'last-write-unverified')
+
+
+class Reads(Base):
+    def test_shell_alone_says_which(self):
+        self.fresh()
+        self.assertIs(pane_send.shell_alone(self.herdr, self.row), True)
+        self.fake.processes = running('wsl.exe')
+        self.assertIs(pane_send.shell_alone(self.herdr, self.row), False)
+        self.fake.processes = {'shell_pid': 1}
+        self.assertIs(pane_send.shell_alone(self.herdr, self.row), False)
+
+    def test_a_failed_read_is_a_refusal_not_an_answer(self):
+        self.fresh().closed = True
+        self.refused(lambda: pane_send.shell_alone(self.herdr, self.row), 'herdr-unavailable')
+
+    def test_observe_proves_the_occupant(self):
+        self.stage()
+        self.assertEqual(pane_send.observe(self.herdr, self.row)['agent']['pane_id'], PANE)
+        self.fake.agents[PANE]['agent_session'] = {'value': 'other'}
+        self.refused(lambda: pane_send.observe(self.herdr, self.row), 'occupant-changed')
+
+
+class ReusedPane(Startup):
+    def test_a_later_row_on_a_pane_is_not_fresh(self):
+        self.trust()
+        ops_panes.update_agent(self.conn, self.row['id'], state='gone')
+        self.row = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', kind='codex', seat='seat', placement='wsl',
+                                          started_by='drover')
+        self.launched()
+        self.refused(self.answer, 'not-fresh')
+
+    def test_another_panes_row_changes_nothing(self):
+        ops_panes.record_agent(self.conn, pane_id='w1:p9', kind='codex', seat='seat', placement='wsl', started_by='drover')
+        self.trust()
+        self.assertEqual(self.answer()['state'], 'sent')

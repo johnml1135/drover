@@ -168,8 +168,6 @@ class Launching(Base):
 
     def test_stubs(self):
         with self.assertRaises(NotImplementedError):
-            launch.PaneLauncher().launch({})
-        with self.assertRaises(NotImplementedError):
             HttpPort().claim_next()
 
 

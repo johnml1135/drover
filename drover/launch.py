@@ -481,10 +481,3 @@ class RunnerLauncher(Launcher):
         if r.returncode != 0 or not isinstance(rows, list):
             raise ScanError(f"WSL runner find exited {r.returncode}")
         return [row["run_id"] for row in rows if isinstance(row, dict) and type(row.get("run_id")) in (int, str)]
-
-
-class PaneLauncher(Launcher):
-    """Reserved pane launcher; headless RunnerLauncher is the supported implementation."""
-
-    def launch(self, spec):
-        raise NotImplementedError("PaneLauncher is not implemented; use RunnerLauncher")
