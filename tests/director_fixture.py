@@ -66,7 +66,7 @@ class ResidentAdapter(ControlledAdapter):
         self.fail_maintain = False
         self.up = True
 
-    def ready(self):
+    def ready(self, role_id=None, config=None):
         return self.up
 
     def revivable(self, spec):

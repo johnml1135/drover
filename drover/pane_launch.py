@@ -25,7 +25,7 @@ from .ledger import disk_notices, ops_panes
 from .pane_files import NATIVE_COMPACT, repo_trusted, write_private
 from .pane_send import PaneRefused
 
-__all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'START_DEADLINE_S', 'advance', 'age', 'brief', 'expire', 'open_pane', 'publish',
+__all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'START_DEADLINE_S', 'advance', 'age', 'blocked', 'brief', 'expire', 'open_pane', 'publish',
            'repo_trusted', 'resume', 'session_of', 'start', 'write_private']
 
 FIRST_TURN_S = 90
@@ -382,6 +382,42 @@ def advance(port, herdr, row, spec, guard, now, *, cfg) -> bool:
     return _first_turn(port, herdr, row, write, spec, now, cfg)
 
 
+def _workspace(herdr, cfg):
+    """`open_pane` would have somewhere to open: the configured workspace, or any one if none is set."""
+    listed = [entry['workspace_id'] for entry in herdr.call('workspace', 'list').get('workspaces') or []]
+    wanted = cfg['panes']['workspace']
+    if not listed or (wanted and wanted not in listed):
+        raise AdmissionHeld('herdr-no-workspace')
+
+
+def _preconditions(spec, cfg):
+    """(seat, args), or a hold: what a launch needs that no agent can give it. Touches nothing."""
+    if not os.path.isdir(placement.to_windows_path(spec['cwd'])):
+        raise AdmissionHeld('pane-cwd-missing')
+    return _prepare(spec, cfg)
+
+
+def blocked(port, herdr, role_id, launch, *, cfg, resuming=False) -> str | None:
+    """Why this launch could not start now, or None. Reads only, so a role pays nothing for a launch that cannot go.
+
+    A resume keeps its pane, so it needs no workspace, and its `live` row is no occupant.
+    """
+    seat = config.seat_by_name(launch['seat'], cfg) or {}
+    spec = dict(launch, role='director', role_id=role_id, run_id=0, sandbox=seat.get('sandbox'))
+    try:
+        _preconditions(spec, cfg)
+        if not resuming:
+            _clear_role(port, herdr, spec)
+            _workspace(herdr, cfg)
+    except AdmissionHeld as held:
+        return str(held)
+    except HerdrUnavailable:
+        return HERDR_CLOSED
+    except HerdrRefused as refused:
+        return f'herdr-refused:{refused.code}'
+    return None
+
+
 def _available(herdr):
     if not herdr.available():
         raise AdmissionHeld('herdr-unavailable')
@@ -390,9 +426,7 @@ def _available(herdr):
 def start(port, herdr, spec, credential, guard, *, cfg) -> dict:
     """The row for a new agent, `live` once it has reported and `failed` otherwise. Holds come before any effect."""
     guard()
-    if not os.path.isdir(placement.to_windows_path(spec['cwd'])):
-        raise AdmissionHeld('pane-cwd-missing')
-    seat, args = _prepare(spec, cfg)
+    seat, args = _preconditions(spec, cfg)
     _available(herdr)
     _clear_role(port, herdr, spec)
     try:

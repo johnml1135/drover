@@ -23,6 +23,7 @@ class FakeHerdr:
         self.closed = False
         self.hang = False
         self.refuse = {}
+        self.workspaces = [{'workspace_id': 'w1', 'label': 'drover'}]
         self._opened = 0
 
     def restart(self):
@@ -106,7 +107,7 @@ class FakeHerdr:
         return _result({'tabs': [{'tab_id': tab} for tab in sorted({p.get('tab_id') for p in self.panes.values()})]})
 
     def _workspaces(self, args):
-        return _result({'workspaces': [{'workspace_id': 'w1', 'label': 'drover'}]})
+        return _result({'workspaces': self.workspaces})
 
 
 def _option(args, name, default):

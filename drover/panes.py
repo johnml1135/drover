@@ -124,7 +124,11 @@ class PaneService:
     def revivable(self, spec):
         """A lapsed run may end for a resume only when a read shows its pane's shell alone. Otherwise the owner hears why not."""
         row = ops_panes.by_run(self.conn, spec['run_id'])
-        if row is None or row['state'] != 'live' or self.inspect(row) not in (ALIVE, CHANGED, LEFT):
+        if row is None or row['state'] != 'live':
+            return False
+        seen = self.inspect(row)
+        self._lasting(row, seen)        # `_keep` stops at the fence, so this read is the lapsed run's clock
+        if seen not in (ALIVE, CHANGED, LEFT):
             return False
         try:
             roles.admission(self.notifications, spec['role_id'])
@@ -136,6 +140,21 @@ class PaneService:
                                 f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: the agent has no session now and gets "
                                 'no wakes. Drover resumes it here once it has exited; closing the pane frees the role.')
         return alone
+
+    def blocked(self, role_id, cause):
+        """One notice for one cause of one role, whoever restarts, closed when the cause clears or changes."""
+        key = f'pane_blocked:{role_id}'
+        current = self.port.get_setting(key)
+        prefix = f'pane-blocked:{role_id}:{cause}:'
+        if current and not (cause and current.startswith(prefix)):
+            disk_notices.retract(self.conn, current, kind='pane.notice', actor='panes')
+            self.port.set_setting(key, '')
+            current = ''
+        if cause and not current:
+            notice_id = f'{prefix}{int(self.now())}'
+            pane_launch.publish(self.port, notice_id, 'A director cannot start',
+                                f'{role_id}: {cause}. Its mail waits, and it starts once this clears.')
+            self.port.set_setting(key, notice_id)
 
     def orphan(self, role_id):
         """The role's `live` row while no run holds it: only a lapsed run leaves one, and a resume takes it up."""
@@ -305,16 +324,26 @@ class PaneDirectorAdapter:
     def __init__(self, service):
         self.service = service
 
-    def ready(self) -> bool:
-        """Whether a launch may be tried. No costs nothing: Herdr may be closed, and no launch may stand in a compaction's way."""
+    def ready(self, role_id=None, launch=None) -> bool:
+        """Whether a launch may be tried, the role's own if given. No costs nothing: Herdr may be closed, a workspace or a
+        checkout missing, and no launch may stand in a compaction's way.
+        """
         service = self.service
         if compaction_hold.active():
             return False
-        if service.herdr.available():
-            service.herdr_up()
+        if not service.herdr.available():
+            service.herdr_down()
+            return False
+        service.herdr_up()
+        if launch is None:
             return True
-        service.herdr_down()
-        return False
+        cause = pane_launch.blocked(service.port, service.herdr, role_id, launch, cfg=service.cfg,
+                                    resuming=service.orphan(role_id) is not None)
+        if cause == pane_launch.HERDR_CLOSED:
+            service.herdr_down()
+            return False
+        service.blocked(role_id, cause)
+        return cause is None
 
     def overdue(self, spec):
         return self.service.overdue(spec)

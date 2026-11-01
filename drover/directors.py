@@ -450,12 +450,12 @@ class DirectorRuntime:
                 reason = 'unsupported:' + ','.join(missing)
             if reason is None and resident and any(run['role_id'] != role_id for run in self.active_runs()):
                 reason = 'multi-director-parked'
-            if reason is None and resident and not self.adapter.ready():
-                continue  # Closed Herdr is a normal state: the mail waits, and nothing is spent or asked.
-            if reason is None and slots <= 0:
-                reason = 'capacity-unavailable'
             try:
                 config = self._config(role_id) if reason is None else None
+                if config and resident and not self.adapter.ready(role_id, config):
+                    continue  # A launch that cannot start waits: the mail stays, the adapter tells the owner, and nothing is spent.
+                if reason is None and slots <= 0:
+                    reason = 'capacity-unavailable'
                 if reason is None:
                     # This callback shares the dispatcher's seat, allowance,
                     # platform and resource checks, including open durable runs.
