@@ -58,8 +58,8 @@ def _ticks(seconds):
 
 def brief(spec, handoff=None) -> str:
     """One short line, so the screen can prove it is Drover's. Anything longer belongs in a file."""
-    line = f"Drover: you are director role {spec['role_id']}. " + ' '.join(str(spec.get('user_prompt') or DEFAULT_PROMPT).split())
-    return line + (f' First read the handoff at {handoff} and write restated.md beside it.' if handoff else '')
+    first = f'First read the handoff at {handoff} and restate its standing rules in restated.md beside it, before anything else. ' if handoff else ''
+    return f"Drover: you are director role {spec['role_id']}. {first}" + ' '.join(str(spec.get('user_prompt') or DEFAULT_PROMPT).split())
 
 
 def open_pane(herdr, cfg, cwd) -> str:

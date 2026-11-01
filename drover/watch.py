@@ -65,6 +65,13 @@ def context(runs, cfg):
             for r in runs or [] if isinstance(r.get('context'), (int, float)) and r['context'] > cfg['context_tokens']]
 
 
+def director_runs(conn):
+    """Directors in panes, as context() takes them: `pane_handoff` keeps each row's last known reading."""
+    rows = conn.execute("SELECT run_id, role_id, context_tokens FROM pane_agents WHERE state='live' AND started_by='drover' "
+                        'AND context_tokens IS NOT NULL').fetchall()
+    return [{'run_id': row['run_id'], 'task_id': row['role_id'], 'context': row['context_tokens']} for row in rows]
+
+
 def _state(conn):
     try:
         state = json.loads(ops.get_setting(conn, STATE_KEY, '{}'))
@@ -82,7 +89,7 @@ def tick(conn, cfg, resources, now, runs=()):
         return state['open']
     wanted, failed = {}, set()
     for name, check in (('warden', lambda: warden(resources)), ('velocity', lambda: velocity(conn, w, now)),
-                        ('context', lambda: context(runs, w))):
+                        ('context', lambda: context([*runs, *director_runs(conn)], w))):
         try:
             for notice in check():
                 wanted[notice['id']] = notice
