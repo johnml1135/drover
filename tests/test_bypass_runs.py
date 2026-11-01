@@ -277,11 +277,73 @@ class BetweenClaimAndLaunch(YankBase):
             self.d.tick()
         self.assert_nothing_started(tid)
 
+    def test_the_real_ledger_refusal_starts_nothing(self):
+        """A yank after the dispatcher's own read: ops.start_run refuses the worker run."""
+        tid = self.task(size='S')
+        real = self.pipe.worktree
+
+        def worktree(task, where=None):
+            self.yank(task['id'])
+            return real(task, where)
+        self.pipe.worktree = worktree
+        with unittest.mock.patch.object(self.d, '_is_yanked', side_effect=[False, True]):
+            self.d.tick()
+        self.assert_nothing_started(tid)
+
     def test_a_refusal_of_another_kind_still_raises(self):
         self.task(size='S')
         with unittest.mock.patch.object(self.port, 'start_run', side_effect=ValueError('not a yank')):
             with self.assertRaises(ValueError):
                 self.d.tick()
+
+
+class BeforeAGateOrReview(YankBase):
+    """The ledger refuses worker runs only: these paths read the status themselves."""
+    def worker_done(self):
+        tid, rid = self.start()
+        self.fl.handles[0].result = res('done', DONE)
+        return tid
+
+    def assert_no_run_of(self, tid, role):
+        self.assertEqual(self.status(tid), 'yanked')
+        self.assertEqual([r for r in ops.list_runs(self.conn, tid) if r['role'] == role], [])
+        self.assertEqual([r for r in ops.list_runs(self.conn, tid) if r['ended'] is None], [])
+        self.assertEqual(self.d.live, {})
+
+    def test_a_yank_as_the_gate_takes_its_slot_starts_no_gate(self):
+        tid = self.worker_done()
+        real = self.d.ci_runners.reserve
+
+        def reserve(task, **kw):
+            ticket = real(task, **kw)
+            self.yank(task['id'])
+            return ticket
+        launch_call = unittest.mock.Mock(side_effect=AssertionError('no gate may launch'))
+        self.fl.launch = launch_call
+        with unittest.mock.patch.object(self.d.ci_runners, 'reserve', side_effect=reserve) as reserved:
+            self.d.tick()
+        reserved.assert_called_once()
+        launch_call.assert_not_called()
+        self.assert_no_run_of(tid, 'gate')
+        self.assertNotIn(tid, self.d.ci_runners.tickets)
+        self.assertEqual(self.events('gate-error'), [])
+
+    def test_a_yank_as_the_review_prepares_starts_no_review(self):
+        self.allow['codex'] = True
+        tid = self.worker_done()
+        self.d.tick()                                            # reaps the worker, starts the gate
+        self.assertIn(self.run_of(tid, 'gate')['id'], self.d.live)
+        launched = len(self.fl.specs)
+
+        def diff_text(repo, base, sha):
+            self.yank(tid)
+            return 'fixture diff'
+        with unittest.mock.patch.object(self.pipe, 'diff_text', side_effect=diff_text) as diff:
+            self.d.tick()                                        # reaps the gate; the review would start here
+        diff.assert_called_once()
+        self.assert_no_run_of(tid, 'review')
+        self.assertEqual(len(self.fl.specs), launched)
+        self.assertEqual(self.events('review-error'), [])
 
 
 class Landing(MemoryLandingCase):

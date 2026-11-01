@@ -113,6 +113,9 @@ class GateSteps:
             return False
         if self.ci_runners.reserve(task, platform=platform) is None:
             return False                                     # waiting for a gate slot
+        if self._is_yanked(tid):                             # the ledger refuses worker runs only
+            self.ci_runners.release(tid)
+            return False
         gate_run = p.start_run(tid, "gate", "local", "gate")
         nonce = None
         if hasattr(p, "set_run_context"):
