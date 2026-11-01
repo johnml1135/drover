@@ -32,7 +32,7 @@
 <details class="card"><summary>All ledger fields</summary><dl class="kv task-fields">{% for key, value in task.items() %}<dt>{{ key }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}</dl></details>
 {% if task.status in ('proposed', 'draft', 'needs-owner') %}{{ decide('task', task.id, 'Accept findings' if task.can_accept_findings else 'Approve') }}{% else %}{{ comment_btn('task', task.id) }}{% endif %}
 {% if task.status == 'yanked' %}<section class="card"><h2>Yanked</h2>
-<p>Taken outside Drover. It stays closed until it is detected as landed or you settle it.</p>
+<p>Taken outside Drover. It stays closed until it is detected as merged or you settle it.</p>
 <form method="post" action="/tasks/{{ task.id }}/abandon"><button class="btn">Abandon</button></form>
 <form method="post" action="/tasks/{{ task.id }}/handback"><button class="btn ok">Hand back</button></form>
 </section>{% elif task.status not in ('landed', 'cancelled') %}<details class="card"><summary>Yank</summary>

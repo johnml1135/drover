@@ -65,11 +65,16 @@ class BypassHubTests(unittest.TestCase):
         self.assertEqual(r.json()["status"], "draft")
         self.assertEqual(self.status(tid), "cancelled")
 
-    def test_the_generic_status_route_is_not_a_yank(self):
+    def test_the_generic_status_route_yanks_with_the_same_record_and_owner_rule(self):
         tid = self.task()
-        r = self.owner.post(f"/api/v1/tasks/{tid}/status", json={"status": "yanked"}, headers=SAME)
-        self.assertEqual(r.status_code, 422)
+        r = self.token.post(f"/api/v1/tasks/{tid}/status", json={"status": "yanked"}, headers=AUTH)
+        self.assertEqual(r.status_code, 403)
         self.assertEqual(self.status(tid), "ready")
+        r = self.owner.post(f"/api/v1/tasks/{tid}/status", json={"status": "yanked", "reason": "by hand"}, headers=SAME)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.status(tid), "yanked")
+        events = self.store.list_events(task_id=tid, kind="bypass")
+        self.assertEqual([e["data"]["reason"] for e in events], ["by hand"])
 
     def test_task_page_offers_what_the_state_allows(self):
         tid = self.task()

@@ -18,7 +18,7 @@ TaskSize = Literal["S", "M", "L"]
 TaskRisk = Literal["low", "high"]
 NewTaskStatus = Literal["proposed", "draft"]
 TaskStatus = Literal["proposed", "draft", "ready", "claimed", "running", "gated", "reviewed",
-                     "landed", "blocked", "failed", "needs-owner", "cancelled"]
+                     "landed", "blocked", "failed", "needs-owner", "cancelled", "yanked"]
 
 public = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(auth.require_api)])
@@ -319,28 +319,6 @@ def set_status(tid: str, body: StatusIn, request: Request,
 def approve(tid: str, request: Request, who: str = Depends(auth.require_api)):
     owner_only(who)
     return guard(_store(request).approve, tid)
-
-
-class YankIn(BaseModel):
-    reason: str = ""
-
-
-@router.post("/tasks/{tid}/yank")
-def yank_task(tid: str, request: Request, body: YankIn | None = None, who: str = Depends(auth.require_api)):
-    owner_only(who)
-    return guard(_store(request).yank_task, tid, body.reason if body else "")
-
-
-@router.post("/tasks/{tid}/abandon")
-def abandon_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
-    owner_only(who)
-    return guard(_store(request).abandon_task, tid)
-
-
-@router.post("/tasks/{tid}/handback")
-def handback_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
-    owner_only(who)
-    return guard(_store(request).handback_task, tid)
 
 
 @router.post("/runs", status_code=201)
