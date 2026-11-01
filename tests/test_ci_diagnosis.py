@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 import unittest
 from drover import ci
-from tests import test_ci as fixture
+from tests import test_ci_policy as fixture
 
 class DiagnosticCI(unittest.TestCase):
     setUp = fixture.PolicyCITests.setUp

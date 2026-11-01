@@ -203,3 +203,8 @@ class FakeGitCase(Questions, LedgerCase):
         for each in patches:
             each.start()
             self.addCleanup(each.stop)
+
+    def landed_by_hand(self):
+        tip = self.r.branch('feat', {'f.txt': 'x'})
+        self.r.merge()
+        return tip

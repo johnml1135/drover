@@ -48,7 +48,7 @@ def _serve(request):
                 result['errors'].append(dict(reason_code='trim_unavailable', error=str(error)))
         return result
     if stage == 2:
-        from .disk_paths import temporary
+        from .disk_temp import temporary
         return temporary(request)
     if stage == 3:
         from .disk_paths import caches

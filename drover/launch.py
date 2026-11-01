@@ -29,7 +29,7 @@ from .placement import NO_WINDOW
 from .launch_usage import (HANDOFF_MAX, PROVIDER_ERROR, PROVIDER_STATUS, PROGRESS_EVENTS,
                            provider_error_of, Usage, _one_line, summarise, rotation_handoff)
 from .launch_handle import (TAIL_LINES, TAIL_FLUSH_EVERY, POLL_S, MAX_LINE, START_TIMEOUT_S,
-                            TERMINAL, IN_FILE, TAIL_FILE, Tail, RunnerHandle)
+                            TERMINAL, IN_FILE, TAIL_FILE, Tail, RunnerHandle, normalize_run_ids)
 
 HAIKU_CEILING = 80_000        # the pricing line is 100K; rotate before it
 NOTE_MAX = 300
@@ -481,19 +481,6 @@ class RunnerLauncher(Launcher):
         if r.returncode != 0 or not isinstance(rows, list):
             raise ScanError(f"WSL runner find exited {r.returncode}")
         return [row["run_id"] for row in rows if isinstance(row, dict) and type(row.get("run_id")) in (int, str)]
-
-
-def normalize_run_ids(found):
-    """Integer ledger run ids only; ignore unrelated or malformed process markers."""
-    out = {}
-    for rid, placement in found.items():
-        if type(rid) not in (int, str):
-            continue
-        try:
-            out[int(rid)] = placement
-        except ValueError:
-            continue
-    return out
 
 
 class PaneLauncher(Launcher):

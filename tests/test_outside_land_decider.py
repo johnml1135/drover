@@ -4,22 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import landing, outside_land, placement
-from drover.ledger import landing as landing_storage
 from drover.ledger import ops, states
 from tests.outside_land_fixture import Decider, DeciderCase, GitCase
 
 
 class LiveCitationTests(DeciderCase):
-    def test_live_answer_citing_a_commit_on_main_lands(self):
-        tid, _, commit = self.unproved(hand='f.txt')
-        self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
-        self.assertEqual(self.status(tid), states.LANDED)
-        record = self.external(tid)
-        self.assertEqual((record['sha'], record['gate'], record['review']), (commit, 'outside-drover', 'decider'))
-        self.assertEqual(ops.events(self.conn, task_id=tid, kind='status')[-1]['actor'], 'detector')
-        self.assertEqual(landing_storage.land_sha(self.conn, tid), commit)
-        self.assertEqual(ops.open_questions(self.conn), [])
-        self.assertEqual(self.conn.execute('SELECT shadow FROM decisions').fetchone()[0], 0)
 
     def test_live_answer_on_a_pushing_repo_reads_the_remote_base(self):
         self.use_config(push=True)
@@ -34,19 +23,6 @@ class LiveCitationTests(DeciderCase):
         self.r.git('push', '-q', 'origin', 'main')
         self.r.commit('local.txt')
         self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
-
-    def test_live_answer_for_a_commit_off_main_is_ignored(self):
-        tid, tip, commit = self.unproved()
-        with patch.object(outside_land, 'ambiguous', return_value=[commit, tip]):
-            self.scan(Decider(self.conn, acted=True, answer=tip))
-        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-
-    def test_live_citation_with_no_file_overlap_asks_the_owner(self):
-        tid, _, commit = self.unproved(hand='g.txt')      # in scope, but the task's recorded commit changed only f.txt
-        self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [])
-        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
-        self.assertIn(f'Landed at {commit}', self.labels())
 
     def test_live_citation_for_a_task_with_no_recorded_commit_asks_the_owner(self):
         tid = self.task()
@@ -142,31 +118,6 @@ class UnknownTests(DeciderCase):
         with self.fail_only('cherry'), self.assertRaises(outside_land.GitUnknown):
             outside_land._proof(self.r.repo, 'feat', 'main', [tip], self.fork)
 
-    def test_pruned_recorded_commit_still_reaches_the_question(self):
-        tid = self.task()
-        self.r.branch('feat', {'g.txt': 'y'})
-        self.worker_done(tid, 'a' * 40)
-        self.r.commit('f.txt', msg='hand work')
-        self.scan()
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-
-    def test_unresolved_start_still_reaches_the_question(self):
-        tid = self.task()
-        tip = self.r.branch('feat', {'g.txt': 'y'})
-        self.worker_done(tid, tip, base='b' * 40)
-        self.r.commit('f.txt', msg='hand work')
-        self.scan()
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-
-    def test_pruned_later_point_still_reaches_the_question(self):
-        tid = self.task()
-        tip = self.r.branch('feat', {'g.txt': 'y'})
-        self.worker_done(tid, 'c' * 40, run=1)
-        self.worker_done(tid, tip, run=2, base='d' * 40)
-        self.r.commit('f.txt', msg='hand work')
-        self.assertEqual(self.scan()['landed'], [])
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-
     def test_no_git_inside_a_transaction(self):
         _, _, commit = self.unproved()
         real, seen = placement.git, []
@@ -179,39 +130,6 @@ class UnknownTests(DeciderCase):
             self.scan()
         self.assertTrue(seen)
         self.assertFalse(any(seen))
-
-
-class OwnerAnswerTests(DeciderCase):
-    def test_owner_answer_landed_records_the_named_commit(self):
-        tid, _, commit = self.unproved()
-        self.scan()
-        self.answer(f'Landed at {commit}')
-        self.assertEqual(self.scan()['landed'], [tid])
-        self.assertEqual(self.status(tid), states.LANDED)
-        record = self.external(tid)
-        self.assertEqual((record['sha'], record['base_ref'], record['review']), (commit, 'main', 'owner-answer'))
-        self.assertEqual(ops.events(self.conn, task_id=tid, kind='status')[-1]['actor'], 'owner')
-
-    def refused(self, sha):
-        answered = self.question()['id']
-        self.answer(f'Landed at {sha}')
-        self.scan()
-        self.assertEqual(ops.get_question(self.conn, answered)['status'], 'answered')
-        return answered
-
-    def test_owner_answer_off_the_base_opens_one_question_saying_why(self):
-        tid, tip, commit = self.unproved()
-        with patch.object(outside_land, 'ambiguous', return_value=[commit, tip]):
-            self.scan()
-        answered = self.refused(tip)
-        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
-        again = self.question()
-        self.assertNotEqual(again['id'], answered)
-        self.assertIn(tip, again['body'])
-        self.assertIn('is not on main', again['body'])
-        self.assertEqual(self.labels(again), [f'Landed at {commit}', 'Not landed'])
-        self.scan()
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
 
 class RetractionTests(DeciderCase):

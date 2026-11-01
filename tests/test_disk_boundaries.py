@@ -13,9 +13,9 @@ from tests.disk_fixture import DiskCase
 
 class Boundaries(DiskCase):
     def test_no_platform_forks_sql_or_legacy_disk_imports(self):
-        from drover import disk, disk_cleanup, disk_side, disk_paths, disk_worktrees, disk_state, ownership, disk_schedule
+        from drover import disk, disk_cleanup, disk_side, disk_paths, disk_temp, disk_worktrees, disk_state, ownership, disk_schedule
         root = Path(__file__).resolve().parents[1]
-        modules = (disk, disk_cleanup, disk_side, disk_paths, disk_worktrees, disk_state, ownership, disk_schedule)
+        modules = (disk, disk_cleanup, disk_side, disk_paths, disk_temp, disk_worktrees, disk_state, ownership, disk_schedule)
         for module in modules:
             source = Path(module.__file__).read_text()
             tree = ast.parse(source)
