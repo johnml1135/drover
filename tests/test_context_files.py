@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import config_defaults, context_files
-from tests.tiers import integration
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -16,7 +15,6 @@ def adr(n, globs='["drover/**"]', status='accepted', body='Decision.\n'):
     return f'---\nschema_version: 1\nid: ADR-{n:04d}\nstatus: {status}\napplies_to: {globs}\n---\n# Title\n{body}'
 
 
-@integration
 class SelectTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

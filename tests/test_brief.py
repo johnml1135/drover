@@ -5,7 +5,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import brief
-from tests.tiers import integration
 
 LIMITS = {'context': {'file_limit_bytes': 6144, 'total_limit_bytes': 12288}}
 
@@ -14,7 +13,6 @@ def adr(n, body):
     return f'---\nid: ADR-{n:04d}\nstatus: accepted\napplies_to: ["drover/**"]\n---\n# Title {n}\n{body}\n'
 
 
-@integration
 class ContextSectionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
