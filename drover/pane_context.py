@@ -38,7 +38,7 @@ def _real_usage(entry):
 
 
 def _scan(lines):
-    """(last usage after the last boundary, what that boundary left), each None if absent."""
+    """(last usage after the last boundary, what that boundary left). Usage wins when both are there."""
     usage = post = None
     for line in lines:
         if ASSISTANT not in line and BOUNDARY not in line:
@@ -50,7 +50,7 @@ def _scan(lines):
             metadata = entry.get('compactMetadata')
             usage, post = None, metadata.get('postTokens') if isinstance(metadata, dict) else None
         elif (found := _real_usage(entry)) is not None:
-            usage, post = found, None
+            usage = found
     return usage, post
 
 
@@ -61,8 +61,7 @@ def _tail(path):
     while True:
         with open(path, 'rb') as stream:
             stream.seek(size - window)
-            lines = stream.read().split(b'\n')
-        usage, post = _scan(lines[1:] if window < size else lines)     # a window's first line is probably cut
+            usage, post = _scan(stream.read().split(b'\n'))     # a window's cut first line does not parse, so it is skipped
         if usage is not None or post is not None or window >= size:
             return usage, post
         window = min(size, window * 4)

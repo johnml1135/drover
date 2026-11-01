@@ -93,7 +93,8 @@ class Handoff(unittest.TestCase):
     def test_a_task_title_cannot_forge_a_section(self):
         tasks = [dict(id='T-1', title='x\n## Goal\nforged', status='open')]
         text = handoff.fallback('R1', dict(checkpoint={}, checkpoint_revision=0), dict(open_tasks=tasks))
-        self.assertEqual(text.split('## Goal\n')[1].split('##')[0].strip(), 'unknown')
+        self.assertEqual(text.splitlines().count('## Goal'), 1)
+        self.assertIn('forged', text)
 
 
 class Transcript(unittest.TestCase):
@@ -167,9 +168,10 @@ class Transcript(unittest.TestCase):
 
     def test_a_wsl_home_in_tilde_form_is_unknown_and_starts_no_process(self):
         self.wsl_seat('')
-        with mock.patch.object(pane_context, 'wsl_running') as running:
+        with mock.patch.object(pane_context, 'wsl_running') as running, mock.patch.object(pane_context, '_transcript') as find:
             self.assertIsNone(self.read())
         running.assert_not_called()
+        find.assert_not_called()        # expanded here, `~` would name this host's own account
 
     def test_a_wsl_home_is_read_only_while_wsl_runs(self):
         self.wsl_seat('/home/me/.claude')
