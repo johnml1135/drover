@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 
-from . import pane_guard, pane_screen, placement, placement_git
+from . import config, pane_guard, pane_screen, placement, placement_git
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .ledger import ops_panes
 
@@ -123,11 +123,12 @@ def judge(row, agent, screen, facts, *, now, observed):
                % (idle, note))
 
 
-def _snapshot(row):
+def _snapshot(row, cfg=None):
     """Processes on the side the hub runs on. The other side cannot be listed from here, so it is unknown."""
     if row.get('placement') != placement.cleanup_side():
         return None
-    return placement.cleanup_processes(request={})
+    ignore = list((config.get() if cfg is None else cfg)['disk_cleanup']['process_ignore'])
+    return placement.cleanup_processes(request={'paths': {'process_ignore': ignore}, 'clear_ignored': True})
 
 
 def _busy(herdr, row, pane, path, processes):
@@ -243,8 +244,9 @@ def close_if_still_eligible(port, herdr, row, result, *, now, observed, pending,
     return dict(checked, verdict='closed')
 
 
-def tick(port, herdr, now, *, apply=True, run=None, processes=None) -> list[dict]:
-    """Judge every retired Drover pane; with apply, close those that pass twice. No pane's failure skips the rest."""
+def tick(port, herdr, now, *, apply=False, run=None, processes=None, cfg=None) -> list[dict]:
+    """Judge every retired Drover pane; a dry run unless `apply`, which closes those that pass twice. No pane's failure skips the rest."""
+    processes = processes or (lambda row: _snapshot(row, cfg))
     rows = [r for r in ops_panes.open_agents(port.conn) if r['state'] == 'retired']
     observed, pending = _load(port, SETTING), _load(port, PENDING)
     results = []

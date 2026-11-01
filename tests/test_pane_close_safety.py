@@ -4,7 +4,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from drover import pane_close
+from drover import pane_close, placement_proof
 from drover.ledger import ops_panes
 from tests.pane_close_fixtures import CLAUDE_READY, NOW, REPO, Fleet, PaneCloseBase, agent, snapshot
 
@@ -84,6 +84,49 @@ class RealSnapshot(PaneCloseBase):
             self.tick(herdr, 0, processes=None)
             self.assertEqual(self.tick(herdr, 60, processes=None)[0]['verdict'], 'close')
         taken.assert_called()
+
+
+class Cleared(PaneCloseBase):
+    def rows(self, **over):
+        csrss = dict(pid=1720, name='csrss.exe', same_user=None, cwd=None, cmd='', session_id=1, ppid=0, exe=None)
+        other = dict(csrss, pid=1721, name='mystery.exe')
+        return [dict(pid=101, name='node.exe', same_user=True, cwd=REPO, cmd=['node'], ppid=100), csrss,
+                *([other] if over.get('other') else [])]
+
+    def proof(self, request, **over):
+        rows = self.rows(**over)
+        return placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, request=request)
+
+    def test_ignored_images_with_unreadable_executables_are_cleared_only_when_asked(self):
+        paths = {'process_ignore': ['csrss.exe']}
+        self.assertTrue(self.proof(dict(paths=paths)).unknown)
+        self.assertFalse(self.proof(dict(paths=paths, clear_ignored=True)).unknown)
+
+    def test_clearing_is_not_a_budget_purge(self):
+        self.assertFalse(self.proof(dict(paths={'process_ignore': []}, clear_ignored=True)).budget)
+
+    def test_a_process_that_stays_unreadable_and_is_not_listed_keeps_the_pane(self):
+        proof = self.proof(dict(paths={'process_ignore': ['csrss.exe']}, clear_ignored=True), other=True)
+        self.assertTrue(proof.unknown)
+        self.assertEqual([r['name'] for r in proof.unreadable], ['mystery.exe'])
+
+    def test_the_default_snapshot_asks_for_the_configured_names(self):
+        row = dict(placement='windows')
+        cfg = {'disk_cleanup': {'process_ignore': ['a.exe']}}
+        with mock.patch.object(pane_close.placement, 'cleanup_side', return_value='windows'),                 mock.patch.object(pane_close.placement, 'cleanup_processes') as taken:
+            pane_close._snapshot(row, cfg)
+        taken.assert_called_once_with(request={'paths': {'process_ignore': ['a.exe']}, 'clear_ignored': True})
+
+
+class DryFirst(PaneCloseBase):
+    def test_tick_is_a_dry_run_unless_told_to_apply(self):
+        self.retired()
+        herdr = self.herdr()
+        kwargs = dict(run=self.git, processes=self.processes)
+        pane_close.tick(self.port, herdr, NOW, **kwargs)
+        out = pane_close.tick(self.port, herdr, NOW + 3600, **kwargs)
+        self.assertEqual(([r['verdict'] for r in out], self.fake.closes(), self.events('pane-closed')), (['close'], [], []))
+        self.assertEqual(pane_close.tick(self.port, herdr, NOW + 3600, apply=True, **kwargs)[0]['verdict'], 'closed')
 
 
 class OwnTree(PaneCloseBase):

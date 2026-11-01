@@ -83,6 +83,7 @@ class _CleanupProcesses:
         self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
         self.budget = bool((request or {}).get('budget'))
+        self.clear_ignored = bool((request or {}).get('clear_ignored'))
         self.ignored = (request or {}).get('paths', {}).get('process_ignore', PROCESS_IGNORE)
         self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
         self.query_failure = None
@@ -192,7 +193,7 @@ class _CleanupProcesses:
         regenerable outputs idle 2 hours are at stake, and Windows hides these images from a non-elevated hub, so no
         location check can ever pass for them. Linux cuts a process name to 15 characters. Other stages never ask."""
         image = self._image(name)
-        return self.budget and not exe and (image in self.ignored or (
+        return (self.budget or self.clear_ignored) and not exe and (image in self.ignored or (
             not self.windows and len(image) == 15 and any(entry.startswith(image) for entry in self.ignored)))
 
     def _scope(self, name, exe, same_user, session_id):
