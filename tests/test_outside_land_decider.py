@@ -21,7 +21,8 @@ class Decider:
 
     def __call__(self, name, state, rule_answer=None, dynamic_criteria=None, **kw):
         assert not self.conn.in_transaction
-        self.calls.append(SimpleNamespace(name=name, state=state, rule=rule_answer, criteria=dynamic_criteria))
+        self.calls.append(SimpleNamespace(name=name, state=state, rule=rule_answer, criteria=dynamic_criteria,
+                                          timeout=kw.get('timeout')))
         return self.result
 
 
@@ -81,6 +82,13 @@ class ShadowAndLiveTests(DeciderCase):
         self.r.git('push', '-q', 'origin', 'main')
         self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
         self.assertEqual(self.external(tid)['base_ref'], 'origin/main')
+
+    def test_live_answer_holds_when_the_local_branch_is_ahead_of_the_remote(self):
+        self.use_config(push=True)
+        tid, _, commit = self.unproved()
+        self.r.git('push', '-q', 'origin', 'main')
+        self.r.commit('local.txt')
+        self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
 
     def test_live_answer_citing_an_unknown_sha_is_ignored(self):
         tid, _, commit = self.unproved()
@@ -188,6 +196,53 @@ class QuietTests(DeciderCase):
             self.scan()
         self.assertEqual((self.decider.calls, ops.open_questions(self.conn)), ([], []))
 
+    def fail_only(self, command, returncode=128):
+        real = landing.git
+        def broken(repo, *args, **kw):
+            if args and args[0] == command:
+                return SimpleNamespace(returncode=returncode, stdout='', stderr='fatal: disk full')
+            return real(repo, *args, **kw)
+        return patch.object(landing, 'git', side_effect=broken)
+
+    def test_failure_of_one_git_step_asks_nothing_and_the_next_interval_proves_it(self):
+        tid = self.task('yanked')
+        self.worker_done(tid, self.landed_by_hand())
+        self.r.commit('h.txt')
+        with self.fail_only('merge-tree'), self.assertLogs('drover.outside_land', 'WARNING'):
+            self.assertEqual(self.scan()['landed'], [])
+        self.assertEqual((self.decider.calls, ops.open_questions(self.conn)), ([], []))
+        self.assertEqual(self.scan()['landed'], [tid])
+
+    def test_failed_cherry_is_unknown(self):
+        tip = self.r.branch('feat', {'f.txt': 'x'})
+        self.r.commit('other.txt')
+        self.r.git('cherry-pick', 'feat')
+        with self.fail_only('cherry'), self.assertRaises(outside_land.GitUnknown):
+            outside_land._proof(self.r.repo, 'feat', 'main', [tip], self.fork)
+
+    def test_failed_cited_commit_check_asks_nothing(self):
+        _, _, commit = self.unproved()
+        with patch.object(outside_land, '_survives', side_effect=outside_land.GitUnknown('broken')), \
+                self.assertLogs('drover.outside_land', 'WARNING'):
+            self.scan(Decider(self.conn, acted=True, answer=commit))
+        self.assertEqual(ops.open_questions(self.conn), [])
+
+    def test_pruned_recorded_commit_still_reaches_the_question(self):
+        tid = self.task()
+        self.r.branch('feat', {'g.txt': 'y'})
+        self.worker_done(tid, 'a' * 40)
+        self.r.commit('f.txt', msg='hand work')
+        self.scan()
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_unresolved_start_still_reaches_the_question(self):
+        tid = self.task()
+        tip = self.r.branch('feat', {'g.txt': 'y'})
+        self.worker_done(tid, tip, base='b' * 40)
+        self.r.commit('f.txt', msg='hand work')
+        self.scan()
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
     def test_no_git_inside_a_transaction(self):
         _, _, commit = self.unproved()
         real, seen = placement.git, []
@@ -205,7 +260,7 @@ class QuietTests(DeciderCase):
 class BudgetTests(DeciderCase):
     def test_decider_call_that_would_pass_the_budget_waits_for_the_next_interval(self):
         tid, _, _ = self.unproved()
-        clock = iter([0, 0, outside_land.SCAN_BUDGET_S - outside_land.decide_module.TIMEOUT])
+        clock = iter([0, 0, outside_land.SCAN_BUDGET_S - outside_land.decide_module.TIMEOUT + 1])
         decider = Decider(self.conn)
         with self.assertLogs('drover.outside_land', 'WARNING'):
             outside_land.tick(self.conn, {}, decide=decider, now=lambda: next(clock))
@@ -220,6 +275,26 @@ class BudgetTests(DeciderCase):
         decider = Decider(self.conn)
         outside_land.tick(self.conn, {'decider': {'timeout_s': 1}}, decide=decider, now=lambda: next(clock, 60))
         self.assertEqual(len(decider.calls), 1)
+
+    def test_a_timeout_past_the_budget_gets_the_time_left(self):
+        self.unproved()
+        clock = iter([0, 0, 10])
+        decider = Decider(self.conn)
+        outside_land.tick(self.conn, {'decider': {'timeout_s': 600}}, decide=decider, now=lambda: next(clock, 60))
+        self.assertEqual(decider.calls[0].timeout, outside_land.SCAN_BUDGET_S - 10)
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_git_before_the_decider_counts_against_its_time(self):
+        self.unproved()
+        spent = {'now': 0.0}
+        real = outside_land._described
+        def slow(*args):
+            spent['now'] = outside_land.SCAN_BUDGET_S - 1
+            return real(*args)
+        decider = Decider(self.conn)
+        with patch.object(outside_land, '_described', side_effect=slow), self.assertLogs('drover.outside_land', 'WARNING'):
+            outside_land.tick(self.conn, {}, decide=decider, now=lambda: spent['now'])
+        self.assertEqual(decider.calls, [])
 
     def test_decider_time_counts_against_the_budget(self):
         first, _, _ = self.unproved()
@@ -351,6 +426,137 @@ class OwnerAnswerTests(DeciderCase):
             self.assertEqual(self.scan(), {'scanned': 0, 'landed': []})
         git.assert_not_called()
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
+
+
+class AnswerOnceTests(DeciderCase):
+    def taken(self, tid):
+        return [e['data']['outcome'] for e in ops.events(self.conn, task_id=tid, kind='landing.answer')]
+
+    def test_not_landed_then_later_yank_does_not_cancel(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        self.answer('Not landed')
+        self.scan()
+        ops.yank(self.conn, tid)
+        self.scan()
+        self.scan()
+        self.assertEqual(self.status(tid), states.YANKED)
+        self.assertEqual(self.taken(tid), ['not-landed'])
+
+    def test_not_landed_with_a_yank_before_the_next_tick_does_not_cancel(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        self.answer('Not landed')
+        ops.yank(self.conn, tid)
+        self.scan()
+        self.assertEqual(self.status(tid), states.YANKED)
+        self.assertEqual(self.taken(tid), ['void'])
+
+    def rerun(self, tid):
+        ops.set_status(self.conn, tid, states.READY, 'owner', reason='requeued')
+        self.assertEqual(ops.claim_next(self.conn, {})['id'], tid)
+        ops.set_status(self.conn, tid, states.NEEDS_OWNER, 'worker', reason='stuck again')
+
+    def test_stale_landed_answer_does_not_land_a_rerun_task(self):
+        tid, _, commit = self.unproved()
+        self.scan()
+        question = self.question()['id']
+        ops.set_status(self.conn, tid, states.READY, 'owner', reason='requeued')
+        self.answer(f'Landed at {commit}')
+        self.assertEqual(ops.claim_next(self.conn, {})['id'], tid)
+        ops.set_status(self.conn, tid, states.NEEDS_OWNER, 'worker', reason='stuck again')
+        self.assertEqual(self.scan()['landed'], [])
+        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
+        self.assertEqual(self.taken(tid), ['void'])
+        self.assertEqual(ops.open_questions(self.conn), [])
+        self.assertEqual(ops.get_question(self.conn, question)['status'], 'answered')
+
+    def test_void_answer_naming_a_bad_commit_opens_no_refusal(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        self.answer(text=f'Landed at {"f" * 40}')
+        self.rerun(tid)
+        self.scan()
+        self.assertEqual((self.taken(tid), ops.open_questions(self.conn)), (['void'], []))
+
+    def test_answer_is_consumed_once_across_ticks(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        self.answer(text='ask me next week')
+        self.scan()
+        self.scan()
+        self.assertEqual(self.taken(tid), ['no-action'])
+
+    def test_landing_and_its_consumption_commit_together(self):
+        tid, _, commit = self.unproved()
+        self.scan()
+        self.answer(f'Landed at {commit}')
+        with patch('drover.ledger.landing.record_merged', side_effect=ValueError('no')), \
+                self.assertLogs('drover.outside_land', 'WARNING'):
+            self.assertEqual(self.scan()['landed'], [])
+        self.assertEqual((self.status(tid), self.taken(tid)), (states.NEEDS_OWNER, []))
+        self.assertEqual(self.scan()['landed'], [tid])
+        self.assertEqual(self.taken(tid), ['landed'])
+
+    def test_refusal_and_its_consumption_commit_together(self):
+        tid, tip, commit = self.unproved()
+        with patch.object(outside_land, 'ambiguous', return_value=[commit, tip]):
+            self.scan()
+        self.answer(f'Landed at {tip}')
+        with patch.object(outside_land, '_ask_owner', side_effect=ValueError('no')), \
+                self.assertLogs('drover.outside_land', 'WARNING'):
+            self.scan()
+        self.assertEqual((self.taken(tid), ops.open_questions(self.conn)), ([], []))
+        self.scan()
+        self.assertEqual(self.taken(tid), ['refused'])
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_abandon_and_its_consumption_commit_together(self):
+        tid, _, _ = self.unproved('yanked')
+        self.scan()
+        self.answer('Not landed')
+        with patch('drover.ledger.ops_bypass.abandon', side_effect=ValueError('no')), \
+                self.assertLogs('drover.outside_land', 'WARNING'):
+            self.scan()
+        self.assertEqual((self.status(tid), self.taken(tid)), (states.YANKED, []))
+        self.scan()
+        self.assertEqual((self.status(tid), self.taken(tid)), (states.CANCELLED, ['not-landed']))
+
+    def test_a_task_moved_since_it_was_asked_about_loses_its_open_question(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        ops.yank(self.conn, tid)
+        self.scan()
+        self.assertEqual((self.status(tid), ops.open_questions(self.conn)), (states.YANKED, []))
+        self.scan()
+        self.assertEqual(self.taken(tid), ['void'])
+        self.assertEqual(self.status(tid), states.YANKED)
+
+
+class QuestionBodyTests(DeciderCase):
+    def test_the_body_names_each_candidate_and_the_options_stay(self):
+        _, _, commit = self.unproved()
+        self.scan()
+        body = self.question()['body']
+        self.assertIn(f'{commit[:12]} hand work', body)
+        self.assertEqual(self.labels(), [f'Landed at {commit}', 'Not landed'])
+
+    def test_subjects_are_truncated_plain_text(self):
+        self.unproved()
+        subject = 'tag <b>\u202e' + 'x' * 200
+        self.r.commit('g.txt', 'again', msg=subject)
+        self.scan()
+        body = self.question()['body']
+        self.assertNotIn('\u202e', body)
+        self.assertNotIn('x' * 100, body)
+        self.assertIn('tag <b> xxx', body)
+        self.assertIn('...', body)
+
+    def test_a_subject_cannot_forge_a_changed_file(self):
+        self.task(scope_files=['f.txt'])
+        self.r.commit('unrelated.txt', msg='evil\u2028f.txt\u2028more')
+        found = outside_land._log(self.r.repo, 'main', '-1')[0]
+        self.assertEqual((found[1], found[2]), ('evil\u2028f.txt\u2028more', ['unrelated.txt']))
 
 
 class RetractionTests(DeciderCase):

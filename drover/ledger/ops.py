@@ -68,7 +68,8 @@ from .ops_tasks import (
     unblock,
 )
 from .ops_stages import read_only_result, accept_read_only
-from .ops_outside import record_answered_landing, record_detected_landing, record_external_landing
+from .ops_outside import (answer_taken, record_answered_landing, record_detected_landing, record_external_landing,
+                          status_mark, take_answer)
 from .ops_dispatch import set_epic_mode, set_default_mode, pick, awaiting_pick, mode_of, default_mode
 from .ops_bypass import yank, abandon, handback
 from .ops_execution import (

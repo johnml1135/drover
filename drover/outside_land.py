@@ -1,12 +1,14 @@
 """Detect landings made outside Drover: git proves them, so nobody has to record them.
 
 Only commits the ledger ties to the task can prove a landing, and the task's change must still be on the base: a
-branch name can be reused, and history cannot see a revert. Every failure or unknown state returns no proof, and git
-never runs inside a ledger transaction. The scan is synchronous, so its time is budgeted and a stuck repo stops early.
+branch name can be reused, and history cannot see a revert. No failure or unknown state is a proof, and git never
+runs inside a ledger transaction. The scan is synchronous, so its time is budgeted and a stuck repo stops early.
 
 What git answers but does not prove, with commits on the base that overlap the task, goes to the decider and then to
-the owner in one Inbox question. A model's answer counts only for a commit git_proof then shows on the base, and the
-owner's answer is checked against the base too. When git cannot answer, nothing is asked and the next interval retries.
+the owner in one Inbox question. A model's answer counts only for a commit git then shows on the base with its change
+still there, and the owner's answer is checked against the base too. An answer is consumed once, with what it causes,
+and is void if the task has changed since it was asked about. When git cannot answer, nothing is asked and the next
+interval retries.
 """
 import json
 import logging
@@ -15,7 +17,7 @@ import subprocess
 import time
 
 from . import ci, config, decide as decide_module, disk, landing, placement, repos
-from .ledger import disk_notices, ops, ops_bypass, scope, states
+from .ledger import disk_notices, ops, ops_bypass, scope, states, tx
 
 INTERVAL_S = 600
 GIT_TIMEOUT_S = 30
@@ -23,6 +25,8 @@ SCAN_BUDGET_S = 60
 RESUME_KEY = 'outside_land_resume'
 SHA = re.compile('[0-9a-f]{40}')
 QUESTION, MAX_CANDIDATES, NOT_LANDED = 'landed_outside', 20, 'not_landed'
+SUBJECT_CHARS = 72
+DECIDER_FLOOR_S = 5      # less time than this, or than the configured timeout if lower, is not worth a call
 KIND, EPIC, ACTOR = 'landing.notice', 'Outside landings', 'detector'
 LANDED_AT = re.compile(r'landed at\s+(\S+)', re.IGNORECASE)
 log = logging.getLogger(__name__)
@@ -41,9 +45,17 @@ def interval_s(cfg):
 
 
 def _out(repo, *args, **kw):
-    """Git's stripped stdout, or None for any nonzero exit. A timeout raises TimeoutExpired."""
+    """Git's stripped stdout, or None when it answers no by exiting 1. Any other exit raises GitUnknown, and a timeout
+    raises TimeoutExpired."""
     result = landing.timed_git(repo, *args, timeout=GIT_TIMEOUT_S, **kw)
+    if result.returncode not in (0, 1):
+        raise GitUnknown(f'git {args[0]} exited {result.returncode}: {result.stderr.strip()[:200]}')
     return None if result.returncode else result.stdout.strip()
+
+
+def _commit(repo, name):
+    """The full SHA `name` resolves to, or None when the repo has no such commit."""
+    return _out(repo, 'rev-parse', '--verify', '-q', f'{name}^{{commit}}')
 
 
 def _count(repo, base, sha, kind):
@@ -53,14 +65,17 @@ def _count(repo, base, sha, kind):
 def _replayed(repo, base, sha):
     """No commit past the base is a merge, which `git cherry` skips, and the base holds the patch of each.
     The caller has shown `sha` is not on the base, so there is at least one."""
-    return _count(repo, base, sha, '--merges') == '0' and landing.contained(repo, sha, base, timeout=GIT_TIMEOUT_S)
+    if _count(repo, base, sha, '--merges') != '0':
+        return False
+    cherry = _out(repo, 'cherry', base, sha)
+    return cherry is not None and not any(line.startswith('+') for line in cherry.splitlines())
 
 
 def _adds_nothing(repo, base, sha):
     """`sha` changed something, and merging it into the base changes nothing."""
     fork = _out(repo, 'merge-base', base, sha)
-    merged = _out(repo, 'merge-tree', '--write-tree', base, sha)
-    if not fork or not merged:
+    merged = fork and _out(repo, 'merge-tree', '--write-tree', base, sha)    # with no fork, git refuses the merge
+    if not merged:
         return False
     fork_tree, sha_tree, base_tree = (_out(repo, 'rev-parse', '--verify', f'{commit}^{{tree}}') for commit in (fork, sha, base))
     return bool(base_tree) and fork_tree != sha_tree and merged == base_tree
@@ -79,9 +94,10 @@ def _survives(repo, base, start, sha):
 
 
 def _proof(repo, branch, base_ref, commits, start):
-    if not commits:
-        return None
+    if not commits or not _commit(repo, commits[-1]):
+        return None           # a pruned commit is a real no, though the checks below would fail on it
     recorded = commits[-1]    # an earlier attempt on the base says nothing about the task's final output
+    start = start and _commit(repo, start)
     tip = _out(repo, 'rev-parse', '--verify', '-q', f'refs/heads/{branch}^{{commit}}')
     base = _out(repo, 'rev-parse', '--verify', '-q', f'{base_ref}^{{commit}}')
     if not tip or not base:
@@ -105,7 +121,7 @@ def git_proof(repo, branch, base_ref, commits=(), start=None):
 
     `commits` are the commits the ledger recorded for the task, and `start` the base of its first worker run.
     `sha` is always on the base: the recorded commit for 'ancestor', the base itself for the other proofs, whose
-    recorded commit never reached it. A timeout is unknown, so it gives None."""
+    recorded commit never reached it. A timeout or a git failure is unknown, so it gives None too; `_proof` raises."""
     try:
         return _proof(repo, branch, base_ref, commits, start)
     except (OSError, ValueError, subprocess.SubprocessError, ci.CIError):
@@ -134,35 +150,22 @@ def candidates(conn):
     return found
 
 
-def _said(repo, *args):
-    """Git's stripped stdout, or None when it answers no by exiting 1. Any other exit raises GitUnknown."""
-    result = landing.timed_git(repo, *args, timeout=GIT_TIMEOUT_S)
-    if result.returncode not in (0, 1):
-        raise GitUnknown(f'git {args[0]} exited {result.returncode}: {result.stderr.strip()[:200]}')
-    return None if result.returncode else result.stdout.strip()
-
-
-def _commit(repo, name):
-    """The full SHA `name` resolves to, or None when the repo has no such commit."""
-    return _said(repo, 'rev-parse', '--verify', '-q', f'{name}^{{commit}}')
-
-
 def _log(repo, *args):
     """(sha, subject, changed files) of each commit `git log` selects, newest first."""
     found = []
-    for entry in (_said(repo, 'log', '--format=%x00%H %s', '--name-only', *args) or '').split('\0')[1:]:
-        head, *files = entry.strip().splitlines()
+    for entry in (_out(repo, 'log', '--format=%x00%H %s', '--name-only', *args) or '').split('\0')[1:]:
+        head, *files = entry.strip().split('\n')    # only newlines: a subject can hold other line separators
         sha, _, subject = head.partition(' ')
         found.append((sha, subject, [name for name in files if name]))
     return found
 
 
 def _fork(repo, task, base_ref):
-    """Where the task left the base: from its last run's start, or else from its branch or recorded commits, since a
+    """Where the task left the base: from its first run's start, or else from its branch or recorded commits, since a
     branch that reached the base has moved its own merge base past the task's work."""
     for name in filter(None, (task.get('start'), f"refs/heads/{task['branch']}", *reversed(task.get('commits') or ()))):
         if _commit(repo, name):
-            fork = _said(repo, 'merge-base', base_ref, name)
+            fork = _out(repo, 'merge-base', base_ref, name)
             if fork:
                 return fork
     return None
@@ -191,9 +194,19 @@ def ambiguous(repo, task, base_ref):
 
 
 def _described(repo, shas):
-    """Each commit and a line that says what it is."""
-    return {sha: f"{subject}; files: {', '.join(files[:6])}"
-            for sha, subject, files in (_log(repo, '--no-walk=unsorted', *shas) if shas else [])}
+    """Each commit's subject and changed files."""
+    return {sha: (subject, files) for sha, subject, files in (_log(repo, '--no-walk=unsorted', *shas) if shas else [])}
+
+
+def _line(commit):
+    subject, files = commit
+    return f"{subject}; files: {', '.join(files[:6])}"
+
+
+def _plain(subject):
+    """A commit subject as one short line of plain text: it is someone else's text, shown to the owner to decide on."""
+    text = ' '.join(''.join(c if c.isprintable() else ' ' for c in subject).split())
+    return text if len(text) <= SUBJECT_CHARS else text[:SUBJECT_CHARS - 3] + '...'
 
 
 def _refusal(repo, sha, ref, name):
@@ -202,100 +215,110 @@ def _refusal(repo, sha, ref, name):
         return f'{sha} is not a full commit SHA'
     if not _commit(repo, sha):
         return f'{sha} is not a commit in this repository'
-    if _said(repo, 'merge-base', '--is-ancestor', sha, ref) is None:
+    if _out(repo, 'merge-base', '--is-ancestor', sha, ref) is None:
         return f'{sha} is not on {name}'
     return None
 
 
-def _holds(repo, sha, ref, name, default_branch):
-    """A cited commit is on the base and its own change is still there, so one reverted since cannot land a task.
-    git_proof judges the commit alone: the default branch stands in for the task's, which it never reached."""
-    if _refusal(repo, sha, ref, name):
-        return False
-    proof = git_proof(repo, default_branch, ref, [sha], _commit(repo, f'{sha}^'))
-    return bool(proof) and proof['sha'] == sha
+def _holds(repo, sha, ref, name):
+    """A cited commit is on the base and its own change is still there, so one reverted since cannot land a task."""
+    return not _refusal(repo, sha, ref, name) and _survives(repo, ref, _commit(repo, f'{sha}^'), sha)
 
 
 def _real_decide(*args, **kw):
     return decide_module.decide(*args, recorder=lambda result: None, **kw)    # _ask_decider records into the ledger
 
 
-def _ask_decider(conn, task, commits, decide):
+def _ask_decider(conn, task, commits, decide, wait):
     """The commit a live answer cites, if it is one of the candidates. No transaction is open across the call."""
+    lines = {sha: _line(commit) for sha, commit in commits.items()}
     state = json.dumps({'task': {key: task.get(key) for key in ('title', 'goal', 'acceptance', 'scope_files', 'branch')},
-                        'recorded_commits': task['commits'], 'candidate_commits': commits}, indent=1)
-    criteria = {**{sha: f"This commit carries all of the task's accepted work: {line}" for sha, line in commits.items()},
+                        'recorded_commits': task['commits'], 'candidate_commits': lines}, indent=1)
+    criteria = {**{sha: f"This commit carries all of the task's accepted work: {line}" for sha, line in lines.items()},
                 NOT_LANDED: "No one commit listed carries all of the task's accepted work, or it cannot be told."}
-    result = decide(QUESTION, state, rule_answer=NOT_LANDED, dynamic_criteria=criteria)
+    result = decide(QUESTION, state, rule_answer=NOT_LANDED, dynamic_criteria=criteria, timeout=wait)
     landing._recorder(conn)(result)
     return result.get('answer') if result.get('acted') and result.get('answer') in commits else None
 
 
-def _ask_owner(conn, ident, task, commits, name, why=''):
-    """One Inbox question. It sits on the epic: an answer on the task itself would requeue a needs-owner task."""
-    options = [*(dict(label=f'Landed at {sha}', description=line) for sha, line in commits.items()),
+def _ask_owner(conn, ident, task, commits, name, mark, why=''):
+    """One Inbox question, tied to the task's state by `mark`. It sits on the epic: an answer on the task itself would
+    requeue a needs-owner task. The Inbox shows only the body and the labels, so the body names the commits."""
+    options = [*(dict(label=f'Landed at {sha}', description=_line(commit)) for sha, commit in commits.items()),
                dict(label='Not landed', description='It stays where it is; a yanked task is abandoned.')]
+    listed = '; '.join(f'{sha[:12]} {_plain(subject)}' for sha, (subject, _) in commits.items())
     body = f"{task['title']}\n\nGit cannot prove this task landed on {name}. Free text may say \"Landed at <full SHA>\"."
-    disk_notices.publish(conn, dict(id=ident, task=task['id'], title=f"Did {task['id']} land outside Drover?",
+    body += f'\n\nCommits that overlap it: {listed}' if listed else ''
+    disk_notices.publish(conn, dict(id=ident, task=task['id'], mark=mark, title=f"Did {task['id']} land outside Drover?",
                                     body=f'{why}\n\n{body}' if why else body, options=options, allow_text=True),
                          kind=KIND, epic_title=EPIC, actor=ACTOR)
 
 
-def _take_answer(conn, task, repo, name, ref, question):
-    """Act on the owner's answer, if there is one. Each outcome holds when read again next interval: the task has
-    moved, there was nothing to do, or the new question already exists under its own id."""
+def _take_answer(conn, task, repo, name, ref, notice):
+    """Act once on the owner's answer, if there is one. `take_answer` commits with the action, and only then does the
+    action run, so an answer is never read twice and never outlives the state it was given about."""
+    tid, question, mark = task['id'], notice['question'], notice['notice']['mark']
     asked = ops.get_question(conn, question)
-    if asked['status'] == 'open':
+    if asked['status'] == 'open' or ops.answer_taken(conn, tid, question):
         return False
     reply = (asked['answer_choice'] or asked['answer_text'] or '').strip()
-    if reply.lower() == 'not landed' and task['status'] == states.YANKED:
-        ops_bypass.abandon(conn, task['id'], actor='owner')
     landed = LANDED_AT.fullmatch(reply)
-    if not landed:
+    if ops.status_mark(conn, tid) != mark or not landed:
+        with tx(conn):
+            not_landed = reply.lower() == 'not landed'
+            if ops.take_answer(conn, tid, question, mark, 'not-landed' if not_landed else 'no-action') \
+                    and not_landed and task['status'] == states.YANKED:
+                ops_bypass.abandon(conn, tid, actor='owner')
         return False
     sha = landed[1].lower()
     why = _refusal(repo, sha, ref, name)
     if why:
-        _ask_owner(conn, f"{task['id']}#{question}", task, _described(repo, ambiguous(repo, task, ref)), name,
-                   why=f'That answer was not recorded: {why}.')
+        commits = _described(repo, ambiguous(repo, task, ref))
+        with tx(conn):
+            if ops.take_answer(conn, tid, question, mark, 'refused'):
+                _ask_owner(conn, f'{tid}#{question}', task, commits, name, mark,
+                           why=f'That answer was not recorded: {why}.')
         return False
-    ops.record_answered_landing(conn, task['id'], sha, name, actor='owner')
-    return True
+    done = ops.record_answered_landing(conn, tid, sha, name, actor='owner',
+                                       guard=lambda: ops.take_answer(conn, tid, question, mark, 'landed'))
+    return done['status'] == states.LANDED
 
 
 def _unproved(conn, task, prog, decide, room):
-    """No proof was found. True if the task lands all the same. One question per task, for ever, unless the owner's
-    answer is refused. git_proof gives None for unknown too, so git must first show that it can answer here."""
+    """Git answered, with no proof. True if the task lands all the same. One question per task, for ever, unless the
+    owner's answer is refused."""
     name, ref, repo = *_base(prog), repos.native(repos.repo_path(prog))
     if not _commit(repo, ref):
         raise GitUnknown(f'{ref} does not resolve')
     notices = [e['data'] for e in ops.events(conn, kind=KIND) if e['data']['notice']['task'] == task['id']]
     if notices:
-        return _take_answer(conn, task, repo, name, ref, notices[-1]['question'])
+        return _take_answer(conn, task, repo, name, ref, notices[-1])
     shas = ambiguous(repo, task, ref)
     if not shas:
         return False
-    if not room():
+    commits, mark, wait = _described(repo, shas), ops.status_mark(conn, task['id']), room()
+    if not wait:
         raise _OutOfTime
-    commits = _described(repo, shas)
-    cited = _ask_decider(conn, task, commits, decide)
-    if ops.get_task(conn, task['id'])['status'] != task['status']:
-        return False          # the owner moved it while the model thought
-    if cited and _holds(repo, cited, ref, name, repos.default_branch(prog)):
+    cited = _ask_decider(conn, task, commits, decide, wait)
+    if ops.status_mark(conn, task['id']) != mark:
+        return False          # the task moved while the model thought
+    if cited and _holds(repo, cited, ref, name):
         ops.record_detected_landing(conn, task['id'], cited, name, 'decider')
         return True
-    _ask_owner(conn, task['id'], task, commits, name)
+    _ask_owner(conn, task['id'], task, commits, name, mark)
     return False
 
 
 def _close_settled(conn):
-    """Close the open questions of tasks that have landed or been cancelled, however that came about."""
+    """Close the open questions of tasks that have landed or been cancelled, however that came about, and of tasks that
+    have moved since they were asked about, whose answer would be void."""
     for data in (e['data'] for e in ops.events(conn, kind=KIND)):
+        notice = data['notice']
         if ops.get_question(conn, data['question'])['status'] == 'open':
-            status = ops.get_task(conn, data['notice']['task'])['status']
-            if status in states.TERMINAL:
-                disk_notices.retract(conn, data['notice']['id'], kind=KIND, actor=ACTOR, choice=None,
-                                     text=f'Closed by Drover: the task {status}.')
+            status = ops.get_task(conn, notice['task'])['status']
+            if status in states.TERMINAL or ops.status_mark(conn, notice['task']) != notice['mark']:
+                disk_notices.retract(conn, notice['id'], kind=KIND, actor=ACTOR, choice=None,
+                                     text=f'Closed by Drover: the task is {status} now.')
 
 
 def _base(prog):
@@ -333,12 +356,14 @@ def _detect(conn, task, prog):
 def tick(conn, cfg, *, decide=None, now=time.monotonic):
     """Scan the candidates once. Proofs are found with no transaction open; each landing is one short transaction.
 
-    A repo stops at its first timeout. The whole scan, decider calls included, stops at SCAN_BUDGET_S, or before a
-    call that could pass it, and resumes there at the next interval."""
+    A repo stops at its first timeout. The whole scan, decider calls included, stops at SCAN_BUDGET_S, and a decider
+    call gets only the time left, or waits if too little is. Either way the scan resumes there at the next interval."""
     tasks, landed, stuck, up, scanned, started = _in_turn(conn, candidates(conn)), [], set(), None, 0, now()
     programs, resume, decide = repos.load_all() if tasks else {}, '', decide or _real_decide
     margin = cfg.get('decider', {}).get('timeout_s', decide_module.TIMEOUT)
-    room = lambda: now() - started + margin < SCAN_BUDGET_S
+    def room():
+        wait = min(margin, SCAN_BUDGET_S - (now() - started))
+        return wait if wait >= min(margin, DECIDER_FLOOR_S) else 0
     for task in tasks:
         if now() - started >= SCAN_BUDGET_S:
             resume = task['id']

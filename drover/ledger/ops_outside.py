@@ -10,6 +10,7 @@ from .ops_tasks import get_task
 
 
 PROOFS = ('ancestor', 'patch-equivalent', 'adds-nothing', 'decider')
+ANSWER_KIND = 'landing.answer'
 
 
 def _landable(conn, task_id, sha, base_ref, gate, review, sources, refusal):
@@ -54,8 +55,32 @@ def _reachable_base(task, sha, base_ref):
     return base_sha
 
 
-def _record_landing(conn, task_id, sha, base_ref, gate, review, actor, sources, refusal, reason):
-    """Verify with git first, then record in one short transaction that re-reads the task."""
+def status_mark(conn, task_id):
+    """The position of the task's latest status change. Any later state or attempt has a greater one."""
+    latest = events(conn, task_id=task_id, kind='status', limit=1, newest=True)
+    return latest[0]['id'] if latest else 0
+
+
+def answer_taken(conn, task_id, question):
+    return any(e['data']['question'] == question for e in events(conn, task_id=task_id, kind=ANSWER_KIND))
+
+
+def take_answer(conn, task_id, question, mark, outcome, actor='detector'):
+    """Consume an answer to a landing question, in the caller's transaction if there is one, so that the consumption
+    and the action it allows commit together. True only the first time, and only if the task has not changed since
+    `mark`, taken when the question was asked; otherwise the answer is void and nothing may act on it."""
+    with tx(conn):
+        if answer_taken(conn, task_id, question):
+            return False
+        valid = status_mark(conn, task_id) == mark
+        event(conn, ANSWER_KIND, actor, {'question': question, 'outcome': outcome if valid else 'void'}, task_id=task_id)
+        return valid
+
+
+def _record_landing(conn, task_id, sha, base_ref, gate, review, actor, sources, refusal, reason, guard=None):
+    """Verify with git first, then record in one short transaction that re-reads the task.
+
+    `guard` runs in that transaction, and a false result records nothing."""
     if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', sha):
         raise ValueError('a full 40-character commit SHA is required')
     sha = sha.lower()
@@ -68,7 +93,7 @@ def _record_landing(conn, task_id, sha, base_ref, gate, review, actor, sources, 
     base_sha = _reachable_base(task, sha, base_ref)
     with tx(conn):
         task = _landable(*check)
-        if task['status'] == states.LANDED:
+        if task['status'] == states.LANDED or (guard and not guard()):
             return task
         evidence = dict(sha=sha, base_ref=base_ref, base_sha=base_sha, gate=gate, review=review)
         conn.execute('UPDATE tasks SET status=?, blocker=NULL, updated=? WHERE id=?',
@@ -90,14 +115,14 @@ def record_external_landing(conn, task_id, sha, base_ref, gate, review, actor='o
                            'Owner recorded external landing')
 
 
-def record_answered_landing(conn, task_id, sha, base_ref, actor='owner'):
+def record_answered_landing(conn, task_id, sha, base_ref, actor='owner', guard=None):
     """Record the commit the owner named in answer to a landing question, for a task awaiting the owner or yanked."""
     if actor != 'owner':
         raise PermissionError('only the owner may answer that a task landed')
     return _record_landing(conn, task_id, sha, base_ref, 'outside-drover', 'owner-answer', actor,
                            (states.NEEDS_OWNER, states.YANKED),
                            'only yanked or owner-held implementations can be recorded',
-                           'Owner answered that it landed outside Drover')
+                           'Owner answered that it landed outside Drover', guard)
 
 
 def record_detected_landing(conn, task_id, sha, base_ref, proof, actor='detector'):
