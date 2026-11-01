@@ -67,15 +67,19 @@ def _adds_nothing(repo, base, sha):
 
 
 def _survives(repo, base, start, sha):
-    """The task changed something, and merging its whole change from `start` into the base changes nothing, so it is
-    all still there. This compares trees: a conflict or a later edit of the same lines is a missed proof, never a false one."""
-    if not start:
+    """The task changed something, and merging `sha` into the base changes nothing from any point the task passed
+    through, so all of it is still there. One span cannot show this: a run that only restores what `start[0]`, the first
+    run's base, held is in no diff from it. Each point merges to `sha`, not the next commit, because a run may remove
+    what a later run restores. This compares trees: a conflict or a later edit of the same lines is a missed proof,
+    never a false one."""
+    first, *later = [start] if isinstance(start, str) else start or [None]
+    if not first or not all(later):
         return False
-    merged = _out(repo, 'merge-tree', '--write-tree', f'--merge-base={start}', base, sha)
-    if not merged:
+    first_tree, sha_tree, base_tree = (_out(repo, 'rev-parse', '--verify', f'{commit}^{{tree}}') for commit in (first, sha, base))
+    if not base_tree or first_tree == sha_tree:
         return False
-    start_tree, sha_tree, base_tree = (_out(repo, 'rev-parse', '--verify', f'{commit}^{{tree}}') for commit in (start, sha, base))
-    return bool(base_tree) and start_tree != sha_tree and merged == base_tree
+    return all(_out(repo, 'merge-tree', '--write-tree', f'--merge-base={point}', base, sha) == base_tree
+               for point in dict.fromkeys(point for point in (first, *later) if point == first or point != sha))
 
 
 def _proof(repo, branch, base_ref, commits, start):
@@ -103,7 +107,8 @@ def _proof(repo, branch, base_ref, commits, start):
 def git_proof(repo, branch, base_ref, commits=(), start=None):
     """{'sha', 'proof'} when git proves the task's newest recorded commit landed on `base_ref` and is still there.
 
-    `commits` are the commits the ledger recorded for the task, and `start` the base of its first worker run.
+    `commits` are the commits the ledger recorded for the task, and `start` the base of its first worker run, or
+    the list `candidates` gives: that base, then the task's earlier commits and the base of the run that made the newest.
     `sha` is always on the base: the recorded commit for 'ancestor', the base itself for the other proofs, whose
     recorded commit never reached it. A timeout is unknown, so it gives None."""
     try:
@@ -119,8 +124,9 @@ def _evidence(conn, task_id):
              for e in ops.events(conn, task_id=task_id, kind='run-launching')}
     first = next((e['data'].get('run') for e in ops.events(conn, task_id=task_id, kind='run-started')
                   if e['data'].get('role') == 'worker'), None)
-    start = bases.get(first)
-    return {'commits': [d['sha'] for d in done], 'start': start if SHA.fullmatch(start or '') else None}
+    start, commits = bases.get(first), [d['sha'] for d in done]
+    points = [start, *commits[:-1], bases.get(done[-1].get('run'))] if done else [start]
+    return {'commits': commits, 'start': points if SHA.fullmatch(start or '') else None}
 
 
 def candidates(conn):
