@@ -10,6 +10,13 @@ DEVICES = ("auto", "gpu", "cpu")
 AUTH_MODES = ("tailscale",)
 SIZES = ("S", "M", "L")
 
+# Shared append-only lists and generated files that conflict on nearly every merge (herdr/wsl/admit-slice.py).
+DEFAULT_MAGNETS = [
+    '*expected-findings*', '*expected_findings*', '*work-list*', '*worklist*', '*WORKLIST*',
+    '*golden*', '*.golden.*', '*test-shard-weights*', '*shard-weights*', '*/Help/Content/*/commands.json',
+    '*terms.json', '*release-pathways*', '*registry*', '*Registry*', '*.lock.json',
+]
+
 # Process names a disk cleanup never counts as workspace activity. Shells are deliberately excluded.
 PROCESS_IGNORE_R11_WINDOWS = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
                               'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe']
@@ -80,7 +87,8 @@ DEFAULTS = {
         "review": "sonnet-5.5",
         "director": "opus-5.5",
     },
-    "capacity": {"parallel_cap": 4},
+    "capacity": {"parallel_cap": 40},
+    "dispatch": {"magnets": DEFAULT_MAGNETS, "conflict_hold": True},
     "trackers": DEFAULT_TRACKERS,
     "policy": {"tau": 0.8, "landing_batch_size": 3, "tuner_cadence_days": [1, 1, 2, 3, 5, 7], "push": False},
     "decider": {"commercial_use": False,"url": "", "models": {"primary": "nimble-v3", "shadow": "nimble", "long_state": "nimble"},

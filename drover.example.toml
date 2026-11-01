@@ -150,7 +150,15 @@ M = 1
 L = 1
 
 [capacity]
-parallel_cap = 4            # workers at once, all seats; the tuner may move it by one either way
+parallel_cap = 40           # workers at once, all seats; yours alone, the tuner never moves it
+
+[dispatch]
+# A ready task waits (stays ready, reported as conflict-hold) while an active task's branch has changed a file its
+# scope covers, or a file matching the same magnet pattern. Magnets are fnmatch patterns on the path or file name.
+magnets = ["*expected-findings*", "*expected_findings*", "*work-list*", "*worklist*", "*WORKLIST*", "*golden*",
+           "*.golden.*", "*test-shard-weights*", "*shard-weights*", "*/Help/Content/*/commands.json", "*terms.json",
+           "*release-pathways*", "*registry*", "*Registry*", "*.lock.json"]
+conflict_hold = true        # false starts likely collisions at once
 
 # Trackers: resource checks before new work starts. queue = start nothing new, hold = stop everything. A [[trackers]]
 # entry with the name of a built-in one overrides just the keys you give; a new name adds a tracker; enabled = false

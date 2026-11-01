@@ -86,6 +86,7 @@ def validate(raw):
     cfg["models"] = _check_table(raw.get("models", {}), DEFAULTS["models"], ["models"])
     cfg["capacity"] = _check_table(raw.get("capacity", {}), DEFAULTS["capacity"], ["capacity"],
                                    {"parallel_cap": (1, 64)})
+    cfg["dispatch"] = _check_table(raw.get("dispatch", {}), DEFAULTS["dispatch"], ["dispatch"])
     cfg["trackers"] = _trackers(raw.get("trackers", []))
     cfg["disk_cleanup"] = _cleanup_policy(raw.get("disk_cleanup", {}))
     cfg["policy"] = _check_table(raw.get("policy", {}), DEFAULTS["policy"], ["policy"],

@@ -48,7 +48,7 @@ TAU_QUESTIONS = ("retry_or_escalate", "plan_wrong")
 MIN_AUDIT = 3
 SMALL_DIFF_LINES = 20
 TIER = {"haiku": 0, "luna": 0, "sonnet": 1, "sol": 1, "opus": 2, "fable": 3}
-AUTO_KEYS = ("routes", "leaders", "tau", "batch_size", "parallel_cap")  # the only policy keys the tuner writes
+AUTO_KEYS = ("routes", "leaders", "tau", "batch_size")  # the only policy keys the tuner writes
 STATE_KEY = "tuner_state"
 
 
@@ -176,7 +176,6 @@ def current_policy(conn):
     for q in TAU_QUESTIONS:
         p["tau"][q] = min(TAU_RANGE[1], max(TAU_RANGE[0], p["tau"].get(q, _policy()["tau"])))
     p.setdefault("batch_size", _policy()["landing_batch_size"])
-    p.setdefault("parallel_cap", _cap_default())
     return p
 
 
@@ -254,11 +253,8 @@ def _pass(conn, now, state, runs):
     if batch != policy["batch_size"]:
         material.append(f"batch_size: {policy['batch_size']} -> {batch}")
     lph = landed_per_hour(new)
-    cap, cap_dir = tune_cap(policy["parallel_cap"], lph, state)
-    if cap != policy["parallel_cap"]:
-        material.append(f"parallel_cap: {policy['parallel_cap']} -> {cap}")
 
-    policy.update(routes=routes, leaders=leaders, tau={**tau, **tau_new}, batch_size=batch, parallel_cap=cap)
+    policy.update(routes=routes, leaders=leaders, tau={**tau, **tau_new}, batch_size=batch)
     version = None
     if json.dumps({k: policy.get(k) for k in AUTO_KEYS}, sort_keys=True) != before:
         version = _new_version(conn)
@@ -273,10 +269,10 @@ def _pass(conn, now, state, runs):
     advance(state, adopted=bool(material), reset=bool(triggers))
     state.update(last_pass=now.strftime("%Y-%m-%dT%H:%M:%SZ"), last_run_id=max(r["id"] for r in runs), new_runs=0,
                  last_cpl=cpl if cpl is not None else state["last_cpl"], models_sig=sig, repos=progs, reset=False,
-                 last_lph=lph if lph is not None else state["last_lph"], last_cap=cap, last_cap_dir=cap_dir)
+                 last_lph=lph if lph is not None else state["last_lph"])
     save_state(conn, state)
     return {"ran": True, "version": version, "changes": material, "audit": aud, "tau": tau_new, "batch_size": batch,
-            "parallel_cap": cap, "cost_per_landed": cpl, "proposals": made, "resets": sorted(set(triggers)),
+            "cost_per_landed": cpl, "proposals": made, "resets": sorted(set(triggers)),
             "step": state["step"], "shadow": acc}
 
 

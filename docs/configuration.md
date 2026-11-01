@@ -31,6 +31,14 @@ Legacy `resources.toml` and legacy resource dictionaries are unsupported. Move l
 `[[trackers]]`, disk prefixes to named disk trackers, and GPU `vram_fallback_pct` to the vram tracker's
 `fallback_pct` before removing old operational files. No ledger migration is required.
 
+## Dispatch limits
+
+`capacity.parallel_cap` (default 40, range 1 to 64) is the owner's: stored policy values are ignored and the tuner never
+changes it. `[dispatch] conflict_hold` (default true) makes a ready task wait while an active task in the same
+repository has branch changes (`git diff base...branch`, cached by tip) on a file its `scope_files` cover, or on a
+file matching the same `[dispatch] magnets` pattern (the Herdr skill's list by default). The task stays ready and
+the heartbeat counts it as `conflict-hold`. An unknown branch or a git failure holds nothing.
+
 ## Repository key reference
 
 Every repository key is listed below. Tables must have the documented shape; unlisted keys and registration facts
