@@ -7,6 +7,8 @@ from unittest import mock
 from drover.ledger import IllegalTransition, disk_notices, ops, states
 from drover.ledger.ops_bypass import abandon, handback, yank
 from drover.ledger.waiting import TASK_TERMINAL, Waiting, cause_key
+from drover.notifications import Notifications
+from drover.notifications.core_scope import effective_owner
 from tests import ledger_fixture
 from tests.test_ledger import Base
 
@@ -180,6 +182,35 @@ class YankTests(BypassBase):
         self.assertFalse(entry['live'])
         self.assertEqual(active, [])
 
+    def test_snapshot_stays_live_when_a_yanked_task_is_settled_with_a_run_open(self):
+        for settle in (abandon, handback):
+            with self.subTest(settle=settle.__name__):
+                tid = self.task()['id']
+                ledger_fixture.stage(self.conn, tid, 'running')
+                with ops.tx(self.conn):
+                    self.conn.execute("UPDATE tasks SET worktree=? WHERE id=?", (f'H:/wt/{tid}', tid))
+                yank(self.conn, tid)
+                settle(self.conn, tid)
+                self.assertEqual(self.status(tid), states.CANCELLED)
+                state = Path(self.tmp.name) / 'state'
+                with mock.patch('drover.config.state_dir', return_value=state):
+                    disk_notices.replay(self.conn, {}, 1000)
+                snapshot = json.loads((state / 'disk' / 'tasks.json').read_text())
+                entry = next(t for t in snapshot['tasks'] if t['id'] == tid)
+                self.assertFalse(entry['terminal'])
+                self.assertTrue(entry['live'])
+                self.assertIn(f'H:/wt/{tid}', snapshot['active_worktrees'])
+
+    def test_start_run_refused_after_yank(self):
+        tid = self.task()['id']
+        ledger_fixture.stage(self.conn, tid, 'claimed')
+        yank(self.conn, tid)
+        with self.assertRaises(IllegalTransition):
+            ops.start_run(self.conn, tid, 'worker', 'local')
+        self.assertEqual(ops.list_runs(self.conn, tid), [])
+        self.assertEqual(self.status(tid), states.YANKED)
+        self.assertEqual(ops.get_task(self.conn, tid)['attempts'], 0)
+
 
 class ClosedSubjectTests(BypassBase):
     """Waits and replans never move a yanked task, and never fail because of one."""
@@ -317,6 +348,48 @@ class HandbackTests(BypassBase):
         old = self.yanked()
         self.assertEqual(ops.get_task(self.conn, old)['read_access'], ['p@main'])
         self.assertEqual(handback(self.conn, old)['read_access'], ['p@main'])
+
+    def test_handback_keeps_upstream_deps(self):
+        hard = self.task()['id']
+        soft = self.task()['id']
+        old = self.task(deps=[hard, dict(depends_on=soft, kind='waits-for')])['id']
+        yank(self.conn, old)
+        new = handback(self.conn, old)['id']
+        self.assertEqual(ops.deps_of(self.conn, new), sorted(
+            [dict(depends_on=hard, kind='blocks'), dict(depends_on=soft, kind='waits-for')],
+            key=lambda d: d['depends_on']))
+        ops.approve(self.conn, new)
+        self.assertNotIn(new, [t['id'] for t in ops.ready_tasks(self.conn)])
+
+    def test_handback_moves_group_membership_and_director_ownership(self):
+        service = Notifications(self.conn)
+        service.register('director:a')
+        service.create_group('G-one', 'director:a')
+        old = self.task(group_id='G-one', initiating_role='director:a', kind='research')['id']
+        service.seal('G-one', service.get_group('G-one')['revision'], 'seal')
+        yank(self.conn, old)
+        self.assertIn('child-yanked', service.get_group('G-one')['failure_reason'])
+        before = service.get_group('G-one')['revision']
+        new = handback(self.conn, old)['id']
+        group = service.get_group('G-one')
+        self.assertEqual([m['child_id'] for m in group['members']], [new])
+        self.assertIsNone(group['failure_reason'])
+        self.assertEqual(group['revision'], before + 1)
+        self.assertEqual(effective_owner(self.conn, new, 'stage')['role_id'], 'director:a')
+
+    def test_handback_keeps_the_group_gate_of_a_parent_and_its_own_parent(self):
+        service = Notifications(self.conn)
+        service.register('director:a')
+        top = self.task(initiating_role='director:a')['id']
+        old = self.task(parent_id=top)['id']
+        service.create_group('G-gate', 'director:a', parent_id=old)
+        yank(self.conn, old)
+        new = handback(self.conn, old)
+        self.assertEqual(new['parent_id'], top)
+        self.assertEqual(service.get_group('G-gate')['parent_id'], new['id'])
+        self.assertEqual(effective_owner(self.conn, new['id'], 'stage')['role_id'], 'director:a')
+        ops.approve(self.conn, new['id'])
+        self.assertNotIn(new['id'], [t['id'] for t in ops.ready_tasks(self.conn)])
 
     def test_handback_needs_owner_approval_to_run(self):
         new = handback(self.conn, self.yanked())
