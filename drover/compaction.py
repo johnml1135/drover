@@ -183,7 +183,6 @@ def _attempt(result, action):
 
 def _compact(runtime, record, result):
     vhdx = runtime.vhdx()
-    runtime.clear_left_mount()
     _step(runtime, record, 'stop')
     pane_stop(runtime)
     answer = runtime.wait_for_hub(record)
@@ -198,6 +197,7 @@ def _compact(runtime, record, result):
     _attempt(result, runtime.trim)
     _step(runtime, record, 'shutdown', phase='offline')
     runtime.shutdown()
+    runtime.clear_left_mount()      # only here: the VHDX cannot be dismounted cleanly under a running WSL
     _step(runtime, record, 'compact')
     return runtime.compact(vhdx)
 

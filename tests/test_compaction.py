@@ -442,12 +442,22 @@ class Recovery(Job):
         notice = next(iter(self.outbox().values()))['notice']
         self.assertIn('compact', notice['body'])
 
-    def test_a_mount_left_by_a_crash_is_dismounted_first(self):
+    def test_a_mount_left_by_a_crash_is_dismounted_once_wsl_is_down(self):
         compaction_hold.note_mount(self.state, VHDX)
         self.run_job()
-        self.assertLess(self.fake.calls.index(self.fake.seen('Dismount-VHD')[0]),
-                        self.fake.calls.index(self.fake.seen('--shutdown')[0]))
+        calls = self.fake.calls.index
+        self.assertLess(calls(self.fake.seen('--shutdown')[0]), calls(self.fake.seen('Dismount-VHD')[0]))
+        self.assertLess(calls(self.fake.seen('Dismount-VHD')[0]), calls(self.fake.seen('Mount-VHD')[0]))
         self.assertIsNone(compaction_hold.mounted(self.state))
+
+    def test_a_left_mount_that_will_not_dismount_ends_the_night_with_wsl_back_and_the_hold_gone(self):
+        compaction_hold.note_mount(self.state, VHDX)
+        self.fake = Vhdx(refuse_dismount=True, attached=True)
+        self.assertEqual(self.run_job()['status'], 'failed')
+        self.assertEqual(self.fake.seen('Optimize-VHD'), [])
+        self.assertTrue(self.fake.seen('--exec'))
+        self.assertIsNone(self.hold())
+        self.assertEqual(compaction_hold.mounted(self.state), VHDX)
 
     def test_the_mount_is_noted_before_mounting_and_cleared_after(self):
         noted = []
