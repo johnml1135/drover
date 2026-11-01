@@ -94,6 +94,31 @@ class OtherDialogs(unittest.TestCase):
         for rows in ('All done.', 'Previous progress result: preserve approval/question UIs.', ''):
             self.assertFalse(suspected_dialog(rows + '\n› \n? for shortcuts\n'), rows)
 
+    def test_a_hint_under_the_options_does_not_hide_them(self):
+        # Finding I5: the option rows were looked for only in the last row.
+        for hint in ('Use arrows to choose', '(esc to cancel)', 'Use arrows\n(esc to cancel)'):
+            for rows in ('1. Approve\n2. Reject\n' + hint, '› 1. Approve\n  2. Reject\n' + hint, '1. Approve\n2. Reject\n' + hint + '\n\n'):
+                self.assertTrue(suspected_dialog(rows + '\n› \n? for shortcuts\n'), rows)
+
+    def test_only_the_rows_directly_above_the_composer_are_searched_for_options(self):
+        for rows in ('1. Approve\n\nAll done.', '1. Approve\n────\nAll done.', '1. Approve\n---\nAll done.', 'Run it?\nAll done.'):
+            self.assertFalse(suspected_dialog(rows + '\n› \n? for shortcuts\n'), rows)
+
+    def test_a_dash_row_does_not_end_the_search_for_a_dialog(self):
+        # Finding I5: `---` is text an agent or a dialog can print; only a real `─` row ends the search (rule 12).
+        for rows in ('Requires approval: rm -rf\n---', 'Allow once\n---', 'Allow once\n  -----', 'Allow once\n---\n'):
+            screen = rows + '\n› \n? for shortcuts\n'
+            self.assertTrue(adjacent_dialog(screen), rows)
+            self.assertTrue(blocking_dialog(screen), rows)
+            with self.assertRaises(ValueError):
+                refuse_dialog(screen)
+        self.assertFalse(adjacent_dialog('Allow once\n────\n› \n? for shortcuts\n'))
+        self.assertFalse(adjacent_dialog('Allow once\n━━━━\n› \n? for shortcuts\n'))
+
+    def test_a_dash_row_does_not_hide_a_row_shaped_like_a_choice(self):
+        for rows in ('Do you want to proceed?\n---', 'Run this (Y/n)\n  -----', '1. Approve\n2. Reject\n---'):
+            self.assertTrue(suspected_dialog(rows + '\n› \n? for shortcuts\n'), rows)
+
 
 class Working(unittest.TestCase):
     def test_working_ignores_scrollback_and_looks_above_the_queue(self):

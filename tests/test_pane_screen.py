@@ -193,7 +193,8 @@ class Composer(unittest.TestCase):
 
     def test_past_prompts_in_the_transcript_are_not_a_draft(self):
         self.assertEqual(status('› an earlier prompt\n\n• Done.\n\n› \n? for shortcuts\n', 'codex'), 'idle')
-        self.assertEqual(status('❯ an earlier prompt\n\n• Done.\n────\n❯\n────\n⏵⏵ auto mode on\n', 'claude'), 'idle')
+        # Deliberate change, finding N1: Claude's half read idle here. No Claude answer row is captured, so a separator was
+        # all that ended its walk. Task 15's capture can give it a stop; test_pane_screen_walk pins the None until then.
 
     def test_footer_shaped_owner_text_stays_in_the_digest(self):
         # Finding I1. In the first screen the owner's row sat between our words, and the digest matched.
