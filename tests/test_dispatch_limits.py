@@ -151,6 +151,16 @@ class GateQueue(Base):
         self.assertEqual(len(self.d.tick()['gated']), 1)
         self.assertEqual(len(self.reads), 1)
 
+    def test_free_slots_and_a_not_go_read_cost_one_resource_read_a_tick_for_any_queue(self):
+        self.workers_done(8)
+        self.verdict = {'verdict': 'queue', 'slots': 0, 'reasons': ['ram']}
+        self.reads.clear()
+        self.assertEqual(self.d.tick()['gated'], [])
+        self.assertEqual(len(self.reads), 1)
+        self.reads.clear()
+        self.d.tick()
+        self.assertEqual(len(self.reads), 1)
+
     def test_a_slot_held_for_a_check_that_fails_goes_back(self):
         tasks = self.workers_done(1)
         self.verdict = {**self.verdict, 'side_admission': {'windows': {'verdict': 'hold'}, 'wsl': {'verdict': 'hold'}}}

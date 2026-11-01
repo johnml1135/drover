@@ -183,7 +183,9 @@ class FakeRepo:
 
     def out(self, repo, *args):
         assert args[:2] == ('merge-base', '--is-ancestor'), args
-        return '' if args[2] in self.base else None
+        sha, ref = args[2], args[3]                  # git answers for the ref it is asked about, not for any ref
+        history = self.base[:self.base.index(ref) + 1] if ref in self.base else [ref] if ref in self.commits else self.base
+        return '' if sha in history else None
 
     def reachable(self, task, sha, base_ref):
         if sha not in self.base:

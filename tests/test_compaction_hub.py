@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -339,7 +340,12 @@ class DiedUnderARunningHub(Draining):
         child.communicate('')
         del child                                               # Windows keeps a process visible while a handle is open
         gc.collect()
-        self.d.tick()
+        deadline = time.monotonic() + 5                         # a scanner may hold a handle for a moment after exit
+        while True:
+            self.d.tick()
+            if compaction_hold.read(self.state) is None or time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
         self.assertIsNone(compaction_hold.read(self.state))
 
     @integration
