@@ -91,6 +91,42 @@ class NotificationCliTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(['--url', self.url, '--credential-file', str(path), 'health']), 0)
 
+    def test_credential_file_defaults_from_the_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'private-token'
+            path.write_text('private-token')
+            path.chmod(0o600)
+            with patch.dict(os.environ, DROVER_CREDENTIAL_FILE=str(path)), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(['--url', self.url, 'health']), 0)
+            self.assertEqual(self.requests[-1][2], 'Bearer private-token')
+
+    def test_an_explicit_source_beats_the_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'private-token'
+            path.write_text('private-token')
+            path.chmod(0o600)
+            with patch.dict(os.environ, DROVER_CREDENTIAL_FILE=str(Path(directory) / 'missing'), EXPLICIT='other-token'), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(['--url', self.url, '--credential-file', str(path), 'health']), 0)
+                self.assertEqual(self.requests[-1][2], 'Bearer private-token')
+                self.assertEqual(main(['--url', self.url, '--credential-env', 'EXPLICIT', 'health']), 0)
+                self.assertEqual(self.requests[-1][2], 'Bearer other-token')
+
+    def test_a_bad_file_from_the_environment_names_no_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'missing-token-path')
+            out, err = io.StringIO(), io.StringIO()
+            with patch.dict(os.environ, DROVER_CREDENTIAL_FILE=path), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(main(['--url', self.url, 'health']), 2)
+            self.assertFalse(self.requests)
+            self.assertNotIn('missing-token-path', err.getvalue() + out.getvalue())
+
+    def test_no_source_at_all_is_still_refused(self):
+        environ = {k: v for k, v in os.environ.items() if k != 'DROVER_CREDENTIAL_FILE'}
+        with patch.dict(os.environ, environ, clear=True), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit):
+            main(['--url', self.url, 'health'])
+
     def test_redirect_handler_refuses_remote_location(self):
         from drover.notifications.__main__ import NoRedirect
         self.assertIsNone(NoRedirect().redirect_request(None, None, 302, 'redirect', {}, 'https://other.test/'))

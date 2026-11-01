@@ -82,6 +82,13 @@ def by_pane(conn, pane_id) -> dict | None:
     return dict(row) if row else None
 
 
+def by_run(conn, run_id) -> dict | None:
+    """The newest row of a run that is not gone: a resume gives a run a second row, and only this one speaks for it."""
+    row = conn.execute("SELECT * FROM pane_agents WHERE run_id=? AND state<>'gone' ORDER BY id DESC LIMIT 1",
+                       (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def reused_pane(conn, row) -> bool:
     """Any earlier row, gone or not, held this pane. Only a pane's first row is in the launcher's own new pane."""
     return conn.execute('SELECT 1 FROM pane_agents WHERE pane_id=? AND id<? LIMIT 1', (row['pane_id'], row['id'])).fetchone() is not None

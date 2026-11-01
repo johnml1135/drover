@@ -53,3 +53,22 @@ class ControlledAdapter:
     def stop(self, spec):
         self.stops.append((spec['run_id'], spec['nonce']))
         return True  # A request is not proof that the process has ceased.
+
+
+class ResidentAdapter(ControlledAdapter):
+    """A pane adapter's promises without a pane: it cannot enforce a token cap, and it is told to keep its runs."""
+    capabilities = dict(ControlledAdapter.capabilities, resident=True, enforced_token_cap=False)
+    session_ttl = 86400
+
+    def __init__(self, service):
+        super().__init__(service)
+        self.maintained, self.swept = [], 0
+        self.fail_maintain = False
+
+    def maintain(self, run):
+        self.maintained.append(run['run_id'])
+        if self.fail_maintain:
+            raise OSError('lost pane')
+
+    def sweep(self):
+        self.swept += 1

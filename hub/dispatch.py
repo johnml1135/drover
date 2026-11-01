@@ -193,13 +193,25 @@ class DispatcherService:
         return {n: s.get(k) for n, k in WSL_BIN_KEYS.items() if s.get(k)}
 
     def _default_dispatcher(self, port):
-        from drover.directors import DirectorRuntime, RunnerDirectorAdapter
+        from drover.directors import DirectorRuntime
         launcher = RunnerLauncher(runs_dir=self.settings.runs_dir, distro=self._distro, wsl_bins=self._wsl_bins,
                                   on_complete=self.wake_dispatcher)
         self._validate_seat_homes(port, force=True)
-        runtime = DispatchRuntime(launcher, directors=DirectorRuntime(port, RunnerDirectorAdapter(launcher)),
+        adapter, panes = self._director_adapter(port, launcher)
+        runtime = DispatchRuntime(launcher, directors=DirectorRuntime(port, adapter), panes=panes,
                                   completion_wake=self.completion_committed)
         return Dispatcher(port, Pipeline(port, runs_dir=self.settings.runs_dir), runtime)
+
+    def _director_adapter(self, port, launcher):
+        """(adapter, PaneService or None). The only place a Herdr client is built, so only the hub reaches Herdr."""
+        from drover import config
+        from drover.directors import RunnerDirectorAdapter
+        if not config.get()['panes']['enabled']:
+            return RunnerDirectorAdapter(launcher), None
+        from drover.herdr_client import from_config
+        from drover.panes import PaneDirectorAdapter, PaneService
+        panes = PaneService(port, from_config())
+        return PaneDirectorAdapter(panes), panes
 
     def _validate_seat_homes(self, port, *, force=False):
         from drover import config, seat_paths

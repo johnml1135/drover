@@ -18,6 +18,7 @@ from .placement_exec import NO_WINDOW, wsl_control
 
 NATIVE_COMPACT = 350_000
 WSL_TIMEOUT_S = 15
+SANDBOXES = ('read-only', 'workspace-write')
 WSL_PRIVATE = ('umask 077; mkdir -p "$HOME/.drover/panes" && set -C && f="$HOME/.drover/panes/$1" && '
                'cat > "$f" && printf %s "$f"')
 GATEWAY = "$(ip route show default | awk '{print $3; exit}')"
@@ -88,7 +89,7 @@ def repo_trusted(cwd, seat, *, read=None) -> bool:
 
 
 def agent_args(spec, *, model, effort, settings=None, resume=None) -> list:
-    """The agent's own flags: model, effort and compaction, never a permission flag. A bypass raises ValueError."""
+    """The agent's own flags: model, effort, compaction and a Codex seat's sandbox. A bypass raises ValueError."""
     if spec['backend'] == 'claude':
         args = ['--resume', resume] if resume else []
         args += ['--model', model, '--effort', effort, '--autocompact', f'{NATIVE_COMPACT // 1000}k']
@@ -98,6 +99,10 @@ def agent_args(spec, *, model, effort, settings=None, resume=None) -> list:
         args = ['resume', resume] if resume else []
         args += ['--model', model, '-c', f'model_reasoning_effort={effort}', '-c', f'model_context_window={NATIVE_COMPACT}',
                  '-c', f'model_auto_compact_token_limit={NATIVE_COMPACT}', '-c', 'check_for_update_on_startup=false']
+        sandbox = spec.get('sandbox')
+        if sandbox and sandbox not in SANDBOXES:
+            raise ValueError('sandbox is not a seat setting')
+        args += ['-s', sandbox] if sandbox else []
     _reject_permission_bypass(args)
     return args
 

@@ -20,10 +20,12 @@ from .ledger import disk_notices, ops_panes
 from .pane_files import NATIVE_COMPACT, repo_trusted, write_private
 from .pane_send import PaneRefused
 
-__all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'brief', 'open_pane', 'repo_trusted', 'resume', 'start', 'write_private']
+__all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'START_DEADLINE_S', 'brief', 'expire', 'open_pane', 'publish', 'repo_trusted',
+           'resume', 'session_of', 'start', 'write_private']
 
 FIRST_TURN_S = 90
 STARTUP_S = 60
+START_DEADLINE_S = 300      # well past the longest wait a `starting` row sees, slow calls included: only a dead hub gets here
 SHELL_PROMPT_S = 30         # a new tab's shell draws its prompt in its own time; Task 15 measures how long that is
 SHELL_BACK_S = 10           # the environment line must end before `agent start` finds a free shell
 POLL_S = 2
@@ -76,7 +78,7 @@ def _read_alone(herdr, row):
         return None
 
 
-def _notice(port, notice_id, title, body):
+def publish(port, notice_id, title, body):
     disk_notices.publish(port.conn, dict(id=notice_id, kind='pane', title=title, body=body), kind='pane.notice',
                          epic_title='Directors', actor='panes')
 
@@ -89,9 +91,14 @@ def _fail(port, herdr, row, reason, *, notice=True, outcome='The pane is left as
     port.append_event('pane-launch-failed', dict(row=row['id'], pane_id=row['pane_id'], seat=row['seat'], placement=row['placement'],
                       reason=reason, shell_alone=_read_alone(herdr, row)), actor='panes')
     if notice:
-        _notice(port, f"pane-launch:{row['id']}", 'An agent did not start in its pane',
+        publish(port, f"pane-launch:{row['id']}", 'An agent did not start in its pane',
                 f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: {reason}. {outcome}")
     return failed
+
+
+def expire(port, herdr, row) -> dict:
+    """End a `starting` row whose launcher is gone. Nothing is resent: the agent may be up, so the row stays to say so."""
+    return _fail(port, herdr, row, 'launch-deadline')
 
 
 def _prepare(spec, cfg, *, resume_id=None):
@@ -199,7 +206,7 @@ def _dialog(screen):
         return True
 
 
-def _session(agent):
+def session_of(agent):
     session = agent.get('agent_session')
     return session.get('value') if isinstance(session, dict) else None
 
@@ -258,8 +265,8 @@ def _settle(port, herdr, row, cfg) -> dict:
             continue
         if _dialog(screen):
             return _fail(port, herdr, row, 'dialog')
-        if _session(agent):
-            live = ops_panes.update_agent(port.conn, row['id'], session_id=_session(agent), state='live')
+        if session_of(agent):
+            live = ops_panes.update_agent(port.conn, row['id'], session_id=session_of(agent), state='live')
             _rename(herdr, live)
             return live
     return _fail(port, herdr, row, 'agent-not-ready')
@@ -320,7 +327,7 @@ def _check_footer(port, row, screen, spec, cfg):
     found = pane_screen.footer_model(screen)
     wanted = {_plain(spec['model']), _plain(config.model_id(spec['model'], cfg))}
     if found and (found[0] not in wanted or found[1] != _plain(_effort(spec, cfg))):
-        _notice(port, f"pane-model:{row['id']}", 'An agent runs on a different model',
+        publish(port, f"pane-model:{row['id']}", 'An agent runs on a different model',
                 f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: the footer shows {found[0]} {found[1]}, "
                 f"not {spec['model']} {_effort(spec, cfg)}.")
 

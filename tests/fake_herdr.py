@@ -4,7 +4,8 @@ Pane ids key `agents`, `panes` and `screens`. A screen is text, or a list read o
 repeating, for a screen that changes between reads. All three stay mutable during a test. `calls` holds every argv
 without the binary, and `kwargs` the keywords of each call. Set `closed` for a stopped server, `hang` for a call that
 times out (True for every call, or a set of (group, verb)), and `refuse[(group, verb)] = code` for a refusal from a
-running server. `pane run` echoes as a shell does: the line stays on its prompt's row, under a new prompt.
+running server. `pane run` echoes as a shell does: the line stays on its prompt's row, under a new prompt. `restart`
+forgets every name, as a restarted server does, and pane ids survive.
 """
 import json
 import subprocess
@@ -24,6 +25,10 @@ class FakeHerdr:
         self.refuse = {}
         self._opened = 0
 
+    def restart(self):
+        for agent in self.agents.values():
+            agent['name'] = None
+
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv[1:]))
         self.kwargs.append(kwargs)
@@ -39,7 +44,7 @@ class FakeHerdr:
         if pair in self.refuse:
             return _error(self.refuse[pair])
         handler = {('agent', 'get'): self._agent, ('agent', 'list'): self._agents, ('agent', 'read'): self._read,
-                   ('pane', 'get'): self._pane, ('pane', 'list'): self._panes, ('pane', 'read'): self._read,
+                   ('agent', 'rename'): self._rename, ('pane', 'get'): self._pane, ('pane', 'list'): self._panes, ('pane', 'read'): self._read,
                    ('pane', 'close'): self._close, ('pane', 'run'): self._run, ('tab', 'create'): self._tab_create,
                    ('tab', 'list'): self._tabs, ('workspace', 'list'): self._workspaces}.get(pair)
         return handler(args) if handler else _result({})
@@ -47,6 +52,13 @@ class FakeHerdr:
     def _agent(self, args):
         agent = self.agents.get(args[2])
         return _result({'agent': agent}) if agent else _error('agent_not_found')
+
+    def _rename(self, args):
+        agent = self.agents.get(args[2])
+        if not agent:
+            return _error('agent_not_found')
+        agent['name'] = args[3]
+        return _result({})
 
     def _agents(self, args):
         return _result({'agents': list(self.agents.values())})

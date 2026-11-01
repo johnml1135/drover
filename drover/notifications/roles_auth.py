@@ -7,6 +7,8 @@ from ..ledger.db import tx
 from .core_scope import Conflict, _role
 from .roles_base import CAPABILITIES, _artifact, _runtime, _ttl, canonical, hashed
 
+DISPATCH_PAUSED = 'dispatch is paused'
+
 def issue_session(service, role_id, session_id, ttl=3600, capabilities=None):
     _ttl(ttl)
     if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 256:
@@ -33,6 +35,20 @@ def issue_session(service, role_id, session_id, ttl=3600, capabilities=None):
         return dict(role_id=role_id, session_id=session_id, generation=generation,
                     expires_at=expires, capabilities=capabilities, credential=credential)
 
+def renew_session(service, role_id, session_id, ttl=86400):
+    """Extend the current session in place: same credential, same generation, so nothing it holds is fenced."""
+    _ttl(ttl)
+    conn = service.conn
+    with tx(conn):
+        role = _role(conn, role_id)
+        expires = service.now() + ttl
+        renewed = conn.execute('UPDATE director_sessions SET expires=MAX(expires,?) WHERE role_id=? AND session_id=? '
+                               'AND generation=? AND expires>? RETURNING expires',
+                               (expires, role_id, session_id, role['generation'], service.now())).fetchone()
+        if not renewed:
+            raise PermissionError('current session required')
+        return dict(role_id=role_id, session_id=session_id, generation=role['generation'], expires_at=renewed['expires'])
+
 def authenticate(service, credential):
     if not isinstance(credential, str):
         raise PermissionError('invalid director credential')
@@ -49,7 +65,7 @@ def admission(service, role_id):
     if _role(service.conn, role_id)['state'] != 'active':
         raise Conflict('director is paused or retired')
     if str(ops.get_setting(service.conn, 'dispatch_enabled', 'false')).lower() not in ('true', '1', 'yes', 'on'):
-        raise Conflict('dispatch is paused')
+        raise Conflict(DISPATCH_PAUSED)
 
 def acquire(service, role_id, session_id, ttl=60):
     _ttl(ttl)

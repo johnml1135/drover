@@ -7,15 +7,22 @@ launch nonce; unknown never authorizes a replacement. No paid adapter is enabled
 default. Notification projection, digests and local action effects need no adapter.
 """
 import json
+import logging
 import time
 import uuid
 
+from . import config as config_mod
 from . import stats
 from .launch import AdmissionHeld, RunnerLauncher
 from .ledger import actions, ops
 from .ledger.db import tx
 from .notifications import Conflict, Notifications
 from .notifications import roles
+
+CLEAN_OUTCOMES = ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', 'compaction-fresh')  # none spends the replacement
+FINITE_PROMPT = 'Process the authenticated director inbox and save a checkpoint before exiting.'
+RESIDENT_PROMPT = 'Read your inbox with python -m drover.notifications inbox, act on it, and commit a checkpoint.'
+log = logging.getLogger(__name__)
 
 
 def service_tick(port, now=None):
@@ -120,6 +127,16 @@ class DirectorRuntime:
         self.adapter = adapter or RunnerDirectorAdapter()
         self.live = {}
 
+    def _capabilities(self):
+        return getattr(self.adapter, 'capabilities', {})
+
+    def _resident(self):
+        return self._capabilities().get('resident') is True
+
+    def _sandbox(self, config):
+        """A resident run may write, under its seat's own sandbox. A seat that cannot be read stays read-only."""
+        return (config_mod.seat_by_name(config['seat']) or {}).get('sandbox', 'read-only')
+
     def active_runs(self):
         return [dict(row, spec=json.loads(row['spec'])) for row in self.conn.execute(
             "SELECT * FROM director_runs WHERE state<>'finished' ORDER BY run_id")]
@@ -172,6 +189,8 @@ class DirectorRuntime:
         return task_id
 
     def _start(self, role_id, config, epoch, global_epoch, mode='fresh', previous=None):
+        resident = self._resident()
+        sandbox = self._sandbox(config) if resident else 'read-only'
         with tx(self.conn):
             # Recheck inside the same transaction as budget, identity, and intent.
             roles.admission(self.service, role_id)
@@ -185,19 +204,21 @@ class DirectorRuntime:
                 return None
             state = self.service.role_state(role_id)
             nonce = uuid.uuid4().hex
-            reserved = self.service.reserve_wake(role_id, 'launch:' + nonce, tokens=config['max_tokens'], model=config['model'])
+            # An interactive CLI cannot enforce a spend cap: seat allowance and the context ceiling are its limits.
+            reserved = self.service.reserve_wake(role_id, 'launch:' + nonce, tokens=0 if resident else config['max_tokens'],
+                                                 model=config['model'])
             if not reserved['accepted']:
                 return reserved
-            session = self.service.issue_session(role_id, 'director-run:' + nonce)
+            session = self.service.issue_session(role_id, 'director-run:' + nonce, ttl=self.adapter.session_ttl if resident else 3600)
             task_id = self._anchor()
             run_id = self.conn.execute('INSERT INTO runs(task_id,role,backend,model,started) VALUES(?,?,?,?,?)',
                                       (task_id, 'director', config['backend'], config['model'], ops.stamp())).lastrowid
             spec = dict(config, role='director', role_id=role_id, run_id=run_id, nonce=nonce,
                         session_id=session['session_id'], generation=session['generation'], control_epoch=epoch,
                         checkpoint=state['checkpoint'], checkpoint_revision=state['checkpoint_revision'],
-                        write=False, sandbox='read-only', read_dirs=[], system_append='',
+                        write=resident, sandbox=sandbox, read_dirs=[], system_append='',
                         mode=mode, effort=None, wall_s=600, idle_s=120,
-                        user_prompt='Process the authenticated director inbox and save a checkpoint before exiting.',
+                        user_prompt=RESIDENT_PROMPT if resident else FINITE_PROMPT,
                         task={'id': task_id, 'title': 'Director ' + role_id})
             if mode == 'resume':
                 spec['resume_from'] = dict(run_id=previous['run_id'], nonce=previous['nonce'], session_id=previous['session_id'])
@@ -231,6 +252,31 @@ class DirectorRuntime:
             self.stop_active(self.service.admission()['epoch'])
         return dict(run_id=run_id, launched=True)
 
+    def _uncertain(self, run):
+        """Unknown liveness. A resident pane tells the owner itself, once, so it raises no second question on the role."""
+        reason = 'consumer-liveness-uncertain'
+        if not self._resident():
+            return self._record_hold(run['role_id'], reason, run['run_id'])
+        with tx(self.conn):
+            self.conn.execute('UPDATE director_runs SET held_reason=? WHERE run_id=?', (reason, run['run_id']))
+        return dict(role_id=run['role_id'], accepted=False, held=True, reason=reason)
+
+    def _maintain(self):
+        """Upkeep before any launch, so a failed launch is read by `recover` first. Nothing here reaches the tick."""
+        if not self._resident():
+            return
+        runs = self.active_runs()
+        for run in runs:
+            try:
+                self.adapter.maintain(run)
+            except Exception as error:      # no exception text, as with a launch
+                log.warning('director run %s maintenance failed: %s', run['run_id'], type(error).__name__)
+        try:
+            if not runs:
+                self.adapter.sweep()
+        except Exception as error:
+            log.warning('pane sweep failed: %s', type(error).__name__)
+
     def recover(self):
         out = dict(adopted=[], finished=[], held=[])
         for run in self.active_runs():
@@ -245,14 +291,16 @@ class DirectorRuntime:
             if state != 'gone':
                 try:
                     self._guard(spec)
-                except AdmissionHeld:
-                    out['held'].append(self._stop_one(run, self.service.admission(role_id=run['role_id'])['epoch']))
-                    continue
+                except AdmissionHeld as held:
+                    # Pausing dispatch starts no new work; it does not end a resident director's session.
+                    if not (self._resident() and str(held) == roles.DISPATCH_PAUSED):
+                        out['held'].append(self._stop_one(run, self.service.admission(role_id=run['role_id'])['epoch']))
+                        continue
                 if run['stop_action_id']:
                     out['held'].append(self._stop_one(run, self.service.admission()['epoch']))
                     continue
             if state not in ('alive', 'gone'):
-                out['held'].append(self._record_hold(run['role_id'], 'consumer-liveness-uncertain', run_id))
+                out['held'].append(self._uncertain(run))
                 continue
             if state == 'gone':
                 # Recover a terminal receipt when available; no receipt means a
@@ -343,6 +391,7 @@ class DirectorRuntime:
 
     def tick(self, admission, capacity):
         out = dict(service=service_tick(self.port, self.now), recovery=self.recover(), launched=[], held=[], capacity_used=0)
+        self._maintain()
         current = self.service.admission(epoch=admission['epoch'])
         if not admission['allowed']:
             current.update(allowed=False, reason=admission['reason'])
@@ -352,7 +401,8 @@ class DirectorRuntime:
         available = capacity.get('slots', 0)
         slots = available() if callable(available) else available
         enabled = str(self.port.get_setting('director_execution_enabled', 'false')).lower() in ('true', '1', 'yes', 'on')
-        capabilities = getattr(self.adapter, 'capabilities', {})
+        capabilities = self._capabilities()
+        resident = self._resident()
         for row in self.conn.execute("SELECT role_id FROM director_roles WHERE state<>'retired' ORDER BY role_id").fetchall():
             role_id = row['role_id']
             state = self.service.role_state(role_id)
@@ -362,8 +412,7 @@ class DirectorRuntime:
             # Replacing a director whose latest run on this generation failed is recovery, not a new wake.
             last = self.conn.execute('SELECT d.generation,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
                                      'WHERE d.role_id=? ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
-            recovering = bool(last and last['generation'] == state['generation']
-                              and last['outcome'] not in ('done', 'stopped', 'admission-held'))
+            recovering = bool(last and last['generation'] == state['generation'] and last['outcome'] not in CLEAN_OUTCOMES)
             if not recovering and not roles.wake_due(self.service, role_id):
                 continue  # Grouped: the wake stays pending and no budget is reserved.
             if callable(available):
@@ -371,10 +420,13 @@ class DirectorRuntime:
             reason = current['reason'] if not current['allowed'] else None
             if reason is None and not enabled:
                 reason = 'execution-disabled'
-            required = ('enforced_token_cap', 'authenticated_processing', 'secure_handoff')
+            required = ('authenticated_processing', 'secure_handoff') if resident else (
+                'enforced_token_cap', 'authenticated_processing', 'secure_handoff')
             missing = [key.replace('_', '-') for key in required if capabilities.get(key) is not True]
             if reason is None and missing:
                 reason = 'unsupported:' + ','.join(missing)
+            if reason is None and resident and any(run['role_id'] != role_id for run in self.active_runs()):
+                reason = 'multi-director-parked'
             if reason is None and slots <= 0:
                 reason = 'capacity-unavailable'
             try:
@@ -396,7 +448,7 @@ class DirectorRuntime:
                             reason = 'resume-verification-uncertain'
                     if mode == 'fresh' and capabilities.get('fresh_start') is not True:
                         reason = 'unsupported:fresh-start,verified-resume-unavailable'
-                    failed = previous and previous['outcome'] not in ('done', 'stopped', 'admission-held')
+                    failed = previous and previous['outcome'] not in CLEAN_OUTCOMES
                     if failed and previous['generation'] == state['generation']:
                         if reason is None:
                             replaced = self.service.replace(role_id, state['generation'], confirmed_dead=True)

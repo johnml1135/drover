@@ -12,7 +12,7 @@ from drover.ledger.db import connect
 from drover.notifications import Notifications, roles
 from drover.port import DirectPort
 from drover import usage
-from tests.director_fixture import ControlledAdapter
+from tests.director_fixture import ControlledAdapter, ResidentAdapter
 
 
 class DirectorRuntimeTests(unittest.TestCase):
@@ -184,6 +184,31 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertEqual(self.adapter.started, [])
         self.assertEqual(self.service.role_state('director:a')['tokens_reserved'], 0)
         self.assertIsNone(self.service.role_state('director:a')['session_id'])
+
+    def resident(self):
+        self.adapter = self.runtime.adapter = ResidentAdapter(self.service)
+        return self.adapter
+
+    def test_resident_run_needs_no_token_cap_capability(self):
+        self.resident()
+        self.wake()
+        self.assertEqual(len(self.tick()['launched']), 1)
+
+    def test_runner_adapter_still_needs_all_three(self):
+        self.wake()
+        for capability in ('enforced_token_cap', 'authenticated_processing', 'secure_handoff'):
+            self.adapter.capabilities = {**ControlledAdapter.capabilities, capability: False}
+            self.assertIn(capability.replace('_', '-'), str(self.tick()))
+        self.resident().capabilities = {**ResidentAdapter.capabilities, 'secure_handoff': False}
+        self.assertIn("'unsupported:secure-handoff'", str(self.tick()))
+        self.assertEqual(self.adapter.started, [])
+
+    def test_resident_launch_reserves_no_tokens(self):
+        self.resident()
+        self.wake()
+        self.tick()
+        self.assertEqual(self.service.role_state('director:a')['tokens_reserved'], 0)
+        self.assertAlmostEqual(self.conn.execute('SELECT expires FROM director_sessions').fetchone()[0], self.time + 86400)
 
     def test_actor_control_stops_only_affected_runtime_and_lease_expiry_never_duplicates_live_run(self):
         self.wake()

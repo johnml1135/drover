@@ -82,6 +82,7 @@ class DispatchRuntime:
     now: object = time.time
     directors: object = None
     completion_wake: object = None  # receives run ids after their completion has been committed by reap()
+    panes: object = None            # the PaneService when `[panes] enabled`; the only holder of a Herdr client
 
 
 class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps, AdmissionSteps):
@@ -103,6 +104,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         self.finish_tries = {}
         self.live = {}                       # run_id -> (handle, task_id, spec)
         self.directors = runtime.directors
+        self.panes = runtime.panes
         self.completion_wake = runtime.completion_wake
         self._control_epoch = None
         self.missed = {}                     # run_id -> consecutive clean scans that did not find its runner

@@ -78,8 +78,10 @@ def payload(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', default=os.environ.get('DROVER_HUB_URL', 'http://127.0.0.1:8766'))
-    sources = parser.add_mutually_exclusive_group(required=True)
-    sources.add_argument('--credential-file')
+    # The default is a path: a director's launcher sets it, so the credential itself never reaches argv.
+    default_file = os.environ.get('DROVER_CREDENTIAL_FILE') or None
+    sources = parser.add_mutually_exclusive_group(required=default_file is None)
+    sources.add_argument('--credential-file', default=default_file)
     sources.add_argument('--credential-env', metavar='VARIABLE_NAME')
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('health', 'checkpoint'):
