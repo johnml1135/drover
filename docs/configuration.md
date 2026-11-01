@@ -146,7 +146,9 @@ processes may use (the first N; never more than the machine has). Pinning is bes
 
 Global `[disk_cleanup]` `wsl_purge_gb` (default 300), `wsl_target_gb` (default 225) and `wsl_stop_gb` (default 500)
 are sizes in GB of the space used inside WSL, read from the running distro (a reading never starts WSL; an unreadable
-one triggers nothing). Used space at or above `wsl_purge_gb` starts a cleanup on its own cooldown, whatever H: has
+one triggers nothing). They apply only while an enabled disk tracker has `wsl_combined`, which says WSL lives on that
+drive. The default `h` tracker has it, and a `[[trackers]]` entry named `h` merges over the default and keeps it unless
+it sets `wsl_combined = false`. Used space at or above `wsl_purge_gb` starts a cleanup on its own cooldown, whatever H: has
 free; the cleanup aims for `wsl_target_gb`; at or above `wsl_stop_gb` new work stops starting. Each is finite and
 positive, and `wsl_target_gb` < `wsl_purge_gb` < `wsl_stop_gb`.
 

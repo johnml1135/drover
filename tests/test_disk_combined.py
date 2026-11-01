@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from drover import config, disk, placement, placement_host, resources
+from drover import config, config_defaults, disk, placement, placement_host, resources
 
 
 def cfg(**over):
@@ -16,6 +16,29 @@ def check(host, wsl, **over):
     fake = {'platform': 'windows', 'load5': 1.0, 'cores': 8, 'ram_available_gb': 30, 'wsl_ram_available_gb': 30,
             'disk_free_gb': {'h': host, 'c': 500}, 'wsl_disk_free_gb': wsl, 'vram': None}
     return resources.check(fake=fake, config=cfg(**over))
+
+
+@unittest.skipUnless(config_defaults.WINDOWS_OR_WSL, 'the h tracker is a Windows host default')
+class LiveEntry(unittest.TestCase):
+    """The machine's own [[trackers]] entry names no wsl_combined: it merges under the default and gets it anyway."""
+    ENTRY = {'kind': 'disk', 'name': 'h', 'path': 'H:/'}
+
+    def h(self, **over):
+        return config.validate({'trackers': [{**self.ENTRY, **over}]})
+
+    def wsl_level(self, resolved, host, wsl):
+        with mock.patch.object(placement, 'physical_disk_path', side_effect=lambda path: path):
+            rows = disk.read(resolved, reader=lambda path: host, side='wsl', wsl_free=wsl)
+        return next(row for row in rows if row['name'] == 'h')['level']
+
+    def test_an_entry_silent_on_it_is_combined(self):
+        tracker = next(t for t in self.h()['trackers'] if t['name'] == 'h')
+        self.assertTrue(tracker['wsl_combined'])
+        self.assertEqual(tracker['host_floor_gb'], 10.0)
+
+    def test_the_runbook_floor_holds_what_the_default_admits(self):
+        self.assertEqual(self.wsl_level(self.h(), 30, 700), 'ok')
+        self.assertEqual(self.wsl_level(self.h(host_floor_gb=50.0), 30, 700), 'hold')
 
 
 class Combined(unittest.TestCase):
