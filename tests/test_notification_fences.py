@@ -102,7 +102,9 @@ class WorkerFences(Base):
         service.register('director:a', allowed_models=['fixture'], token_budget=20)
         service.broadcast('owner', ['director:a'], 'work', urgency='urgent')
         ops.set_setting(self.conn, 'director_execution_enabled', 'true')
-        ops.set_setting(self.conn, 'parallel_cap', '1')
+        capped = patch.dict(config.get()['capacity'], parallel_cap=1)
+        capped.start()
+        self.addCleanup(capped.stop)
         ops.set_setting(self.conn, 'director_execution', json.dumps({'director:a': dict(
             backend=seat['backend'], model='fixture', seat=seat['name'], max_tokens=20,
             placement=seat['placement'], cwd=self.tmp.name)}))

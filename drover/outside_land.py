@@ -2,13 +2,15 @@
 
 Only commits the ledger ties to the task can prove a landing, and the task's change must still be on the base: a
 branch name can be reused, and history cannot see a revert. No failure or unknown state is a proof, and git never
-runs inside a ledger transaction. The scan is synchronous, so its time is budgeted and a stuck repo stops early.
+runs inside a ledger transaction. The scan is synchronous, so its time is budgeted and a stuck repo stops early. A repo
+the owner excluded through `dispatch_repos` is not scanned at all, as landing skips it.
 
 What git answers but does not prove, with commits on the base that overlap the task, goes to the decider and then to
 the owner in one Inbox question. A model's answer counts only for a commit git then shows on the base with its change
 still there and its files among the task's recorded ones, and the owner's answer is checked against the base too. An
 answer is consumed once, with what it causes, and is void if the task has changed since it was asked about. When git
-cannot answer, nothing is asked and the next interval retries.
+cannot answer, nothing is asked and the next interval retries. A scan opens at most MAX_QUESTIONS new questions, so a
+backlog reaches the Inbox a few at a time, and a question offers at most MAX_OPTIONS commits, newest first.
 """
 import json
 import logging
@@ -16,7 +18,7 @@ import re
 import subprocess
 import time
 
-from . import ci, config, decide as decide_module, disk, landing, placement, repos
+from . import ci, config, decide as decide_module, disk, dispatch_repos, landing, placement, repos
 from .ledger import disk_notices, ops, ops_bypass, scope, states, tx
 
 INTERVAL_S = 600
@@ -24,7 +26,8 @@ GIT_TIMEOUT_S = 30
 SCAN_BUDGET_S = 60
 RESUME_KEY = 'outside_land_resume'
 SHA = re.compile('[0-9a-f]{40}')
-QUESTION, MAX_CANDIDATES, NOT_LANDED = 'landed_outside', 20, 'not_landed'
+QUESTION, NOT_LANDED = 'landed_outside', 'not_landed'
+MAX_CANDIDATES, MAX_OPTIONS, MAX_QUESTIONS = 20, 8, 5    # shown to the decider, offered to the owner, opened per scan
 SUBJECT_CHARS = 72
 DECIDER_FLOOR_S = 5      # less time than this, or than the configured timeout if lower, is not worth a call
 KIND, EPIC, ACTOR = 'landing.notice', 'Outside landings', 'detector'
@@ -40,14 +43,18 @@ class _OutOfTime(Exception):
     """A decider call would pass the scan's budget."""
 
 
+class _EnoughAsked(Exception):
+    """This scan has opened its MAX_QUESTIONS, and the next task may need another."""
+
+
 def interval_s(cfg):
     return cfg.get('watch', {}).get('interval_s', INTERVAL_S)
 
 
-def _out(repo, *args, **kw):
+def _out(repo, *args):
     """Git's stripped stdout, or None when it answers no by exiting 1. Any other exit raises GitUnknown, and a timeout
     raises TimeoutExpired."""
-    result = landing.timed_git(repo, *args, timeout=GIT_TIMEOUT_S, **kw)
+    result = landing.timed_git(repo, *args, timeout=GIT_TIMEOUT_S)
     if result.returncode not in (0, 1):
         raise GitUnknown(f'git {args[0]} exited {result.returncode}: {result.stderr.strip()[:200]}')
     return None if result.returncode else result.stdout.strip()
@@ -196,18 +203,24 @@ def _subject_overlaps(task, subject):
 
 
 def ambiguous(repo, task, base_ref):
-    """Up to MAX_CANDIDATES commits on the base since the task left it, newest first, whose subject or changed files
-    overlap the task. Empty means nothing to ask."""
+    """Every commit on the base since the task left it, newest first, whose subject or changed files overlap the task.
+    Empty means nothing to ask."""
     fork = _fork(repo, task, base_ref)
     if not fork:
         return []
     return [sha for sha, subject, files in _log(repo, f'{fork}..{base_ref}')
-            if scope.any_overlap(task['scope_files'] or [], files) or _subject_overlaps(task, subject)][:MAX_CANDIDATES]
+            if scope.any_overlap(task['scope_files'] or [], files) or _subject_overlaps(task, subject)]
 
 
 def _described(repo, shas):
     """Each commit's subject and changed files."""
     return {sha: (subject, files) for sha, subject, files in (_log(repo, '--no-walk=unsorted', *shas) if shas else [])}
+
+
+def _overlapping(repo, task, ref):
+    """The newest MAX_CANDIDATES overlapping commits, described, and how many overlap in all."""
+    shas = ambiguous(repo, task, ref)
+    return _described(repo, shas[:MAX_CANDIDATES]), len(shas)
 
 
 def _line(commit):
@@ -274,68 +287,77 @@ def _ask_decider(conn, task, commits, decide, wait):
     return result.get('answer') if result.get('acted') and result.get('answer') in commits else None
 
 
-def _ask_owner(conn, ident, task, commits, name, mark, why=''):
+def _ask_owner(conn, ident, task, commits, total, name, mark, why=''):
     """One Inbox question, tied to the task's state by `mark`. It sits on the epic: an answer on the task itself would
-    requeue a needs-owner task. The Inbox shows only the body and the labels, so the body names the commits."""
-    options = [*(dict(label=f'Landed at {sha}', description=_line(commit)) for sha, commit in commits.items()),
+    requeue a needs-owner task. The Inbox shows only the body and the labels, so the body names the commits it offers:
+    the newest MAX_OPTIONS of the `total` that overlap."""
+    shown = list(commits.items())[:MAX_OPTIONS]
+    options = [*(dict(label=f'Landed at {sha}', description=_line(commit)) for sha, commit in shown),
                dict(label='Not landed', description='It stays where it is; a yanked task is abandoned.')]
-    listed = '; '.join(f'{sha[:12]} {_plain(subject)}' for sha, (subject, _) in commits.items())
+    listed = '; '.join(f'{sha[:12]} {_plain(subject)}' for sha, (subject, _) in shown)
     body = f"{task['title']}\n\nGit cannot prove this task landed on {name}. Free text may say \"Landed at <full SHA>\"."
     body += f'\n\nCommits that overlap it: {listed}' if listed else ''
+    body += f'\n\n{total - len(shown)} older overlapping commits are left out.' if total > len(shown) else ''
     disk_notices.publish(conn, dict(id=ident, task=task['id'], mark=mark, title=f"Did {task['id']} land outside Drover?",
                                     body=f'{why}\n\n{body}' if why else body, options=options, allow_text=True),
                          kind=KIND, epic_title=EPIC, actor=ACTOR)
 
 
-def _take_answer(conn, task, repo, name, ref, notice):
+def _take_answer(conn, task, repo, name, ref, notice, opened):
     """Act once on the owner's answer, if there is one. `take_answer` commits with the action, and only then does the
     action run, so an answer is never read twice and never outlives the state it was given about."""
     tid, question, mark = task['id'], notice['question'], notice['notice']['mark']
     asked = ops.get_question(conn, question)
     if asked['status'] == 'open' or ops.answer_taken(conn, tid, question):
         return False
+    if len(opened) >= MAX_QUESTIONS:
+        raise _EnoughAsked    # before the answer is used: using it can open a question, and those two are one act
     reply = (asked['answer_choice'] or asked['answer_text'] or '').strip()
     landed = LANDED_AT.fullmatch(reply)
     moved = ops.status_mark(conn, tid) != mark
     if moved or not landed:
         yanked = task['status'] == states.YANKED
-        commits = _described(repo, ambiguous(repo, task, ref)) if moved and yanked else {}
+        commits, total = _overlapping(repo, task, ref) if moved and yanked else ({}, 0)
         with tx(conn):
             not_landed = reply.lower() == 'not landed'
             if ops.take_answer(conn, tid, question, mark, 'not-landed' if not_landed else 'no-action'):
                 if not_landed and yanked:
                     ops_bypass.abandon(conn, tid, actor='owner')
             elif commits:         # one new question per void answer: its id holds it to one across ticks
-                _ask_owner(conn, f'{tid}#{question}', task, commits, name, ops.status_mark(conn, tid),
+                _ask_owner(conn, f'{tid}#{question}', task, commits, total, name, ops.status_mark(conn, tid),
                            why='An earlier answer was not used: the task changed after this was asked.')
+                opened.append(tid)
         return False
     sha = landed[1].lower()
     why = _refusal(repo, sha, ref, name)
     if why:
-        commits = _described(repo, ambiguous(repo, task, ref))
+        commits, total = _overlapping(repo, task, ref)
         with tx(conn):
             if ops.take_answer(conn, tid, question, mark, 'refused'):
-                _ask_owner(conn, f'{tid}#{question}', task, commits, name, mark,
+                _ask_owner(conn, f'{tid}#{question}', task, commits, total, name, mark,
                            why=f'That answer was not recorded: {why}.')
+                opened.append(tid)
         return False
     done = ops.record_answered_landing(conn, tid, sha, name, actor='owner',
                                        guard=lambda: ops.take_answer(conn, tid, question, mark, 'landed'))
     return done['status'] == states.LANDED
 
 
-def _unproved(conn, task, prog, decide, room):
+def _unproved(conn, task, prog, decide, room, opened):
     """Git answered, with no proof. True if the task lands all the same. One question per task, for ever, unless the
-    owner's answer is refused."""
+    owner's answer is refused. `opened` lists the questions this scan has opened."""
     name, ref, repo = *_base(prog), repos.native(repos.repo_path(prog))
     if not _commit(repo, ref):
         raise GitUnknown(f'{ref} does not resolve')
     notices = [e['data'] for e in ops.events(conn, kind=KIND) if e['data']['notice']['task'] == task['id']]
     if notices:
-        return _take_answer(conn, task, repo, name, ref, notices[-1])
-    shas = ambiguous(repo, task, ref)
-    if not shas:
+        return _take_answer(conn, task, repo, name, ref, notices[-1], opened)
+    commits, total = _overlapping(repo, task, ref)
+    if not commits:
         return False
-    commits, mark, wait = _described(repo, shas), ops.status_mark(conn, task['id']), room()
+    if len(opened) >= MAX_QUESTIONS:
+        raise _EnoughAsked
+    mark, wait = ops.status_mark(conn, task['id']), room()
     if not wait:
         raise _OutOfTime
     cited = _ask_decider(conn, task, commits, decide, wait)
@@ -344,7 +366,8 @@ def _unproved(conn, task, prog, decide, room):
     if cited and _holds(repo, task, cited, ref, name):
         ops.record_detected_landing(conn, task['id'], cited, name, 'decider')
         return True
-    _ask_owner(conn, task['id'], task, commits, name, mark)
+    _ask_owner(conn, task['id'], task, commits, total, name, mark)
+    opened.append(task['id'])
     return False
 
 
@@ -354,8 +377,11 @@ def _close_settled(conn):
     for data in (e['data'] for e in ops.events(conn, kind=KIND)):
         notice = data['notice']
         if ops.get_question(conn, data['question'])['status'] == 'open':
-            status = ops.get_task(conn, notice['task'])['status']
-            if status in states.TERMINAL or ops.status_mark(conn, notice['task']) != notice['mark']:
+            try:
+                status = ops.get_task(conn, notice['task'])['status']
+            except ops.NotFound:      # deleted while the question was open
+                status = 'deleted'
+            if status in (*states.TERMINAL, 'deleted') or ops.status_mark(conn, notice['task']) != notice['mark']:
                 disk_notices.retract(conn, notice['id'], kind=KIND, actor=ACTOR, choice=None,
                                      text=f'Closed by Drover: the task is {status} now.')
 
@@ -395,22 +421,24 @@ def _detect(conn, task, prog):
 def tick(conn, cfg, *, decide=None, now=time.monotonic):
     """Scan the candidates once. Proofs are found with no transaction open; each landing is one short transaction.
 
-    A repo stops at its first timeout. The whole scan, decider calls included, stops at SCAN_BUDGET_S, and a decider
-    call gets only the time left, or waits if too little is. Either way the scan resumes there at the next interval."""
+    A repo stops at its first timeout, and its turn resumes with the next task. The whole scan, decider calls included,
+    stops at SCAN_BUDGET_S or at MAX_QUESTIONS new questions, and a decider call gets only the time left, or waits if too
+    little is. Either way the scan resumes there at the next interval."""
     tasks, landed, stuck, up, scanned, started = _in_turn(conn, candidates(conn)), [], set(), None, 0, now()
     programs, resume, decide = repos.load_all() if tasks else {}, '', decide or _real_decide
+    allow, opened = dispatch_repos.allowed(lambda key, default=None: ops.get_setting(conn, key, default)), []
     margin = cfg.get('decider', {}).get('timeout_s', decide_module.TIMEOUT)
     def room():
         wait = min(margin, SCAN_BUDGET_S - (now() - started))
         return wait if wait >= min(margin, DECIDER_FLOOR_S) else 0
-    for task in tasks:
+    for position, task in enumerate(tasks):
         if now() - started >= SCAN_BUDGET_S:
             resume = task['id']
             log.warning('outside landing scan ran out of time; resuming at %s', resume)
             break
         key = task['repo'].lower()
         prog = programs.get(key)
-        if prog is None or key in stuck:
+        if prog is None or key in stuck or not dispatch_repos.permits(allow, task['repo']):
             continue
         try:
             if placement.routes_through_wsl(repos.repo_path(prog)):
@@ -418,15 +446,21 @@ def tick(conn, cfg, *, decide=None, now=time.monotonic):
                 if not up:
                     continue
             scanned += 1
-            if _detect(conn, task, prog) or _unproved(conn, task, prog, decide, room):
+            if _detect(conn, task, prog) or _unproved(conn, task, prog, decide, room, opened):
                 landed.append(task['id'])
         except _OutOfTime:
             resume = task['id']
             log.warning('outside landing scan stops before the decider; resuming at %s', resume)
             break
+        except _EnoughAsked:
+            resume = task['id']
+            log.info('outside landing scan opened %d questions; resuming at %s', len(opened), resume)
+            break
         except subprocess.TimeoutExpired:
             stuck.add(key)
             log.warning('outside landing scan skips %s: git timed out', key)
+            later = next((t['id'] for t in tasks[position + 1:] if t['repo'].lower() == key), '')
+            resume = resume or later    # or the task that timed out stands in front of its repo every interval
         except (OSError, LookupError, ValueError, PermissionError, subprocess.SubprocessError, ci.CIError) as error:
             log.warning('landing of %s not detected: %s', task['id'], error)     # IllegalTransition is a ValueError
     if ops.get_setting(conn, RESUME_KEY, '') != resume:

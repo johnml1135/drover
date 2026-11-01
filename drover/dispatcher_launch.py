@@ -120,11 +120,13 @@ class LaunchSteps:
             if getattr(exc, 'missing', False) or isinstance(exc, FileNotFoundError):
                 self.unavailable[(route['backend'], placement)] = self.now()
             return None
-        if cancelled and self._is_yanked(tid):        # recorded first: a yanked run carries no cancel-requested note
+        yanked = self._is_yanked(tid)                 # one read, so both steps below agree on it
+        if cancelled and yanked:                      # recorded first: a yanked run carries no cancel-requested note
             self.cancelling[run_id] = (tid, placement, nonce)
             p.append_event("launch-cancel", {"run": run_id, "placement": placement}, tid)
-        yanked = self._end_if_yanked(run_id, tid, release=not cancelled)
-        if not yanked:
+        if yanked:
+            self._end_if_yanked(run_id, tid, release=not cancelled, yanked=True)
+        else:
             p.finish_run(run_id, "launch-error", note=(f"launch failed: {exc}"[:270] + (" cancel-requested" if cancelled else "")))
             if cancelled:
                 self.cancelling[run_id] = (tid, placement, nonce)

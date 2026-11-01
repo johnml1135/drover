@@ -92,6 +92,8 @@ def land_stage(conn, task, tip, receipt):
     from ..landing_batch import review_landed
     with tx(conn):
         current = get_task(conn, task['id'])
+        if current['status'] == states.LANDED:       # detection saw the commit reach main first, and has recorded it
+            return current
         # A yank that arrives once the commit is on main cannot stop it: yanked -> landed records what happened.
         if (current['status'] not in (states.REVIEWED, 'yanked') or not review_landed(conn, task['id'], task['head'])
                 or not re.fullmatch(r'[0-9a-f]{40}', tip or '') or not re.fullmatch(r'[0-9a-f]{40}', task['last_sha'] or '')

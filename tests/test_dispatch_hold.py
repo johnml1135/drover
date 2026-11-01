@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, dispatch_hold
+from drover import config, dispatch_hold, placement, repos
 from drover.ledger import connect, ops
 from drover.port import DirectPort
 
@@ -13,8 +13,12 @@ from tests.test_dispatcher import Base
 CFG = {"magnets": config.DEFAULTS["dispatch"]["magnets"], "conflict_hold": True}
 
 
-def task(tid, scope, repo="p", branch=None, repo_path="/r"):
-    return {"id": tid, "scope_files": scope, "repo": repo, "branch": branch, "repo_path": repo_path}
+def task(tid, scope, repo="p", branch=None):
+    return {"id": tid, "scope_files": scope, "repo": repo, "branch": branch, "repo_path": None}    # as dispatch leaves it
+
+
+def holds(ready, active, cfg=CFG, repo_of=lambda t: "/r", **kw):
+    return dispatch_hold.holds(ready, active, cfg, repo_of, **kw)
 
 
 class FakeGit:
@@ -50,7 +54,7 @@ def fake(files, *branches):
 
 def run(ready, active, files):
     git = fake(files, "b1")
-    return dispatch_hold.holds(ready, active, CFG, git=git, cache={}, base_of=lambda t: "refs/heads/main")
+    return holds(ready, active, git=git, cache={}, base_of=lambda t: "refs/heads/main")
 
 
 class Config(unittest.TestCase):
@@ -106,11 +110,15 @@ class Reasons(unittest.TestCase):
         files = {"b1-tip": ["src/a.py"]}
         self.assertEqual(run([task("T2", ["src/a.py"])], [task("T1", ["x"], branch=None)], files), {})
         git = fake(files, "b1")
-        self.assertEqual(dispatch_hold.holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="ghost")], CFG,
-                                             git=git, cache={}), {})
+        self.assertEqual(holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="ghost")], git=git, cache={}), {})
         self.assertEqual([c[1] for c in git.calls], ["for-each-ref"])     # a missing ref costs no further git call
-        self.assertEqual(dispatch_hold.holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")], CFG,
-                                             git=lambda *a: None, cache={}), {})
+        self.assertEqual(holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")],
+                               git=lambda *a: None, cache={}), {})
+
+    def test_a_repo_with_no_checkout_is_left_alone(self):
+        git = fake({"b1-tip": ["src/a.py"]}, "b1")
+        out = holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")], repo_of=lambda t: None, git=git, cache={})
+        self.assertEqual((out, git.calls), ({}, []))
 
     def test_hold_clears_when_the_branch_lands(self):
         ready, active = [task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")]
@@ -120,24 +128,24 @@ class Reasons(unittest.TestCase):
 
     def test_conflict_hold_off_holds_nothing(self):
         git = fake({"b1-tip": ["src/a.py"]}, "b1")
-        out = dispatch_hold.holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")],
-                                  {**CFG, "conflict_hold": False}, git=git, cache={})
+        out = holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")],
+                    {**CFG, "conflict_hold": False}, git=git, cache={})
         self.assertEqual((out, git.calls), ({}, []))
 
     def test_no_scoped_ready_task_spawns_no_git(self):
         git = fake({"b1-tip": ["src/a.py"]}, "b1")
-        dispatch_hold.holds([task("T2", [])], [task("T1", ["x"], branch="b1")], CFG, git=git, cache={})
-        dispatch_hold.holds([], [task("T1", ["x"], branch="b1")], CFG, git=git, cache={})
+        holds([task("T2", [])], [task("T1", ["x"], branch="b1")], git=git, cache={})
+        holds([], [task("T1", ["x"], branch="b1")], git=git, cache={})
         self.assertEqual(git.calls, [])
 
     def test_git_runs_once_per_branch_tip_across_ticks(self):
         git, cache = fake({"b1-tip": ["src/a.py"]}, "b1"), {}
         ready, active = [task("T2", ["src/a.py"]), task("T3", ["src/z.py"])], [task("T1", ["x"], branch="b1")]
         for _ in range(3):
-            dispatch_hold.holds(ready, active, CFG, git=git, cache=cache)
+            holds(ready, active, git=git, cache=cache)
         self.assertEqual(len(git.diffs()), 1)
         git.branch("b1", "new")                    # the branch moved: read again, and the old key is pruned
-        dispatch_hold.holds(ready, active, CFG, git=git, cache=cache)
+        holds(ready, active, git=git, cache=cache)
         self.assertEqual(len(git.diffs()), 2)
         self.assertEqual(len(cache), 1)
 
@@ -147,24 +155,34 @@ class Reasons(unittest.TestCase):
             git.branch(f"b{i}")
         active = [task(f"A{i}", ["x"], branch=f"b{i}") for i in range(40)]
         ready = [task("T2", ["src/a.py"])]
-        dispatch_hold.holds(ready, active, CFG, git=git, cache=cache)
+        holds(ready, active, git=git, cache=cache)
         self.assertEqual(len(git.calls), 41)                 # one listing, one diff per uncached tip
         git.calls.clear()
-        dispatch_hold.holds(ready, active, CFG, git=git, cache=cache)
+        holds(ready, active, git=git, cache=cache)
         self.assertEqual(len(git.calls), 1)
         git.calls.clear()
-        other = [task(f"B{i}", ["x"], branch=f"b{i}", repo_path="/other") for i in range(40)]
-        dispatch_hold.holds(ready, active[:20] + other[:20], CFG, git=git, cache=cache)
+        other = [task(f"B{i}", ["x"], repo="q", branch=f"b{i}") for i in range(40)]
+        holds([*ready, task("T3", ["src/a.py"], repo="q")], active[:20] + other[:20], repo_of=lambda t: "/" + t["repo"],
+              git=git, cache=cache)
         self.assertEqual(len({c[0] for c in git.calls if c[1] == "for-each-ref"}), 2)
 
     def test_pushed_repo_releases_when_the_branch_is_on_the_remote_ref(self):
         git = FakeGit({("m1", "b1-tip"): ["src/a.py"], ("r1", "b1-tip"): []})   # local main is behind the remote
         git.branch("b1").refs["refs/remotes/origin/main"] = "r1"
         ready, active = [task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")]
-        local = dispatch_hold.holds(ready, active, CFG, git=git, cache={}, base_of=lambda t: "refs/heads/main")
-        pushed = dispatch_hold.holds(ready, active, CFG, git=git, cache={},
-                                     base_of=lambda t: "refs/remotes/origin/main")
+        local = holds(ready, active, git=git, cache={}, base_of=lambda t: "refs/heads/main")
+        pushed = holds(ready, active, git=git, cache={}, base_of=lambda t: "refs/remotes/origin/main")
         self.assertEqual((list(local), pushed), (["T2"], {}))
+
+
+class GitSeam(unittest.TestCase):
+    def test_git_goes_through_placement(self):
+        done = mock.Mock(returncode=0, stdout="sha refs/heads/main\n")
+        with mock.patch.object(placement, "git", return_value=done) as git:
+            self.assertEqual(dispatch_hold._git("R:/r", "for-each-ref"), done.stdout)
+        git.assert_called_once_with("R:/r", "for-each-ref", timeout=60)
+        with mock.patch.object(placement, "git", side_effect=OSError("offline")):
+            self.assertIsNone(dispatch_hold._git("R:/r", "for-each-ref"))
 
 
 class InTick(Base):
@@ -176,7 +194,7 @@ class InTick(Base):
         self.addCleanup(patch.stop)
         dispatch_hold._CACHE.clear()
         self.active = self.task(scope_files=["other/x"])
-        self.conn.execute("UPDATE tasks SET status='gated', branch='b1', repo_path='/r' WHERE id=?", (self.active,))
+        self.conn.execute("UPDATE tasks SET status='gated', branch='b1' WHERE id=?", (self.active,))
 
     def beat(self):
         return json.loads(ops.get_setting(self.conn, "dispatcher_heartbeat")).get("not_dispatched")
@@ -186,6 +204,33 @@ class InTick(Base):
         out = self.d.tick()
         self.assertEqual((out["launched"], self.status(t)), ([], "ready"))
         self.assertEqual(self.beat(), {"conflict-hold": 1})
+
+    def test_the_checkout_comes_from_the_repo_registry_as_tasks_have_no_repo_path(self):
+        self.assertIsNone(ops.get_task(self.conn, self.active)["repo_path"])
+        self.task(scope_files=["src/a.py"])
+        self.d.tick()
+        self.assertEqual({call[0] for call in self.git.calls}, {repos.native(repos.repo_path(self.pipe.prog))})
+
+    def wsl_repo(self, up):
+        self.pipe.prog["repo"] = "/home/owner/p"
+        self.fl.wsl_up = lambda: up
+        return self.task(scope_files=["src/a.py"])
+
+    def test_a_stopped_wsl_is_not_started_for_a_hold(self):
+        t = self.wsl_repo(False)
+        with mock.patch.object(placement, "routes_through_wsl", return_value=True):
+            self.assertEqual(self.d._hold_repo(ops.get_task(self.conn, t)), None)
+
+    def test_a_compaction_is_not_woken_for_a_hold(self):
+        t = self.wsl_repo(True)
+        with mock.patch.object(placement, "routes_through_wsl", return_value=True), \
+                mock.patch("drover.dispatcher.compaction_hold.active", return_value={"phase": "draining"}):
+            self.assertEqual(self.d._hold_repo(ops.get_task(self.conn, t)), None)
+
+    def test_a_running_wsl_is_read(self):
+        t = self.wsl_repo(True)
+        with mock.patch.object(placement, "routes_through_wsl", return_value=True):
+            self.assertEqual(self.d._hold_repo(ops.get_task(self.conn, t)), repos.native("/home/owner/p"))
 
     def test_picked_task_is_held_too(self):
         held, free = self.task(scope_files=["src/a.py"]), self.task(scope_files=["src/free.py"])

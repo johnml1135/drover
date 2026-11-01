@@ -74,6 +74,13 @@ class DispatchSetting(Base):
         ops.set_status(self.conn, t["id"], "ready", actor="owner")
         self.assertEqual(self.claim()["id"], t["id"])
 
+    def test_a_second_pick_changes_nothing_and_logs_nothing(self):
+        t = self.task(epic_id=self.epic(DIRECTOR))
+        first = ops.pick(self.conn, t["id"], "dispatcher")
+        again = ops.pick(self.conn, t["id"], "owner")
+        self.assertEqual((again["picked_by"], again["picked_at"]), (first["picked_by"], first["picked_at"]))
+        self.assertEqual(len(ops.events(self.conn, task_id=t["id"], kind="picked")), 1)
+
     def test_pick_refused_unless_ready(self):
         t = self.task(epic_id=self.epic(DIRECTOR))
         self.claim()                       # not picked: stays ready

@@ -164,7 +164,6 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             runs = [{'run_id': rid, 'task_id': tid, 'context': reading(h)} for rid, (h, tid, _) in list(self.live.items())]
             watch.tick(self.port.conn, config_mod.get(), res, self.now(), runs)
         except Exception:
-            import logging
             logging.getLogger(__name__).exception('watch tick failed')
 
     def _detect_outside_landings(self):
@@ -175,10 +174,29 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             if self._outside_at is not None and now - self._outside_at < outside_land.interval_s(cfg):
                 return
             self._outside_at = now
-            outside_land.tick(self.port.conn, cfg)
+            for task_id in outside_land.tick(self.port.conn, cfg)['landed']:
+                self.port._status_changed(self.port.get_task(task_id))   # the scan writes the ledger, so tell open pages
         except Exception:
             self._outside_at = now
             logging.getLogger(__name__).exception('outside landing detection failed')
+
+    def _hold_base(self, task):
+        """The ref a conflict hold compares against: a pushing repo lands on the remote ref, as ops_outside does."""
+        prog = self.pipeline.all_repos().get(str(task.get("repo") or "").lower())
+        if not prog:
+            return None
+        base = repos_mod.default_branch(prog)
+        return f"refs/remotes/{repos_mod.remote_name(prog)}/{base}" if prog["landing"]["push"] else f"refs/heads/{base}"
+
+    def _hold_repo(self, task):
+        """The checkout a conflict hold reads, from the registry. None when its git would start or wake WSL."""
+        prog = self.pipeline.all_repos().get(str(task.get("repo") or "").lower())
+        if not prog:
+            return None
+        path = repos_mod.repo_path(prog)
+        if placement.routes_through_wsl(path) and (compaction_hold.active() or not self.launcher.wsl_up()):
+            return None
+        return repos_mod.native(path)
 
     def tick(self):
         self._control_epoch = self.port.admission()['epoch']
@@ -267,25 +285,23 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             self._admission_report()
             return report({}, "no-backend-admitted")
         slots = min(policy["parallel_cap"] - in_use(), res.get("slots", 0) - out.get('directors', {}).get('capacity_used', 0))
-        out["reviewed"] = self._start_reviews(policy, admitted, max(slots, 0))
+        launches = config_mod.get()["capacity"]["launches_per_tick"]    # each is synchronous, and the tick waits for it
+        out["reviewed"] = self._start_reviews(policy, admitted, max(min(slots, launches), 0))
         slots -= len(out["reviewed"])
-        out["planned"] = [] if hold else self._start_replans(policy, admitted, max(slots, 0))   # planners read checkouts
+        launches -= len(out["reviewed"])
+        out["planned"] = [] if hold else self._start_replans(policy, admitted, max(min(slots, launches), 0))   # planners read checkouts
         slots -= len(out["planned"])
+        launches -= len(out["planned"])
         skip = {row["subject_key"] for row in p.waiting.pending() if row["subject_kind"] == "task"}
         if hold:
             skip.update(t["id"] for t in p.list_tasks("ready") if self._wsl_window(t))
         skip.update(planner_tasks)
         skip.update(tid for _, tid, _ in self.live.values())
-        def hold_base(t):      # git runs here, outside any ledger transaction
-            prog = self.pipeline.all_repos().get(str(t.get("repo") or "").lower())
-            if not prog:
-                return None
-            base = repos_mod.default_branch(prog)      # a pushing repo lands on the remote ref, as ops_outside does
-            return f"refs/remotes/{repos_mod.remote_name(prog)}/{base}" if prog["landing"]["push"] else f"refs/heads/{base}"
-        held = dispatch_hold.tick_holds(p, config_mod.get()["dispatch"], hold_base) if slots > 0 else {}
+        room = min(slots, launches) > 0
+        held = dispatch_hold.tick_holds(p, config_mod.get()["dispatch"], self._hold_base, self._hold_repo) if room else {}    # no transaction is open
         skip.update(held)
         skipped = {"conflict-hold": len(held)} if held else {}
-        while slots > 0 and self._launch_allowed():
+        while slots > 0 and launches > 0 and self._launch_allowed():
             task = p.claim_next({}, exclude=skip)
             if task is None:
                 break
@@ -297,8 +313,9 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             if isinstance(got, str):
                 skipped[got] = skipped.get(got, 0) + 1
                 continue
-            route, placement, wt = got
-            if self._unless_closed(task["id"], self._launch, task, route, policy, placement, cwd=wt) is not None \
+            route, place_on, wt = got
+            launches -= 1                            # an attempt that fails has taken its time all the same
+            if self._unless_closed(task["id"], self._launch, task, route, policy, place_on, cwd=wt) is not None \
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1
@@ -307,7 +324,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         waiting_on_director = ops_dispatch.awaiting_pick(p.conn)    # ready, in a director's epic, not yet picked
         if waiting_on_director:
             skipped["awaiting-director"] = waiting_on_director
-        return report(skipped, "no-slots" if slots <= 0 else "")
+        return report(skipped, "no-slots" if slots <= 0 else "launch-limit" if launches <= 0 else "")
 
 
 def loop(dispatcher, interval=30, stop=lambda: False, sleep=time.sleep):

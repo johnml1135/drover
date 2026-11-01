@@ -151,6 +151,7 @@ L = 1
 
 [capacity]
 parallel_cap = 40           # workers at once, all seats; yours alone, the tuner never moves it
+launches_per_tick = 4       # reviews, planners and workers started in one tick; each blocks the tick while it starts
 
 [dispatch]
 # A ready task waits (stays ready, reported as conflict-hold) while an active task's branch has changed a file its

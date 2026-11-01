@@ -87,7 +87,7 @@ DEFAULTS = {
         "review": "sonnet-5.5",
         "director": "opus-5.5",
     },
-    "capacity": {"parallel_cap": 40},
+    "capacity": {"parallel_cap": 40, "launches_per_tick": 4},
     "dispatch": {"magnets": DEFAULT_MAGNETS, "conflict_hold": True},
     "watch": {"interval_s": 600, "stalled_hours": 24, "context_tokens": 300000, "red_rate": 0.5, "min_gates": 6},
     "trackers": DEFAULT_TRACKERS,

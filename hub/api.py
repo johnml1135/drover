@@ -321,32 +321,6 @@ def approve(tid: str, request: Request, who: str = Depends(auth.require_api)):
     return guard(_store(request).approve, tid)
 
 
-class DispatchModeIn(Loose):
-    mode: Literal["drover", "director"]
-
-
-@router.get("/dispatch/default")
-def get_dispatch_default(request: Request):
-    return {"mode": _store(request).get_default_dispatch()}
-
-
-@router.post("/dispatch/default")
-def set_dispatch_default(body: DispatchModeIn, request: Request, who: str = Depends(auth.require_api)):
-    owner_only(who)
-    return {"mode": guard(_store(request).set_default_dispatch, body.mode)}
-
-
-@router.post("/epics/{eid}/dispatch")
-def set_epic_dispatch(eid: str, body: DispatchModeIn, request: Request, who: str = Depends(auth.require_api)):
-    owner_only(who)
-    return guard(_store(request).set_epic_dispatch, eid, body.mode)
-
-
-@router.post("/tasks/{tid}/pick")
-def pick_task(tid: str, request: Request, who: str = Depends(auth.require_api)):
-    return guard(_store(request).pick, tid, actor(who))
-
-
 @router.post("/runs", status_code=201)
 def start_run(body: RunStart, request: Request, who: str = Depends(auth.require_api)):
     if body.role == "director" or body.role.startswith("director:"):
@@ -366,7 +340,7 @@ def finish_run(rid: int, body: RunFinish, request: Request,
     return guard(_store(request).finish_run, rid, body.outcome, actor(who), **d)
 
 
-OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "bypass", "handback", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
+OWNER_EVENT_KINDS = ("garden.", "dispatch.", "import-batch", "import-task", "tuner.", "director-borrow", "director.", "notification.", "group.", "waiting.", "bypass", "handback", "landing.", "watch.", "task.result-accepted", "task.landed", "result.accepted", "tasks-approved", "task-approval-skipped", "task-approval-policy")  # the executor trusts these
 
 
 @router.post("/events", status_code=201)
@@ -459,21 +433,6 @@ def put_settings(body: dict[str, str], request: Request, who: str = Depends(auth
         if k in body and not SAFE_NAME.match(body[k]):
             raise HTTPException(400, f"{k} must match [A-Za-z0-9._-]+ and not start with '-'")
     return guard(_store(request).update_settings, body, author=actor(who))
-
-
-class DispatchIn(Loose):
-    enabled: bool
-
-
-@router.get("/dispatch")
-def get_dispatch(request: Request):
-    return {"enabled": _store(request).dispatch_enabled()}
-
-
-@router.post("/dispatch")
-def set_dispatch(body: DispatchIn, request: Request, who: str = Depends(auth.require_api)):
-    owner_only(who)
-    return {"enabled": _store(request).set_dispatch_enabled(body.enabled, actor="owner")}
 
 
 @router.post("/epics/{eid}/approve-proposed")

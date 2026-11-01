@@ -1,6 +1,7 @@
 {
  "config": {
   "capacity": {
+   "launches_per_tick": 4,
    "parallel_cap": 6
   },
   "config_sync": {
@@ -242,6 +243,7 @@
   }
  },
  "sources": {
+  "capacity.launches_per_tick": "default",
   "capacity.parallel_cap": "machine:<home>/config.toml",
   "config_sync.auto_push": "default",
   "config_sync.remote": "default",
