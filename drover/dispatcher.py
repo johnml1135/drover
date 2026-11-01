@@ -168,6 +168,15 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
         except Exception:
             logging.getLogger(__name__).exception('watch tick failed')
 
+    def _pane_compaction(self, hold):
+        """Stop or resume agents in WSL panes, and end rows a past hold left. No exception text: it may quote a path."""
+        if self.panes is None:
+            return
+        try:
+            self.panes.compaction_tick(hold)
+        except Exception as error:
+            logging.getLogger(__name__).warning('pane compaction tick failed: %s', type(error).__name__)
+
     def _detect_outside_landings(self):
         """At most once per interval, even after a failure; a detection failure never stops dispatch."""
         now = self.now()
@@ -235,6 +244,7 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             hold = None
         if hold:
             out['compaction'] = self._compaction_drain(hold)
+        self._pane_compaction(hold)
         self.check_stale()
         if not hold:                                       # its git must not wake WSL during a compaction
             self._detect_outside_landings()

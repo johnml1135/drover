@@ -18,7 +18,7 @@ other refusal ends the row `failed`, flagged, and a fresh agent starts from the 
 import logging
 import time
 
-from . import compaction_hold, config, pane_close, pane_handoff, pane_launch, pane_send, pane_wake, placement
+from . import compaction_hold, config, pane_close, pane_compaction, pane_handoff, pane_launch, pane_send, pane_wake, placement
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .launch import AdmissionHeld
 from .ledger import disk_notices, ops_panes
@@ -308,8 +308,8 @@ class PaneService:
             self.port.set_setting(OUTAGE, '')
 
     def compaction_tick(self, hold) -> dict:
-        """The hub's part of the compaction stop. Task 13 fills it; until then no pane has anything to settle."""
-        return dict(id=hold.get('id'), phase=hold.get('phase'), settled=True, agents=[])
+        """The hub's part of the compaction: a step of the stop or the resume, or, with no hold, what the last one left."""
+        return pane_compaction.tick(self, hold)
 
 
 class PaneHandle:

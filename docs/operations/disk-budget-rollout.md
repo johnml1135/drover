@@ -27,9 +27,11 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
    The task `\DroverCompaction` runs nightly at 03:30 with `<Root>\hub\.venv\Scripts\python.exe` (override with `-Python`), so it does
    not depend on PATH. The task is registered with `-LogonType Interactive`, so it runs only while you are logged on (a locked
    session counts); a night with nobody logged on is not compacted, and a missed night is not made up.
-   Do this only after Phase 3 of the spec lands (directors in panes, which adds the pane stop that sends "stop now" to agents in
-   WSL panes), or if you accept that interactive WSL agents get no stop message yet: until then the job kills them without notice
-   at its kill step, as soon as the hub has drained its own runs. `compaction.pane_stop` is the empty hook for it.
+   With `[panes] enabled`, the hub first stops Drover-started agents in WSL panes: "stop now", an interruption at 5 minutes, and the
+   job's kill no sooner than 6. A pane showing a dialog or a draft gets no input and waits for the kill. After the restart the agents resume and
+   are told "restart complete, keep going". A run you stopped stays stopped. When a resume fails, a fresh agent starts only if the pane
+   shows none; an agent still there keeps its session and hears by its next wake. The morning report flags each with seat and placement.
+   Directors on Windows are untouched. Agents you started yourself in WSL get no stop message: the kill reaches them without notice.
 
 6. **Retire `HerdrDiskGuard` after 3 clean applied days:** three consecutive calendar days of successful applied daily reports for
    the same scope, with no cleanup errors or protected mutations. A missing, failed or scope-changed day restarts the count.

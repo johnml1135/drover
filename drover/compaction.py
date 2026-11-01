@@ -1,11 +1,12 @@
 """The overnight WSL compaction job, run once a night by the elevated task \\DroverCompaction.
 
-Order: lock, hold, stop, kill, trim, shutdown, compact, restart, release, unlock. The job takes the cleanup lock first:
+Order: lock, hold, stop, kill, trim, shutdown, compact, restart, resume, release, unlock. The job takes the cleanup lock first:
 its kill would otherwise reach a cleanup worker mid removal. If a cleanup keeps the lock the night is skipped. Once this
 run holds WSL it always restarts WSL and releases the hold, whatever failed. Each step is stored in the hold file first, so a crash leaves a record the hub can
 release on its next start. The job cannot open the ledger (ADR-0001) and its workers are the hub's children, so the hub
 winds them down when it sees the hold (Dispatcher._compaction_drain) and answers in a file. The result is written to
-the state directory, and anything but `compacted` raises an Inbox notice.
+the state directory, and anything but `compacted` raises an Inbox notice, as does an agent that failed to resume.
+The hub stops and resumes agents in WSL panes the same way: the job only waits for its answer, and goes on without one.
 """
 import argparse
 import json
@@ -24,10 +25,25 @@ AGENT_PROCESS = re.compile(r'\b(claude|codex)\b|drover\.(runner|placement)')
 NOTICE_TRIES = 30
 LOCK_WAIT_S = 30 * 60           # a running cleanup gets this long to finish; the job's task limit is 3 hours
 LOCK_POLL_S = 5
+PANE_ANSWER_S = 120             # a hub that is up answers within a few ticks; after this the job goes on without one
+PANE_STOP_WAIT_S = 420          # the hub's 5 minute ask, its 1 minute interruption and two dispatcher ticks
+PANE_RESUME_WAIT_S = 240        # compaction_hold.RESUME_S and two dispatcher ticks
+PANE_OVER = ('resumed', 'resume-failed', 'resumed-untold', 'stayed-stopped')
+
+
+def _panes_on(runtime):
+    """With panes off the hub answers for none, so there is nothing to wait for and nothing to report."""
+    return bool(runtime.cfg.get('panes', {}).get('enabled'))
 
 
 def pane_stop(runtime):
-    """Phase 3: stop agents in WSL panes. There are none yet."""
+    """The hub's answer once agents in WSL panes have stopped or are left for the kill. None with panes off."""
+    return runtime.wait_for_panes('stop', PANE_STOP_WAIT_S) if _panes_on(runtime) else None
+
+
+def pane_resume(runtime):
+    """The hub's answer once those agents are back or flagged. None with panes off."""
+    return runtime.wait_for_panes('resume', PANE_RESUME_WAIT_S) if _panes_on(runtime) else None
 
 
 class Runtime:
@@ -79,6 +95,23 @@ class Runtime:
                 return answer
             if self.clock() >= deadline:
                 return answer or dict(stopped=[], killed=[], requeued=[], drained=False)
+            self.sleep(DRAIN_POLL_S)
+
+    def wait_for_panes(self, phase, deadline_s):
+        """The hub's settled answer for this phase, or its last word at the deadline. `error` says what is missing."""
+        token = (compaction_hold.read(self.state_dir) or {}).get('id')
+        started = self.clock()
+        while True:
+            answer = compaction_hold.read_panes(self.state_dir)
+            answer = answer if answer and answer.get('id') == token and answer.get('phase') == phase else None
+            if answer and answer.get('settled'):
+                return answer
+            waited = self.clock() - started
+            if answer is None and waited >= PANE_ANSWER_S:
+                return dict(id=token, phase=phase, settled=False, agents=[],
+                            error=f'the hub gave no pane {phase} answer in {PANE_ANSWER_S // 60} minutes')
+            if answer and waited >= deadline_s:
+                return {**answer, 'error': f'the hub had not settled the pane {phase} in {deadline_s // 60} minutes'}
             self.sleep(DRAIN_POLL_S)
 
     def _wsl(self, argv, timeout):
@@ -140,13 +173,20 @@ def holder_dead(record):
     return seen == 'absent' or bool(seen and record.get('birth') and seen != record['birth'])
 
 
+def _resume_failures(result):
+    told = {'resume-failed': 'did not resume', 'resumed-untold': 'is back but was not told to go on'}
+    return [f"{agent.get('seat')} ({agent.get('placement')}) {told[agent['outcome']]}: {agent.get('reason')}"
+            for agent in (result.get('panes') or {}).get('agents', []) if agent.get('outcome') in told]
+
+
 def report(state_dir, result, at):
     """The morning report: always a file. An Inbox notice goes through the disk outbox unless the night was clean."""
     disk_state.save_file(state_dir, compaction_hold.REPORT_FILE, {**result, 'at': at})
-    if result['status'] == 'compacted' and not result['errors']:
+    reasons = [*result['errors'], *_resume_failures(result)]
+    if result['status'] == 'compacted' and not reasons:
         return
     ident = 'compaction:%s:%s' % (time.strftime('%Y-%m-%d', time.localtime(at)), result['status'])
-    why = '; '.join(str(error) for error in result['errors']) or 'no reason recorded'
+    why = '; '.join(str(error) for error in reasons) or 'no reason recorded'
     outcome = 'compacted with errors' if result['status'] == 'compacted' else result['status']
     notice = dict(id=ident, kind='compaction', title=f'WSL compaction {outcome}',
                   body=f'The overnight WSL compaction {outcome}: {why}')
@@ -173,10 +213,10 @@ def _step(runtime, record, name, phase=None):
     runtime.save(record)
 
 
-def _note_step(runtime, record, result, name):
+def _note_step(runtime, record, result, name, phase=None):
     """Record a closing step. A record that cannot be written must not stop what comes next."""
     try:
-        _step(runtime, record, name)
+        _step(runtime, record, name, phase)
     except Exception as error:
         result['errors'].append(f'step {name} was not recorded: {type(error).__name__}: {error}')
 
@@ -189,10 +229,40 @@ def _attempt(result, action):
         result['errors'].append(str(error))
 
 
+def _pane_answer(result, action, runtime):
+    """The hub's answer about panes, if it has one. Nothing it says, or fails to say, stops the job."""
+    try:
+        answer = action(runtime)
+    except Exception as error:
+        result['errors'].append(f'the pane step failed: {type(error).__name__}: {error}')
+        return None
+    if answer and answer.get('error'):
+        result['errors'].append(answer['error'])
+    return answer
+
+
+def _flag_panes(result, reason):
+    """Agents no resume reached. The hub ends their rows when the hold goes; the report has to name them."""
+    for agent in (result.get('panes') or {}).get('agents', []):
+        if agent.get('outcome') is None:        # the hub's own word on why
+            agent.update(outcome='resume-failed', reason=agent.get('reason') or reason)
+        elif agent['outcome'] not in PANE_OVER:
+            agent.update(outcome='resume-failed', reason=reason)
+
+
+def _resume_panes(runtime, result):
+    answer = _pane_answer(result, pane_resume, runtime)
+    if answer and answer.get('agents'):
+        result['panes'] = answer
+    _flag_panes(result, 'the hub gave no resume answer')
+
+
 def _compact(runtime, record, result):
     vhdx = runtime.vhdx()
     _step(runtime, record, 'stop')
-    pane_stop(runtime)
+    panes = _pane_answer(result, pane_stop, runtime)
+    if panes is not None:
+        result['panes'] = panes
     answer = runtime.wait_for_hub(record)
     result['stopped'] = list(answer['stopped'])
     result['requeued'] = list(answer['requeued'])
@@ -236,6 +306,10 @@ def _held(runtime, at, result):
         except Exception as error:
             result['status'] = 'failed'
             result['errors'].append(f'{type(error).__name__}: {error}')
+            _flag_panes(result, 'WSL did not restart')
+        else:
+            _note_step(runtime, record, result, 'resume', phase='resuming')
+            _resume_panes(runtime, result)
         _note_step(runtime, record, result, 'release')
         try:
             runtime.release(record)
@@ -278,6 +352,9 @@ def recover(cfg=None):
                   errors=[f'the job died at step {step}; check that WSL starts'])
     if compaction_hold.mounted(state_dir):
         result['errors'].append('the disk may still be mounted; the next run dismounts it')
+    panes = compaction_hold.read_panes(state_dir)
+    if panes:
+        result['panes'] = panes
     compaction_hold.release(state_dir, record['id'])
     _reported(state_dir, result, record.get('since', record.get('at', time.time())))
     return result

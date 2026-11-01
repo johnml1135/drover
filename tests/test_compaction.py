@@ -63,7 +63,7 @@ class Order(Job):
                 seen.append((record['step'], record['phase']))
         self.run_job(Watching)
         self.assertEqual(seen, [('stop', 'draining'), ('kill', 'draining'), ('trim', 'draining'), ('shutdown', 'offline'),
-                                ('compact', 'offline'), ('restart', 'offline'), ('release', 'offline')])
+                                ('compact', 'offline'), ('restart', 'offline'), ('resume', 'resuming'), ('release', 'resuming')])
 
     def test_the_hub_report_reaches_the_result(self):
         answer = self.run_job()
