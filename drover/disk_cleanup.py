@@ -183,14 +183,15 @@ def _budget_purge(cfg, runtime, progress, result, base):
     return receipt
 
 
-def _finish_wsl(state_dir, claim, receipt):
+def _finish_wsl(state_dir, claim, receipt, at):
     """Its own receipt, holding no free space: the drive's baselines mean nothing to an episode judged on used GB.
-    `partial` records a purge cut off by its deadline with work still done, which tick retries sooner."""
+    `partial` records a purge cut off by its deadline with work still done, which tick retries sooner; `reclaimed` lets
+    a purge at the stop level come back. Waits count from `at`, when the purge ended, not from the claim."""
     disk_state.save_file(state_dir, 'result-' + claim['id'] + '.json', receipt)
     def finish(state):
         episode = state['episodes']['wsl']
         if (episode.get('claim') or {}).get('id') == claim['id']:
-            episode.update(claim=None, partial=receipt['partial'])
+            episode.update(claim=None, partial=receipt['partial'], reclaimed=receipt['reclaimed_bytes'] > 0, last_cleanup=at)
     try:
         disk_state.update(state_dir, finish)
     except BlockingIOError:
@@ -214,6 +215,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         wsl_claim = claims.get('wsl') if mode == 'triggered' else None
         machines = _repos(cfg, result['errors'])
         rows = disk.read(cfg, reader=runtime.read)
+        drive_stages_skipped = False
         inventories = set()
         inventory_id = uuid.uuid4().hex
         for row in rows:
@@ -223,9 +225,11 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             result['drives'].append(drive)
             for stage in range(1, 5 if mode == 'daily' else 7):
                 # Report all scopes, even when healthy. Unknown readings cannot authorize mutation.
-                # A wsl claim is no reason to run a drive's stages: during one, only a claimed drive runs them.
-                if apply and mode != 'daily' and (free is not None and free >= tracker['warn_gb'] or
-                                                  wsl_claim and row['name'] not in claims):
+                # A wsl claim is no reason to run a drive's stages, report-only or not: only a claimed drive runs them.
+                if wsl_claim and row['name'] not in claims:
+                    drive_stages_skipped = True
+                    break
+                if apply and mode != 'daily' and free is not None and free >= tracker['warn_gb']:
                     break
                 result['stages'].append(dict(drive=row['name'], stage=stage))
                 for side in ('windows', 'wsl'):
@@ -262,8 +266,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                 base = dict(mode=mode, apply=apply, repos=machines, paths=cfg['disk_cleanup'], state_dir=str(state_dir),
                             tasks=tasks, _inventory_id=inventory_id)
                 result['budget'] = _budget_purge(cfg, runtime, progress, result, base)
-                _finish_wsl(state_dir, wsl_claim, result['budget'])
-        if apply:
+                _finish_wsl(state_dir, wsl_claim, result['budget'], runtime.now())
+        if apply and not drive_stages_skipped:
             # Budget observation is report-only and independent of destructive stages.
             budgeted = [m for m in machines if m.get('budget_gb')]
             if budgeted:
@@ -310,7 +314,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             _save_report(state_dir, result)
         except OSError as error:
             result['errors'].append(dict(reason_code='report_persistence_failed', error=str(error)))
-        if not apply and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):
+        # Only a report of every stage authorizes apply; a stage 5 of one claim is not that report.
+        if not apply and not drive_stages_skipped and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):
             disk_state.update(state_dir, lambda state: state.update(report_scope=key))
     return result
 

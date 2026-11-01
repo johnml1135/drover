@@ -157,7 +157,7 @@ def admission(readings: list[dict]) -> dict:
 LOCK_BACKOFF_S = 30 * 60
 RETRIGGER_DROP_GB = 10.0       # a finished cleanup re-triggers only after free space falls this far below its result
 DEFAULT_COOLDOWN_S = 6 * 3600  # minimum gap after any cleanup run; disk_cleanup.cooldown_s overrides
-PARTIAL_RETRY_S = 30 * 60      # minimum gap after a budget purge its deadline cut off, while WSL stays over budget
+PARTIAL_RETRY_S = 30 * 60      # minimum gap after a budget purge that freed bytes, while WSL stays over budget
 UNKNOWN_CLAIM_MAX_S = 24 * 3600
 ABSENT_GRACE_S = 120
 
@@ -234,6 +234,17 @@ BUDGET_OUTCOMES = {
     'failed': 'the cleanup worker failed',
     'died': 'the cleanup process died before it reported',
 }
+
+
+def _retry_wait(row, episode, cooldown):
+    """Seconds this episode waits after its last cleanup ended. At stop the first claim of an episode does not wait and
+    a purge that freed bytes comes back at PARTIAL_RETRY_S; every other ending, a dead claim included, has freed nothing
+    and waits out the cooldown, never less than PARTIAL_RETRY_S. A run that could not help must not relaunch each tick."""
+    if row.get('wsl') and row['level'] == 'stop':
+        if not episode.get('attempted'):
+            return 0
+        return PARTIAL_RETRY_S if episode.get('reclaimed') else max(cooldown, PARTIAL_RETRY_S)
+    return min(cooldown, PARTIAL_RETRY_S) if episode.get('partial') else cooldown
 
 
 def budget_notice(state, outcome, *, applied=True, processes=()):
@@ -352,7 +363,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 episode['last_cleanup'] = now
                 episode.update(claim=None)
                 if row.get('wsl'):       # the receipt's free space is the drive's; WSL re-arms on its cooldown alone
-                    episode['partial'] = bool(completed.get('partial'))
+                    episode.update(partial=bool(completed.get('partial')), reclaimed=bool(completed.get('reclaimed_bytes')))
                 else:
                     episode['post' if completed['applied'] else 'report_post'] = completed['free']
                 claim = None
@@ -360,6 +371,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 episode['last_cleanup'] = now
                 episode['claim'] = claim = None
                 episode.pop('partial', None)
+                episode.pop('reclaimed', None)
                 if row.get('wsl'):
                     budget_notice(state, 'died', applied=applied)
             free = row['free_gb']
@@ -368,7 +380,8 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             if row['level'] == 'ok':
                 episode.pop('post', None)
                 episode.pop('report_post', None)
-                episode.pop('partial', None)
+                for key in ('partial', 'reclaimed', 'attempted'):
+                    episode.pop(key, None)
                 state.setdefault('notice_episodes', {}).pop(row['name'], None)
                 continue
             baseline = episode.get('post' if applied else 'report_post')
@@ -380,9 +393,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 deferrals.append(('compaction', ['%s: waiting for the WSL compaction to end' % row['name']]))
                 continue
             last = episode.get('last_cleanup', -math.inf)
-            wait = min(cooldown, PARTIAL_RETRY_S) if episode.get('partial') else cooldown
-            if row.get('wsl') and row['level'] == 'stop':
-                wait = PARTIAL_RETRY_S if episode.get('partial') else 0   # stop bypasses the cooldown like critical
+            wait = _retry_wait(row, episode, cooldown)
             if row['level'] != 'critical' and now - last < wait:
                 deferrals.append(('cooldown', ['%s: last cleanup ended %d min ago; waiting %d min' % (
                     row['name'], (now - last) // 60, wait // 60)]))
@@ -391,6 +402,8 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                          prior_last=episode.get('last_cleanup'))
             episode['last_cleanup'] = now
             episode['claim'] = claim
+            if row.get('wsl'):
+                episode['attempted'] = True
             launches.append((row['name'], claim))
         if deferrals:
             previous = state.get('cleanup_deferred') or {}

@@ -652,7 +652,6 @@ class LiveSnapshot(LocalSide):
         self.assertEqual(self.receipt()['budget'], 'processes_unknown')
 
     def test_a_cleared_process_still_counts_as_path_evidence(self):
-        self.windows_rows[0].update(cmd=r'csrss.exe \\wsl$\Disk Test Distro\home\me\wt')
         self.windows_rows[0].update(cmd=r'csrss.exe --root=\\wsl$\Ubuntu\home\me\wt')
         proof = placement_proof._CleanupProcesses(windows=True, request=dict(budget=True))
         self.assertEqual(proof.wsl_paths('Ubuntu'), ['/home/me/wt'])
@@ -976,12 +975,111 @@ class Coordinator(BudgetCase):
         self.run_triggered()
         self.assertEqual(self.asked(), [('wsl', 5, BUDGET), ('windows', 1, None)])
 
-    def test_dry_claim_keeps_reporting_every_stage(self):
+    def test_dry_claim_runs_no_drive_stages_either(self):
         self.claim(applied=False)
         self.run_triggered(apply=False)
-        budgeted = [a for a in self.asked() if a[2]]
-        self.assertEqual(budgeted, [('wsl', 5, BUDGET)])
+        self.assertEqual(self.asked(), [('wsl', 5, BUDGET)])
         self.assertEqual({r['apply'] for s, r in self.calls}, {False})
+
+    def test_a_dry_claim_is_no_report_for_apply(self):
+        # The stages it skipped are the report; it must not refresh the receipt that authorizes apply.
+        self.cfg['disk_cleanup']['cooldown_s'] = 1234
+        self.claim(applied=False)
+        self.run_triggered(apply=False)
+        self.assertNotEqual(disk_state.read(self.state).get('report_scope'), disk_cleanup.scope_key(self.cfg))
+
+    def test_budget_observation_does_not_run_for_a_wsl_claim(self):
+        machine = self.repos_dir / 'alpha.toml'
+        machine.write_text(machine.read_text(encoding='utf-8') + 'budget_gb = 1\n', encoding='utf-8')
+        self.approve_report()
+        self.calls.clear()
+        self.claim()
+        self.run_triggered()
+        self.assertEqual(self.asked(), [('wsl', 5, BUDGET)])
+
+
+class StopLevel(LocalSide):
+    """500 GB and over, from a real tick to a real receipt and back: what ended the run decides when it comes back."""
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+        self.launches = []
+        self.approve_report()
+        disk_state.update(self.state, lambda state: state.update(automation=dict(apply=True)))
+        self.calls.clear()
+
+    def tick(self, seconds=0, used=510.):
+        self.now += seconds
+        disk.tick(self.cfg, now=self.now, reader=lambda path: 200., wsl_used=lambda: used,
+                  enqueue=lambda: self.launches.append(self.now))
+
+    def receipt(self):
+        latest = max((self.state / 'disk').glob('result-*.json'), key=lambda path: path.stat().st_mtime_ns)
+        return json.loads(latest.read_text(encoding='utf-8'))
+
+    def claimed(self):
+        self.tick()
+        self.assertIsNotNone(self.episode()['claim'])
+        return len(self.launches)
+
+    def assert_next_launch(self, gap):
+        launched = len(self.launches)
+        self.tick(30)
+        self.tick(gap - 31)
+        self.assertEqual(len(self.launches), launched, 'no relaunch before the wait is over')
+        self.tick(1)
+        self.assertEqual(len(self.launches), launched + 1)
+
+    def test_a_shortfall_with_nothing_to_remove_does_not_relaunch_every_tick(self):
+        self.allowed = -(5 * GIB)
+        self.claimed()
+        self.run_cleanup(apply=True, mode='triggered')
+        self.assertEqual((self.receipt()['budget'], self.receipt()['reclaimed_bytes']), ('shortfall', 0))
+        self.assert_next_launch(6 * HOUR)
+
+    def test_a_shortfall_that_freed_bytes_comes_back_at_the_floor(self):
+        self.output('idle', 9 * DAY)
+        self.allowed = -(5 * GIB)
+        self.claimed()
+        self.run_cleanup(apply=True, mode='triggered')
+        self.assertEqual((self.receipt()['budget'], self.receipt()['reclaimed_bytes']), ('shortfall', SIZE))
+        self.assert_next_launch(30 * 60)
+
+    def test_outcomes_that_freed_nothing_wait_out_the_cooldown(self):
+        self.claimed()
+        for status in ('processes_unknown', 'unknown', 'failed', 'deadline'):
+            with self.subTest(status=status):
+                answer = dict(empty_result(), budget=dict(status=status, used_gb=510., target_gb=225., shortfall_bytes=GIB))
+                if status == 'failed':
+                    answer = empty_result()
+                self.run_cleanup(apply=True, mode='triggered', real=False, handler=lambda side, request: answer)
+                self.assertEqual(self.receipt()['budget'], status)
+                self.assert_next_launch(6 * HOUR)    # which claims again, for the next outcome
+
+    def test_a_report_only_claim_does_not_relaunch_every_tick(self):
+        disk_state.update(self.state, lambda state: state.update(automation=dict(apply=False)))
+        self.allowed = -(5 * GIB)
+        self.claimed()
+        self.run_cleanup(apply=False, mode='triggered')
+        self.assert_next_launch(6 * HOUR)
+
+    def test_a_dead_claim_waits_out_the_cooldown(self):
+        self.claimed()
+        with patch.object(placement, 'cleanup_claim_alive', return_value=False):
+            self.tick(60)
+            self.assertIsNone(self.episode()['claim'])
+            self.assert_next_launch(6 * HOUR)
+
+    def test_the_wait_counts_from_the_end_of_the_purge(self):
+        self.output('idle', 9 * DAY)
+        self.allowed = -(5 * GIB)
+        self.claimed()
+        self.now += 25 * 60                 # the purge took 25 minutes
+        self.run_cleanup(apply=True, mode='triggered')
+        self.assertEqual(self.episode()['last_cleanup'], self.now)
+        self.assert_next_launch(30 * 60)
 
 
 class Retrigger(BudgetCase):

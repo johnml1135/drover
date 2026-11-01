@@ -186,13 +186,41 @@ class StopHoldsNewWork(DiskCase):
 
 
 class StopBypassesCooldown(Triggers):
-    def test_stop_bypasses_normal_cooldown(self):
+    def test_stop_claims_at_once_at_the_start_of_an_episode(self):
+        self.tick(310)
+        self.finish_claim()
+        self.now += 60
+        self.tick(200)                               # a healthy reading ends the episode
+        self.tick(500)
+        self.assertEqual(len(self.launches), 2)
+
+    def test_stop_comes_back_at_the_floor_after_bytes_were_freed(self):
+        self.tick(500)
+        self.finish_claim(reclaimed=True)
+        self.now += 29 * 60
         self.tick(500)
         self.assertEqual(len(self.launches), 1)
-        self.finish_claim()
         self.now += 60
         self.tick(500)
         self.assertEqual(len(self.launches), 2)
+
+    def test_stop_waits_out_the_cooldown_after_a_claim_that_freed_nothing(self):
+        self.tick(500)
+        self.finish_claim()
+        self.now += 6 * 3600 - 1
+        self.tick(500)
+        self.assertEqual(len(self.launches), 1)
+        self.now += 1
+        self.tick(500)
+        self.assertEqual(len(self.launches), 2)
+
+    def test_the_floor_holds_under_a_short_cooldown(self):
+        self.cfg['disk_cleanup']['cooldown_s'] = 60
+        self.tick(500)
+        self.finish_claim()
+        self.now += 29 * 60
+        self.tick(500)
+        self.assertEqual(len(self.launches), 1)
 
     def test_purge_still_waits_for_cooldown(self):
         self.tick(310)
@@ -203,7 +231,7 @@ class StopBypassesCooldown(Triggers):
 
     def test_stop_respects_partial_retry_spacing(self):
         self.tick(500)
-        self.finish_claim(partial=True)
+        self.finish_claim(partial=True, reclaimed=True)
         self.now += 60
         self.tick(500)
         self.assertEqual(len(self.launches), 1)
@@ -211,11 +239,11 @@ class StopBypassesCooldown(Triggers):
         self.tick(500)
         self.assertEqual(len(self.launches), 2)
 
-    def finish_claim(self, partial=False):
+    def finish_claim(self, partial=False, reclaimed=False):
         from drover import disk_state
 
         def change(state):
-            state['episodes']['wsl'].update(claim=None, last_cleanup=self.now, partial=partial)
+            state['episodes']['wsl'].update(claim=None, last_cleanup=self.now, partial=partial, reclaimed=reclaimed)
         disk_state.update(config.state_dir(self.cfg), change)
 
 

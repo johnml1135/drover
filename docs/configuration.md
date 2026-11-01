@@ -150,6 +150,11 @@ one triggers nothing). Used space at or above `wsl_purge_gb` starts a cleanup on
 free; the cleanup aims for `wsl_target_gb`; at or above `wsl_stop_gb` new work stops starting. Each is finite and
 positive, and `wsl_target_gb` < `wsl_purge_gb` < `wsl_stop_gb`.
 
+At `wsl_stop_gb` the first claim of an episode does not wait for the cooldown, and a purge that freed bytes comes back
+30 minutes after it ended. Any other ending, a dead cleanup included, waits out `cooldown_s` and at least 30 minutes.
+A reading below `wsl_purge_gb` ends the episode. A claim with no low drive runs only the WSL purge, report-only or
+not, so it is no dry report for `--apply`. Every purge outcome except `met` raises one Inbox notice per episode.
+
 The overnight WSL compaction has no settings. `scripts/Install-CompactionTask.ps1` registers `\DroverCompaction`,
 nightly at 03:30, elevated, as the owner; a night the machine was off is not caught up. The task runs
 `python -m drover.compaction`, which holds WSL through `disk/compaction-active.json` in the state directory. While that
