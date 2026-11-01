@@ -27,12 +27,13 @@ FRIENDLY_LOCATION = r'(?:~?/|[A-Z]:[\\/]|\\\\)[^\s·]*'
 # Narrower than the skill: text after a model row's "·" must be a path or a context reading, so owner text is no footer.
 MODEL_TAIL = (r'\s*·\s*(?:\d+% context left(?:\s*·\s*' + FRIENDLY_LOCATION + r')?|' +
               FRIENDLY_LOCATION + r'(?:\s*·\s*[^·]+)?)')
+CUT_EFFORT = 'l|lo|low|m|me|med|medi|mediu|h|hi|hig|high|x|xh|xhi|xhig|xhigh'  # narrower than the skill's five letters
 FOOTER = re.compile(
     r'(?:(?:← for agents\s*·\s*)?\? for shortcuts(?:\s+' + WARNING_FOOTER + r')?|\? fo(?:…|\.\.\.)|\?\s+⚠\s*\d+(?:\s*·\s*f\d+)?|'
     r'New activity\s*·\s*enter/esc latest(?:\s*·\s*\? (?:for )?shortcuts)?(?:\s+' + WARNING_FOOTER + r')?|'
     r'\d+% context left|' + FRIENDLY_MODEL + r'\s+(?:low|medium|high|xhigh)\s*·\s*' +
     FRIENDLY_LOCATION + r'(?:\s*·\s*[^·]+)?|'  # optional thread title / "Read briefs"
-    r'gpt-[\w.\-]+…|gpt-[\w.\-]+\s+[a-z]{1,5}…|gpt-[\w.\-]+\s+(?:low|medium|high|xhigh)' + MODEL_TAIL + r'|'
+    r'gpt-[\w.\-]+…|gpt-[\w.\-]+\s+(?:' + CUT_EFFORT + r')…|gpt-[\w.\-]+\s+(?:low|medium|high|xhigh)' + MODEL_TAIL + r'|'
     + WARNING_FOOTER + r')', re.I)
 SEPARATOR = re.compile(r'\s*[─━]{3,}\s*')  # narrower than the skill: `-` and `---` are text an owner can type
 EMPTY_COMPOSER = ('', 'Ask Codex to do anything')
@@ -45,7 +46,13 @@ CONTEXT_LEFT = re.compile(r'(?<![\d.])(\d{1,3})% context left', re.I)
 STUCK_CLASSES = ('rate_limit', 'model_prompt', 'approval', 'question', 'trust', 'usage_limit', 'unsent_prompt', 'stale_working',
                  'error_turn', 'exited', 'wake_unverified', 'scope_stale', 'queued_wedged', 'viewport_held', 'viewport_unknown',
                  'screen_unknown')
-CLAUDE_BUSY_ROWS = 12
+BUSY_ROWS = 12
+# Read over the joined rows, so a wrapped row still matches. Whole or cut: Working under any glyph or none, one word and
+# a running time, or the phrase's start, even with a wrap inside `esc to`. The cost of a look-alike row is mail.
+LIVE_TURN = re.compile(r'^\W*Working\b|^\W*W[orking]*…|^\W*\w+…?\s*\(\d+(?:\s*[smh]|…|$)|'
+                       r'e\s*s\s*c\s*t\s*o\b|\besc(?:\s+t)?\s*(?:…|$)', re.I | re.M)
+# Where a real Codex answer starts. Only this ends the composer walk; Claude's answer row has no capture yet, so has none.
+ANSWER_ROW = dict(codex=re.compile(r'•\s'))
 
 
 def _unknown(result):
@@ -104,20 +111,16 @@ COMPOSER = dict(claude=(r'^\s*❯', _claude_footer), codex=(r'^\s*›', is_foote
 
 
 def _composer_top(lines, index, kind):
-    """The first row of the composer ending at `index`: a mark above it means the last mark sits inside a draft.
+    """The highest mark above `index` that nothing explains: any such mark means the last mark sits inside a draft.
 
-    Codex shows past prompts with the same mark, so its walk ends at the first blank row after content. Claude's
-    composer is fenced by a separator, so a blank row inside a draft does not end it.
+    A blank row or a separator proves nothing, because a draft can hold either. Only an answer the agent printed shows
+    that what lies above it is a finished turn: in the first column, under a blank row. Indented, or tight under other
+    text, that row can be pasted text. A past prompt with no such row under it costs a read of None, so mail.
     """
-    top, content = index, False
+    answer, top = ANSWER_ROW.get(kind), index
     for row in range(index - 1, -1, -1):
-        if re.fullmatch(r'\s*[─━-]{3,}\s*', lines[row]):
+        if answer and answer.match(lines[row]) and (row == 0 or not lines[row - 1].strip()):
             break
-        if not lines[row].strip():
-            if content and kind == 'codex':
-                break
-            continue
-        content = True
         if re.match(COMPOSER[kind][0], lines[row]):
             top = row
     return top
@@ -162,6 +165,12 @@ def viewport_class(pane, screen):
     return 'viewport_held' if offset else None
 
 
+@_unknown(True)
+def turn_showing(screen):
+    """A live turn's row near the bottom, even above the separator `working` stops at. Never idle, never unsent."""
+    return bool(LIVE_TURN.search('\n'.join([line for line in screen.splitlines() if line.strip()][-BUSY_ROWS:])))
+
+
 @_unknown(None)
 def status(screen, kind):
     """'idle', 'working' or 'blocked' only from a recognizable screen, else None."""
@@ -173,12 +182,7 @@ def status(screen, kind):
         return 'working'
     if blocking_dialog(screen):
         return 'blocked'
-    lines = screen.splitlines()
-    # A Claude spinner can sit above the separator, out of the bottom region; it is never read as idle.
-    if kind == 'claude' and any('esc to interrupt' in line.lower()
-                                for line in [line for line in lines if line.strip()][-CLAUDE_BUSY_ROWS:]):
-        return None
-    if suspected_dialog(screen):
+    if turn_showing(screen) or suspected_dialog(screen):
         return None
     return 'idle' if composer_empty(screen, kind) else None
 
@@ -301,7 +305,8 @@ def classify(agent, screen, item, now):
     text = composer_text(screen, kind)
     if text and not composer_empty(screen, kind):
         ours = own_prompt(text, item.get('last_prompt_digest'), item.get('last_prompt_at'), now)
-        return 'unsent_prompt' if ours and not suspected_dialog(screen) else 'owner_draft'
+        sendable = ours and _lone_composer(screen.splitlines(), kind) and not suspected_dialog(screen)
+        return 'unsent_prompt' if sendable and not turn_showing(screen) else 'owner_draft'
     # Tool output often says 'error:' or 'failed'; only Codex's own turn-error markers count.
     if current == 'idle' and any(re.search(r'stream disconnected|^\s*■', l, re.I) for l in tail):
         return 'error_turn'
