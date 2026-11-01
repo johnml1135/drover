@@ -63,6 +63,14 @@ class Sessions(Resident):
         self.assertEqual(self.expiry(), first)
 
 
+    def test_a_failed_row_is_not_renewed(self):
+        self.launched()
+        first = self.expiry()
+        ops_panes.update_agent(self.conn, self.row['id'], state='failed')
+        self.time += 50000
+        self.panes.maintain(self.run_row)
+        self.assertEqual(self.expiry(), first)
+
     def test_renewing_needs_the_current_session(self):
         self.launched()
         session = self.role()['session_id']
@@ -83,6 +91,10 @@ class Sessions(Resident):
 
 
 class HerdrClosed(Resident):
+    def owner_question_status(self):
+        notice = next(e for e in self.port.events(kind='pane.notice') if e['data']['notice']['id'].startswith('pane-herdr-closed:'))
+        return self.conn.execute('SELECT status FROM questions WHERE id=?', (notice['data']['question'],)).fetchone()[0]
+
     def test_herdr_closed_does_not_spend_the_replacement(self):
         self.launched()
         generation = self.role()['generation']
@@ -100,6 +112,7 @@ class HerdrClosed(Resident):
         self.launched()
         self.fake.closed = True
         for _ in range(3):
+            self.time += 1      # a later clock must not read as a later outage
             self.tick()
         self.assertEqual(len([n for n in self.notices() if n['id'].startswith('pane-herdr-closed:')]), 1)
         self.assertEqual(self.open_questions(), 0, 'the notice is the one message')
@@ -108,6 +121,19 @@ class HerdrClosed(Resident):
         self.tick()
         self.assertEqual(self.open_questions(), 0)
         self.assertIsNone(self.runtime.active_runs()[0]['held_reason'])
+        self.assertEqual(self.owner_question_status(), 'answered')
+
+    def test_a_good_launch_closes_the_outage(self):
+        self.build()
+        self.turns()
+        self.fake.closed = True
+        self.wake()
+        self.tick()
+        self.assertEqual(self.owner_question_status(), 'open')
+        self.fake.closed = False
+        self.time += 1
+        self.assertEqual(len(self.tick()['launched']), 1)
+        self.assertEqual(self.owner_question_status(), 'answered')
 
     def test_a_second_outage_is_a_second_notice(self):
         self.launched()
@@ -184,6 +210,14 @@ class Maintenance(Resident):
         handoff.assert_called_once()
         self.assertNotIn('secret text', ''.join(logs.output))
 
+    def test_a_row_in_compaction_gets_no_wake(self):
+        self.launched()
+        wake, handoff = self.hooks()
+        ops_panes.update_agent(self.conn, self.row['id'], state='compaction')
+        self.panes.maintain(self.run_row)
+        wake.assert_not_called()
+        handoff.assert_not_called()
+
     def test_pane_close_stays_dry_unless_the_owner_enables_it(self):
         self.launched()
         with mock.patch.object(pane_close, 'tick', return_value=[]) as tick:
@@ -223,6 +257,14 @@ class Maintenance(Resident):
         self.launched()
         self.fake.screens[PANE], self.fake.agents[PANE]['agent_status'] = CLAUDE_IDLE, 'idle'
         self.notifications.stop('owner', 'stop')
+        self.tick()
+        self.assertEqual(self.calls('pane', 'send-keys'), [['pane', 'send-keys', PANE, 'ctrl+c']])
+
+    def test_an_expired_session_still_stops_a_resident_pane(self):
+        self.launched()
+        self.fake.screens[PANE], self.fake.agents[PANE]['agent_status'] = CLAUDE_IDLE, 'idle'
+        self.conn.execute('DELETE FROM director_sessions')
+        self.conn.commit()
         self.tick()
         self.assertEqual(self.calls('pane', 'send-keys'), [['pane', 'send-keys', PANE, 'ctrl+c']])
 

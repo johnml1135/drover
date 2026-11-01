@@ -181,6 +181,25 @@ class Runtime(unittest.TestCase):
         with self.assertLogs('drover.directors', 'WARNING'):
             self.tick()
 
+    def finite(self):
+        self.adapter = self.runtime.adapter = ControlledAdapter(self.service)
+        self.wake()
+        with mock.patch.object(config, 'seat_by_name', return_value=dict(sandbox='workspace-write')):
+            self.tick()
+        return self.adapter.started[0]
+
+    def test_a_finite_run_keeps_its_read_only_spec_and_hour(self):
+        spec = self.finite()
+        self.assertEqual((spec['sandbox'], spec['write']), ('read-only', False))
+        expires = self.conn.execute('SELECT expires FROM director_sessions').fetchone()[0]
+        self.assertEqual(expires, self.time + 3600)
+
+    def test_pausing_dispatch_still_stops_a_finite_run(self):
+        spec = self.finite()
+        self.port.set_setting('dispatch_enabled', 'false')
+        self.tick()
+        self.assertEqual(self.adapter.stops, [(spec['run_id'], spec['nonce'])])
+
     def test_an_adapter_that_is_not_resident_is_not_maintained(self):
         self.runtime.adapter = ControlledAdapter(self.service)
         self.wake()

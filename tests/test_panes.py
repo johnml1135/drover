@@ -210,6 +210,11 @@ class Probe(Resident):
         self.assertEqual(self.adapter.probe(self.spec_), 'unknown')
         self.assertEqual(self.row_now()['state'], 'live')
 
+    def test_a_retired_row_is_gone_though_an_agent_still_shows(self):
+        self.launched()
+        ops_panes.update_agent(self.conn, self.row['id'], state='retired')
+        self.assertEqual(self.adapter.probe(self.spec_), 'gone')
+
     def test_a_run_with_no_row_is_gone(self):
         self.build()
         self.assertEqual(self.adapter.probe(dict(run_id=404)), 'gone')
@@ -218,6 +223,7 @@ class Probe(Resident):
         self.launched()
         fresh = ops_panes.record_agent(self.conn, **{k: self.row[k] for k in (
             'pane_id', 'terminal_id', 'kind', 'seat', 'placement', 'started_by', 'role_id', 'run_id', 'cwd', 'name')})
+        self.assertEqual(ops_panes.by_run(self.conn, self.rid)['id'], fresh['id'])
         ops_panes.update_agent(self.conn, self.row['id'], state='gone')
         self.assertEqual(ops_panes.by_run(self.conn, self.rid)['id'], fresh['id'])
         ops_panes.update_agent(self.conn, fresh['id'], state='gone')
