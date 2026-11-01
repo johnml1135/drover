@@ -121,6 +121,7 @@ class Kept(Case):
 
     def test_an_agent_that_was_never_killed_keeps_its_session(self):
         self.stopped_tonight()
+        self.conn.execute('UPDATE director_runtime SET pending_wake=0')
         self.restarted()
         self.at(900)
         self.assert_kept('pane-agent-running')
@@ -162,6 +163,14 @@ class Kept(Case):
         self.assertEqual(self.sessions(), 1)
         self.assertEqual(self.new_row()['state'], 'failed')
 
+    def test_a_pane_that_is_gone_shows_no_agent(self):
+        self.stopped_tonight()
+        self.comes_back(boots=False)
+        self.fake.refuse[('pane', 'process-info')] = 'pane_not_found'
+        self.at(900)
+        self.assertEqual(self.agent()['outcome'], 'resume-failed')
+        self.assertEqual(self.outcome(), 'compaction-fresh')
+
     def test_a_job_that_died_before_its_kill_leaves_the_agent_its_session(self):
         self.stopped_tonight()
         self.released()
@@ -182,6 +191,8 @@ class Kept(Case):
         self.assertIsNone(self.agent()['outcome'])
         self.assertEqual(self.agent()['reason'], 'herdr-unavailable')
         self.assertFalse(self.answer['settled'])
+        self.at(920)
+        self.assertEqual(self.agent()['reason'], 'herdr-unavailable', 'the cause, on every tick that asks')
         self.at(900 + compaction_hold.RESUME_S)
         self.assertTrue(self.answer['settled'], 'the job need not wait past the deadline')
         self.assertEqual(self.row_now()['state'], 'compaction')
