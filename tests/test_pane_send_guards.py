@@ -5,12 +5,9 @@ from unittest import mock
 from drover import compaction_hold, pane_send
 from drover.ledger import connect, ops_panes
 from drover.pane_send import PaneRefused
-from tests.pane_send_support import (CLAUDE_IDLE, Case, DRAFT, ENTER, IDLE, PANE, TEXT, WORKING, composing, running)
+from tests.pane_send_support import CLAUDE_IDLE, Case, DIALOG, DRAFT, ENTER, IDLE, PANE, TEXT, WORKING, composing, running
 
 SHELL_PROMPT = 'PS C:\\repos> claude\nbye\n❯ \n'
-TRUST = 'Trust this folder?\n› 1. Trust and continue\n2. Quit\n'
-ANSWER = ['pane', 'send-keys', PANE, 'enter']
-COMMAND = 'wsl.exe -d Ubuntu -e bash -li /home/x/launch.sh'
 
 
 class Resend(Case):
@@ -62,55 +59,201 @@ class Resend(Case):
         self.assertEqual(len(self.sends()), 2)
 
 
+class Gate(Case):
+    def stalled(self):
+        fake = self.stage()
+        fake.hang = {('pane', 'send-text')}
+        self.send()
+        fake.hang = False
+        fake.calls.clear()
+        return fake
+
+    def test_an_interrupt_after_a_stalled_write_does_not_hide_it(self):
+        fake = self.windows()
+        fake.hang = {('agent', 'prompt')}
+        self.send()
+        fake.hang = False
+        self.assertEqual(pane_send.interrupt(self.port, self.herdr, self.row)['state'], 'sent')
+        fake.calls.clear()
+        self.refused(self.send, 'last-write-unverified')
+
+    def test_a_refused_stop_does_not_hide_an_open_write(self):
+        fake = self.stalled()
+        with mock.patch.object(compaction_hold, 'active', return_value={'id': 'h1'}):
+            fake.after[('pane', 'read', fake.seen[('pane', 'read')] + 1)] = lambda: fake.screens.update({PANE: DRAFT})
+            self.refused(self.stop, 'draft')
+        self.assertEqual(self.last()['state'], 'unsent')
+        fake.screens[PANE] = IDLE
+        self.refused(self.send, 'last-write-unverified')
+
+    def test_two_open_writes_still_refuse(self):
+        self.stage()
+        ops_panes.note_write(self.conn, self.row['id'], 'wake', TEXT)
+        ops_panes.note_write(self.conn, self.row['id'], 'stop', 'stop now')
+        self.refused(self.send, 'last-write-pending')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_a_state_this_module_does_not_know_stays_open(self):
+        self.stage()
+        write = ops_panes.note_write(self.conn, self.row['id'], 'wake', TEXT)
+        ops_panes.finish_write(self.conn, write['id'], 'wake_unverified')
+        self.refused(self.send, 'last-write-wake_unverified')
+        self.assertEqual(self.fake.calls, [])
+
+    def test_submit_finds_the_open_write_under_a_newer_row(self):
+        fake = self.stalled()
+        write = ops_panes.note_write(self.conn, self.row['id'], 'interrupt', 'ctrl+c')
+        ops_panes.finish_write(self.conn, write['id'], 'unsent', 'draft')
+        fake.screens[PANE] = composing(TEXT)
+        self.assertEqual(pane_send.submit_own(self.port, self.herdr, self.row)['kind'], 'wake')
+        self.assertEqual(self.sends(), [ENTER])
+
+    def test_open_writes_are_listed_oldest_first_and_the_closed_left_out(self):
+        self.stage()
+        states = ('pending', 'sent', 'unverified', 'unsent', 'observed', 'acknowledged', 'wake_unverified')
+        for state in states:
+            write = ops_panes.note_write(self.conn, self.row['id'], 'wake', TEXT)
+            if state != 'pending':
+                ops_panes.finish_write(self.conn, write['id'], state)
+        self.assertEqual([w['state'] for w in ops_panes.open_writes(self.conn, self.row['id'])],
+                         ['pending', 'unverified', 'wake_unverified'])
+
+
+class Refused(Case):
+    def test_only_a_code_that_proves_nothing_went_out_is_unsent(self):
+        for code in ('usage', 'agent_blocked', 'pane_not_found'):
+            with self.subTest(code):
+                self.windows().refuse[('agent', 'prompt')] = code
+                self.assertRaises(PaneRefused, self.send)
+                self.assertEqual(self.last()['state'], 'unsent')
+                self.reset()
+
+    def test_any_other_code_stays_open_and_stops_the_next_write(self):
+        for code in ('timeout', 'other', 'internal_error', 'agent_prompt_stalled', 'agent_not_ready'):
+            with self.subTest(code):
+                fake = self.windows()
+                fake.refuse[('agent', 'prompt')] = code
+                write = self.send()
+                self.assertEqual((write['state'], write['reason']), ('unverified', f'herdr-refused:{code}'))
+                del fake.refuse[('agent', 'prompt')]
+                fake.calls.clear()
+                self.refused(self.send, 'last-write-unverified')
+                self.reset()
+
+    def test_a_paste_and_a_key_follow_the_same_rule(self):
+        fake = self.stage()
+        fake.refuse[('pane', 'send-text')] = 'internal_error'
+        self.assertEqual(self.send()['state'], 'unverified')
+        self.sleep.assert_not_called()
+        self.reset()
+        fake = self.stage(WORKING)
+        fake.refuse[('pane', 'send-keys')] = 'internal_error'
+        self.assertEqual(pane_send.interrupt(self.port, self.herdr, self.row)['state'], 'unverified')
+
+
+TURN = 'history\n\n› {}\n\n• Working (3s • esc to interrupt)\n\n› {}\n\n? for shortcuts\n'
+
+
 class Landed(Case):
     def land(self):
         return pane_send.confirm_landed(self.port, self.herdr, self.row)
 
-    def stalled(self, screen=CLAUDE_IDLE, **agent):
-        fake = self.windows(screen)
-        fake.hang = {('agent', 'prompt')}
+    def stalled(self, status='working', **stage):
+        fake = self.stage(**stage)
+        fake.hang = {('pane', 'send-text')}
         self.send()
         fake.hang = False
         fake.calls.clear()
-        fake.agents[PANE].update(agent)
+        fake.agents[PANE]['agent_status'] = status
+        fake.screens[PANE] = TURN.format(TEXT, '')
+        return fake
 
-    def test_a_read_that_shows_the_turn_clears_the_write(self):
-        for name, screen, agent in (('herdr working', CLAUDE_IDLE, {'agent_status': 'working'}),
-                                    ('herdr blocked', CLAUDE_IDLE, {'agent_status': 'blocked'}),
-                                    ('turn on screen', WORKING, {})):
-            with self.subTest(name):
-                self.stalled(**agent)
-                self.fake.screens[PANE] = screen
-                self.assertEqual(self.land()['state'], 'observed')
-                self.assertEqual(self.sends(), [])
-                self.reset()
+    def test_the_prompt_then_a_turn_under_it_clears_the_write(self):
+        self.stalled()
+        write = self.land()
+        self.assertEqual((write['state'], write['reason']), ('observed', 'turn-seen'))
+        self.assertEqual(self.sends(), [])
+
+    def test_a_wrapped_prompt_still_matches(self):
+        self.stalled()
+        self.fake.screens[PANE] = TURN.format(TEXT[:30].rstrip() + '\n  ' + TEXT[30:].lstrip(), '')
+        self.assertEqual(self.land()['state'], 'observed')
 
     def test_the_next_send_goes_once_it_is_cleared(self):
-        self.stalled(agent_status='working')
+        fake = self.stalled()
         self.land()
-        self.fake.agents[PANE]['agent_status'] = 'idle'
+        fake.agents[PANE]['agent_status'] = 'idle'
+        fake.screens[PANE] = IDLE
+        self.paste_settles_to(composing(TEXT))
         self.assertEqual(self.send()['state'], 'sent')
 
-    def test_an_idle_empty_pane_proves_nothing(self):
-        self.stalled()
-        self.refused(self.land, 'turn-not-seen')
+    def test_no_read_that_lacks_the_proof_clears_it(self):
+        history = 'docs: the footer says esc to interrupt\n\n› \n\n? for shortcuts\n'
+        cases = (('idle pane', IDLE, 'idle', 'turn-not-seen'),
+                 ('history text', history, 'idle', 'turn-not-seen'),
+                 ('history text under herdr working', history, 'working', 'turn-not-seen'),
+                 ('herdr working alone', IDLE, 'working', 'turn-not-seen'),
+                 ('herdr blocked alone', IDLE, 'blocked', 'turn-not-seen'),
+                 ('herdr idle under a turn', TURN.format(TEXT, ''), 'idle', 'turn-not-seen'),
+                 ('herdr done under a turn', TURN.format(TEXT, ''), 'done', 'turn-not-seen'),
+                 ('a turn with no prompt', WORKING, 'working', 'turn-not-seen'),
+                 ('the owners prompt', TURN.format('do something else', ''), 'working', 'turn-not-seen'),
+                 ('a collapsed prompt', TURN.format('[Pasted Content 900 chars]', ''), 'working', 'turn-not-seen'),
+                 ('own text unsent', composing(TEXT), 'working', 'draft'),
+                 ('a draft under the turn', TURN.format(TEXT, 'mine'), 'working', 'draft'),
+                 ('turn above the prompt', 'x\n\n• Working (3s • esc to interrupt)\n\n› ' + TEXT + '\n\n› \n', 'working', None),
+                 ('turn above an answered prompt', 'x\n\n• Working (3s • esc to interrupt)\n\n› ' + TEXT +
+                  '\n\n• done\n\n› \n\n? for shortcuts\n', 'working', 'turn-not-seen'),
+                 ('own prompt, then the owners', 'x\n\n› ' + TEXT + '\n\n• done\n\n› my words\n\n'
+                  '• Working (3s • esc to interrupt)\n\n› \n\n? for shortcuts\n', 'working', 'turn-not-seen'),
+                 ('dialog', DIALOG, 'working', 'dialog'),
+                 ('held viewport', TURN.format(TEXT, '') + '^c copy · enter copy & follow · esc clear\n', 'working', None),
+                 ('unreadable', 'bad \ufffd', 'working', 'screen-unreadable'))
+        for name, screen, status, reason in cases:
+            with self.subTest(name):
+                self.stalled(status)
+                self.fake.screens[PANE] = screen
+                self.refused(self.land, reason)
+                self.assertEqual(self.last()['state'], 'unverified')
+                self.reset()
+
+    def test_a_scrolled_or_focused_or_changed_pane_clears_nothing(self):
+        for name, stage, reason in (('scrolled', dict(pane={'scroll': {'offset_from_bottom': 2}}), 'viewport_held'),
+                                    ('focused', dict(agent={'focused': True}), 'focused'),
+                                    ('occupant', dict(agent={'terminal_id': 't2'}), 'occupant-changed')):
+            with self.subTest(name):
+                fake = self.stage()
+                write = ops_panes.note_write(self.conn, self.row['id'], 'wake', TEXT)
+                ops_panes.finish_write(self.conn, write['id'], 'unverified', 'herdr-unavailable')
+                fake.screens[PANE] = TURN.format(TEXT, '')
+                fake.agents[PANE].update(agent_status='working', **stage.get('agent', {}))
+                fake.panes[PANE].update(stage.get('pane', {}))
+                self.refused(self.land, reason)
+                self.reset()
+
+    def test_only_a_typed_prompt_can_land(self):
+        for kind, text in (('stop', TEXT), ('interrupt', 'ctrl+c'), ('shell', TEXT), ('startup', TEXT), ('start', TEXT)):
+            with self.subTest(kind):
+                fake = self.stage()
+                write = ops_panes.note_write(self.conn, self.row['id'], kind, text)
+                ops_panes.finish_write(self.conn, write['id'], 'unverified', 'herdr-unavailable')
+                fake.screens[PANE] = TURN.format(text, '')
+                fake.agents[PANE]['agent_status'] = 'working'
+                self.refused(self.land, 'nothing-open')
+                self.assertEqual(self.last()['state'], 'unverified')
+                self.reset()
+
+    def test_a_claude_read_stays_open_until_a_capture_shows_its_prompt_rows(self):
+        self.stage(CLAUDE_IDLE, kind='claude')
+        write = ops_panes.note_write(self.conn, self.row['id'], 'wake', TEXT)
+        ops_panes.finish_write(self.conn, write['id'], 'unverified', 'herdr-unavailable')
+        self.fake.screens[PANE] = f'❯ {TEXT}\n\n✢ Thinking… (3s · esc to interrupt)\n───\n❯ \n───\n'
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.refused(self.land)
         self.assertEqual(self.last()['state'], 'unverified')
 
-    def test_own_text_still_in_the_composer_has_not_landed(self):
-        self.stalled(agent_status='working')
-        self.fake.screens[PANE] = CLAUDE_IDLE.replace('❯ ', '❯ ' + TEXT)
-        self.refused(self.land, 'turn-not-seen')
-
-    def test_another_occupant_or_an_unreadable_screen_proves_nothing(self):
-        self.stalled(agent_status='working', terminal_id='t2')
-        self.refused(self.land, 'occupant-changed')
-        self.reset()
-        self.stalled(agent_status='working')
-        self.fake.screens[PANE] = 'bad \ufffd screen'
-        self.refused(self.land, 'screen-unreadable')
-
     def test_a_row_drover_does_not_hold_proves_nothing(self):
-        self.stalled(agent_status='working')
+        self.stalled()
         stale = dict(self.row)
         self.conn.execute("UPDATE pane_agents SET started_by='owner'")
         self.refused(self.land, 'not-drovers')
@@ -119,8 +262,7 @@ class Landed(Case):
         self.refused(self.land, 'not-live')
 
     def test_herdr_closed_and_nothing_open_are_refusals(self):
-        self.stalled(agent_status='working')
-        self.fake.closed = True
+        self.stalled().closed = True
         self.refused(self.land, 'herdr-unavailable')
         self.reset()
         self.windows()
@@ -257,6 +399,34 @@ class Foreground(Case):
         fake.processes = {'shell_pid': 1, 'foreground_processes': [{'pid': 1, 'name': 'wsl.exe'}]}
         self.refused(self.send, 'agent-not-foreground')
 
+    def test_a_mark_with_nothing_of_an_agent_refuses_in_wsl(self):
+        for name, screen in (('bare', 'history\n❯ \n'), ('fence far above', '───\nhistory\nmore\n❯ \n'),
+                             ('text row under it', 'history\n❯ \nsome output\n')):
+            with self.subTest(name):
+                self.stage(screen, kind='claude')
+                self.refused(self.send, 'agent-not-marked')
+                self.refused(lambda: pane_send.interrupt(self.port, self.herdr, self.row), 'agent-not-marked')
+                self.reset()
+
+    def test_a_footer_or_a_fence_marks_an_agent(self):
+        for name, screen in (('both', CLAUDE_IDLE), ('fence only', 'history\n───\n❯ \n───\n'),
+                             ('footer only', 'history\n❯ \n⏵⏵ auto mode on\n')):
+            with self.subTest(name):
+                self.stage(screen, kind='claude')
+                self.paste_settles_to(screen.replace('❯ ', '❯ ' + TEXT))
+                self.assertEqual(self.send()['state'], 'sent')
+                self.reset()
+
+    def test_a_windows_pane_has_its_process_proof_instead(self):
+        self.windows('history\n❯ \n')
+        self.assertEqual(self.send()['state'], 'sent')
+
+    def test_a_mark_that_loses_its_footer_after_the_paste_gets_no_enter(self):
+        self.stage(CLAUDE_IDLE, kind='claude')
+        self.paste_settles_to(f'history\n❯ {TEXT}\n')
+        self.assertEqual(self.send()['reason'], 'agent-not-marked')
+        self.assertNotIn(ENTER, self.sends())
+
     def test_process_info_missing_refuses(self):
         fake = self.stage()
         fake.processes = None
@@ -289,132 +459,3 @@ class Foreground(Case):
                                                   setattr(fake, 'processes', running()))
         self.assertEqual(self.send()['reason'], 'agent-not-foreground')
         self.assertNotIn(ENTER, self.sends())
-
-
-class Startup(Case):
-    def fresh(self, screen=TRUST, *, row=None, **stage):
-        fake = self.stage(screen, row={'state': 'starting', 'session_id': None, **(row or {})}, **stage)
-        fake.agents.clear()
-        return fake
-
-    def answer(self, **over):
-        return pane_send.answer_startup(self.port, self.herdr, self.row, **{'trusted': True, 'fresh': True, **over})
-
-    def test_one_enter_goes_to_a_fresh_trust_dialog(self):
-        self.fresh()
-        write = self.answer()
-        self.assertEqual(self.sends(), [ANSWER])
-        self.assertEqual((write['kind'], write['state']), ('startup', 'sent'))
-
-    def test_the_key_is_noted_first(self):
-        fake = self.fresh()
-        states = []
-        real = fake._answer
-        fake._answer = lambda args: (states.append(self.last()['state']) if args[:2] == ['pane', 'send-keys'] else None,
-                                     real(args))[1]
-        self.answer()
-        self.assertEqual(states, ['pending'])
-
-    def test_trust_and_freshness_are_the_callers_to_prove(self):
-        self.fresh()
-        self.refused(lambda: self.answer(trusted=False), 'not-trusted')
-        self.refused(lambda: self.answer(fresh=False), 'not-trusted')
-        self.assertEqual(self.fake.calls, [])
-
-    def test_every_other_screen_or_pane_gets_no_key(self):
-        cases = dict(other=dict(screen='Trust this folder?\n› 1. Trust and continue\n2. Quit\n3. More\n'),
-                     blank=dict(screen=''), idle=dict(screen=IDLE), draft=dict(screen=DRAFT),
-                     focused=dict(pane={'focused': True}), unknown_focus=dict(pane={'focused': None}),
-                     live=dict(row={'state': 'live'}), owner=dict(row={'started_by': 'owner'}),
-                     terminal=dict(pane={'terminal_id': 't2'}), kind=dict(kind='claude'),
-                     scrolled=dict(pane={'scroll': {'offset_from_bottom': 1}}), unreadable=dict(screen='bad \ufffd'),
-                     no_terminal=dict(row={'terminal_id': None}, pane={'terminal_id': None}))
-        for name, over in cases.items():
-            with self.subTest(name):
-                self.fresh(**over)
-                self.refused(self.answer)
-                self.assertIsNone(self.last())
-                self.reset()
-
-    def test_a_row_that_moved_on_gets_no_key(self):
-        self.fresh()
-        ops_panes.update_agent(self.conn, self.row['id'], state='live')
-        self.refused(self.answer, 'not-live')
-
-    def test_a_key_that_stalled_is_never_pressed_again(self):
-        fake = self.fresh()
-        fake.hang = {('pane', 'send-keys')}
-        self.assertEqual(self.answer()['state'], 'unverified')
-        fake.hang = False
-        fake.calls.clear()
-        self.refused(self.answer, 'last-write-unverified')
-
-    def test_a_shell_gets_no_key(self):
-        fake = self.fresh()
-        fake.processes = running()
-        self.refused(self.answer, 'agent-not-foreground')
-
-    def test_a_dialog_gone_on_the_last_read_gets_no_key(self):
-        fake = self.fresh()
-        real = ops_panes.note_write
-
-        def noted(*args):
-            write = real(*args)
-            fake.screens[PANE] = DRAFT
-            return write
-        with mock.patch.object(ops_panes, 'note_write', noted):
-            self.refused(self.answer)
-        self.assertEqual(self.last()['state'], 'unsent')
-
-    def test_herdr_closed_is_a_refusal(self):
-        self.fresh().closed = True
-        self.refused(self.answer, 'herdr-unavailable')
-
-
-class ShellStart(Case):
-    def fresh(self, screen='PS C:\\repos> ', *, row=None, processes=None, **stage):
-        fake = self.stage(screen, row={'state': 'starting', 'session_id': None, **(row or {})}, **stage)
-        fake.agents.clear()
-        fake.processes = processes or {'shell_pid': 1, 'foreground_processes': [{'pid': 1, 'name': 'pwsh.exe'}]}
-        return fake
-
-    def start(self, command=COMMAND):
-        return pane_send.start_in_shell(self.port, self.herdr, self.row, command)
-
-    def test_a_command_runs_once_in_a_fresh_shell(self):
-        self.fresh()
-        write = self.start()
-        self.assertEqual([c for c in self.fake.calls if c[:2] == ['pane', 'run']], [['pane', 'run', PANE, COMMAND]])
-        self.assertEqual((write['kind'], write['state']), ('shell', 'sent'))
-
-    def test_anything_but_a_lone_shell_gets_no_command(self):
-        cases = dict(program={'processes': running('claude.exe')}, listed_none={'processes': running()},
-                     unknown={'processes': {'shell_pid': 1}}, two={'processes': {'shell_pid': 1, 'foreground_processes': [
-                         {'pid': 1, 'name': 'pwsh'}, {'pid': 3, 'name': 'dotnet'}]}},
-                     focused={'pane': {'focused': True}}, live={'row': {'state': 'live'}},
-                     owner={'row': {'started_by': 'owner'}}, terminal={'pane': {'terminal_id': 't2'}})
-        for name, over in cases.items():
-            with self.subTest(name):
-                self.fresh(**over)
-                self.refused(self.start)
-                self.assertIsNone(self.last())
-                self.reset()
-
-    def test_a_row_that_moved_on_gets_no_command(self):
-        self.fresh()
-        ops_panes.update_agent(self.conn, self.row['id'], state='live')
-        self.refused(self.start, 'not-live')
-
-    def test_the_text_gate_holds_before_any_call(self):
-        self.fresh()
-        for text in ('-x', 'a\nb', 'a\x1b[201~', ''):
-            self.refused(lambda: self.start(text), 'text-refused')
-        self.assertEqual(self.fake.calls, [])
-
-    def test_a_stalled_command_is_unverified_and_never_repeated(self):
-        fake = self.fresh()
-        fake.hang = {('pane', 'run')}
-        self.assertEqual(self.start()['state'], 'unverified')
-        fake.hang = False
-        fake.calls.clear()
-        self.refused(self.start, 'last-write-unverified')

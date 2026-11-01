@@ -23,7 +23,8 @@ MODEL = 'Switch to gpt-6.1 sol?\n› 1. Switch to gpt-6.1 sol\n  2. Keep current
 SUSPECT = 'history\n\nShall I delete the branch?\n\n› \n\n? for shortcuts\n'
 COPY = 'history\n\n› \n^c copy · enter copy & follow · esc clear\n'
 UNREADABLE = 'history\n\n› \n\n? for sho\ufffdtcuts\n'
-WRITE_VERBS = (('agent', 'prompt'), ('agent', 'send-keys'), ('pane', 'send-text'), ('pane', 'send-keys'), ('pane', 'run'))
+WRITE_VERBS = (('agent', 'prompt'), ('agent', 'send-keys'), ('pane', 'send-text'), ('pane', 'send-keys'), ('pane', 'run'),
+               ('agent', 'start'))
 PASTE = ['pane', 'send-text', PANE, f'\x1b[200~{TEXT}\x1b[201~']
 ENTER = ['pane', 'send-keys', PANE, 'enter']
 

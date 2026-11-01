@@ -59,14 +59,17 @@ class OnlyThisModule(Case):
         for path in sources():
             found = set(pairs(ast.parse(path.read_text(encoding='utf-8'))))
             if found & {('agent', 'prompt'), ('agent', 'send-keys'), ('pane', 'send-text'), ('pane', 'send-keys'),
-                        ('pane', 'run')} or {'send-text', 'send-keys'} & set(constants(path)):
+                        ('pane', 'run'), ('agent', 'start')} or {'send-text', 'send-keys'} & set(constants(path)):
                 reached.add(path.relative_to(ROOT).as_posix())
         self.assertEqual(reached - {'drover/herdr_client.py'}, {'drover/pane_send.py'})
 
     def test_the_scan_sees_each_shape(self):
-        for source in ("h.call('pane', 'run', p, t)", "argv = ('pane', 'send-keys', p, 'enter')", "['agent', 'prompt', p]"):
+        """A tripwire against accident, not a proof: a verb passed through a name gets past it."""
+        for source in ("h.call('pane', 'run', p, t)", "argv = ('pane', 'send-keys', p, 'enter')", "['agent', 'prompt', p]",
+                       "h.call('agent', 'start', n)"):
             with self.subTest(source):
-                self.assertTrue(set(pairs(ast.parse(source))) & {('pane', 'run'), ('pane', 'send-keys'), ('agent', 'prompt')})
+                self.assertTrue(set(pairs(ast.parse(source))) & {('pane', 'run'), ('pane', 'send-keys'), ('agent', 'prompt'),
+                                                                 ('agent', 'start')})
 
     def test_the_client_itself_writes_nothing(self):
         tree = ast.parse((ROOT / 'drover/herdr_client.py').read_text(encoding='utf-8'))

@@ -3,11 +3,14 @@
 A write is noted first. `PaneRefused` means no write verb went out, and the note ends `unsent`. Once one has gone out,
 nothing is resent and the write ends `sent` or `unverified`; the dict returned says which, and the reason says why.
 `unverified` with any reason but `enter-pressed` may be finished by `submit_own`, which reads the pane first.
-A `pending` or `unverified` write stays open and stops the next write to that agent, however long ago it was made,
-until `confirm_landed` sees its turn or the caller records what became of it with `ops_panes.finish_write`.
+Any write not known to be over stays open and stops the next write to that agent, however long ago it was made, until
+`confirm_landed` sees its turn or the caller records what became of it with `ops_panes.finish_write`. A refusal from
+Herdr ends `unsent` only for the codes in NOTHING_WENT_OUT; the rest may follow a write that landed.
 
 Every path needs proof the agent is the pane's foreground process, because a shell prompt can look like a composer.
-Herdr sees only wsl.exe for a WSL agent, which is enough here: the launcher's script ends with the agent.
+Herdr sees only wsl.exe for a WSL agent, so a WSL pane must also show something only the agent draws.
+
+The new pane's writes each go once per row, claimed in the ledger: Task 9 must close a stalled one itself.
 
 Text stays short and on one line, so a paste cannot collapse and the screen can prove it is Drover's. Longer text goes
 in a file, and the pane gets a short line naming the path.
@@ -15,6 +18,7 @@ in a file, and the pane gets a short line naming the path.
 `port` must hold a ledger connection, as DirectPort does. Herdr's `idle` and `done` both mean ready for input: `done`
 only says nobody has looked since the turn ended (references/cli.md:44 in the skill), and the hub never focuses a pane.
 """
+import re
 import time
 import unicodedata
 
@@ -26,12 +30,15 @@ TYPED_KINDS = ('brief', 'wake', 'handoff', 'resume')
 INTERRUPT_KEY = 'ctrl+c'
 LIVE = ('live',)
 STARTING = ('starting',)
+LAUNCHES = ('shell', 'start')
 STOPPABLE = ('live', 'compaction')
 HERDR_READY = ('idle', 'done')
 AGENT_PROCESSES = dict(windows=('claude', 'node'), wsl=('wsl',))    # lower case, no .exe; Task 15 samples the real names
 MAX_TEXT = 400              # a margin, not a measurement: Task 15 samples where each CLI collapses a paste
 PASTE_SETTLE_S = 0.8
 PASTE_START, PASTE_END = '\x1b[200~', '\x1b[201~'
+NOTHING_WENT_OUT = ('usage', 'agent_blocked', 'pane_not_found')     # Task 15 may extend this from real errors
+SHELL_PROMPT = re.compile(r'(?:PS [^>]*>|[A-Za-z]:[\\/][^>]*>|[^\s$#%]*[$#%])\s*')  # Task 15 adds the owner's real prompts
 PASTED = 'pasted'           # the text went out and its Enter is still to come
 ENTER_PRESSED = 'enter-pressed'     # an Enter may have gone out: no second one, ever
 
@@ -73,17 +80,16 @@ def _owned(row, states):
         raise PaneRefused('not-live')
 
 
+def _newest_open(port, row):
+    writes = ops_panes.open_writes(port.conn, row['id'])
+    return writes[-1] if writes else None
+
+
 def _refuse_open_write(port, row):
-    state = _open_state(ops_panes.last_write(port.conn, row['id']))
-    if state:
-        raise PaneRefused(f'last-write-{state}')
-
-
-def _open_state(write):
-    """What stops the next write: its state, or `enter-pressed` when an Enter may have gone. None when it is closed."""
-    if write is None or write['state'] not in ('pending', 'unverified'):
-        return None
-    return ENTER_PRESSED if write['reason'] == ENTER_PRESSED else write['state']
+    """Every open write counts, so nothing written since, and no refused attempt, can release one."""
+    write = _newest_open(port, row)
+    if write:
+        raise PaneRefused(f"last-write-{ENTER_PRESSED if write['reason'] == ENTER_PRESSED else write['state']}")
 
 
 def _ask(ask, *argv):
@@ -159,12 +165,24 @@ def _occupied(herdr, row):
     return seen
 
 
+def _agent_marked(screen):
+    """A `❯` row is a shell's prompt too, so one must sit against a fence or a footer no shell draws."""
+    rows = [line for line in screen.splitlines() if line.strip()]
+    marks = [i for i, line in enumerate(rows) if line.lstrip().startswith('❯')]
+    if not marks:
+        return True
+    near = rows[max(0, marks[-1] - 1):marks[-1]] + rows[marks[-1] + 1:]
+    return any(pane_screen.SEPARATOR.fullmatch(line) or '⏵⏵' in line for line in near)
+
+
 def _safe(herdr, row, states, *, focus=True, idle=True):
     """Every guard that does not depend on the composer. `focus` and `idle` are dropped only for a compaction stop."""
     _owned(row, states)
     _agent_in_foreground(herdr, row)
     seen = _occupied(herdr, row)
     _no_dialog(seen['screen'])
+    if row['placement'] == 'wsl' and not _agent_marked(seen['screen']):
+        raise PaneRefused('agent-not-marked')
     viewport = pane_screen.viewport_class(seen['pane'], seen['screen'])
     if viewport:
         raise PaneRefused(viewport)
@@ -234,9 +252,18 @@ def _enter(port, herdr, row, write, hold_id=None):
     return finish('sent')
 
 
-def _write(port, herdr, row, kind, text, read, argv, after=('sent', None)):
+def _note(port, row, kind, text, once):
+    if not once:
+        return ops_panes.note_write(port.conn, row['id'], kind, text)
+    write = ops_panes.note_once(port.conn, row['id'], once, kind, text)
+    if write is None:
+        raise PaneRefused('already-started')
+    return write
+
+
+def _write(port, herdr, row, kind, text, read, argv, after=('sent', None), once=()):
     """Note the intent, read once more, make the one call. Never a second try and never another verb."""
-    write = ops_panes.note_write(port.conn, row['id'], kind, text)
+    write = _note(port, row, kind, text, once)
     finish = lambda state, reason=None: ops_panes.finish_write(port.conn, write['id'], state, reason)
     try:
         read()
@@ -249,6 +276,8 @@ def _write(port, herdr, row, kind, text, read, argv, after=('sent', None)):
         return finish('unverified', 'herdr-unavailable')
     except HerdrRefused as refused:
         reason = f'herdr-refused:{refused.code}'
+        if refused.code not in NOTHING_WENT_OUT:
+            return finish('unverified', reason)
         finish('unsent', reason)
         raise PaneRefused(reason) from None
     return finish(*after)
@@ -291,7 +320,7 @@ def submit_own(port, herdr, row) -> dict:
     """One Enter for a paste that is still in the composer. `classify` may suggest this; only this read decides it."""
     row = _current(port, row)
     _owned(row, STOPPABLE)
-    write = ops_panes.last_write(port.conn, row['id'])
+    write = _newest_open(port, row)
     if not _submittable(write):
         raise PaneRefused('nothing-unsent')
     hold_id = None
@@ -306,17 +335,32 @@ def submit_own(port, herdr, row) -> dict:
     return done
 
 
+def _prompt_then_turn(screen, kind, write):
+    """This write's own text as the last past prompt, and a live turn below it. Nothing else on the screen counts."""
+    lines = screen.splitlines()
+    marks = [i for i, line in enumerate(lines) if re.match(pane_screen.COMPOSER[kind][0], line)]
+    if len(marks) < 2:
+        return False
+    prompt, composer = marks[-2:]
+    end = next((i for i in range(prompt + 1, composer) if not lines[i].strip()), composer)
+    text = ' '.join([lines[prompt].strip()[1:]] + lines[prompt + 1:end])
+    return pane_screen.own_prompt(text, write['digest'], write['at'], None) and pane_guard.working('\n'.join(lines[end:]))
+
+
 def confirm_landed(port, herdr, row) -> dict:
-    """Close an open write on a read that shows its turn. An idle pane with an empty composer proves nothing."""
+    """Close a typed write on one read showing it submitted and a turn under it, on Herdr and on screen alike.
+
+    The write was made to an idle pane, so that turn began after it. Anything less leaves the write open and mail goes:
+    an idle pane, history text, either status alone, or a Claude screen, whose past prompts have no capture yet.
+    """
     row = _current(port, row)
     _owned(row, STOPPABLE)
-    write = ops_panes.last_write(port.conn, row['id'])
-    if _open_state(write) is None:
+    write = _newest_open(port, row)
+    if write is None or write['kind'] not in TYPED_KINDS:
         raise PaneRefused('nothing-open')
-    seen = _occupied(herdr, row)
-    active = seen['agent'].get('agent_status') in ('working', 'blocked') or _turn_visible(seen, row)
-    composer = pane_screen.composer_text(seen['screen'], row['kind'])
-    if not active or pane_screen.own_prompt(composer, write['digest'], write['at'], None):
+    seen = _safe(herdr, row, STOPPABLE, idle=False)
+    _require_empty(seen, row)
+    if seen['agent'].get('agent_status') != 'working' or not _prompt_then_turn(seen['screen'], row['kind'], write):
         raise PaneRefused('turn-not-seen')
     return ops_panes.finish_write(port.conn, write['id'], 'observed', 'turn-seen')
 
@@ -371,26 +415,57 @@ def _starting(herdr, row, foreground):
     return screen
 
 
-def answer_startup(port, herdr, row, *, trusted=False, fresh=False) -> dict:
-    """The one Enter for Codex's folder trust dialog, in Drover's own new pane. The caller proves `trusted` and `fresh`."""
-    if trusted is not True or fresh is not True:
+def _shell_line_empty(herdr, row):
+    rows = [line for line in _starting(herdr, row, _lone_shell).splitlines() if line.strip()]
+    if not rows or not SHELL_PROMPT.fullmatch(rows[-1]):
+        raise PaneRefused('shell-line-not-empty')
+
+
+def _launched(port, row):
+    """The row's own launch went out, so the agent in this `starting` row is the one Drover put here."""
+    return any((ops_panes.last_write(port.conn, row['id'], kind) or {}).get('state') == 'sent' for kind in LAUNCHES)
+
+
+def answer_startup(port, herdr, row, *, trusted=False) -> dict:
+    """The one Enter for Codex's folder trust dialog, once for a row. The caller proves `trusted`; the row proves fresh."""
+    if trusted is not True:
         raise PaneRefused('not-trusted')
     row = _current(port, row)
     _refuse_open_write(port, row)
+    if not _launched(port, row):
+        raise PaneRefused('not-fresh')
 
     def read():
         keys = pane_guard.startup_keys(_starting(herdr, row, _agent_in_foreground), fresh_pane=True, kind=row['kind'])
         if keys != ('enter',):
             raise PaneRefused('not-the-trust-dialog')
     read()
-    return _write(port, herdr, row, 'startup', 'enter', read, ('pane', 'send-keys', row['pane_id'], 'enter'))
+    return _write(port, herdr, row, 'startup', 'enter', read, ('pane', 'send-keys', row['pane_id'], 'enter'),
+                  once=('startup',))
 
 
 def start_in_shell(port, herdr, row, command) -> dict:
-    """`pane run` for Task 9: one short command in Drover's new pane, while its shell is alone in the foreground."""
+    """`pane run`, once for a row: one short command while the shell is alone in the foreground, on an empty line."""
     _check_text(command)
     row = _current(port, row)
     _refuse_open_write(port, row)
-    read = lambda: _starting(herdr, row, _lone_shell)
+    read = lambda: _shell_line_empty(herdr, row)
     read()
-    return _write(port, herdr, row, 'shell', command, read, ('pane', 'run', row['pane_id'], command))
+    return _write(port, herdr, row, 'shell', command, read, ('pane', 'run', row['pane_id'], command), once=LAUNCHES)
+
+
+def start_agent(port, herdr, row, name, args=()) -> dict:
+    """`agent start`, once for a row, under the same guards. `args` go after `--`, so they may be flags."""
+    _check_text(name)
+    if not isinstance(args, (list, tuple)):
+        raise PaneRefused('text-refused')
+    for arg in args:        # a flag is fine after `--`; the rest of the gate still applies
+        _check_text('x' + arg if isinstance(arg, str) else None)
+    row = _current(port, row)
+    if row['placement'] != 'windows':
+        raise PaneRefused('not-windows')
+    _refuse_open_write(port, row)
+    read = lambda: _shell_line_empty(herdr, row)
+    read()
+    argv = ('agent', 'start', name, '--kind', row['kind'], '--pane', row['pane_id'], '--', *args)
+    return _write(port, herdr, row, 'start', name, read, argv, once=LAUNCHES)
