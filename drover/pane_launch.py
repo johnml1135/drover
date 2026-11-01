@@ -10,9 +10,10 @@ waits on an agent. The row's brief write is the state: none, `sent`, then `obser
 
 `working` on screen or from Herdr proves a first turn, and so does the run's session acting on the ledger, since a turn
 can start and end between two ticks. An idle composer proves nothing, and `blocked` may be a dialog from before the
-brief landed. A brief that fails ends a `live` row as `failed`, unless the agent is busy: that is an agent at work, so it waits.
+brief landed. A brief that fails ends a `live` row as `failed`, unless the agent is busy. That is an agent at work, so the row
+stays and nothing is resent, but past STARTUP_S it is one notice and its session is no longer renewed, as with an unknown read.
 
-Only a run's first row is briefed. A compaction resume is the same run on a new row, and its session already has the brief.
+A run's session takes one brief. A compaction resume is the same run on a new row, so it takes one only if none went out.
 """
 import logging
 import os
@@ -47,7 +48,9 @@ SHELL_NOT_READY = 'shell-not-ready'
 SUPERSEDED = ('wake', 'handoff', 'stop', 'interrupt')
 OWNERS_NOW = ('dialog', 'suspected-dialog', 'draft', 'occupant-changed', 'herdr-refused:agent_blocked')    # waiting cannot clear these
 HERDR_CLOSED = 'herdr-unavailable'
-BRIEF_WAITS = (HERDR_CLOSED, 'busy')        # neither says anything is wrong with the agent, so no deadline ends its row
+BUSY = 'busy'
+BRIEF_STUCK = 'A director has not taken its brief'
+STUCK_KEY = 'pane_brief_stuck:'     # a row's setting: its first brief has been held up by a busy agent past the bound
 DEFAULT_PROMPT = 'Read your inbox and commit a checkpoint.'
 _now = time.monotonic
 log = logging.getLogger(__name__)
@@ -241,6 +244,25 @@ def _check_footer(port, row, screen, spec, cfg):
                 f"not {spec['model']} {_effort(spec, cfg)}.")
 
 
+def brief_stuck(port, row) -> bool:
+    return bool(port.get_setting(f"{STUCK_KEY}{row['id']}"))
+
+
+def _busy(port, row, since, now):
+    """A working agent keeps its row, and nothing goes to it twice. Past the bound the owner hears, and its session may lapse."""
+    if age(since, now) >= STARTUP_S and not brief_stuck(port, row):
+        port.set_setting(f"{STUCK_KEY}{row['id']}", '1')
+        publish(port, f"pane-brief-stuck:{row['id']}", BRIEF_STUCK,
+                f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: it has stayed busy since it started, so it does not "
+                'know what it is for and gets no wakes. Nothing is resent, and its session is left to expire.')
+
+
+def _unstuck(port, row):
+    if brief_stuck(port, row):
+        port.set_setting(f"{STUCK_KEY}{row['id']}", '')
+        disk_notices.retract(port.conn, f"pane-brief-stuck:{row['id']}", kind='pane.notice', actor='panes')
+
+
 def _send_brief(port, herdr, row, spec, guard, now):
     """The brief if the pane takes it now. None if it cannot go yet, or the row has ended."""
     try:
@@ -250,13 +272,32 @@ def _send_brief(port, herdr, row, spec, guard, now):
     try:
         written = pane_send.send(port, herdr, row, brief(spec, spec.get('handoff')), 'brief')
     except PaneRefused as refused:
-        if refused.reason in OWNERS_NOW or (refused.reason not in BRIEF_WAITS and age(row['updated'], now) >= STARTUP_S):
+        if refused.reason == BUSY:
+            _busy(port, row, row['updated'], now)
+        elif refused.reason in OWNERS_NOW or (refused.reason != HERDR_CLOSED and age(row['updated'], now) >= STARTUP_S):
             _fail(port, herdr, row, refused.reason)
         return None
     if written['state'] != 'sent':
-        _fail(port, herdr, row, 'brief-unverified')
+        _unsure(port, herdr, row, written, now)
         return None
+    _unstuck(port, row)
     return written
+
+
+def _unsure(port, herdr, row, write, now):
+    """A brief that may have gone out is never sent again. Only a busy agent keeps its row."""
+    if write['reason'] == BUSY:
+        _busy(port, row, write['at'], now)
+    else:
+        _fail(port, herdr, row, 'brief-unverified')
+
+
+def _brief_owed(port, row, spec):
+    """A later row of a run owes one only if none went out, or this row's own is in hand. Only a handoff briefs a new run's reused pane."""
+    if ops_panes.continues_run(port.conn, row):
+        brief = ops_panes.run_brief(port.conn, row['run_id'])
+        return brief is None or brief['agent_id'] == row['id']
+    return bool(spec.get('handoff')) or not ops_panes.reused_pane(port.conn, row)
 
 
 def _first_turn(port, herdr, row, write, spec, now, cfg) -> bool:
@@ -282,13 +323,11 @@ def _first_turn(port, herdr, row, write, spec, now, cfg) -> bool:
 
 
 def advance(port, herdr, row, spec, guard, now, *, cfg) -> bool:
-    """Take a `live` row one step past its launch, with no wait: True once none is left. A run's later row has no brief to
-    take, as its session came back, and only a handoff briefs a reused pane.
+    """Take a `live` row one step past its launch, with no wait: True once none is left.
 
     Herdr unreachable ends nothing: a deadline counts only on a read that answered, and a guard that refuses waits.
     """
-    if row['state'] != 'live' or ops_panes.continues_run(port.conn, row) or \
-            (ops_panes.reused_pane(port.conn, row) and not spec.get('handoff')):
+    if row['state'] != 'live' or not _brief_owed(port, row, spec):
         return True
     write = ops_panes.last_write(port.conn, row['id'], 'brief')
     if write is None or write['state'] == 'unsent':
@@ -298,7 +337,7 @@ def advance(port, herdr, row, spec, guard, now, *, cfg) -> bool:
     if write['state'] == 'observed':
         return True
     if write['state'] != 'sent':        # a hub that died between the note and the call: it may have landed, so never again
-        _fail(port, herdr, row, 'brief-unverified')
+        _unsure(port, herdr, row, write, now)
         return False
     return _first_turn(port, herdr, row, write, spec, now, cfg)
 

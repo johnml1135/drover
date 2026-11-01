@@ -6,6 +6,7 @@ The folder is the hub's, under the state folder, and named so any role id stays 
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -87,6 +88,16 @@ def valid(path) -> bool:
     try:
         return not missing(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
+        return False
+
+
+def answers(path, request) -> bool:
+    """`path` holds every section and is no older than `request`, the write that asked for it. Nothing else may brief a session."""
+    if request is None or not valid(path):
+        return False
+    try:
+        return Path(path).stat().st_mtime >= datetime.fromisoformat(request['at']).timestamp()
+    except OSError:
         return False
 
 

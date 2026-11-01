@@ -1,4 +1,6 @@
 """A compaction resume keeps what the session already has: its brief, its handoff request and its written file."""
+import os
+import time
 from unittest import mock
 
 from drover import handoff, pane_context, pane_handoff, pane_launch
@@ -14,13 +16,23 @@ SUCCESSOR_FILE = '/mnt/c/state/directors/a/handoff-1.md'
 
 
 class Night(Overnight):
-    def night(self, settles=True, state=None, tokens=None, file=True):
+    def asked(self, row):
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, row['id'], 'handoff', 'write it')['id'], 'observed')
+
+    def older(self):
+        """The file on disk is from before any request on record."""
+        then = self.path.stat().st_mtime - 86400
+        os.utime(self.path, (then, then))
+
+    def night(self, settles=True, state=None, tokens=None, file=True, asked=True):
         """Up with this handoff on its row, stopped, killed and resumed."""
         self.up()
         self.cfg['director'].update(handoff_tokens=275000)
         self.cfg['watch'] = dict(context_tokens=300000, interval_s=600, stalled_hours=24, red_rate=0.5, min_gates=6)
         self.path = handoff.path_for(self.cfg, ROLE, self.run_now()['generation'])
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if state and asked:
+            self.asked(self.row)
         if file:
             self.path.write_text(FULL, encoding='utf-8')
         ops_panes.update_agent(self.conn, self.row['id'], handoff_state=state, context_tokens=tokens)
@@ -95,6 +107,61 @@ class ResumedSuccessor(Night):
         self.assertIn(f'pane-restate:{self.rid}', [event['data']['notice']['id'] for event in self.pane_notices()])
 
 
+class BriefNeverWent(Overnight):
+    """A hold landed after `live` and before the brief, so the resumed session has never been told what the run is for."""
+
+    def unbriefed(self, *handed):
+        self.build()
+        self.turns()
+        self.wake()
+        self.rid, = self.tick()['launched']
+        self.row = ops_panes.by_run(self.conn, self.rid)
+        for path in handed:
+            self.conn.execute("UPDATE director_runs SET spec=json_set(spec,'$.handoff',?) WHERE run_id=?", (path, self.rid))
+            self.conn.commit()
+        self.since = self.time
+        self.hold_ = dict(id='h1', since=self.time, at=self.time, step='stop', phase='draining')
+        self.fake.calls.clear()
+        self.fake.settles = True
+        self.at(0)
+        self.at(30)
+        self.comes_back()
+        self.at(900)
+        self.released()
+        self.settle()
+
+    def briefs(self):
+        return self.conn.execute("SELECT state FROM pane_writes WHERE kind='brief' AND state<>'unsent'").fetchall()
+
+    def test_a_successor_gets_its_handoff_after_all(self):
+        self.unbriefed(SUCCESSOR_FILE)
+        for seconds in (0, 700, 4000):
+            self.time += seconds
+            self.tick()
+        self.assertEqual(len(self.briefs()), 1)
+        self.assertTrue([call for call in self.fake.calls if call[:2] == ['pane', 'send-text'] and SUCCESSOR_FILE in call[3]])
+
+    def test_a_first_session_gets_its_brief_after_all(self):
+        self.unbriefed()
+        self.tick()
+        self.assertEqual(len(self.briefs()), 1)
+
+    def test_a_late_brief_is_seen_through_its_first_turn(self):
+        self.unbriefed()
+        self.time = time.time()     # the write is stamped with the real clock
+        self.tick()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.tick()
+        self.assertEqual(ops_panes.run_brief(self.conn, self.rid)['state'], 'observed')
+
+    def test_a_brief_that_never_went_out_is_no_brief(self):
+        self.up()
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, self.row['id'], 'brief', 'x')['id'], 'unsent')
+        self.conn.execute("DELETE FROM pane_writes WHERE kind='brief' AND state<>'unsent'")
+        self.conn.commit()
+        self.assertIsNone(ops_panes.run_brief(self.conn, self.rid))
+
+
 class FirstBrief(Resident):
     def launching(self):
         self.build()
@@ -103,15 +170,89 @@ class FirstBrief(Resident):
         rid, = self.tick()['launched']
         return rid
 
+    def stuck(self):
+        return [event for event in self.port.events(kind='pane.notice') if event['data']['notice']['title'] == pane_launch.BRIEF_STUCK]
+
     def test_a_brief_refused_busy_never_fails_a_live_row(self):
         rid = self.launching()
         self.fake.agents[PANE]['agent_status'] = 'working'
-        for seconds in (pane_launch.STARTUP_S + 1, 600, 7200):
-            self.time += seconds
+        for _ in range(96):
+            self.time += 1800
             self.tick()
-        row = ops_panes.by_run(self.conn, rid)
-        self.assertEqual(row['state'], 'live')
+        self.assertEqual(ops_panes.by_run(self.conn, rid)['state'], 'live')
         self.assertEqual(self.port.events('pane-launch-failed'), [])
+        self.assertIsNone(ops_panes.run_brief(self.conn, rid))
+
+    def test_inside_the_bound_it_only_waits(self):
+        self.launching()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.tick()
+        self.assertEqual(self.stuck(), [])
+
+    def past_the_bound(self, rid):
+        row = ops_panes.by_run(self.conn, rid)
+        self.time = pane_launch.datetime.fromisoformat(row['updated']).timestamp() + pane_launch.STARTUP_S + 1
+
+    def test_past_the_bound_it_is_one_notice(self):
+        rid = self.launching()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.past_the_bound(rid)
+        self.tick()
+        self.time += 600
+        self.tick()
+        self.assertEqual(len(self.stuck()), 1)
+
+    def test_past_the_bound_the_session_is_left_to_expire(self):
+        rid = self.launching()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.past_the_bound(rid)
+        self.tick()
+        before = self.expiry()
+        self.time += 13 * 3600      # past the point any session renews
+        self.tick()
+        self.assertEqual(self.expiry(), before)
+
+    def test_inside_the_bound_a_session_still_renews(self):
+        self.launching()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        before = self.expiry()
+        with mock.patch.object(pane_launch, 'STARTUP_S', 10 ** 9):
+            self.time += 13 * 3600
+            self.tick()
+        self.assertGreater(self.expiry(), before)
+
+    def test_a_brief_that_goes_out_late_clears_the_notice_and_the_session_renews(self):
+        rid = self.launching()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.past_the_bound(rid)
+        self.tick()
+        self.fake.agents[PANE]['agent_status'] = 'idle'
+        with mock.patch.object(pane_launch.disk_notices, 'retract') as retract:
+            self.tick()
+        retract.assert_called_once()
+        row = ops_panes.by_run(self.conn, rid)
+        self.assertIs(pane_launch.brief_stuck(self.port, row), False)
+        self.assertIsNotNone(ops_panes.run_brief(self.conn, rid))
+        before = self.expiry()
+        self.time += 13 * 3600
+        self.tick()
+        self.assertGreater(self.expiry(), before)
+
+    def test_an_enter_refused_busy_keeps_the_row_and_never_resends(self):
+        rid = self.launching()
+        row = ops_panes.by_run(self.conn, rid)
+        write = ops_panes.note_write(self.conn, row['id'], 'brief', 'the brief')
+        ops_panes.finish_write(self.conn, write['id'], 'unverified', 'busy')
+        self.fake.calls.clear()
+        self.fake.agents[PANE]['agent_status'] = 'working'
+        self.past_the_bound(rid)
+        self.tick()
+        self.tick()
+        self.assertEqual(ops_panes.by_run(self.conn, rid)['state'], 'live')
+        self.assertEqual(self.port.events('pane-launch-failed'), [])
+        self.assertEqual(len(self.stuck()), 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM pane_writes WHERE kind='brief'").fetchone()[0], 1)
+        self.assertEqual([call for call in self.fake.calls if call[:2] in (['agent', 'prompt'], ['pane', 'send-text'])], [])
 
     def test_a_brief_refused_for_any_other_reason_past_the_limit_still_fails(self):
         rid = self.launching()
@@ -145,22 +286,54 @@ class WrittenHandoff(Night):
         self.assertEqual(self.maintain(FORCED)['state'], 'rotating')
         self.own_file()
 
-    def test_a_low_reading_after_a_resume_leaves_it(self):
-        """A resumed CLI may show an empty footer until its first turn, and that is no owner compaction."""
+    def test_a_reading_of_zero_proves_nothing(self):
+        """A resumed Codex footer can show all its context left before the first turn."""
         self.settled(state='written')
-        self.assertEqual(self.maintain(LOW)['handoff_state'], 'written')
+        self.assertEqual(self.maintain(0)['handoff_state'], 'written')
         self.own_file()
 
-    def test_a_file_with_no_state_on_a_resumed_row_is_not_cleared(self):
-        self.settled(state=None)
-        self.assertEqual(self.maintain(HANDOFF)['state'], 'rotating')
-        self.own_file()
-        self.assertEqual(self.typed('handoff'), [])
+    def test_a_real_low_reading_ends_the_climb_and_its_file(self):
+        self.settled(state='written')
+        self.assertIsNone(self.maintain(LOW)['handoff_state'])
+        self.assertFalse(self.path.exists())
 
-    def test_a_file_with_no_state_on_a_resumed_row_is_not_replaced(self):
-        self.settled(state=None)
+    def test_the_climb_after_a_low_reading_asks_again_and_ends_no_session(self):
+        self.settled(state='written')
+        self.maintain(LOW)
+        self.path.write_text(FULL, encoding='utf-8')    # stands for a file left from before
+        row = self.maintain(HANDOFF)
+        self.assertEqual((row['state'], row['handoff_state']), ('live', 'requested'))
+        self.assertEqual((len(self.typed('handoff')), self.typed('exit')), (1, []))
+        self.assertIsNone(handoff.pending(self.port, ROLE))
+
+    def test_a_file_older_than_the_request_ends_no_session(self):
+        self.settled(state='written')
+        self.older()
+        self.assertEqual(self.maintain(HANDOFF)['state'], 'live')
+        self.assertEqual(self.typed('exit'), [])
+        self.assertIsNone(handoff.pending(self.port, ROLE))
+
+    def test_at_the_forced_level_a_file_older_than_the_request_is_not_the_handoff(self):
+        self.settled(state='written')
+        self.older()
         self.assertEqual(self.maintain(FORCED)['state'], 'rotating')
-        self.own_file()
+        self.assertTrue(self.path.read_text(encoding='utf-8').startswith('Drover wrote this'))
+
+    def test_a_written_state_with_no_request_on_record_ends_no_session(self):
+        self.settled(state='written', asked=False)
+        self.assertEqual(self.maintain(HANDOFF)['state'], 'live')
+        self.assertEqual(self.typed('exit'), [])
+
+    def test_a_request_refused_before_it_went_out_is_no_request(self):
+        self.settled(state='written', asked=False)
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, self.new_row()['id'], 'handoff', 'x')['id'], 'unsent')
+        self.assertEqual(self.maintain(HANDOFF)['state'], 'live')
+
+    def test_a_valid_file_with_no_request_this_climb_is_not_the_handoff(self):
+        self.settled(state=None)
+        row = self.maintain(HANDOFF)
+        self.assertEqual((row['state'], row['handoff_state']), ('live', 'requested'))
+        self.assertEqual(self.typed('exit'), [])
 
     def test_a_request_is_not_repeated(self):
         self.settled(state='requested', file=False)

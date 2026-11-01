@@ -20,9 +20,9 @@ Nothing is fenced and nothing new starts while the old CLI lives: only a read sh
 spent. That run must write `restated.md` beside the file; the pending handoff stands until it does, so a launch that
 fails hands the same file to the one after it. `handoff.owed` says how long that goes on with no wake.
 
-A resume is the same session, so its row keeps `handoff_state`, and the director's file stands on a resumed row at any
-reading: no request clears it, a low reading does not void it and no fallback replaces it. A resumed CLI may show an empty
-context until its first turn, so there a low reading is not proof that the owner compacted.
+A resume is the same session, so its row keeps `handoff_state` and stays in the climb it was in. A climb ends at a real low
+reading, and its file goes with it. Zero is no reading of that kind: a resumed Codex footer shows all its context left until
+the first turn. A director's file is the handoff only if this climb's request is on record and the file is no older than it.
 """
 from . import compaction_hold, config, handoff, pane_context, pane_launch, pane_send
 from .directors import DirectorRuntime
@@ -167,12 +167,11 @@ def maintain(service, run) -> None:
     if tokens != row['context_tokens']:
         row = ops_panes.update_agent(service.conn, row['id'], context_tokens=tokens)
     path = handoff.path_for(service.cfg, run['role_id'], run['generation'])
-    resumed = ops_panes.reused_pane(service.conn, row) and handoff.valid(path)
     if tokens < service.cfg['director']['handoff_tokens']:
-        if row['handoff_state'] and not resumed:
+        if row['handoff_state'] and tokens:
             _cancel(service, row, path)
         return
-    on_hand = resumed or (bool(row['handoff_state']) and handoff.valid(path))
+    on_hand = bool(row['handoff_state']) and handoff.answers(path, ops_panes.last_request(service.conn, row))
     forced = tokens >= service.cfg['watch']['context_tokens']
     if on_hand or forced:
         _settle(service, run, row, path, on_hand, forced)

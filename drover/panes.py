@@ -91,7 +91,7 @@ class PaneService:
             paused = True
         seen = self.inspect(row)
         lasting = self._lasting(row, seen)
-        if seen == ALIVE or (seen == UNKNOWN and not lasting):
+        if (seen == ALIVE or (seen == UNKNOWN and not lasting)) and not pane_launch.brief_stuck(self.port, row):
             self._step(self._renew, run)
         if seen not in (ALIVE, LEFT) or row['state'] != 'live':
             return

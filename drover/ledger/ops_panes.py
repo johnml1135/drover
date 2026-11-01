@@ -101,9 +101,17 @@ def continues_run(conn, row) -> bool:
 
 
 def run_brief(conn, run_id) -> dict | None:
-    """The brief this run's session took, on whichever of its rows it went to."""
+    """The brief that went out to this run's session, on whichever of its rows. An `unsent` one never did."""
     write = conn.execute("SELECT w.* FROM pane_writes w JOIN pane_agents a ON a.id=w.agent_id WHERE a.run_id=? AND w.kind='brief' "
-                         'ORDER BY w.id DESC LIMIT 1', (run_id,)).fetchone()
+                         "AND w.state<>'unsent' ORDER BY w.id DESC LIMIT 1", (run_id,)).fetchone()
+    return dict(write) if write else None
+
+
+def last_request(conn, row) -> dict | None:
+    """The newest handoff request that went out to this pane's terminal, on any of its rows: a resume keeps the climb it was in."""
+    write = conn.execute("SELECT w.* FROM pane_writes w JOIN pane_agents a ON a.id=w.agent_id WHERE a.pane_id=? AND a.terminal_id=? "
+                         "AND w.kind='handoff' AND w.state<>'unsent' ORDER BY w.id DESC LIMIT 1",
+                         (row['pane_id'], row['terminal_id'])).fetchone()
     return dict(write) if write else None
 
 
