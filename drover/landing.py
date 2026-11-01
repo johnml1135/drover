@@ -21,6 +21,7 @@ def __getattr__(name):   # DEFAULT_SIZE stays importable; it follows the active 
         return default_size()
     raise AttributeError(name)
 ORIGIN_OBSERVE_INTERVAL_S = 120
+GIT_TIMED_OUT = 124   # the exit code landing_batch.git gives a timed-out command
 def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None, land_stage):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
@@ -206,13 +207,20 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
                              options=[{'label': 'Acknowledged'}], actor='landing')
 def land_sha(conn, task_id):
     return storage.land_sha(conn, task_id)
-def contained(repo, branch, main_sha):
+def timed_git(repo, *args, timeout, **kw):
+    """`git` with check off, where a timeout raises TimeoutExpired: it is neither a yes nor a no."""
+    import subprocess
+    result = git(repo, *args, check=False, timeout=timeout, **kw)
+    if result.returncode == GIT_TIMED_OUT:
+        raise subprocess.TimeoutExpired(args, timeout)
+    return result
+def contained(repo, branch, main_sha, timeout=None):
     """True when every commit of `branch` is in `main_sha`: an ancestor, or (replayed commits) all patch-equivalent."""
-    if git(repo, 'rev-parse', '--verify', '-q', f'{branch}^{{commit}}', check=False).returncode:
+    if timed_git(repo, 'rev-parse', '--verify', '-q', f'{branch}^{{commit}}', timeout=timeout).returncode:
         return False
-    if git(repo, 'merge-base', '--is-ancestor', branch, main_sha, check=False).returncode == 0:
+    if timed_git(repo, 'merge-base', '--is-ancestor', branch, main_sha, timeout=timeout).returncode == 0:
         return True
-    cherry = git(repo, 'cherry', main_sha, branch, check=False)
+    cherry = timed_git(repo, 'cherry', main_sha, branch, timeout=timeout)
     return cherry.returncode == 0 and not any(line.startswith('+') for line in cherry.stdout.splitlines())
 def verify_manual_land(repo, branch, main_sha, default_branch):
     """The full main_sha, once it is on `default_branch` (ancestor or equal) and holds all of `branch`'s commits."""
@@ -233,13 +241,14 @@ def base_holds(conn):
     rows = [r for r in Waiting(conn).pending() if r['kind'] == BASE and r['question_id'] and r['cause_state'] == 'open']
     return list({r['cause']: {'repo': r['data']['repo'], 'sha': r['data']['sha'], 'question': r['question_id']}
                  for r in rows}.values())
-def clear_hold(conn, actor='owner'):
-    """Owner action: forget each held base's gate result and answer its question Retry."""
+def clear_hold(conn, repo, actor='owner'):
+    """Owner action, for one repo: forget each held base's gate result and answer its question Retry."""
     if actor != 'owner':
         raise PermissionError(f'only the owner may clear a landing hold (actor {actor!r})')
-    holds = base_holds(conn)
-    for hold in holds:
-        storage.forget_base(conn, hold['repo'], hold['sha'])
-        ops.answer_question(conn, hold['question'], RETRY, actor=actor)
-        ops.event(conn, 'landing-hold-cleared', actor, hold)
+    with ops.tx(conn):
+        holds = [hold for hold in base_holds(conn) if hold['repo'] == repo]
+        for hold in holds:
+            storage.forget_base(conn, hold['repo'], hold['sha'])
+            ops.answer_question(conn, hold['question'], RETRY, actor=actor)
+            ops.event(conn, 'landing-hold-cleared', actor, hold)
     return {'cleared': bool(holds), 'holds': holds}

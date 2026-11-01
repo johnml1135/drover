@@ -201,9 +201,9 @@ class Store:
         return landing.base_holds(self.conn)
 
     @_translate
-    def clear_hold(self):
-        """The authenticated owner clears every landing hold and answers each question Retry."""
-        result = landing.clear_hold(self.conn, actor='owner')
+    def clear_hold(self, repo):
+        """The authenticated owner clears one repo's landing hold and answers its question Retry."""
+        result = landing.clear_hold(self.conn, repo, actor='owner')
         for hold in result['holds']:
             self._changed('question.answered', id=hold['question'])
         return result

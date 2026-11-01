@@ -153,13 +153,15 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
 
     def _detect_outside_landings(self):
         """At most once per interval, even after a failure; a detection failure never stops dispatch."""
-        now, cfg = self.now(), config_mod.get()
-        if self._outside_at is not None and now - self._outside_at < outside_land.interval_s(cfg):
-            return
-        self._outside_at = now
+        now = self.now()
         try:
+            cfg = config_mod.get()
+            if self._outside_at is not None and now - self._outside_at < outside_land.interval_s(cfg):
+                return
+            self._outside_at = now
             outside_land.tick(self.port.conn, cfg)
         except Exception:
+            self._outside_at = now
             logging.getLogger(__name__).exception('outside landing detection failed')
 
     def tick(self):

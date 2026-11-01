@@ -282,8 +282,8 @@ class UiView:
     def base_holds(self):
         return self.s.base_holds()
 
-    def clear_hold(self):
-        return self.s.clear_hold()
+    def clear_hold(self, repo):
+        return self.s.clear_hold(repo)
 
     def push_main(self, name):
         """Owner action; repo paths and remote names come only from validated configuration."""

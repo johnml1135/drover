@@ -255,9 +255,12 @@ def landing(request: Request, store=Depends(get_store)):
 
 
 @router.post("/landing/clear-hold")
-def clear_landing_hold(store=Depends(get_store)):
+async def clear_landing_hold(request: Request, store=Depends(get_store)):
     """Owner-only through the UI auth and CSRF middleware; never exposed on the API."""
-    store.clear_hold()
+    repo = _one(await _form(request), "repo").strip()
+    if not repo:
+        raise HTTPException(422, "name the repo to clear")
+    store.clear_hold(repo)
     return RedirectResponse("/landing", status_code=303)
 
 
