@@ -179,6 +179,8 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
             out["recovered"] = self.watch_runs()
         out["recovered"] += self.requeue_stale_claims()
         hold = compaction_hold.active()
+        if hold and compaction.recover():                  # the job can die with the hub still up
+            hold = None
         if hold:
             out['compaction'] = self._compaction_drain(hold)
         self.check_stale()

@@ -658,7 +658,7 @@ class Polling(Hubbed):
 
     def setUp(self):
         super().setUp()
-        compaction_hold.claim(self.state, at=compaction_hold.clock(), pid=os.getpid(), birth='b')
+        compaction_hold.claim(self.state, at=compaction_hold.clock(), pid=os.getpid(), birth=placement.cleanup_identity()['birth'])
         self.calls = []
 
         def spy(args):
@@ -746,7 +746,7 @@ class Draining(Hubbed):
         self.d.live[self.rid][2]['placement'] = name
 
     def hold(self, phase='draining'):
-        record = compaction_hold.claim(self.state, at=self.clock(), pid=os.getpid(), birth='b')
+        record = compaction_hold.claim(self.state, at=self.clock(), pid=os.getpid(), birth=placement.cleanup_identity()['birth'])
         record['phase'] = phase
         disk_state.save_file(self.state, compaction_hold.HOLD_FILE, record)
         return record
@@ -911,6 +911,37 @@ class WindDown(Draining):
         with mock.patch.object(placement, 'cleanup_identity', return_value=dict(pid=999999, birth='absent')):
             d.tick()
         self.assertIsNone(compaction_hold.read(self.state))
+
+
+class DiedUnderARunningHub(Draining):
+    """A hub that is already up makes no start-up pass, so the tick itself has to notice the job is gone."""
+
+    def die(self, *hold_args):
+        record = self.hold(*hold_args)
+        record.update(pid=999999, birth='b', step='compact')
+        disk_state.save_file(self.state, compaction_hold.HOLD_FILE, record)
+        self.assertTrue(self.d.recovered)
+        return mock.patch.object(placement, 'cleanup_identity', return_value=dict(pid=999999, birth='absent'))
+
+    def test_the_next_tick_releases_the_hold_and_raises_the_notice(self):
+        with self.die('offline'):
+            out = self.d.tick()
+        self.assertIsNone(compaction_hold.read(self.state))
+        self.assertNotIn('compaction', out)
+        notices = [row['notice'] for row in disk_state.read(self.state).get('outbox', {}).values()]
+        self.assertEqual([notice['kind'] for notice in notices], ['compaction'])
+        self.assertIn('the job died at step compact', notices[0]['body'])
+
+    def test_a_live_job_keeps_its_hold(self):
+        record = self.hold()
+        self.d.tick()
+        self.assertEqual(compaction_hold.read(self.state)['id'], record['id'])
+
+    def test_a_holder_that_cannot_be_read_is_not_taken_for_dead(self):
+        record = self.hold()
+        with mock.patch.object(placement, 'cleanup_identity', side_effect=OSError('denied')):
+            self.d.tick()
+        self.assertEqual(compaction_hold.read(self.state)['id'], record['id'])
 
 
 class LandingGate(Draining):
