@@ -1,5 +1,7 @@
 """A repo may declare disposable paths in local, owner-only Drover config, checked like committed ones."""
+import tempfile
 import unittest
+from pathlib import Path
 
 from drover import config, repos
 from drover.disk_worktrees import outputs_at
@@ -47,6 +49,16 @@ class LocalPolicy(unittest.TestCase):
         self.commit_policy('generated', 'obj')
         self.assertEqual(outputs_at(self.machine(local_disposable=['obj', 'bin']), self.fixture.repo),
                          ['generated', 'obj', 'bin'])
+
+    def test_the_list_on_disk_reaches_cleanup_through_the_registration_it_loads(self):
+        # disk_cleanup._repos builds its machine dict this way, not by hand.
+        self.commit_policy('generated')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'alpha.toml'
+            path.write_text(config.dumps(self.machine(local_disposable=['obj'])), encoding='utf-8')
+            raw = repos.read_machine(path)
+            machine = repos.machine_config(repos.load({**raw, 'name': 'alpha'}, machine_path=path))
+        self.assertEqual(outputs_at(machine, machine['repo']), ['generated', 'obj'])
 
     def test_a_committed_file_cannot_declare_local_disposable(self):
         self.fixture.commit('.drover/config.toml', config.dumps(
