@@ -31,12 +31,12 @@ class DeciderCase(ScanCase):
         self.decider = decide or getattr(self, 'decider', None) or Decider(self.conn)
         return outside_land.tick(self.conn, {}, decide=self.decider)
 
-    def unproved(self, status='needs-owner'):
+    def unproved(self, status='needs-owner', hand='g.txt'):
         """A task whose branch never landed, and a hand commit on main that touches its scope."""
         tid = self.task(status, scope_files=['f.txt', 'g.txt'])
         tip = self.r.branch('feat', {'f.txt': 'x'})
         self.worker_done(tid, tip)
-        return tid, tip, self.r.commit('g.txt', msg='hand work')
+        return tid, tip, self.r.commit(hand, msg='hand work')
 
     def question(self, position=0):
         return ops.open_questions(self.conn)[position]
@@ -66,7 +66,7 @@ class ShadowAndLiveTests(DeciderCase):
         self.assertIn('hand work', call.state)
 
     def test_live_answer_citing_a_commit_on_main_lands(self):
-        tid, _, commit = self.unproved()
+        tid, _, commit = self.unproved(hand='f.txt')
         self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
         self.assertEqual(self.status(tid), states.LANDED)
         record = self.external(tid)
@@ -78,14 +78,14 @@ class ShadowAndLiveTests(DeciderCase):
 
     def test_live_answer_on_a_pushing_repo_reads_the_remote_base(self):
         self.use_config(push=True)
-        tid, _, commit = self.unproved()
+        tid, _, commit = self.unproved(hand='f.txt')
         self.r.git('push', '-q', 'origin', 'main')
         self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
         self.assertEqual(self.external(tid)['base_ref'], 'origin/main')
 
     def test_live_answer_holds_when_the_local_branch_is_ahead_of_the_remote(self):
         self.use_config(push=True)
-        tid, _, commit = self.unproved()
+        tid, _, commit = self.unproved(hand='f.txt')
         self.r.git('push', '-q', 'origin', 'main')
         self.r.commit('local.txt')
         self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [tid])
@@ -103,8 +103,34 @@ class ShadowAndLiveTests(DeciderCase):
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
+    def test_live_citation_with_no_file_overlap_asks_the_owner(self):
+        tid, _, commit = self.unproved(hand='g.txt')      # in scope, but the task's recorded commit changed only f.txt
+        self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [])
+        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
+        self.assertIn(f'Landed at {commit}', self.labels())
+
+    def test_live_citation_for_a_task_with_no_recorded_commit_asks_the_owner(self):
+        tid = self.task()
+        self.r.branch('feat', {'g.txt': 'y'})
+        commit = self.r.commit('f.txt', msg='hand work')
+        self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=commit))['landed'], [])
+        self.assertEqual(self.status(tid), states.NEEDS_OWNER)
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+
+    def test_live_citation_of_a_merge_commit_reads_its_whole_change(self):
+        tid = self.task()
+        self.worker_done(tid, self.r.branch('feat', {'f.txt': 'x'}))
+        self.r.git('checkout', '-q', '-b', 'hand', 'main')
+        self.r.commit('f.txt', msg='hand work')
+        self.r.git('checkout', '-q', 'main')
+        self.r.commit('other.txt')
+        self.r.git('merge', '-q', '--no-ff', '--no-edit', 'hand')
+        merge = self.main()
+        with patch.object(outside_land, 'ambiguous', return_value=[merge]):
+            self.assertEqual(self.scan(Decider(self.conn, acted=True, answer=merge))['landed'], [tid])
+
     def test_live_answer_for_a_commit_since_reverted_is_ignored(self):
-        tid, _, commit = self.unproved()
+        tid, _, commit = self.unproved(hand='f.txt')
         self.r.git('revert', '--no-edit', commit)
         self.scan(Decider(self.conn, acted=True, answer=commit))
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
@@ -452,6 +478,44 @@ class AnswerOnceTests(DeciderCase):
         self.assertEqual(self.status(tid), states.YANKED)
         self.assertEqual(self.taken(tid), ['void'])
 
+    def test_void_answer_for_a_yanked_task_asks_once_and_the_new_answer_counts(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        first = self.question()['id']
+        self.answer('Not landed')
+        ops.yank(self.conn, tid)
+        self.scan()
+        self.scan()
+        self.scan()
+        again = self.question()
+        self.assertNotEqual(again['id'], first)
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+        self.assertIn('not used', again['body'])
+        self.answer('Not landed')
+        self.scan()
+        self.assertEqual(self.status(tid), states.CANCELLED)
+        self.assertEqual(self.taken(tid), ['void', 'not-landed'])
+
+    def test_void_answer_for_a_yanked_task_can_still_land_it(self):
+        tid, _, commit = self.unproved()
+        self.scan()
+        self.answer(f'Landed at {commit}')
+        ops.yank(self.conn, tid)
+        self.scan()
+        self.assertEqual(self.status(tid), states.YANKED)
+        self.answer(f'Landed at {commit}')
+        self.assertEqual(self.scan()['landed'], [tid])
+
+    def test_void_answer_for_a_yanked_task_with_no_candidates_stays_quiet(self):
+        tid, _, _ = self.unproved()
+        self.scan()
+        self.answer('Not landed')
+        ops.yank(self.conn, tid)
+        with patch.object(outside_land, 'ambiguous', return_value=[]):
+            self.scan()
+        self.assertEqual((self.status(tid), ops.open_questions(self.conn)), (states.YANKED, []))
+        self.assertEqual(self.taken(tid), ['void'])
+
     def rerun(self, tid):
         ops.set_status(self.conn, tid, states.READY, 'owner', reason='requeued')
         self.assertEqual(ops.claim_next(self.conn, {})['id'], tid)
@@ -529,8 +593,10 @@ class AnswerOnceTests(DeciderCase):
         self.scan()
         self.assertEqual((self.status(tid), ops.open_questions(self.conn)), (states.YANKED, []))
         self.scan()
+        self.scan()
         self.assertEqual(self.taken(tid), ['void'])
         self.assertEqual(self.status(tid), states.YANKED)
+        self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
 
 class QuestionBodyTests(DeciderCase):

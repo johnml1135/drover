@@ -6,9 +6,9 @@ runs inside a ledger transaction. The scan is synchronous, so its time is budget
 
 What git answers but does not prove, with commits on the base that overlap the task, goes to the decider and then to
 the owner in one Inbox question. A model's answer counts only for a commit git then shows on the base with its change
-still there, and the owner's answer is checked against the base too. An answer is consumed once, with what it causes,
-and is void if the task has changed since it was asked about. When git cannot answer, nothing is asked and the next
-interval retries.
+still there and its files among the task's recorded ones, and the owner's answer is checked against the base too. An
+answer is consumed once, with what it causes, and is void if the task has changed since it was asked about. When git
+cannot answer, nothing is asked and the next interval retries.
 """
 import json
 import logging
@@ -220,9 +220,26 @@ def _refusal(repo, sha, ref, name):
     return None
 
 
-def _holds(repo, sha, ref, name):
-    """A cited commit is on the base and its own change is still there, so one reverted since cannot land a task."""
-    return not _refusal(repo, sha, ref, name) and _survives(repo, ref, _commit(repo, f'{sha}^'), sha)
+def _changed(repo, old, new):
+    return set(filter(None, (_out(repo, 'diff', '--name-only', '-z', '--no-renames', old, new) or '').split('\0')))
+
+
+def _recorded_files(repo, task):
+    """The files the task's newest recorded commit changed, from its run's start. None recorded means none known."""
+    recorded = task['commits'][-1] if task['commits'] else None
+    if not recorded or not _commit(repo, recorded):
+        return set()
+    start = (task['start'] and _commit(repo, task['start'])) or _commit(repo, f'{recorded}^')
+    return _changed(repo, start, recorded) if start else set()
+
+
+def _holds(repo, task, sha, ref, name):
+    """A cited commit is on the base, its own change is still there, so one reverted since cannot land a task, and it
+    touches a file the task's recorded work changed, so a persuasive subject alone cannot land one either."""
+    if _refusal(repo, sha, ref, name):
+        return False
+    parent = _commit(repo, f'{sha}^')
+    return _survives(repo, ref, parent, sha) and bool(_changed(repo, parent, sha) & _recorded_files(repo, task))
 
 
 def _real_decide(*args, **kw):
@@ -263,12 +280,18 @@ def _take_answer(conn, task, repo, name, ref, notice):
         return False
     reply = (asked['answer_choice'] or asked['answer_text'] or '').strip()
     landed = LANDED_AT.fullmatch(reply)
-    if ops.status_mark(conn, tid) != mark or not landed:
+    moved = ops.status_mark(conn, tid) != mark
+    if moved or not landed:
+        yanked = task['status'] == states.YANKED
+        commits = _described(repo, ambiguous(repo, task, ref)) if moved and yanked else {}
         with tx(conn):
             not_landed = reply.lower() == 'not landed'
-            if ops.take_answer(conn, tid, question, mark, 'not-landed' if not_landed else 'no-action') \
-                    and not_landed and task['status'] == states.YANKED:
-                ops_bypass.abandon(conn, tid, actor='owner')
+            if ops.take_answer(conn, tid, question, mark, 'not-landed' if not_landed else 'no-action'):
+                if not_landed and yanked:
+                    ops_bypass.abandon(conn, tid, actor='owner')
+            elif commits:         # one new question per void answer: its id holds it to one across ticks
+                _ask_owner(conn, f'{tid}#{question}', task, commits, name, ops.status_mark(conn, tid),
+                           why='An earlier answer was not used: the task changed after this was asked.')
         return False
     sha = landed[1].lower()
     why = _refusal(repo, sha, ref, name)
@@ -302,7 +325,7 @@ def _unproved(conn, task, prog, decide, room):
     cited = _ask_decider(conn, task, commits, decide, wait)
     if ops.status_mark(conn, task['id']) != mark:
         return False          # the task moved while the model thought
-    if cited and _holds(repo, cited, ref, name):
+    if cited and _holds(repo, task, cited, ref, name):
         ops.record_detected_landing(conn, task['id'], cited, name, 'decider')
         return True
     _ask_owner(conn, task['id'], task, commits, name, mark)
