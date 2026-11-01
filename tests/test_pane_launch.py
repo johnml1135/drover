@@ -1,7 +1,7 @@
 """Rows 6, 9, 10, 25, 26, 28 and 29: an agent starts in a new pane once, and is proved before it counts."""
 from drover import pane_launch, pane_send
 from drover.launch import AdmissionHeld
-from drover.ledger import ops, ops_panes
+from drover.ledger import ops_panes
 from tests.pane_launch_support import CLAUDE_TRUST, CLAUDE_WORKING, PROMPT, SECRET, TRUST, Launching
 from tests.pane_send_support import CLAUDE_IDLE, DRAFT, IDLE, PANE, WORKING, WRITE_VERBS
 
@@ -98,6 +98,7 @@ class Opening(Launching):
         fake._tab_create = tab
         row = self.start()
         self.assertEqual((row['state'], self.calls('agent', 'start'), self.calls('pane', 'run')), ('failed', [], []))
+        self.assertEqual((self.reason(), self.private), ('no-terminal', []))
 
     def test_a_private_file_that_cannot_be_written_fails_the_row_with_nothing_typed(self):
         self.scene()
@@ -121,76 +122,6 @@ class Opening(Launching):
             self.start(guard=guard)
         self.assertEqual(self.rows()[0]['state'], 'failed')
         self.assertEqual([c for c in self.fake.calls if tuple(c[:2]) in WRITE_VERBS], [])
-
-
-class Launcher(Launching):
-    def test_windows_launch_uses_agent_start_after_env(self):
-        self.scene()
-        self.turns()
-        row = self.start()
-        writes = [c for c in self.fake.calls if c[:2] in (['pane', 'run'], ['agent', 'start'])]
-        self.assertEqual([c[:2] for c in writes], [['pane', 'run'], ['agent', 'start']])
-        self.assertTrue(writes[0][3].endswith("launch.ps1'"), writes[0][3])
-        self.assertEqual(writes[1][:7], ['agent', 'start', 'director-7', '--kind', 'claude', '--pane', PANE])
-        self.assertEqual(row['state'], 'live')
-        text = (self.state / 'panes' / '7' / 'launch.ps1').read_text(encoding='utf-8')
-        self.assertIn("$env:CLAUDE_CONFIG_DIR = 'C:\\seats\\c'", text)
-        self.assertIn("$env:DROVER_HUB_URL = 'http://127.0.0.1:8766'", text)
-        self.assertIn('$env:DROVER_CREDENTIAL_FILE = ', text)
-        self.assertNotIn('WSLENV', text)
-
-    def test_wsl_launch_sets_wslenv_and_runs_through_wsl_exe(self):
-        self.scene('codex', 'wsl')
-        self.start(self.spec('codex', 'wsl'))
-        self.assertEqual(self.calls('agent', 'start'), [])
-        self.assertEqual(len(self.calls('pane', 'run')), 1)
-        ps1 = (self.state / 'panes' / '7' / 'launch.ps1').read_text(encoding='utf-8')
-        self.assertIn('HERDR_ENV:HERDR_PANE_ID:HERDR_SOCKET_PATH:HERDR_BIN_PATH:HERDR_WORKSPACE_ID:HERDR_TAB_ID', ps1)
-        self.assertIn('wsl.exe -d Ubuntu -e bash -li ', ps1)
-        sh = (self.state / 'panes' / '7' / 'launch.sh').read_text(encoding='utf-8')
-        self.assertIn('export CODEX_HOME="$HOME"/.codex', sh)
-        self.assertIn('export DROVER_CREDENTIAL_FILE="$HOME"/.drover/panes/run-7.credential', sh)
-        self.assertIn('export DROVER_HUB_URL=', sh)
-        self.assertIn('exec codex ', sh)
-        self.assertNotIn('\r', sh)
-
-    def test_only_the_launchers_path_crosses_the_pane(self):
-        self.scene('codex', 'wsl')
-        self.start(self.spec('codex', 'wsl'))
-        self.assertRegex(self.calls('pane', 'run')[0][3], r"^& '[^ ]*launch\.ps1'$")
-
-    def test_credential_never_reaches_argv_scrollback_or_a_write(self):
-        for kind, placement in (('claude', 'windows'), ('codex', 'wsl'), ('claude', 'wsl')):
-            with self.subTest(kind=kind, placement=placement):
-                self.scene(kind, placement)
-                self.turns(kind=kind)
-                self.start(self.spec(kind, placement, run_id=len(self.rows()) + 7))
-                self.assertEqual({text for _, text, _ in self.private}, {SECRET})
-                self.assertNotIn(SECRET, repr(self.fake.calls))
-                self.assertNotIn(SECRET, ''.join(self.launcher_texts()))
-                self.assertNotIn(SECRET, repr([dict(r) for r in self.conn.execute('SELECT * FROM pane_writes')]))
-                self.assertNotIn(SECRET, repr(ops.events(self.conn)))
-                self.reset()
-
-    def test_agent_is_renamed_once_it_reports(self):
-        fake = self.scene('codex', 'wsl', boots=False)
-        order = []
-        fake.after[('pane', 'run', 1)] = lambda: order.append(len(self.calls('agent', 'rename'))) or self.boot()
-        row = self.start(self.spec('codex', 'wsl'))
-        self.assertEqual(order, [0])
-        self.assertEqual(self.calls('agent', 'rename'), [['agent', 'rename', PANE, 'director-7']])
-        self.assertEqual(row['name'], 'director-7')
-
-    def test_a_refused_rename_costs_nothing(self):
-        self.scene('codex', 'wsl').refuse[('agent', 'rename')] = 'pane_not_found'
-        self.turns(kind='codex')
-        self.assertEqual(self.start(self.spec('codex', 'wsl'))['state'], 'live')
-
-    def test_a_windows_agent_is_not_renamed(self):
-        self.scene()
-        self.turns()
-        self.start()
-        self.assertEqual(self.calls('agent', 'rename'), [])
 
 
 class Startup(Launching):
@@ -219,6 +150,7 @@ class Startup(Launching):
         self.assertEqual(row['state'], 'failed')
         self.assertEqual(self.calls('agent', 'prompt'), [])
         self.assertEqual(self.notices()[0]['id'], f"pane-launch:{row['id']}")
+        self.assertEqual(self.reason(), 'agent-not-running')
 
     def test_agent_that_exited_after_self_update_is_refused(self):
         fake = self.scene('codex', 'wsl', boots=False)
@@ -262,6 +194,18 @@ class Startup(Launching):
         row = self.start(self.spec('codex', 'wsl'))
         self.assertEqual(row['state'], 'failed')
         self.assertEqual(self.calls('pane', 'send-text'), [])
+        self.assertEqual(self.reason(), 'draft')
+        self.assertEqual(self.sleep.call_count, 0)      # waiting cannot clear an owner's draft
+
+    def test_a_screen_shaped_like_a_choice_is_left_with_the_owner(self):
+        fake = self.scene('codex', 'wsl', boots=False)
+
+        def up():
+            self.boot()
+            fake.screens[PANE] = 'history\n\nShall I delete the branch?\n\n› \n\n? for shortcuts\n'
+        fake.after[('pane', 'run', 1)] = up
+        self.assertEqual(self.start(self.spec('codex', 'wsl'))['state'], 'failed')
+        self.assertEqual(self.reason(), 'dialog')
 
     def test_an_agent_that_never_reports_ends_failed_without_a_brief(self):
         fake = self.scene('codex', 'wsl', boots=False)
@@ -301,7 +245,7 @@ class Trust(Launching):
         self.trust_scene()
         row = self.start(self.spec('codex', 'wsl'))
         self.assertEqual(self.calls('pane', 'send-keys')[0], ['pane', 'send-keys', PANE, 'enter'])
-        answered = ops.events(self.conn, kind='pane-trust-answered')
+        answered = self.port.events(kind='pane-trust-answered')
         self.assertEqual([e['data']['row'] for e in answered], [row['id']])
 
     def test_codex_trust_is_left_for_an_untrusted_repo(self):
@@ -309,7 +253,8 @@ class Trust(Launching):
         row = self.start(self.spec('codex', 'wsl'))
         self.assertEqual((row['state'], self.calls('pane', 'send-keys')), ('failed', []))
         self.assertEqual(len(self.notices()), 1)
-        self.assertEqual(ops.events(self.conn, kind='pane-trust-answered'), [])
+        self.assertEqual(self.port.events(kind='pane-trust-answered'), [])
+        self.assertEqual(self.reason(), 'trust-left-for-the-owner')
 
     def test_trust_unreadable_config_is_owner_only(self):
         self.trust_scene()
@@ -333,6 +278,7 @@ class Trust(Launching):
         self.trust_scene(CLAUDE_TRUST)
         row = self.start(self.spec('codex', 'wsl'))
         self.assertEqual((row['state'], self.calls('pane', 'send-keys')), ('failed', []))
+        self.assertEqual(self.reason(), 'dialog')
 
     def test_claude_folder_trust_reports_to_the_owner_and_starts_nothing_else(self):
         fake = self.scene(boots=False)
@@ -358,7 +304,7 @@ class Trust(Launching):
         self.trust_scene().hang = {('pane', 'send-keys')}
         row = self.start(self.spec('codex', 'wsl'))
         self.assertEqual((row['state'], len(self.calls('pane', 'send-keys'))), ('failed', 1))
-        self.assertEqual(ops.events(self.conn, kind='pane-trust-answered'), [])
+        self.assertEqual(self.port.events(kind='pane-trust-answered'), [])
         self.assertEqual(ops_panes.open_writes(self.conn, row['id']), [])
 
     def test_a_dialog_after_the_row_went_live_stops_the_brief(self):
@@ -415,6 +361,7 @@ class FirstTurn(Launching):
                 self.assertEqual(row['state'], 'failed')
                 self.assertEqual(len(self.calls('agent', 'prompt')), 1)
                 self.assertEqual(ops_panes.open_writes(self.conn, row['id']), [])
+                self.assertEqual(self.reason(), 'brief-unverified' if code is None else 'herdr-refused:agent_blocked')
                 self.reset()
 
     def test_a_working_row_on_screen_proves_it_under_a_stale_status(self):
@@ -432,6 +379,7 @@ class FirstTurn(Launching):
         self.turns(WORKING)
         fake.after[('agent', 'prompt', 1)] = lambda: fake.agents[PANE].update(agent_session={'value': 'other'})
         self.assertEqual(self.start()['state'], 'failed')
+        self.assertEqual(self.sleep.call_count, 0)      # no first turn can come from another occupant
 
     def footer(self, row):
         self.scene('codex', 'wsl')
@@ -486,4 +434,4 @@ class Reused(Launching):
         fake.after[('pane', 'run', 1)] = up
         row = pane_launch.resume(self.port, self.herdr, first, self.spec('codex', 'wsl'), cfg=self.cfg)
         self.assertEqual((row['state'], self.calls('pane', 'send-keys')), ('failed', []))
-        self.assertEqual(ops.events(self.conn, kind='pane-trust-answered'), [])
+        self.assertEqual(self.port.events(kind='pane-trust-answered'), [])

@@ -5,7 +5,7 @@ from unittest import mock
 
 from drover import pane_guard, pane_launch
 from drover.herdr_client import Herdr
-from drover.ledger import ops, ops_panes
+from drover.ledger import ops_panes
 from tests.pane_send_support import CLAUDE_IDLE, IDLE, PANE, Case, Stage, WORKING, composing, running
 
 SECRET = 'cred-0123456789-do-not-leak'
@@ -86,7 +86,10 @@ class Launching(Case):
         return ops_panes.open_agents(self.conn)
 
     def notices(self):
-        return [e['data']['notice'] for e in ops.events(self.conn, kind='pane.notice')]
+        return [e['data']['notice'] for e in self.port.events(kind='pane.notice')]
+
+    def reason(self):
+        return self.port.events(kind='pane-launch-failed')[-1]['data']['reason']
 
     def launcher_texts(self):
         return [p.read_text(encoding='utf-8') for p in self.state.rglob('*') if p.is_file()]

@@ -1,7 +1,7 @@
 """A launch that stalled, the one start for a role, and `resume`: nothing is ever resent."""
 from drover import pane_launch, pane_send
 from drover.launch import AdmissionHeld
-from drover.ledger import ops, ops_panes
+from drover.ledger import ops_panes
 from tests.pane_launch_support import LONE_SHELL, PROMPT, Launching
 from tests.pane_send_support import IDLE, PANE, running
 
@@ -25,7 +25,7 @@ class Stalled(Launching):
     def test_a_stalled_launch_is_read_and_the_read_is_on_record(self):
         self.stalled()
         row = self.start()
-        failed = ops.events(self.conn, kind='pane-launch-failed')[-1]['data']
+        failed = self.port.events(kind='pane-launch-failed')[-1]['data']
         self.assertEqual((failed['row'], failed['reason'], failed['shell_alone']), (row['id'], 'launch-stalled', False))
 
     def test_a_stalled_write_is_closed_but_keeps_its_claim(self):
@@ -35,6 +35,12 @@ class Stalled(Launching):
         write = ops_panes.last_write(self.conn, row['id'], 'start')
         self.assertEqual((write['state'], write['reason']), ('observed', 'launch-failed'))
         self.assertIsNone(ops_panes.note_once(self.conn, row['id'], pane_send.LAUNCHES, 'start', 'x'))
+
+    def test_a_stalled_environment_line_ends_the_launch_there(self):
+        fake = self.scene(boots=False)
+        fake.hang = {('pane', 'run')}
+        self.assertEqual(self.start()['state'], 'failed')
+        self.assertEqual((self.reason(), self.calls('agent', 'start')), ('launch-stalled', []))
 
     def test_a_stalled_pane_run_is_never_repeated(self):
         fake = self.scene('codex', 'wsl', boots=False)
@@ -73,6 +79,11 @@ class OneAgentForARole(Launching):
             self.start()
         self.assertEqual(str(caught.exception), reason)
         self.assertEqual(self.calls('tab', 'create'), [])
+
+    def test_herdr_closed_is_said_before_any_failed_pane_is_read(self):
+        self.scene().closed = True
+        self.failed_row()
+        self.held('herdr-unavailable')
 
     def test_a_row_still_running_holds_the_role(self):
         for state in ('starting', 'live', 'rotating', 'compaction'):
@@ -168,8 +179,9 @@ class Resume(Launching):
 
     def test_seat_and_placement_come_from_the_row_not_the_spec(self):
         old = self.live()
-        row = self.resume(old, self.spec('claude', 'windows'))
+        row = self.resume(old, self.spec('claude', 'windows', run_id=99))
         self.assertEqual((row['seat'], row['placement'], row['kind']), ('seat-x', 'wsl', 'codex'))
+        self.assertIn('exec codex resume sess-1 ', self.sh())
 
     def test_no_brief_goes(self):
         old = self.live()
@@ -196,6 +208,14 @@ class Resume(Launching):
                 self.assertEqual([r['id'] for r in self.rows()], [row['id']])
                 self.assertEqual(self.calls('pane', 'run'), [])
                 self.reset()
+
+    def test_a_stale_copy_of_a_row_cannot_resume(self):
+        old = self.live()
+        newer = ops_panes.record_agent(self.conn, pane_id=PANE, kind='codex', seat='seat-x', placement='wsl', started_by='drover')
+        with self.assertRaises(AdmissionHeld):
+            self.resume(old)
+        self.assertEqual(self.calls('pane', 'run'), [])
+        self.assertEqual(ops_panes.by_pane(self.conn, PANE)['id'], newer['id'])
 
     def test_an_open_write_stops_a_resume(self):
         row = self.live()

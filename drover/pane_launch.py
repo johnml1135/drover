@@ -16,7 +16,7 @@ from . import config, pane_files, pane_guard, pane_screen, pane_send, placement,
 from .config import state_dir
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .launch import AdmissionHeld
-from .ledger import disk_notices, ops, ops_panes
+from .ledger import disk_notices, ops_panes
 from .pane_files import NATIVE_COMPACT, repo_trusted, write_private
 from .pane_send import PaneRefused
 
@@ -84,8 +84,8 @@ def _fail(port, herdr, row, reason, *, notice=True) -> dict:
     for write in ops_panes.open_writes(port.conn, row['id']):
         ops_panes.finish_write(port.conn, write['id'], 'observed', 'launch-failed')
     failed = ops_panes.update_agent(port.conn, row['id'], state='failed')
-    ops.event(port.conn, 'pane-launch-failed', 'panes', dict(row=row['id'], pane_id=row['pane_id'], seat=row['seat'],
-              placement=row['placement'], reason=reason, shell_alone=_read_alone(herdr, row)))
+    port.append_event('pane-launch-failed', dict(row=row['id'], pane_id=row['pane_id'], seat=row['seat'], placement=row['placement'],
+                      reason=reason, shell_alone=_read_alone(herdr, row)), actor='panes')
     if notice:
         _notice(port, f"pane-launch:{row['id']}", 'An agent did not start in its pane',
                 f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: {reason}. The pane is left as it is.")
@@ -200,7 +200,7 @@ def _answer_trust(port, herdr, row, cfg):
         return False
     if written['state'] != 'sent':
         return False
-    ops.event(port.conn, 'pane-trust-answered', 'panes', dict(row=row['id'], pane_id=row['pane_id'], cwd=row['cwd']))
+    port.append_event('pane-trust-answered', dict(row=row['id'], pane_id=row['pane_id'], cwd=row['cwd']), actor='panes')
     return True
 
 
@@ -249,17 +249,14 @@ def _launched(port, herdr, row, launcher, args, cfg) -> dict:
 
 
 def _wait_idle(herdr, row):
-    """None once the composer is ready, or why it never will be. `check` writes nothing."""
-    reason = 'not-idle'
+    """Until the composer is ready, or waiting cannot help. `send` makes the same check, and refuses on its own."""
     for _ in _ticks(STARTUP_S):
         try:
             pane_send.check(herdr, row)
-            return None
+            return
         except PaneRefused as refused:
-            reason = refused.reason
-            if reason in OWNERS_NOW:
-                return reason
-    return reason
+            if refused.reason in OWNERS_NOW:
+                return
 
 
 def _first_turn(herdr, row):
@@ -291,9 +288,7 @@ def _check_footer(port, row, screen, spec, cfg):
 
 
 def _send_brief(port, herdr, row, spec, cfg) -> dict:
-    waiting = _wait_idle(herdr, row)
-    if waiting:
-        return _fail(port, herdr, row, waiting)
+    _wait_idle(herdr, row)
     try:
         written = pane_send.send(port, herdr, row, brief(spec, spec.get('handoff')), 'brief')
     except PaneRefused as refused:

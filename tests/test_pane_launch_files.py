@@ -173,10 +173,15 @@ class Trusted(unittest.TestCase):
                      project_scalar=dict(config='[projects]\n"/mnt/h/repos/drover" = "trusted"\n'),
                      word=dict(config='[projects."/mnt/h/repos/drover"]\ntrust_level = "trusted-ish"\n'),
                      subfolder=dict(cwd=WORKTREE + '\\sub'), submodule=dict(common='/mnt/h/repos/drover/.git/modules/x'),
-                     bare=dict(common='/mnt/h/repos/drover.git'))
+                     bare=dict(common='/mnt/h/repos/drover.git'), listed_folder=dict(common='/mnt/h/repos/drover'))
         for name, over in cases.items():
             with self.subTest(name):
                 self.assertIs(self.check(**over), False)
+
+    def test_a_key_in_windows_form_or_with_a_slash_still_matches(self):
+        for key in (r'H:\repos\drover', '/mnt/h/repos/drover/'):
+            with self.subTest(key):
+                self.assertIs(self.check(config=f"[projects.'{key}']\ntrust_level = 'trusted'\n"), True)
 
     def test_a_home_on_the_wrong_kind_of_seat_is_untrusted(self):
         self.assertIs(self.check(seat={'name': 'c', 'backend': 'claude'}), False)
