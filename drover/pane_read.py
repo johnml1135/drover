@@ -135,9 +135,9 @@ def _require_empty(seen, row):
         raise PaneRefused('draft' if pane_screen.composer_text(seen['screen'], row['kind']) else 'screen-not-idle')
 
 
-def check(herdr, row) -> dict:
+def check(herdr, row, states=LIVE) -> dict:
     """The pane as read when it is safe to write to: Drover's, unchanged, undisturbed, idle and empty."""
-    seen = _safe(herdr, row, LIVE)
+    seen = _safe(herdr, row, states)
     status = pane_screen.status(seen['screen'], row['kind'])
     if status == 'working':
         raise PaneRefused('busy')

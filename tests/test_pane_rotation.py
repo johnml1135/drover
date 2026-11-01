@@ -1,88 +1,13 @@
 """A rotation: the old CLI leaves by one guarded `/exit`, and only then does a fresh session take the pane. Fakes only."""
 from unittest import mock
 
-from drover import compaction_hold, handoff, pane_context, pane_files, pane_handoff, pane_launch, pane_send
+from drover import compaction_hold, handoff, pane_handoff, pane_launch, pane_send
 from drover.ledger import ops_panes
 from drover.pane_send import PaneRefused
-from tests.pane_launch_support import CLAUDE_WORKING, LONE_SHELL, PROMPT
-from tests.pane_send_support import CLAUDE_IDLE, Case, DIALOG, PANE, composing
-from tests.panes_support import ROLE, Resident
-
-FULL = ''.join(f'## {section}\nSomething true.\n\n' for section in handoff.SECTIONS)
-HANDOFF, FORCED = 275000, 300000
-EXIT = ['agent', 'prompt', PANE, pane_send.EXIT_TEXT]
-
-
-class Rotating(Resident):
-    def setUp(self):
-        super().setUp()
-        self.launched()
-        self.cfg['director'].update(handoff_tokens=HANDOFF)
-        self.cfg['watch'] = dict(context_tokens=FORCED, interval_s=600, stalled_hours=24, red_rate=0.5, min_gates=6)
-        self.idle()
-        reading = mock.patch.object(pane_context, 'read', return_value=HANDOFF)
-        self.read = reading.start()
-        self.addCleanup(reading.stop)
-        self.fake.calls.clear()
-        self.path = handoff.path_for(self.cfg, ROLE, self.run_row['generation'])
-        self.restated = handoff.restated_path(self.path)
-
-    def idle(self):
-        self.fake.screens[PANE] = CLAUDE_IDLE
-        self.fake.agents[PANE].update(agent_status='idle', focused=False)
-
-    def at(self, tokens=HANDOFF):
-        self.read.return_value = tokens
-        pane_handoff.maintain(self.panes, self.run_row)
-        return self.row_now()
-
-    def written(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(FULL, encoding='utf-8')
-
-    def told_to_exit(self):
-        """A file on hand, a safe pane, and the `/exit` gone out."""
-        self.at()
-        self.written()
-        self.assertEqual(self.at()['state'], 'rotating')
-
-    def exits(self):
-        return [call for call in self.fake.calls if call == EXIT]
-
-    def cli_exits(self):
-        self.fake.processes = LONE_SHELL
-        self.fake.screens[PANE] = PROMPT
-        self.fake.agents.pop(PANE)
-
-    def follow(self):
-        pane_handoff.follow_exit(self.panes, self.run_row)
-
-    def sessions(self):
-        return self.conn.execute('SELECT COUNT(*) FROM director_sessions WHERE role_id=?', (ROLE,)).fetchone()[0]
-
-    def notices(self, prefix):
-        found = [event['data']['notice']['id'] for event in self.port.events(kind='pane.notice')]
-        return [notice for notice in found if notice.startswith(prefix)]
-
-    def rotated(self):
-        self.told_to_exit()
-        self.cli_exits()
-        self.follow()
-
-    def next_agent_boots(self):
-        def boot():
-            self.fake.processes = self.foreground
-            self.fake.screens[PANE] = CLAUDE_IDLE
-            self.fake.agents[PANE] = dict(pane_id=PANE, terminal_id='t1', agent='claude', agent_session={'value': 's2'},
-                                          agent_status='idle', focused=False)
-        self.fake.after[('agent', 'start', 2)] = boot
-
-    def relaunched(self):
-        """The rotation done and the next run up on the pane."""
-        self.rotated()
-        self.next_agent_boots()
-        self.next_run, = self.tick()['launched']
-        self.next_row = ops_panes.by_run(self.conn, self.next_run)
+from tests.pane_launch_support import CLAUDE_WORKING
+from tests.pane_rotation_support import FORCED, HANDOFF, Rotating
+from tests.pane_send_support import CLAUDE_IDLE, PANE
+from tests.panes_support import ROLE
 
 
 class OldCliLeavesFirst(Rotating):
@@ -155,16 +80,119 @@ class OldCliLeavesFirst(Rotating):
         self.assertIsNone(handoff.pending(self.port, ROLE))
         self.assertEqual(self.at()['state'], 'rotating')
 
-    def test_a_write_that_may_have_landed_is_never_made_again(self):
+    def died_before_the_write(self):
         self.at()
         self.written()
-        with mock.patch.object(handoff, 'set_pending', side_effect=RuntimeError('the hub went away')):
+        with mock.patch.object(pane_send, 'exit_agent', side_effect=RuntimeError('the hub went away')):
             with self.assertRaises(RuntimeError):
                 self.at()
+
+    def test_rotating_and_the_pending_file_are_committed_before_the_exit(self):
+        seen = []
+        self.at()
+        self.written()
+        real = pane_send.exit_agent
+
+        def noted(*args, **kw):
+            seen.append((self.row_now()['state'], handoff.pending(self.port, ROLE)))
+            return real(*args, **kw)
+        with mock.patch.object(pane_send, 'exit_agent', noted):
+            self.at()
+        self.assertEqual(seen, [('rotating', str(self.path))])
+
+    def test_a_hub_that_died_with_the_cli_gone_carries_on(self):
+        self.died_before_the_write()
+        self.cli_exits()
+        self.follow()
+        self.assertEqual(self.outcome(), 'rotated')
+
+    def test_a_hub_that_died_before_the_write_rolls_back_and_exits_once(self):
+        self.died_before_the_write()
+        self.assertEqual(self.exits(), [])
+        self.follow()
         self.assertEqual(self.row_now()['state'], 'live')
-        self.assertEqual(len(self.exits()), 1)
+        self.assertIsNone(handoff.pending(self.port, ROLE))
+        self.assertIsNone(self.outcome())
         self.assertEqual(self.at()['state'], 'rotating')
         self.assertEqual(len(self.exits()), 1)
+
+    def test_a_write_that_may_have_landed_is_never_made_again(self):
+        self.told_to_exit()
+        for state in ('sent', 'pending', 'unverified'):
+            with self.subTest(state):
+                self.conn.execute('UPDATE pane_writes SET state=? WHERE agent_id=? AND kind=?', (state, self.row['id'], 'exit'))
+                self.follow()
+                self.assertEqual(self.row_now()['state'], 'rotating')
+        self.assertEqual(len(self.exits()), 1)
+
+    def test_an_exit_that_never_went_out_rolls_back(self):
+        self.died_before_the_write()
+        unsent = ops_panes.note_write(self.conn, self.row['id'], 'exit', pane_send.EXIT_TEXT)
+        ops_panes.finish_write(self.conn, unsent['id'], 'unsent', 'screen-changed')
+        self.follow()
+        self.assertEqual(self.row_now()['state'], 'live')
+
+    def test_a_read_that_cannot_say_rolls_nothing_back(self):
+        self.died_before_the_write()
+        self.fake.closed = True
+        self.follow()
+        self.assertEqual(self.row_now()['state'], 'rotating')
+
+    def test_an_empty_foreground_list_is_no_proof_the_cli_left(self):
+        self.told_to_exit()
+        self.fake.processes = dict(shell_pid=1, foreground_processes=[])
+        self.follow()
+        self.assertIsNone(self.outcome())
+        self.assertEqual(self.sessions(), 1)
+
+    def test_forced_closes_an_open_wake_when_the_read_proves_the_pane_idle(self):
+        wake = ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
+        ops_panes.finish_write(self.conn, wake['id'], 'unverified', 'herdr-unavailable')
+        self.assertEqual(self.at(FORCED)['state'], 'rotating')
+        closed = self.conn.execute('SELECT state,reason FROM pane_writes WHERE id=?', (wake['id'],)).fetchone()
+        self.assertEqual(tuple(closed), ('observed', 'superseded'))
+        self.assertEqual(len(self.exits()), 1)
+
+    def test_forced_with_a_turn_on_screen_closes_nothing(self):
+        wake = ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
+        self.fake.screens[PANE] = CLAUDE_WORKING
+        self.assertEqual(self.at(FORCED)['state'], 'live')
+        self.assertEqual(ops_panes.open_writes(self.conn, self.row['id'])[0]['id'], wake['id'])
+
+    def test_forced_with_a_screen_that_moves_closes_nothing_and_waits_with_one_notice(self):
+        wake = ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
+        self.fake.screens[PANE] = [CLAUDE_IDLE, CLAUDE_IDLE, CLAUDE_IDLE + ' ', CLAUDE_IDLE + '  ']
+        self.assertEqual(self.at(FORCED)['state'], 'live')
+        self.assertEqual(self.exits(), [])
+        self.assertEqual(ops_panes.open_writes(self.conn, self.row['id'])[0]['id'], wake['id'])
+        self.assertEqual(len(self.notices('pane-rotation-waits:')), 1)
+
+    def test_forced_never_passes_a_write_of_another_kind(self):
+        ops_panes.note_write(self.conn, self.row['id'], 'brief', 'x')
+        self.assertEqual(self.at(FORCED)['state'], 'live')
+        self.assertEqual(self.exits(), [])
+        self.assertEqual(len(self.notices('pane-rotation-waits:')), 1)
+
+    def test_forced_with_a_wake_beside_another_kind_closes_neither(self):
+        wake = ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
+        brief = ops_panes.note_write(self.conn, self.row['id'], 'brief', 'x')
+        self.assertEqual(self.at(FORCED)['state'], 'live')
+        self.assertEqual(self.exits(), [])
+        self.assertEqual([write['id'] for write in ops_panes.open_writes(self.conn, self.row['id'])], [wake['id'], brief['id']])
+
+    def test_under_the_forced_level_an_open_wake_still_waits(self):
+        self.at()
+        self.written()
+        wake = ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
+        self.assertEqual(self.at(HANDOFF + 1)['state'], 'live')
+        self.assertEqual(self.exits(), [])
+        self.assertEqual(ops_panes.open_writes(self.conn, self.row['id'])[0]['id'], wake['id'])
+
+    def test_a_handoff_request_left_open_does_not_stop_the_forced_exit(self):
+        self.fake.hang = {('agent', 'prompt')}
+        self.at()
+        self.fake.hang = False
+        self.assertEqual(self.at(FORCED)['state'], 'rotating')
 
     def test_no_exit_during_a_compaction(self):
         self.at()
@@ -227,15 +255,52 @@ class Rotated(Rotating):
         self.next_agent_boots()
         self.assertEqual(len(self.tick()['launched']), 1)
 
-    def test_a_handoff_still_owed_starts_the_role_after_a_failed_run(self):
-        self.relaunched()
-        self.runtime.finish(self.next_run, dict(status='pane-gone', usage={}))
-        ops_panes.update_agent(self.conn, self.next_row['id'], state='gone')
+    def end_the_run(self, run_id):
+        """A clean end with no mail left, the window passed, and a launch that needs no pane."""
+        self.runtime.finish(run_id, dict(status='pane-gone', usage={}))
+        for row in ops_panes.open_agents(self.conn):
+            ops_panes.update_agent(self.conn, row['id'], state='gone')
         self.conn.execute('UPDATE director_runtime SET pending_wake=0')
         self.time += 700
         with mock.patch.object(pane_launch, 'start'):
+            return self.tick()['launched']
+
+    def test_a_clean_end_gets_one_start_with_no_wake_and_then_waits_for_one(self):
+        self.relaunched()
+        again, = self.end_the_run(self.next_run)
+        self.assertEqual(self.runtime.active_runs()[0]['spec']['handoff'], str(self.path))
+        self.assertEqual(self.end_the_run(again), [])
+        self.assertEqual(self.tick()['launched'], [])
+        self.assertEqual(handoff.pending(self.port, ROLE), str(self.path))
+        self.wake()
+        with mock.patch.object(pane_launch, 'start'):
             self.assertEqual(len(self.tick()['launched']), 1)
         self.assertEqual(self.runtime.active_runs()[0]['spec']['handoff'], str(self.path))
+
+    def test_a_launch_held_before_any_agent_ran_is_no_attempt(self):
+        self.rotated()
+        self.conn.execute('UPDATE director_runtime SET pending_wake=0')
+        with mock.patch.object(pane_launch, 'rotate', side_effect=pane_launch.AdmissionHeld('pane-not-rotated')), \
+                mock.patch.object(pane_launch, 'start', side_effect=pane_launch.AdmissionHeld('held')):
+            for _ in range(3):
+                self.time += 700
+                self.tick()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM runs WHERE outcome='admission-held'").fetchone()[0], 3)
+        self.assertTrue(handoff.owed(self.port, ROLE, ('admission-held', 'pane-gone', 'rotated')))
+        self.time += 700
+        self.next_agent_boots()
+        self.assertEqual(len(self.tick()['launched']), 1)
+
+    def test_a_failed_end_is_still_recovery(self):
+        self.relaunched()
+        again, = self.end_the_run(self.next_run)
+        self.conn.execute("UPDATE runs SET outcome='launch-failed' WHERE id=?", (again,))
+        self.assertTrue(handoff.owed(self.port, ROLE, ('pane-gone', 'rotated')))
+
+    def test_nothing_is_owed_with_no_pending_file(self):
+        self.relaunched()
+        handoff.set_pending(self.port, ROLE, None)
+        self.assertFalse(handoff.owed(self.port, ROLE, ('pane-gone', 'rotated')))
 
     def test_last_rotations_restatement_does_not_count(self):
         self.told_to_exit()
@@ -250,188 +315,3 @@ class Rotated(Rotating):
         with mock.patch.object(handoff, 'clear', side_effect=PermissionError('held')):
             self.follow()
         self.assertIsNone(self.outcome())
-
-
-class NewSession(Rotating):
-    def brief(self):
-        return [call[-1] for call in self.fake.calls if call[:2] == ['agent', 'prompt'] and 'restated.md' in call[-1]]
-
-    def test_new_session_gets_the_file_and_restates_constraints_first(self):
-        self.relaunched()
-        self.tick()
-        text, = self.brief()
-        self.assertIn(str(self.path), text)
-        self.assertLess(text.index('restated.md'), text.index('Read your inbox'))
-
-    def test_it_takes_the_same_pane_on_a_new_row_with_a_fresh_session(self):
-        self.relaunched()
-        self.assertEqual(self.next_row['pane_id'], PANE)
-        self.assertNotEqual(self.next_row['id'], self.row['id'])
-        self.assertEqual(self.next_row['session_id'], 's2')
-        self.assertEqual(self.row_now()['state'], 'gone')
-        self.assertEqual(self.fake.seen.get(('tab', 'create')), 1)
-        started = [call for call in self.fake.calls if call[:2] == ['agent', 'start']]
-        self.assertEqual(len(started), 1)
-        self.assertNotIn('--resume', started[0])
-        self.assertEqual([row['id'] for row in ops_panes.open_agents(self.conn)], [self.next_row['id']])
-
-    def test_the_new_run_has_its_own_generation_and_file(self):
-        self.relaunched()
-        run = self.runtime.active_runs()[0]
-        self.assertGreater(run['generation'], self.run_row['generation'])
-        self.assertEqual(run['spec']['handoff'], str(self.path))
-
-    def test_a_wsl_session_gets_the_wsl_form(self):
-        self.assertEqual(handoff.for_launch(self.port, ROLE, 'wsl', 'fresh'), {})
-        handoff.set_pending(self.port, ROLE, 'C:\\state\\h.md')
-        self.assertEqual(handoff.for_launch(self.port, ROLE, 'wsl', 'fresh'), dict(handoff='/mnt/c/state/h.md'))
-        self.assertEqual(handoff.for_launch(self.port, ROLE, 'wsl', 'resume'), {})
-
-    def test_a_refused_start_falls_back_to_a_fresh_pane_with_a_flag(self):
-        self.rotated()
-        self.fake.panes[PANE]['terminal_id'] = 't9'
-        self.spec_ = dict(self.spec_, handoff=str(self.path), mode='fresh', run_id=self.rid)
-        with mock.patch.object(pane_launch, 'start') as start:
-            self.adapter.launch(self.spec_, 'credential', lambda: None)
-        start.assert_called_once()
-        self.assertEqual(len(self.notices('pane-rotation-moved:')), 1)
-
-    def test_herdr_closed_is_no_reason_to_move(self):
-        self.rotated()
-        self.fake.closed = True
-        spec = dict(self.spec_, handoff=str(self.path), mode='fresh')
-        with mock.patch.object(pane_launch, 'start') as start, self.assertRaises(pane_launch.AdmissionHeld):
-            self.adapter.launch(spec, 'credential', lambda: None)
-        start.assert_not_called()
-
-    def test_a_launch_with_no_handoff_never_takes_the_pane(self):
-        self.rotated()
-        with mock.patch.object(pane_launch, 'start') as start, mock.patch.object(pane_launch, 'rotate') as rotate:
-            self.adapter.launch(dict(self.spec_, mode='fresh'), 'credential', lambda: None)
-        start.assert_called_once()
-        rotate.assert_not_called()
-
-    def test_only_a_rotated_row_is_taken(self):
-        self.cli_exits()
-        retired = ops_panes.update_agent(self.conn, self.row['id'], state='retired')
-        self.assertIsNone(self.panes.rotated(ROLE))
-        with self.assertRaises(pane_launch.AdmissionHeld) as held:
-            pane_launch.rotate(self.port, self.herdr, retired, self.spec_, cfg=self.cfg, credential='c')
-        self.assertEqual(str(held.exception), 'pane-not-rotated')
-
-    def test_a_run_that_took_no_handoff_does_not_settle_one(self):
-        self.written()
-        self.restated.write_text('Not this run.', encoding='utf-8')
-        handoff.set_pending(self.port, ROLE, self.path)
-        pane_handoff.maintain(self.panes, self.run_row)
-        self.assertEqual(handoff.pending(self.port, ROLE), str(self.path))
-
-    def test_missing_restatement_is_one_notice(self):
-        self.relaunched()
-        self.tick()
-        run = self.runtime.active_runs()[0]
-        pane_handoff.maintain(self.panes, run)
-        self.assertEqual(self.notices('pane-restate:'), [])
-        self.time += pane_handoff.RESTATE_S + 1
-        for _ in range(2):
-            pane_handoff.maintain(self.panes, run)
-        self.assertEqual(len(self.notices('pane-restate:')), 1)
-        self.assertEqual(handoff.pending(self.port, ROLE), str(self.path))
-
-    def test_a_restatement_settles_the_handoff(self):
-        self.relaunched()
-        self.tick()
-        self.restated.write_text('The rules, in my words.', encoding='utf-8')
-        pane_handoff.maintain(self.panes, self.runtime.active_runs()[0])
-        self.assertIsNone(handoff.pending(self.port, ROLE))
-
-
-class WritableRoots(Rotating):
-    def test_a_workspace_write_seat_may_write_the_handoff_folder(self):
-        spec = dict(backend='codex', sandbox='workspace-write', run_config=dict(sandbox_writable_roots=['/mnt/c/state/directors/R1']))
-        args = pane_files.agent_args(spec, model='m', effort='high')
-        self.assertIn('sandbox_workspace_write.writable_roots=["/mnt/c/state/directors/R1"]', args)
-
-    def test_a_read_only_seat_gets_no_writable_root(self):
-        spec = dict(backend='codex', sandbox='read-only', run_config=dict(sandbox_writable_roots=['/x']))
-        self.assertFalse([arg for arg in pane_files.agent_args(spec, model='m', effort='high') if 'writable_roots' in arg])
-
-    def test_every_launch_names_the_folder_and_makes_it(self):
-        self.assertTrue(handoff.folder(self.cfg, ROLE).is_dir())
-        started = next(call for call in self.fake.calls + self.launch_calls if call[:2] == ['agent', 'start'])
-        self.assertEqual(started[started.index('--add-dir') + 1], str(handoff.folder(self.cfg, ROLE)))
-
-    def setUp(self):
-        super().setUp()
-        self.launch_calls = []
-        self.rotated()
-        self.next_agent_boots()
-        self.tick()
-        self.launch_calls = list(self.fake.calls)
-
-
-class FirstLaunch(Resident):
-    def test_the_handoff_folder_exists_from_the_first_launch(self):
-        self.launched()
-        self.assertTrue(handoff.folder(self.cfg, ROLE).is_dir())
-
-
-class ExitAgent(Case):
-    def ready(self, screen=CLAUDE_IDLE, **stage):
-        self.windows(screen, **stage)
-        ops_panes.update_agent(self.conn, self.row['id'], handoff_state='written')
-        self.row = ops_panes.by_pane(self.conn, PANE)
-
-    def exit(self):
-        return pane_send.exit_agent(self.port, self.herdr, self.row)
-
-    def test_it_goes_as_one_prompt_on_windows(self):
-        self.ready()
-        self.assertEqual(self.exit()['kind'], 'exit')
-        self.assertEqual(self.sends(), [EXIT])
-
-    def test_a_wsl_agent_gets_one_paste_and_one_enter(self):
-        self.stage(row=dict(handoff_state='written'))
-        self.sleep.side_effect = lambda seconds: self.fake.screens.update({PANE: composing(pane_send.EXIT_TEXT)})
-        self.assertEqual(self.exit()['state'], 'sent')
-        self.assertEqual([call[:2] for call in self.sends()], [['pane', 'send-text'], ['pane', 'send-keys']])
-
-    def test_it_needs_the_handoff_written(self):
-        for state in (None, 'requested', 'rotated'):
-            self.windows(row=dict(handoff_state=state))
-            self.refused(self.exit, 'no-handoff')
-            self.reset()
-
-    def test_it_goes_once_for_a_row(self):
-        self.ready()
-        self.exit()
-        self.fake.calls.clear()
-        self.refused(self.exit, 'already-started')
-
-    def test_every_guard_of_a_send_refuses_it(self):
-        for name, stage, reason in (('focused', dict(agent=dict(focused=True)), 'focused'),
-                                    ('dialog', dict(screen=DIALOG), None),
-                                    ('turn', dict(screen=CLAUDE_WORKING), 'busy'),
-                                    ('draft', dict(screen=composing('half a thought').replace('›', '❯')), None),
-                                    ('working', dict(agent=dict(agent_status='working')), 'busy')):
-            with self.subTest(name):
-                self.ready(**stage)
-                self.refused(self.exit, reason)
-                self.reset()
-
-    def test_a_changed_occupant_refuses_it(self):
-        self.ready(agent=dict(agent_session={'value': 'other'}))
-        self.refused(self.exit, 'occupant-changed')
-
-    def test_an_open_write_refuses_it(self):
-        self.ready()
-        ops_panes.note_write(self.conn, self.row['id'], 'wake', 'x')
-        self.refused(self.exit)
-
-    def test_an_owner_draft_on_the_last_read_stops_it(self):
-        self.ready(screen=[CLAUDE_IDLE, CLAUDE_IDLE, CLAUDE_IDLE.replace('❯ ', '❯ mine')])
-        self.refused(self.exit)
-
-    def test_send_cannot_type_it(self):
-        self.ready()
-        self.refused(lambda: pane_send.send(self.port, self.herdr, self.row, pane_send.EXIT_TEXT, 'exit'), 'kind-refused')

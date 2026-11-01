@@ -433,7 +433,7 @@ class DirectorRuntime:
             # Replacing a director whose latest run on this generation failed is recovery, not a new wake.
             last = self.conn.execute('SELECT d.generation,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
                                      'WHERE d.role_id=? ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
-            revived = bool(last and last['outcome'] == REVIVED) or handoff.pending(self.port, role_id) is not None
+            revived = bool(last and last['outcome'] == REVIVED) or handoff.owed(self.port, role_id, CLEAN_OUTCOMES)
             if role_id in active or not (state['pending_wake'] or revived):
                 continue
             recovering = bool(last and last['generation'] == state['generation'] and last['outcome'] not in CLEAN_OUTCOMES)

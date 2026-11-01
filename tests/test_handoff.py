@@ -156,6 +156,38 @@ class Transcript(unittest.TestCase):
         self.write(entry)
         self.assertIsNone(self.read())
 
+    def test_a_missing_or_null_usage_number_is_unknown_not_zero(self):
+        for usage in (None, {}, dict(output_tokens=5), dict(input_tokens=None, cache_read_input_tokens=None, cache_creation_input_tokens=None),
+                      dict(input_tokens=False, cache_read_input_tokens=0, cache_creation_input_tokens=0),
+                      dict(input_tokens='', cache_read_input_tokens=0, cache_creation_input_tokens=0),
+                      dict(input_tokens=280000, cache_read_input_tokens=9), dict(input_tokens=-1, cache_read_input_tokens=0,
+                                                                                cache_creation_input_tokens=0)):
+            with self.subTest(usage):
+                entry = message(5)
+                entry['message']['usage'] = usage
+                self.write(entry)
+                self.assertIsNone(self.read())
+
+    def test_a_last_message_with_no_usage_does_not_fall_back_to_an_older_one(self):
+        for usage in (None, {}):
+            with self.subTest(usage):
+                entry = message(5)
+                entry['message']['usage'] = usage
+                self.write(message(100), entry)
+                self.assertIsNone(self.read())
+
+    def test_a_usage_that_is_no_mapping_is_unknown(self):
+        for usage in ('bad', ['bad'], 5):
+            with self.subTest(usage):
+                entry = message(5)
+                entry['message']['usage'] = usage
+                self.write(entry)
+                self.assertIsNone(self.read())
+
+    def test_a_boundary_size_that_is_no_number_is_unknown(self):
+        self.write(message(280000), boundary('41000'))
+        self.assertIsNone(self.read())
+
     def test_a_session_id_never_widens_the_glob(self):
         self.write(message(5))
         for session in ('*', '../x', '-rf', None, ''):

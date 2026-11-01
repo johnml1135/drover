@@ -34,6 +34,9 @@ class Maintain(Resident):
         pane_handoff.maintain(self.panes, self.run_row)
         return self.row_now()
 
+    def context_notices(self):
+        return [event for event in self.port.events(kind='pane.notice') if event['data']['notice']['id'].startswith('pane-context:')]
+
     def request(self):
         return ops_panes.last_write(self.conn, self.row['id'], 'handoff')
 
@@ -89,6 +92,40 @@ class Maintain(Resident):
         self.at(HANDOFF)
         row = self.at(None)
         self.assertEqual((row['handoff_state'], row['context_tokens']), ('requested', HANDOFF))
+
+    def test_unknown_never_cancels_a_written_file(self):
+        self.at(HANDOFF)
+        self.written()
+        self.fake.agents[PANE].update(focused=True)
+        self.at(HANDOFF)
+        row = self.at(None)
+        self.assertEqual(row['handoff_state'], 'written')
+        self.assertTrue(self.path.exists())
+
+    def test_unknown_that_lasts_is_one_notice_and_a_reading_closes_it(self):
+        self.at(None)
+        self.assertEqual(self.context_notices(), [])
+        self.time += pane_handoff.UNKNOWN_S + 1
+        for _ in range(2):
+            self.at(None)
+        self.assertEqual(len(self.context_notices()), 1)
+        self.at(LOW)
+        question = self.context_notices()[0]['data']['question']
+        self.assertEqual(self.conn.execute('SELECT status FROM questions WHERE id=?', (question,)).fetchone()[0], 'answered')
+        self.at(None)
+        self.at(None)
+        self.assertEqual(len(self.context_notices()), 1)
+
+    def test_a_short_gap_in_the_reading_is_no_notice(self):
+        self.at(None)
+        self.time += pane_handoff.UNKNOWN_S - 1
+        self.at(None)
+        self.assertEqual(self.context_notices(), [])
+        self.at(LOW)
+        self.at(None)
+        self.time += 2
+        self.at(None)
+        self.assertEqual(self.context_notices(), [])
 
     def test_unknown_after_a_forced_reading_writes_no_fallback(self):
         self.fake.agents[PANE].update(focused=True)

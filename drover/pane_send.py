@@ -42,6 +42,8 @@ SHELL_PROMPT = re.compile(r'(?:PS [^>]*>|[A-Za-z]:[\\/][^>]*>|[^\s$#%]*[$#%])\s*
 PASTED = 'pasted'           # the text went out and its Enter is still to come
 ENTER_PRESSED = 'enter-pressed'     # an Enter may have gone out: no second one, ever
 EXIT_TEXT = '/exit'
+EXITING = ('rotating',)     # the one write a row in this state may get, and the only state that write goes to
+SUPERSEDABLE = ('wake', 'handoff')  # what a forced exit may close, on the read that proves the pane empty
 
 
 def _check_text(text):
@@ -92,7 +94,7 @@ def _own_unsent(herdr, row, write, hold_id):
         _live_hold(hold_id)
         seen = _safe(herdr, row, STOPPABLE, focus=False, idle=False)
     else:
-        seen = _safe(herdr, row, LIVE)
+        seen = _safe(herdr, row, EXITING if write['kind'] == 'exit' else LIVE)
         if _turn_visible(seen, row):
             raise PaneRefused('busy')
     if not pane_screen.own_prompt(pane_screen.composer_text(seen['screen'], row['kind']), write['digest'], write['at'], None):
@@ -167,28 +169,39 @@ def send(port, herdr, row, text, kind) -> dict:
     return _type(port, herdr, row, kind, text)
 
 
-def _type(port, herdr, row, kind, text, once=()):
-    first = check(herdr, row)
+def _type(port, herdr, row, kind, text, states=LIVE, once=(), closes=()):
+    first = check(herdr, row, states)
+
+    def same():
+        if check(herdr, row, states)['screen'] != first['screen']:
+            raise PaneRefused('screen-changed')
 
     def read():
-        if check(herdr, row)['screen'] != first['screen']:
-            raise PaneRefused('screen-changed')
-    read()
+        same()
+        for write in closes:        # the last read before the write proved it, so a refusal above leaves them open
+            ops_panes.finish_write(port.conn, write['id'], 'observed', 'superseded')
+    same()
     if row['placement'] == 'windows':
         return _write(port, herdr, row, kind, text, read, ('agent', 'prompt', row['pane_id'], text), once=once)
     return _paste(port, herdr, row, kind, text, read, once=once)
 
 
-def exit_agent(port, herdr, row) -> dict:
+def exit_agent(port, herdr, row, *, forced=False) -> dict:
     """`/exit`, once for a row, so a rotation can take the pane: only with the handoff written, on the reads `send` needs.
 
-    Its own kind, so `send` cannot type it and `submit_own` cannot finish it. A refusal means it did not go out.
+    The row is `rotating` first, committed by the caller, so a hub that dies here leaves a role that can recover. Its own
+    kind, so `send` cannot type it and `submit_own` cannot finish it. A refusal means it did not go out.
+
+    `forced` is the context ceiling: an open wake or handoff request would stop a session that must end, so the reads that
+    prove the pane idle, empty and unfocused, with no turn, close it as superseded. Any other open write still refuses.
     """
     row = _current(port, row)
     if row.get('handoff_state') != 'written':
         raise PaneRefused('no-handoff')
-    _refuse_open_write(port, row)
-    return _type(port, herdr, row, 'exit', EXIT_TEXT, once=('exit',))
+    open_now = ops_panes.open_writes(port.conn, row['id'])
+    if open_now and not (forced and all(write['kind'] in SUPERSEDABLE for write in open_now)):
+        _refuse_open_write(port, row)
+    return _type(port, herdr, row, 'exit', EXIT_TEXT, EXITING, once=('exit',), closes=open_now)
 
 
 def _submittable(write):

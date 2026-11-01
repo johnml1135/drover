@@ -18,6 +18,7 @@ HEADING = re.compile(r'#{1,6}\s+(.*?)\s*#*')
 MAX_TASKS = 50
 RESTATED = 'restated.md'
 PENDING = 'pane_handoff:'       # a role's setting: the file its next session must take up, until that session restates it
+ROTATED = 'rotated'
 
 
 def folder(cfg, role_id) -> Path:
@@ -38,6 +39,19 @@ def pending(port, role_id) -> str | None:
 
 def set_pending(port, role_id, path) -> None:
     port.set_setting(PENDING + role_id, str(path) if path else '')
+
+
+def owed(port, role_id, clean) -> bool:
+    """True while a pending handoff may start its role with no wake: the rotation's own start, and one more after a clean end.
+    Two clean ends since the rotation wait for a wake, and a failed end has the replacement budget for its limit. A launch held
+    before any agent ran is no attempt. `clean` is the caller's list of outcomes that say a run ended well.
+    """
+    if pending(port, role_id) is None:
+        return False
+    ended = [row['outcome'] for row in port.conn.execute(
+        "SELECT r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id WHERE d.role_id=? AND r.outcome IS NOT 'admission-held' "
+        'ORDER BY d.run_id DESC LIMIT 2', (role_id,))]
+    return any(outcome == ROTATED or outcome not in clean for outcome in ended)
 
 
 def for_launch(port, role_id, where, mode) -> dict:

@@ -30,11 +30,11 @@ def _parse(line):
 
 
 def _real_usage(entry):
-    """The usage of a message of this session's own model, else None."""
+    """The usage of a message of this session's own model, else None. One that says nothing is `{}`, which reads unknown."""
     message = entry.get('message')
     if entry.get('type') != 'assistant' or entry.get('isSidechain') or not isinstance(message, dict):
         return None
-    return None if message.get('model') == '<synthetic>' else message.get('usage') or None
+    return None if message.get('model') == '<synthetic>' else message.get('usage') or {}
 
 
 def _scan(lines):
@@ -71,7 +71,9 @@ def _tokens(path):
     usage, post = _tail(path)
     if usage is None:
         return post if type(post) is int and post >= 0 else None
-    values = [usage.get(key) or 0 for key in USAGE_KEYS]
+    if not isinstance(usage, dict):
+        return None
+    values = [usage.get(key) for key in USAGE_KEYS]     # a number not there is unknown, never 0: 0 would read as a compaction
     return sum(values) if all(type(value) is int and value >= 0 for value in values) else None
 
 
