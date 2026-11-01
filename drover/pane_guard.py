@@ -113,21 +113,29 @@ def _separator(line):
 def adjacent_dialog(screen):
     """A dialog word anywhere in the rows over the composer, joined so a wrapped or look-alike word still matches.
 
-    A separator still ends the search: scrollback above it stays scrollback (rule 12).
+    A real `─` row still ends the search: scrollback above it stays scrollback (rule 12). A `---` row does not, because
+    any agent can print one.
     """
     rows = _above_composer(screen)
-    cuts = [i for i, row in enumerate(rows) if _separator(row)]
+    cuts = [i for i, row in enumerate(rows) if re.fullmatch(r'\s*[─━]{3,}\s*', row)]
     text = unicodedata.normalize('NFKC', ' '.join(rows[cuts[-1] + 1:] if cuts else rows))
     return bool(re.search(DIALOG, ' '.join(text.split()), re.I))
 
 
 def suspected_dialog(screen):
-    """No dialog word, but the last row over the composer is shaped like a choice: not a dialog, and not idle either."""
-    rows = [row for row in _above_composer(screen) if row.strip() and not _separator(row)]
-    if not rows:
+    """No dialog word, but the rows over the composer are shaped like a choice: not a dialog, and not idle either.
+
+    An option row counts anywhere in the unbroken block over the composer, so a hint under the options cannot hide them.
+    """
+    block = []
+    for row in reversed(_above_composer(screen)):
+        if row.strip() and not _separator(row):
+            block.append(unicodedata.normalize('NFKC', row).strip())
+        elif block:
+            break
+    if not block:
         return False
-    last = unicodedata.normalize('NFKC', rows[-1]).strip()
-    return bool(OPTION_ROW.match(last) or last.endswith('?') or YES_NO.search(last))
+    return bool(any(OPTION_ROW.match(row) for row in block) or block[0].endswith('?') or YES_NO.search(block[0]))
 
 
 def blocking_dialog(screen):
