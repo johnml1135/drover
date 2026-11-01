@@ -16,7 +16,7 @@ KIND, EPIC, ACTOR = 'watch.notice', 'Watch', 'watch'
 STATE_KEY = 'watch_state'
 CLEAR_INTERVALS = 3      # a notice closes after its condition has been absent this many intervals in a row
 RECENT_BATCHES = 20      # the red rate looks at the gates of this many latest landing batches
-PER_ITEM = ('context:', 'velocity:stalled:')
+PER_ITEM = ('context:',)
 CHECKS = ('warden', 'velocity', 'context')      # the id prefix of each check's notices
 log = logging.getLogger(__name__)
 
