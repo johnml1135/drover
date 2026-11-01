@@ -270,6 +270,15 @@ class Launch(Base):
                                           started_by='drover')
         self.assertEqual(self.agent()['state'], 'sent')
 
+    def test_a_line_from_another_terminal_under_the_same_pane_id_is_not_exempt(self):
+        self.fresh(f'{PROMPT}{COMMAND}\n{PROMPT}', placement='windows', kind='claude')
+        self.echoed(COMMAND)
+        self.conn.execute('UPDATE pane_agents SET terminal_id=? WHERE id=?', ('t0', self.row['id']))
+        ops_panes.update_agent(self.conn, self.row['id'], state='gone')
+        self.row = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', kind='claude', seat='seat', placement='windows',
+                                          started_by='drover')
+        self.refused(self.agent, 'shell-line-not-empty')
+
     def test_text_typed_as_a_brief_is_not_exempt(self):
         self.fresh(f'{PROMPT}{COMMAND}\n{PROMPT}', placement='windows', kind='claude')
         self.echoed(COMMAND, kind='brief')
@@ -279,6 +288,16 @@ class Launch(Base):
         for tail in ('100%', '#', 'abc$'):
             with self.subTest(tail):
                 self.fresh(f'{PROMPT}git commit -m "raise\n{tail}', placement='windows', kind='claude')
+                self.echoed(COMMAND)
+                self.refused(self.agent, 'shell-line-not-empty')
+                self.reset()
+
+    def test_a_recorded_line_extended_past_the_margin_still_refuses(self):
+        screens = dict(percent=f'{PROMPT}{COMMAND}\n100%', dollar=f'{PROMPT}{COMMAND}\nabc$',
+                       spaces=f'{PROMPT}{COMMAND}' + ' ' * 20 + '\n#')
+        for name, screen in screens.items():
+            with self.subTest(name):
+                self.fresh(screen, placement='windows', kind='claude')
                 self.echoed(COMMAND)
                 self.refused(self.agent, 'shell-line-not-empty')
                 self.reset()

@@ -234,13 +234,17 @@ class EchoedLaunchLine(Launching):
 
     def test_only_a_shell_write_on_this_pane_counts(self):
         self.scene()
-        row = ops_panes.record_agent(self.conn, pane_id=PANE, kind='claude', seat='s', placement='windows', started_by='drover')
-        other = ops_panes.record_agent(self.conn, pane_id='w1:p9', kind='claude', seat='s', placement='windows', started_by='drover')
+        row = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', kind='claude', seat='s', placement='windows', started_by='drover')
+        other = ops_panes.record_agent(self.conn, pane_id='w1:p9', terminal_id='t9', kind='claude', seat='s', placement='windows', started_by='drover')
+        recycled = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t2', kind='claude', seat='s', placement='windows', started_by='drover')
         ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, row['id'], 'brief', 'a')['id'], 'sent')
         ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, other['id'], 'shell', 'b')['id'], 'sent')
-        self.assertEqual(ops_panes.ran_on_pane(self.conn, PANE), set())
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, recycled['id'], 'shell', 'd')['id'], 'sent')
+        self.assertEqual(ops_panes.ran_on_pane(self.conn, PANE, 't1'), set())
         ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, row['id'], 'shell', 'c')['id'], 'sent')
-        self.assertEqual(len(ops_panes.ran_on_pane(self.conn, PANE)), 1)
+        self.assertEqual(len(ops_panes.ran_on_pane(self.conn, PANE, 't1')), 1)
+        self.assertEqual(len(ops_panes.ran_on_pane(self.conn, PANE, 't2')), 1)
+        self.assertEqual(ops_panes.ran_on_pane(self.conn, PANE, None), set())
 
 
 class OneAgentForARole(Launching):

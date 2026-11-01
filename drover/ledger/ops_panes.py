@@ -87,10 +87,14 @@ def reused_pane(conn, row) -> bool:
     return conn.execute('SELECT 1 FROM pane_agents WHERE pane_id=? AND id<? LIMIT 1', (row['pane_id'], row['id'])).fetchone() is not None
 
 
-def ran_on_pane(conn, pane_id) -> set:
-    """The digest of every line a shell on this pane took from Drover, on any of the pane's rows, old ones included."""
+def ran_on_pane(conn, pane_id, terminal_id) -> set:
+    """The digest of every line the shell in this terminal took from Drover, on any row of the pane, old ones included.
+
+    A recycled pane id is another terminal, and a missing terminal id matches nothing.
+    """
     return {row[0] for row in conn.execute("SELECT w.digest FROM pane_writes w JOIN pane_agents a ON a.id=w.agent_id "
-                                           "WHERE a.pane_id=? AND w.kind='shell' AND w.state='sent'", (pane_id,))}
+                                           "WHERE a.pane_id=? AND a.terminal_id=? AND w.kind='shell' AND w.state='sent'",
+                                           (pane_id, terminal_id))}
 
 
 def _note(conn, agent_id, kind, text):

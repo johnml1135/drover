@@ -419,11 +419,12 @@ def _shell_line_empty(port, herdr, row):
     rows = [line for line in _starting(herdr, row, _lone_shell).splitlines() if line.strip()]
     if not rows or not SHELL_PROMPT.fullmatch(rows[-1]):
         raise PaneRefused('shell-line-not-empty')
-    ran = ops_panes.ran_on_pane(port.conn, row['pane_id'])
+    ran = ops_panes.ran_on_pane(port.conn, row['pane_id'], row.get('terminal_id'))
     for above in rows[:-1]:     # a wrapped draft: its first row is a prompt with text, its tail may pass as a prompt
         found = SHELL_PROMPT.match(above := above.rstrip())
-        if found and found.end() < len(above) and pane_screen.prompt_fingerprint(above[found.end():])[0] not in ran:
-            raise PaneRefused('shell-line-not-empty')   # only a whole line Drover ran here is known not to be a draft
+        if found and found.end() < len(above) and (rows[-1].strip() != found.group().strip()
+                                                   or pane_screen.prompt_fingerprint(above[found.end():])[0] not in ran):
+            raise PaneRefused('shell-line-not-empty')   # exempt only a recorded echo whose own prompt form is the last row
 
 
 def shell_alone(herdr, row) -> bool:
