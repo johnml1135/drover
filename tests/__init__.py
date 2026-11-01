@@ -15,9 +15,11 @@ for _name in config.env_names():
     os.environ.pop(_name, None)
 config.reset()
 
-# Even a test that reaches a real herdr binary finds no server: this socket sits in a folder that is never created.
+# Even a test that reaches a real herdr binary finds no server: nothing inherited from a Herdr pane survives, and this
+# socket sits in a folder that is never created.
+for _name in [name for name in os.environ if name.startswith("HERDR_")]:
+    del os.environ[_name]
 os.environ["HERDR_SOCKET_PATH"] = os.path.join(_home, "no-herdr", "unused.sock")
-os.environ.pop("HERDR_ENV", None)
 
 # Default-tier purity: a default-tier test may not start a process or sleep for real. The guard raises in the calling
 # test; integration contracts are unaffected. Every violation is also recorded and fails the running test after it

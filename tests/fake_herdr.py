@@ -3,7 +3,8 @@
 Pane ids key `agents`, `panes` and `screens`. A screen is text, or a list read one entry at a time with the last one
 repeating, for a screen that changes between reads. All three stay mutable during a test. `calls` holds every argv
 without the binary, and `kwargs` the keywords of each call. Set `closed` for a stopped server, `hang` for a call that
-times out, and `refuse[(group, verb)] = code` for a refusal from a running server.
+times out (True for every call, or a set of (group, verb)), and `refuse[(group, verb)] = code` for a refusal from a
+running server.
 """
 import json
 import subprocess
@@ -26,7 +27,7 @@ class FakeHerdr:
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv[1:]))
         self.kwargs.append(kwargs)
-        if self.hang:
+        if self.hang is True or self.hang and tuple(argv[1:3]) in self.hang:
             raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
         code, out, err = self._answer(list(argv[1:]))
         return subprocess.CompletedProcess(argv, code, _pipe(out, kwargs), _pipe(err, kwargs))

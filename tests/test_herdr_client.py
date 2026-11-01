@@ -12,7 +12,7 @@ from tests.fake_herdr import FakeHerdr
 
 ALLOWED = {
     'agent': ('get', 'list', 'read', 'prompt', 'send-keys', 'start', 'rename'),
-    'pane': ('get', 'list', 'read', 'split', 'run', 'send-text', 'send-keys', 'close', 'process-info', 'report-agent',
+    'pane': ('get', 'list', 'read', 'run', 'send-text', 'send-keys', 'close', 'process-info', 'report-agent',
              'report-agent-session', 'release-agent'),
     'tab': ('create', 'list'),
     'workspace': ('list',),
@@ -50,7 +50,7 @@ class Allowlist(unittest.TestCase):
         self.assertEqual(reached, sent)
         self.assertEqual(herdr_client.ALLOWED, ALLOWED)
         reached.clear()
-        for argv in (('agent', 'wait'), ('agent', 'stop'), ('pane', 'wait-output'), ('pane', 'move'), ('pane', 'current'),
+        for argv in (('pane', 'split'), ('pane', 'split', 'w1:p1'), ('agent', 'wait'), ('agent', 'stop'), ('pane', 'wait-output'), ('pane', 'move'), ('pane', 'current'),
                      ('tab', 'close'), ('tab', 'focus'), ('workspace', 'create'), ('workspace', 'delete'),
                      ('worktree', 'list'), ('terminal', 'list'), ('session', 'list'), ('notification', 'list'),
                      ('integration', 'list'), ('machine', 'list'), ('Agent', 'list'), ('agent', 'LIST')):
@@ -63,24 +63,32 @@ class Allowlist(unittest.TestCase):
             herdr, fake = client(enabled=enabled)
             for argv in ((), ('server',), ('server', 'stop'), ('server', 'start'), ('agent',), ('pane',), ('--help',),
                          ('--machine', 'box', 'agent', 'list'), ('--session', 's', 'pane', 'list'),
-                         ('agent', '--help'), ('agent', 'get', 7), ('', '')):
+                         ('agent', '--help'), ('agent', 'get', 7), ('', ''), ('pane', 'list', '--machine', 'box'),
+                         ('agent', 'list', '--session', 's'), ('pane', 'get', 'w1:p1', '--remote'),
+                         ('agent', 'prompt', 'w1:p1', 'a\0b')):
                 for send in (herdr.call, herdr.text):
                     with self.subTest(argv=argv), self.assertRaises(ValueError):
                         send(*argv)
             self.assertEqual(fake.calls, [])
 
+    def test_native_agent_arguments_may_use_a_remote_option_name(self):
+        herdr, fake = client()
+        herdr.call('agent', 'start', 'dir', '--pane', 'w1:p1', '--', '--session', 'x')
+        self.assertEqual(fake.calls[-1][-2:], ['--session', 'x'])
+
     def test_refusal_of_a_verb_does_not_quote_its_arguments(self):
         herdr, _ = client()
-        with self.assertRaises(ValueError) as caught:
-            herdr.call('pane', 'wait-output', 'secret text')
-        self.assertNotIn('secret text', str(caught.exception))
+        for argv in (('pane', 'wait-output', 'secret text'), ('pane', 'secret text'), ('secret text', 'list')):
+            with self.assertRaises(ValueError) as caught:
+                herdr.call(*argv)
+            self.assertNotIn('secret', str(caught.exception))
 
 
 class Isolation(unittest.TestCase):
     def test_tests_cannot_reach_a_real_server(self):
         socket = Path(os.environ['HERDR_SOCKET_PATH'])
         self.assertFalse(socket.parent.exists())
-        self.assertNotIn('HERDR_ENV', os.environ)
+        self.assertEqual([name for name in os.environ if name.startswith('HERDR_')], ['HERDR_SOCKET_PATH'])
         herdr, fake = client()
         herdr.call('workspace', 'list')
         self.assertEqual(fake.kwargs[-1]['env']['HERDR_SOCKET_PATH'], str(socket))
@@ -171,7 +179,7 @@ class Replies(unittest.TestCase):
         self.assertEqual(len(fake.calls), 2)
 
     def test_a_stopped_server_is_unavailable_never_a_refusal(self):
-        for code in ('server_not_running', 'server_unavailable'):
+        for code in ('server_not_running', 'server_unavailable', 'protocol_mismatch'):
             herdr, fake = client()
             fake.refuse[('pane', 'get')] = code
             with self.subTest(code), self.assertRaises(HerdrUnavailable):
@@ -184,6 +192,110 @@ class Replies(unittest.TestCase):
             with self.assertRaises(HerdrUnavailable):
                 Herdr('herdr', run=run).call('pane', 'get', 'w1:p1')
         self.assertRaises(HerdrUnavailable, Herdr('herdr', run=replying(1, 'plain')).text, 'pane', 'read', 'w1:p1')
+
+
+class SlowStart(unittest.TestCase):
+    ARGV = ('agent', 'start', 'dir', '--kind', 'claude', '--pane', 'w1:p1')
+
+    def test_agent_start_outlasts_herdrs_own_30_seconds(self):
+        herdr, fake = client(timeout_s=10.0)
+        herdr.call(*self.ARGV)
+        self.assertGreater(fake.kwargs[-1]['timeout'], 30.0)
+        herdr.call('workspace', 'list')
+        self.assertEqual(fake.kwargs[-1]['timeout'], 10.0)
+
+    def test_a_longer_configured_timeout_also_covers_the_start(self):
+        herdr, fake = client(timeout_s=90.0)
+        herdr.call(*self.ARGV)
+        self.assertEqual(fake.kwargs[-1]['timeout'], 90.0)
+
+    def test_a_slow_start_succeeds_and_leaves_herdr_available(self):
+        clock = Clock()
+        fake = FakeHerdr()
+
+        def twelve_seconds(argv, **kw):
+            clock.now += 12.0
+            return fake(argv, **kw)
+
+        herdr = Herdr('herdr', run=twelve_seconds, clock=clock)
+        self.assertEqual(herdr.call(*self.ARGV), {})
+        self.assertTrue(herdr.available())
+
+    def test_a_start_past_its_budget_is_not_read_as_nothing_happened(self):
+        fake = FakeHerdr(agents={'w1:p1': {'pane_id': 'w1:p1', 'agent_status': 'working'}})
+        herdr, _ = client(fake, clock=Clock())
+        fake.hang = {('agent', 'start')}
+        with self.assertRaises(HerdrRefused) as caught:
+            herdr.call(*self.ARGV)
+        self.assertNotIsInstance(caught.exception, HerdrUnavailable)
+        self.assertEqual(caught.exception.code, 'start_unconfirmed')
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(herdr.call('agent', 'get', 'w1:p1')['agent']['agent_status'], 'working')
+        self.assertEqual([call[:2] for call in fake.calls].count(['agent', 'start']), 1)
+
+
+class PlainTextFailures(unittest.TestCase):
+    def test_a_usage_error_is_a_refusal_that_opens_no_window(self):
+        for said in ('usage: herdr agent prompt <target> <text>', 'unknown option: --x', 'unexpected argument: y',
+                     'missing value for --pane', '\n  usage: herdr pane run'):
+            calls = []
+
+            def run(argv, said=said, **kw):
+                calls.append(argv)
+                return subprocess.CompletedProcess(argv, 2, '', said)
+
+            herdr = Herdr('herdr', run=run, clock=Clock())
+            for _ in range(2):
+                with self.subTest(said), self.assertRaises(HerdrRefused) as caught:
+                    herdr.call('agent', 'prompt', 'w1:p1', 'words')
+                self.assertEqual(caught.exception.code, 'usage')
+            self.assertEqual(len(calls), 2)
+
+    def test_a_usage_error_says_nothing_about_the_server(self):
+        self.assertFalse(Herdr('herdr', run=replying(2, '', 'usage: herdr workspace list')).available())
+
+    def test_a_failed_connection_is_still_unavailable_and_remembered(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, '', 'failed to connect to server: refused')
+
+        herdr = Herdr('herdr', run=run, clock=Clock())
+        for _ in range(2):
+            with self.assertRaises(HerdrUnavailable):
+                herdr.call('workspace', 'list')
+        self.assertEqual(len(calls), 1)
+
+    def test_errors_never_quote_what_herdr_echoed(self):
+        echo = '- Read the secret note first'
+        for run in (replying(2, '', 'unknown option: ' + echo), replying(1, '', 'failed to connect: ' + echo),
+                    replying(1, '', echo), replying(1, echo),
+                    replying(1, json.dumps({'error': {'code': 'agent_blocked', 'message': echo}})),
+                    replying(1, json.dumps({'error': {'code': 'server_unavailable', 'message': echo}})),
+                    replying(1, json.dumps({'error': {'code': echo}})), replying(1, json.dumps({'error': echo}))):
+            with self.assertRaises((HerdrRefused, HerdrUnavailable)) as caught:
+                Herdr('herdr', run=run).call('agent', 'prompt', 'w1:p1', echo)
+            self.assertNotIn('secret', str(caught.exception))
+            self.assertNotIn('secret', getattr(caught.exception, 'code', ''))
+
+    def test_the_length_of_the_error_output_is_kept(self):
+        with self.assertRaises(HerdrRefused) as caught:
+            Herdr('herdr', run=replying(2, '', 'unknown option: abc')).call('workspace', 'list')
+        self.assertIn('19 characters', str(caught.exception))
+
+    def test_a_clean_exit_that_cannot_be_read_opens_no_window(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, 'sent', '')
+
+        herdr = Herdr('herdr', run=run, clock=Clock())
+        for _ in range(2):
+            with self.assertRaises(HerdrUnavailable):
+                herdr.call('pane', 'send-keys', 'w1:p1', 'enter')
+        self.assertEqual(len(calls), 2)
 
 
 class Remembered(unittest.TestCase):
