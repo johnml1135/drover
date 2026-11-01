@@ -28,7 +28,7 @@ Run these steps in order. Nothing here is done by the build; each step is the ow
    not depend on PATH. The task is registered with `-LogonType Interactive`, so it runs only while you are logged on (a locked
    session counts); a night with nobody logged on is not compacted, and a missed night is not made up.
    With `[panes] enabled`, the hub first stops Drover-started agents in WSL panes: "stop now", an interruption at 5 minutes, and the
-   job's kill at 6. A pane showing a dialog or a draft gets no input and waits for the kill. After the restart the agents resume and
+   job's kill no sooner than 6. A pane showing a dialog or a draft gets no input and waits for the kill. After the restart the agents resume and
    are told "restart complete, keep going"; a failed resume starts a fresh agent and the morning report flags its seat and placement.
    Directors on Windows are untouched. Agents you started yourself in WSL get no stop message: the kill reaches them without notice.
 

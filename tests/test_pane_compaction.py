@@ -379,6 +379,10 @@ class Failed(Overnight):
         self.at(900 + compaction_hold.RESUME_S)
         self.assertEqual((self.agent()['outcome'], self.agent()['reason']), ('resume-failed', 'focused'))
         self.assertEqual(self.new_row()['state'], 'failed')
+        self.released()
+        with mock.patch.object(pane_launch, 'start') as start:
+            self.tick()
+        start.assert_not_called()       # its agent is still in the pane, and two agents on a role is worse than a wait
 
     def test_herdr_closed_is_one_flag_and_the_job_finishes(self):
         self.up()
