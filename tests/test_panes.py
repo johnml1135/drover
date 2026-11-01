@@ -284,8 +284,7 @@ class Handle(Resident):
         self.assertEqual(self.panes.compaction_tick(dict(id='h1', phase='stop')),
                          dict(id='h1', phase='stop', settled=True, agents=[]))
 
-    def test_the_task_11_and_12_hooks_are_empty(self):
-        self.assertIsNone(pane_wake.deliver(None, None))
+    def test_the_task_12_hook_is_empty(self):
         self.assertIsNone(pane_handoff.maintain(None, None))
 
 

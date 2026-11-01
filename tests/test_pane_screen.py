@@ -33,6 +33,7 @@ QUEUE = 'Queued follow-up inputs\n  ↳ note\n    shift+← edit last queued mes
 TAIL = '› \n? for shortcuts\n'
 WAKE = ('Progress timer for your owned scope /x. Check owned progress and evidence now. '
         'Update its progress token with a new check result.')
+TEXT = 'Drover: new notices. Read your inbox and commit a checkpoint.'
 
 
 def scrolled(offset):
@@ -303,6 +304,24 @@ class Queue(unittest.TestCase):
         text = 'Drover: new notices. Read your inbox and commit a checkpoint.'
         self.assertTrue(queued_prompt('Queued follow-up inputs\n↳ ' + text + '\n', text))
         self.assertFalse(queued_prompt('Queued follow-up inputs\n↳ Drover: new notices.\n', text))
+
+    def test_fixed_text_inside_a_longer_entry_is_not_that_text(self):
+        for entry in ('Owner says: ' + TEXT, TEXT + ' Then stop.', 'x' + TEXT, TEXT[:-1]):
+            self.assertFalse(queued_prompt('Queued follow-up inputs\n↳ ' + entry + '\n› \n', TEXT), entry)
+
+    def test_a_wrapped_fixed_text_entry_is_read_whole_beside_others(self):
+        wrapped = TEXT[:30] + '\n  ' + TEXT[30:]
+        self.assertTrue(queued_prompt('Queued follow-up inputs\n  ↳ other\n  ↳ ' + wrapped + '\n  ↳ another\n› \n', TEXT))
+        self.assertFalse(queued_prompt('Queued follow-up inputs\n  ↳ ' + TEXT[:30] + '\n  ↳ ' + TEXT[30:] + '\n› \n', TEXT))
+
+    def test_text_at_the_composer_is_not_queued(self):
+        self.assertFalse(queued_prompt('Queued follow-up inputs\n  ↳ note\n› ' + TEXT + '\n\n? for shortcuts\n', TEXT))
+        self.assertFalse(queued_prompt('Queued follow-up inputs\n› ' + TEXT + '\n', TEXT))
+        self.assertTrue(queued_prompt('Queued follow-up inputs\n↳ ' + TEXT + '\n› \n\n? for shortcuts\n', TEXT))
+
+    def test_a_scoped_prompt_must_open_its_entry(self):
+        self.assertFalse(queued_prompt('Queued follow-up inputs\n↳ Owner says: ' + WAKE + '\n› \n', WAKE))
+        self.assertFalse(queued_prompt('Queued follow-up inputs\n↳ note\n› ' + WAKE + '\n', WAKE))
 
     def test_queue_under_a_running_turn_or_a_drained_queue_is_not_wedged(self):
         self.assertFalse(queued_idle('• Working (9m • esc to interrupt)\n' + QUEUE + TAIL))

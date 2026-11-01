@@ -251,22 +251,36 @@ def queued_idle(screen):
     return not viewport_held(screen) and bool(queued_input_range(screen)) and not working(screen) and not blocking_dialog(screen)
 
 
+def _queue_entries(screen):
+    """Each `↳` row with the rows it wraps onto, read no further than the live composer: text there is not queued."""
+    start, end = queued_input_range(screen)
+    entries = []
+    for line in screen.splitlines()[start:end]:
+        if re.match(r'^\s*[›❯]', line):
+            break
+        if re.match(r'^\s*↳\s', line):
+            entries.append(line.strip()[1:])
+        elif entries:
+            entries[-1] += line
+    return entries
+
+
 @_unknown(False)
 def queued_prompt(screen, prompt):
-    """True only when the queue shows this prompt's whole scope address, or the whole prompt when it has none."""
-    queued = queued_input_range(screen)
-    if not queued or viewport_held(screen):
+    """True only when one queued entry is this prompt: whole, or from the start through its scope address if it has one."""
+    if not queued_input_range(screen) or viewport_held(screen):
         return False
-    body = '\n'.join(screen.splitlines()[queued[0]:queued[1]])
     # The complete scope address identifies our wake; an opaque paste or another message does not.
     # Matched through the words after it: scope /x must not match scope /x2 or /x.y.
-    head, addressed, _ = prompt.partition('. Check owned progress')
-    expected = head + addressed if addressed else prompt
     compact = lambda text: re.sub(r'\s+', '', text)
-    if not compact(expected) or compact(expected) not in compact(body):
+    head, addressed, _ = prompt.partition('. Check owned progress')
+    expected = compact(head + addressed if addressed else prompt)
+    if not expected:
         return False
     marker = ' Worker completion reports ready for your review: '
-    return marker not in prompt or compact(prompt.split(marker, 1)[1]) in compact(body)
+    reports = compact(prompt.split(marker, 1)[1]) if marker in prompt else ''
+    entries = [compact(entry) for entry in _queue_entries(screen)]
+    return any(entry.startswith(expected) and reports in entry if addressed else entry == expected for entry in entries)
 
 
 def classify(agent, screen, item, now):
