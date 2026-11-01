@@ -18,7 +18,7 @@ other refusal ends the row `failed`, flagged, and a fresh agent starts from the 
 import logging
 import time
 
-from . import compaction_hold, config, pane_close, pane_compaction, pane_handoff, pane_launch, pane_send, pane_wake, placement
+from . import compaction_hold, config, pane_close, pane_compaction, pane_fault, pane_handoff, pane_launch, pane_send, pane_wake, placement
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .launch import AdmissionHeld
 from .ledger import disk_notices, ops_panes
@@ -33,8 +33,6 @@ SESSION_TTL = 86400
 RENEW_BELOW_S = SESSION_TTL / 2
 UNKNOWN_LIMIT_S = 1800
 OUTAGE = 'pane_herdr_outage'            # the open outage's notice id, so a hub restart does not publish it again
-CLOSE_ENABLED = 'pane_close_enabled'    # the owner's switch: without it `pane_close` only reports
-TRUTHY = ('true', '1', 'yes', 'on')
 log = logging.getLogger(__name__)
 
 
@@ -62,7 +60,10 @@ class PaneService:
         return config.get() if self._cfg is None else self._cfg
 
     def maintain(self, run, guard) -> None:
-        """Keep one run. Nothing leaves this: a step that fails is logged, without its text, and the rest still run."""
+        """Keep one run. Nothing leaves this: a step that fails is logged, without its text, and the rest still run.
+
+        A bug in a step goes to the log with its traceback and to the owner as one notice, so it cannot pass for an outage.
+        """
         self._step(self.sweep)
         self._step(self._keep, run, guard)
 
@@ -70,7 +71,7 @@ class PaneService:
         try:
             return action(*args)
         except Exception as error:      # no exception text: it may quote a path or a credential
-            log.warning('pane maintenance step failed: %s', type(error).__name__)
+            pane_fault.note(self.port, log, 'A pane upkeep step', error)
             return None
 
     def _keep(self, run, guard):
@@ -195,7 +196,7 @@ class PaneService:
         return not reads or wsl_running(placement.distro(self.cfg['paths']['wsl_distro']))
 
     def _close_enabled(self):
-        return str(self.port.get_setting(CLOSE_ENABLED, 'false')).lower() in TRUTHY
+        return pane_send.close_enabled(self.port)
 
     def _reconcile(self, row):
         if self.inspect(row) == EMPTY:
@@ -309,7 +310,7 @@ class PaneService:
 
     def compaction_tick(self, hold) -> dict:
         """The hub's part of the compaction: a step of the stop or the resume, or, with no hold, what the last one left."""
-        return pane_compaction.tick(self, hold)
+        return self._step(pane_compaction.tick, self, hold)
 
 
 class PaneHandle:
@@ -355,10 +356,10 @@ class PaneDirectorAdapter:
         return cause is None
 
     def overdue(self, spec):
-        return self.service.overdue(spec)
+        return bool(self.service._step(self.service.overdue, spec))
 
     def revivable(self, spec):
-        return self.service.revivable(spec)
+        return bool(self.service._step(self.service.revivable, spec))
 
     def _resume(self, spec, credential, guard):
         """The pane a lapsed run left, taken up again. False sends the launch to a fresh pane, past `start`'s own read."""
@@ -406,6 +407,9 @@ class PaneDirectorAdapter:
             if str(held) == 'herdr-unavailable':
                 service.herdr_down()
             raise
+        except Exception as error:      # the runtime holds the role and logs nothing, so a bug is told here
+            pane_fault.note(service.port, log, 'A director launch', error)
+            raise
         service.herdr_up()
         return PaneHandle(service, spec)
 
@@ -421,7 +425,8 @@ class PaneDirectorAdapter:
         return seen not in (None, GONE)
 
     def probe(self, spec):
-        return self.service.probe(spec)
+        """The runtime reads any exception as unknown and says nothing, so a bug is told here, and unknown is what it costs."""
+        return self.service._step(self.service.probe, spec) or UNKNOWN
 
     def adopt(self, spec):
         return PaneHandle(self.service, spec)
@@ -448,4 +453,4 @@ class PaneDirectorAdapter:
         self.service.maintain(run, guard)
 
     def sweep(self):
-        self.service.sweep()
+        self.service._step(self.service.sweep)

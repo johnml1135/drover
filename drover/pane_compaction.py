@@ -23,7 +23,7 @@ such a row is settled the same way with a notice of its own, once a clean read p
 import json
 import logging
 
-from . import compaction_hold, config, pane_launch, pane_read, pane_screen, pane_send
+from . import compaction_hold, config, pane_fault, pane_launch, pane_read, pane_screen, pane_send
 from .directors import COMPACTION_FRESH, DirectorRuntime
 from .launch import AdmissionHeld
 from .ledger import ops_panes
@@ -93,12 +93,12 @@ def _owned(service):
             if row['started_by'] == 'drover' and row['state'] in pane_launch.RESUMABLE]
 
 
-def _guarded(action, *args):
-    """One agent's trouble is that agent's alone. No exception text: it may quote a path or a credential."""
+def _guarded(service, action, *args):
+    """One agent's trouble is that agent's alone. A bug in it reaches the owner, and the night goes on."""
     try:
         action(*args)
     except Exception as error:
-        log.warning('pane compaction step failed: %s', type(error).__name__)
+        pane_fault.note(service.port, log, 'A pane compaction step', error)
         return True
     return False
 
@@ -150,7 +150,7 @@ def _stop_tick(night):
             continue
         if moved_on:
             night.left(row['id'], 'no-time-left')
-        elif _guarded(_stop_one, night, row, elapsed, deadline):
+        elif _guarded(night.service, _stop_one, night, row, elapsed, deadline):
             night.left(row['id'], 'stop-failed')
     held = {row['id'] for row in rows}
     for row_id, facts in night.agents.items():
@@ -321,8 +321,8 @@ def _resume_tick(night):
             night.stopped(row['id'], LEFT, 'no-time-left')
     night.save(night.answer(RESUME, False))     # a launch takes its time, and the job is counting
     for row_id, facts in list(night.agents.items()):
-        if facts.get('outcome') not in OVER and _guarded(_resume_one, night, row_id, expired):
-            _guarded(_failed, night, row_id, 'resume-error')
+        if facts.get('outcome') not in OVER and _guarded(night.service, _resume_one, night, row_id, expired):
+            _guarded(night.service, _failed, night, row_id, 'resume-error')
     return night.answer(RESUME, expired or all(facts.get('outcome') in OVER for facts in night.agents.values()))
 
 
@@ -347,7 +347,7 @@ def _leftovers(service):
     rows = [row for row in ops_panes.open_agents(service.conn) if row['state'] == 'compaction']
     if rows and compaction_hold.over(config.state_dir(service.cfg)):
         for row in rows:
-            _guarded(_leftover, service, row)
+            _guarded(service, _leftover, service, row)
     return dict(id=None, phase=None, settled=True, agents=[])
 
 

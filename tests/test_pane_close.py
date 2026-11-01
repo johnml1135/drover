@@ -196,7 +196,7 @@ class Gates(Base8):
     def test_unknown_process_visibility_keeps_the_pane(self):
         for label, processes in (('snapshot unknown', snapshot((101, REPO, 100), unknown=True)),
                                  ('no snapshot for this side', lambda row: None),
-                                 ('broken', lambda row: (_ for _ in ()).throw(KeyError('x')))):
+                                 ('broken', lambda row: (_ for _ in ()).throw(OSError('x')))):
             with self.subTest(label):
                 self.conn.execute('DELETE FROM pane_agents')
                 self.processes = processes
@@ -276,9 +276,8 @@ class Closing(Base8):
         for word in ('pkill', 'shell=True', 'taskkill', 'os.kill', 'terminate', 'Popen', 'subprocess'):
             self.assertNotIn(word, source)
         calls = set(re.findall(r"herdr\.(?:call|text)\('(\w+)', '([\w-]+)'", source))
-        self.assertEqual(calls, {('agent', 'get'), ('pane', 'get'), ('pane', 'read'), ('pane', 'process-info'),
-                         ('pane', 'close')})
-        self.assertEqual(re.findall(r"herdr\.call\('pane', 'close', ([\w\[\]']+)\)", source), ["current['pane_id']"])
+        self.assertEqual(calls, {('agent', 'get'), ('pane', 'get'), ('pane', 'read'), ('pane', 'process-info')})
+        self.assertEqual(re.findall(r"pane_send\.close_pane\(port, herdr, (\w+)\)", source), ['current'])
 
 
 if __name__ == '__main__':

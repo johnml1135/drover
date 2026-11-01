@@ -90,6 +90,18 @@ def valid(path) -> bool:
         return False
 
 
+def follow(cfg, role_id, was, now) -> bool:
+    """A session resumed into generation `now` keeps the file it wrote, at the path that generation reads. False if it has none."""
+    old = path_for(cfg, role_id, was)
+    try:
+        if not valid(old):
+            return False
+        os.replace(old, path_for(cfg, role_id, now))
+    except OSError:
+        return False
+    return True
+
+
 def clear(path) -> None:
     """An OSError leaves the file in place, so the caller must not go on as if it were gone."""
     Path(path).unlink(missing_ok=True)

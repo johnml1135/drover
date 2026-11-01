@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from .db import tx
 
 AGENT_STATES = ('starting', 'live', 'rotating', 'compaction', 'retired', 'failed', 'gone')
+RUNNING = ('starting', 'live', 'rotating', 'compaction')
 HEAD_MAX = 60
 CLOSED_WRITES = ('sent', 'unsent', 'observed', 'acknowledged')    # any other state may still be acting on the pane
 _REQUIRED = ('pane_id', 'kind', 'seat', 'placement', 'started_by')
@@ -92,6 +93,28 @@ def by_run(conn, run_id) -> dict | None:
 def reused_pane(conn, row) -> bool:
     """Any earlier row, gone or not, held this pane. Only a pane's first row is in the launcher's own new pane."""
     return conn.execute('SELECT 1 FROM pane_agents WHERE pane_id=? AND id<? LIMIT 1', (row['pane_id'], row['id'])).fetchone() is not None
+
+
+def continues_run(conn, row) -> bool:
+    """An earlier row, gone or not, held this run: a resume, whose session has already been told what the run is for."""
+    return conn.execute('SELECT 1 FROM pane_agents WHERE run_id=? AND id<? LIMIT 1', (row['run_id'], row['id'])).fetchone() is not None
+
+
+def run_brief(conn, run_id) -> dict | None:
+    """The brief this run's session took, on whichever of its rows it went to."""
+    write = conn.execute("SELECT w.* FROM pane_writes w JOIN pane_agents a ON a.id=w.agent_id WHERE a.run_id=? AND w.kind='brief' "
+                         'ORDER BY w.id DESC LIMIT 1', (run_id,)).fetchone()
+    return dict(write) if write else None
+
+
+def generation_of(conn, run_id) -> int | None:
+    run = conn.execute('SELECT generation FROM director_runs WHERE run_id=?', (run_id,)).fetchone()
+    return run['generation'] if run else None
+
+
+def running_agents(conn) -> list[dict]:
+    """Drover's agents that may be up in a pane now, whatever a read would say."""
+    return [row for row in open_agents(conn) if row['started_by'] == 'drover' and row['state'] in RUNNING]
 
 
 def session_acted(conn, session_id) -> bool:

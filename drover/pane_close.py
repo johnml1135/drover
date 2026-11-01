@@ -18,10 +18,11 @@ import hashlib
 import json
 import logging
 
-from . import config, pane_guard, pane_screen, placement, placement_git
+from . import config, pane_fault, pane_guard, pane_screen, pane_send, placement, placement_git
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .ledger import ops_panes
 from .ledger.db import tx
+from .pane_read import PaneRefused
 
 MIN_IDLE_S = 3600
 SETTING = 'pane_close_observed'
@@ -34,7 +35,7 @@ def worktree_facts(cwd, run=None):
     """Facts about the checkout holding cwd, or None when it is not inside a readable git checkout."""
     try:
         return _facts(cwd, run or _git)
-    except Exception:   # git timing out or failing in any way
+    except (*pane_fault.EXPECTED, ValueError):      # git timing out, or an answer that is not text
         return None     # a stuck or unreadable checkout is unknown, and unknown keeps the pane
 
 
@@ -135,10 +136,16 @@ def _snapshot(row, cfg=None):
 def _busy(herdr, row, pane, path, processes):
     """Whether a process outside the pane's own tree uses `path`; None when that cannot be known."""
     try:
-        info = herdr.call('pane', 'process-info', '--pane', pane)['process_info']
-        own = {info['shell_pid'], *(p['pid'] for p in info.get('foreground_processes', []))}
+        info = herdr.call('pane', 'process-info', '--pane', pane).get('process_info')
+    except HerdrRefused:
+        return None
+    listed = info.get('foreground_processes', []) if isinstance(info, dict) else None
+    if not isinstance(listed, list) or 'shell_pid' not in info or not all(isinstance(p, dict) and 'pid' in p for p in listed):
+        return None
+    own = {info['shell_pid'], *(p['pid'] for p in listed)}
+    try:
         proof = processes(row)
-    except (KeyError, TypeError, HerdrRefused):
+    except pane_fault.EXPECTED:
         return None
     if proof is None or proof.unknown:
         return None
@@ -154,11 +161,11 @@ def assess(herdr, row, *, now, observed, run=None, processes=None):
     """Read the pane and judge it. Herdr closed raises HerdrUnavailable; a pane Herdr will not show is kept."""
     pane = row['pane_id']
     try:
-        agent = herdr.call('agent', 'get', pane)['agent']
+        agent = herdr.call('agent', 'get', pane).get('agent')
         if not isinstance(agent, dict):
             return _kept(row, 'agent unreadable')
         screen = herdr.text('pane', 'read', pane, '--source', 'visible') if agent.get('agent_status') == 'done' else ''
-    except (KeyError, TypeError, HerdrRefused):
+    except HerdrRefused:
         return _kept(row, 'pane or agent not readable')
     facts = None
     cwd = agent.get('foreground_cwd') or agent.get('cwd')
@@ -232,7 +239,10 @@ def close_if_still_eligible(port, herdr, row, result, *, now, observed, pending,
     pending[str(current['id'])] = entry     # written first: a crash or a late answer is settled by the next tick
     _save(port, PENDING, pending)
     try:
-        herdr.call('pane', 'close', current['pane_id'])
+        pane_send.close_pane(port, herdr, current)
+    except PaneRefused as refused:      # nothing went out, so nothing is left to settle later
+        _settle(port, pending, current)
+        return dict(checked, verdict='keep', reason='not closed: ' + refused.reason)
     except HerdrRefused as error:
         if error.code == 'pane_not_found':
             _gone(port, current, pending, entry, 'the pane was already gone; ' + checked['reason'])
@@ -268,7 +278,7 @@ def tick(port, herdr, now, *, apply=False, run=None, processes=None, cfg=None) -
         except HerdrUnavailable:
             results.append(_kept(row, 'herdr unavailable: nothing is known about the pane'))
         except Exception as error:      # one pane's failure is that pane's keep, never the rest's
-            log.warning('pane %s kept: %s: %s', row.get('pane_id'), type(error).__name__, error)
+            pane_fault.note(port, log, f"Judging pane {row.get('pane_id')}", error)
             results.append(_kept(row, 'not judged: %s' % type(error).__name__))
     present = {r['pane_id'] for r in rows} - {r['pane'] for r in results if r['verdict'] == 'closed'}
     _save(port, SETTING, {p: v for p, v in observed.items() if p in present})

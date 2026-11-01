@@ -1,4 +1,4 @@
-"""The only code that types into a pane. Anything uncertain is a PaneRefused and leaves the mail in the mailbox.
+"""The only code that types into a pane or closes one. Anything uncertain is a PaneRefused and leaves the mail in the mailbox.
 
 A write is noted first. `PaneRefused` means no write verb went out, and the note ends `unsent`. Once one has gone out,
 nothing is resent and the write ends `sent` or `unverified`; the dict returned says which, and the reason says why.
@@ -15,6 +15,8 @@ row, so a launch is never resent. A Windows launch is one shell line for its env
 
 Text stays short and on one line, so a paste cannot collapse and the screen can prove it is Drover's. Longer text goes
 in a file, and the pane gets a short line naming the path.
+
+`close_pane` is the one way to `pane close`. Its callers read the pane first and keep to `close_enabled`, the owner's switch.
 
 `port` must hold a ledger connection, as DirectPort does. Herdr's `idle` and `done` both mean ready for input: `done`
 only says nobody has looked since the turn ended (references/cli.md:44 in the skill), and the hub never focuses a pane.
@@ -44,6 +46,9 @@ ENTER_PRESSED = 'enter-pressed'     # an Enter may have gone out: no second one,
 EXIT_TEXT = '/exit'
 EXITING = ('rotating',)     # the one write a row in this state may get, and the only state that write goes to
 SUPERSEDABLE = ('wake', 'handoff')  # what a forced exit may close, on the read that proves the pane empty
+CLOSE_ENABLED = 'pane_close_enabled'    # the owner's switch: without it `pane_close` only reports and no tab closes
+TRUTHY = ('true', '1', 'yes', 'on')
+CLOSABLE = ('retired', 'starting')      # a finished agent's pane, or a new tab no agent ever reached
 
 
 def _check_text(text):
@@ -341,6 +346,19 @@ def answer_startup(port, herdr, row, *, trusted=False) -> dict:
     read()
     return _write(port, herdr, row, 'startup', 'enter', read, ('pane', 'send-keys', row['pane_id'], 'enter'),
                   once=('startup',))
+
+
+def close_enabled(port) -> bool:
+    return str(port.get_setting(CLOSE_ENABLED, 'false')).lower() in TRUTHY
+
+
+def close_pane(port, herdr, row) -> None:
+    """`pane close` by id, for the row that holds the pane now and has no agent up there. Herdr's own errors go to the caller,
+    who alone knows what each means for its record.
+    """
+    row = _current(port, row)
+    _owned(row, CLOSABLE)
+    herdr.call('pane', 'close', row['pane_id'])
 
 
 def start_in_shell(port, herdr, row, command) -> dict:

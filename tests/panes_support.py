@@ -69,7 +69,7 @@ class Resident(Launching):
         def die(port, herdr, spec, credential, guard, *, cfg):
             ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', kind='claude', seat='seat-c', placement='windows',
                                    started_by='drover', role_id=spec['role_id'], run_id=spec['run_id'], cwd=spec['cwd'], name='n')
-            raise RuntimeError('the hub went away')
+            raise OSError('the hub went away')
         with mock.patch.object(pane_launch, 'start', die):
             self.wake()
             self.tick()

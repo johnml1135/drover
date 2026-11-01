@@ -76,15 +76,17 @@ def repo_trusted(cwd, seat, *, read=None) -> bool:
     read = read or _wsl_read
     try:
         path = placement.to_wsl_path(cwd).rstrip('/')
-        home = config.seat_env(seat)['CODEX_HOME'].rstrip('/')
-        top, common = read(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--show-toplevel',
-                            '--git-common-dir']).splitlines()[:2]
-        if top != path or not common.endswith('/.git'):     # a subfolder, a bare repo or a submodule is not covered
+        home = config.seat_env(seat).get('CODEX_HOME')
+        found = read(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--show-toplevel',
+                      '--git-common-dir']).splitlines()[:2] if home else []
+        if len(found) < 2 or found[0] != path or not found[1].endswith('/.git'):    # a subfolder, a bare repo or a submodule
             return False
-        projects = tomllib.loads(read(_read_config(home)))['projects']
-        trusted = {placement.to_wsl_path(key).rstrip('/'): value for key, value in projects.items()}
-        return trusted[common.removesuffix('/.git')]['trust_level'] == 'trusted'
-    except Exception:
+        projects = tomllib.loads(read(_read_config(home.rstrip('/')))).get('projects')
+        if not isinstance(projects, dict):
+            return False
+        entry = {placement.to_wsl_path(key).rstrip('/'): value for key, value in projects.items()}.get(found[1].removesuffix('/.git'))
+        return isinstance(entry, dict) and entry.get('trust_level') == 'trusted'
+    except (OSError, ValueError, subprocess.SubprocessError):
         return False
 
 

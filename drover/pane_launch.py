@@ -10,20 +10,25 @@ waits on an agent. The row's brief write is the state: none, `sent`, then `obser
 
 `working` on screen or from Herdr proves a first turn, and so does the run's session acting on the ledger, since a turn
 can start and end between two ticks. An idle composer proves nothing, and `blocked` may be a dialog from before the
-brief landed. A brief that fails ends a `live` row as `failed`.
+brief landed. A brief that fails ends a `live` row as `failed`, unless the agent is busy: that is an agent at work, so it waits.
+
+Only a run's first row is briefed. A compaction resume is the same run on a new row, and its session already has the brief.
 """
+import logging
 import os
 import re
 import time
 from datetime import datetime
 
-from . import config, handoff, pane_blank, pane_files, pane_guard, pane_screen, pane_send, placement, runner
+from . import config, handoff, pane_blank, pane_fault, pane_files, pane_guard, pane_screen, pane_send, placement, runner
 from .config import state_dir
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .launch import AdmissionHeld
 from .ledger import disk_notices, ops_panes
 from .pane_files import NATIVE_COMPACT, repo_trusted, write_private
 from .pane_send import PaneRefused
+from .pane_tab import (_dialog, _look, _no_agent, _read_alone, _rename, _stall_reason, _terminal, _workspace, open_pane,
+                       session_of)
 
 __all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'START_DEADLINE_S', 'advance', 'age', 'blocked', 'brief', 'expire', 'open_pane', 'publish',
            'repo_trusted', 'resume', 'rotate', 'session_of', 'start', 'write_private']
@@ -35,15 +40,17 @@ SHELL_PROMPT_S = 30         # a new tab's shell draws its prompt in its own time
 SHELL_BACK_S = 10           # the environment line must end before `agent start` finds a free shell
 POLL_S = 2
 SHELL_READS = 2             # a launch line takes a moment to become a process, so one read of a lone shell proves nothing
-RUNNING = ('starting', 'live', 'rotating', 'compaction')
+RUNNING = ops_panes.RUNNING
 RESUMABLE = ('live', 'compaction')
 SHELL_BUSY = ('shell-not-alone', 'shell-line-not-empty')
 SHELL_NOT_READY = 'shell-not-ready'
 SUPERSEDED = ('wake', 'handoff', 'stop', 'interrupt')
 OWNERS_NOW = ('dialog', 'suspected-dialog', 'draft', 'occupant-changed', 'herdr-refused:agent_blocked')    # waiting cannot clear these
 HERDR_CLOSED = 'herdr-unavailable'
+BRIEF_WAITS = (HERDR_CLOSED, 'busy')        # neither says anything is wrong with the agent, so no deadline ends its row
 DEFAULT_PROMPT = 'Read your inbox and commit a checkpoint.'
 _now = time.monotonic
+log = logging.getLogger(__name__)
 
 
 def age(stamp, now):
@@ -61,32 +68,6 @@ def brief(spec, handoff=None) -> str:
     """One short line, so the screen can prove it is Drover's. Anything longer belongs in a file."""
     first = f'First read the handoff at {handoff} and restate its standing rules in restated.md beside it. ' if handoff else ''
     return f"Drover: you are director role {spec['role_id']}. {first}" + ' '.join(str(spec.get('user_prompt') or DEFAULT_PROMPT).split())
-
-
-def open_pane(herdr, cfg, cwd) -> str:
-    """A new tab that takes no focus. Herdr's own errors are the caller's to hold on."""
-    workspace = cfg['panes']['workspace']
-    if not workspace:
-        listed = herdr.call('workspace', 'list').get('workspaces') or []
-        if not listed:
-            raise AdmissionHeld('herdr-no-workspace')
-        workspace = listed[0]['workspace_id']
-    return herdr.call('tab', 'create', '--workspace', workspace, '--cwd', cwd, '--no-focus')['root_pane']['pane_id']
-
-
-def _terminal(herdr, pane_id):
-    try:
-        return herdr.call('pane', 'get', pane_id)['pane'].get('terminal_id') or None
-    except (HerdrUnavailable, HerdrRefused, KeyError):
-        return None
-
-
-def _read_alone(herdr, row):
-    """What the failure record says: True, False, or None when the pane cannot be read."""
-    try:
-        return pane_send.shell_alone(herdr, row)
-    except PaneRefused:
-        return None
 
 
 def publish(port, notice_id, title, body):
@@ -143,13 +124,6 @@ def _folder(spec, cfg):
     return state_dir(cfg) / 'panes' / str(spec['run_id'])
 
 
-def _no_agent(herdr, row):
-    try:
-        return pane_send.shell_alone(herdr, row)
-    except PaneRefused as refused:
-        return refused.reason == 'herdr-refused:pane_not_found'
-
-
 def _clear_role(port, herdr, spec):
     """Never a second agent for a role: a failed launch may have started one, so its pane must show none."""
     for row in ops_panes.open_agents(port.conn):
@@ -200,32 +174,6 @@ def _launch(port, herdr, row, launcher, args):
     return _when_shell_is_free(SHELL_BACK_S, lambda: pane_send.start_agent(port, herdr, row, row['name'], args), 'shell-not-back')
 
 
-def _dialog(screen):
-    try:
-        pane_guard.refuse_dialog(screen)
-        return pane_guard.suspected_dialog(screen)
-    except ValueError:
-        return True
-
-
-def session_of(agent):
-    session = agent.get('agent_session')
-    return session.get('value') if isinstance(session, dict) else None
-
-
-def _look(herdr, row):
-    alone = pane_send.shell_alone(herdr, row)
-    try:
-        screen = herdr.text('pane', 'read', row['pane_id'], '--source', 'visible')
-        try:
-            agent = herdr.call('agent', 'get', row['pane_id']).get('agent')
-        except HerdrRefused:        # no agent has reported here yet
-            agent = None
-    except (HerdrUnavailable, HerdrRefused):
-        raise PaneRefused('herdr-unavailable') from None
-    return alone, screen, agent if isinstance(agent, dict) else {}
-
-
 def _answer_trust(port, herdr, row, cfg):
     """True when the one Enter went out. The row proves fresh and this proves the repo; the rest stays with the owner."""
     if not repo_trusted(row['cwd'], config.seat_by_name(row['seat'], cfg)):
@@ -238,14 +186,6 @@ def _answer_trust(port, herdr, row, cfg):
         return False
     port.append_event('pane-trust-answered', dict(row=row['id'], pane_id=row['pane_id'], cwd=row['cwd']), actor='panes')
     return True
-
-
-def _rename(herdr, row):
-    if row['placement'] == 'wsl':
-        try:
-            herdr.call('agent', 'rename', row['pane_id'], row['name'])
-        except (HerdrUnavailable, HerdrRefused):
-            pass                # a name is a label: Task 10 restores lost ones
 
 
 def _settle(port, herdr, row, cfg) -> dict:
@@ -272,14 +212,6 @@ def _settle(port, herdr, row, cfg) -> dict:
             _rename(herdr, live)
             return live
     return _fail(port, herdr, row, 'agent-not-ready')
-
-
-def _stall_reason(herdr, row):
-    """Herdr gives up on an agent held at a dialog too, and the owner needs to hear which."""
-    try:
-        return 'dialog' if _dialog(herdr.text('pane', 'read', row['pane_id'], '--source', 'visible')) else 'launch-stalled'
-    except (HerdrUnavailable, HerdrRefused):
-        return 'launch-stalled'
 
 
 def _launched(port, herdr, row, launcher, args, cfg) -> dict:
@@ -318,7 +250,7 @@ def _send_brief(port, herdr, row, spec, guard, now):
     try:
         written = pane_send.send(port, herdr, row, brief(spec, spec.get('handoff')), 'brief')
     except PaneRefused as refused:
-        if refused.reason in OWNERS_NOW or (refused.reason != HERDR_CLOSED and age(row['updated'], now) >= STARTUP_S):
+        if refused.reason in OWNERS_NOW or (refused.reason not in BRIEF_WAITS and age(row['updated'], now) >= STARTUP_S):
             _fail(port, herdr, row, refused.reason)
         return None
     if written['state'] != 'sent':
@@ -350,11 +282,13 @@ def _first_turn(port, herdr, row, write, spec, now, cfg) -> bool:
 
 
 def advance(port, herdr, row, spec, guard, now, *, cfg) -> bool:
-    """Take a `live` row one step past its launch, with no wait: True once none is left. Only a handoff briefs a reused pane.
+    """Take a `live` row one step past its launch, with no wait: True once none is left. A run's later row has no brief to
+    take, as its session came back, and only a handoff briefs a reused pane.
 
     Herdr unreachable ends nothing: a deadline counts only on a read that answered, and a guard that refuses waits.
     """
-    if row['state'] != 'live' or (ops_panes.reused_pane(port.conn, row) and not spec.get('handoff')):
+    if row['state'] != 'live' or ops_panes.continues_run(port.conn, row) or \
+            (ops_panes.reused_pane(port.conn, row) and not spec.get('handoff')):
         return True
     write = ops_panes.last_write(port.conn, row['id'], 'brief')
     if write is None or write['state'] == 'unsent':
@@ -367,14 +301,6 @@ def advance(port, herdr, row, spec, guard, now, *, cfg) -> bool:
         _fail(port, herdr, row, 'brief-unverified')
         return False
     return _first_turn(port, herdr, row, write, spec, now, cfg)
-
-
-def _workspace(herdr, cfg):
-    """`open_pane` would have somewhere to open: the configured workspace, or any one if none is set."""
-    listed = [entry['workspace_id'] for entry in herdr.call('workspace', 'list').get('workspaces') or []]
-    wanted = cfg['panes']['workspace']
-    if not listed or (wanted and wanted not in listed):
-        raise AdmissionHeld('herdr-no-workspace')
 
 
 def _preconditions(spec, cfg):
@@ -430,7 +356,8 @@ def start(port, herdr, spec, credential, guard, *, cfg) -> dict:
     try:
         _write_credential(spec, credential, cfg)
         launcher = _write_files(spec, seat, args, cfg)
-    except Exception:           # no text from here: it may quote a path or a secret
+    except Exception as error:  # no text from here: it may quote a path or a secret
+        pane_fault.note(port, log, 'Writing a launch file', error)
         return _fail(port, herdr, row, 'private-file')
     try:
         guard()
@@ -451,6 +378,7 @@ def resume(port, herdr, row, spec, *, cfg, credential=None) -> dict:
     """Relaunch the recorded session in its pane, on a new row and with no brief. Seat and placement come from the row.
 
     With a `credential` the row joins the new run in `spec`, whose session lapsed the old one's; without it the run goes on.
+    The session is the same either way, so the row keeps its context reading and whatever its handoff has reached.
 
     The old row goes `gone`, so a pane's history cannot pass for its present. The new row is not the pane's first, so
     no startup dialog is answered here. A `failed` row comes back on any refusal, and the same pane is not tried again:
@@ -468,6 +396,15 @@ def rotate(port, herdr, row, spec, *, cfg, credential) -> dict:
     return _take_pane(port, herdr, row, spec, cfg, credential, None)
 
 
+def _carried(port, row, spec, cfg, credential):
+    """A new generation reads another path, so its file moves with it. With none, the next request there is its first."""
+    state = row.get('handoff_state')
+    if credential and state:
+        was = ops_panes.generation_of(port.conn, row['run_id'])
+        state = state if handoff.follow(cfg, row['role_id'], was, spec['generation']) else None
+    return dict(handoff_state=state, context_tokens=row.get('context_tokens'))
+
+
 def _take_pane(port, herdr, row, spec, cfg, credential, resume_id):
     _available(herdr)
     current = ops_panes.by_pane(port.conn, row['pane_id'])
@@ -483,13 +420,15 @@ def _take_pane(port, herdr, row, spec, cfg, credential, resume_id):
     spec = dict(spec, backend=row['kind'], placement=row['placement'], seat=row['seat'], cwd=row['cwd'],
                 run_id=spec['run_id'] if credential else row['run_id'])
     seat, args = _prepare(spec, cfg, resume_id=resume_id)
-    fresh = ops_panes.record_agent(port.conn, run_id=spec['run_id'], **{name: row[name] for name in (
+    kept = _carried(port, row, spec, cfg, credential) if resume_id else {}
+    fresh = ops_panes.record_agent(port.conn, run_id=spec['run_id'], **kept, **{name: row[name] for name in (
         'pane_id', 'terminal_id', 'kind', 'seat', 'placement', 'started_by', 'role_id', 'cwd', 'name')})
     ops_panes.update_agent(port.conn, row['id'], state='gone')
     try:
         if credential:
             _write_credential(spec, credential, cfg)
         launcher = _write_files(spec, seat, args, cfg)
-    except Exception:           # no text from here: it may quote a path or a secret
+    except Exception as error:  # no text from here: it may quote a path or a secret
+        pane_fault.note(port, log, 'Writing a resume file', error)
         return _fail(port, herdr, fresh, 'private-file')
     return _launched(port, herdr, fresh, launcher, args, cfg)

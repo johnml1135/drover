@@ -19,6 +19,10 @@ Nothing is fenced and nothing new starts while the old CLI lives: only a read sh
 `rotated`, retires the row and signals the role, whose next run is a fresh session with the handoff. No replacement is
 spent. That run must write `restated.md` beside the file; the pending handoff stands until it does, so a launch that
 fails hands the same file to the one after it. `handoff.owed` says how long that goes on with no wake.
+
+A resume is the same session, so its row keeps `handoff_state`, and the director's file stands on a resumed row at any
+reading: no request clears it, a low reading does not void it and no fallback replaces it. A resumed CLI may show an empty
+context until its first turn, so there a low reading is not proof that the owner compacted.
 """
 from . import compaction_hold, config, handoff, pane_context, pane_launch, pane_send
 from .directors import DirectorRuntime
@@ -124,7 +128,7 @@ def _restatement(service, run, row):
         handoff.set_pending(service.port, run['role_id'], None)
         disk_notices.retract(service.conn, _restate_id(run), kind='pane.notice', actor='panes')
         return
-    brief = ops_panes.last_write(service.conn, row['id'], 'brief')
+    brief = ops_panes.run_brief(service.conn, row['run_id'])
     if brief and pane_launch.age(brief['at'], service.now()) >= RESTATE_S:
         pane_launch.publish(service.port, _restate_id(run), 'A new director has not restated its handoff',
                             f'{_where(row)}: no {handoff.RESTATED} beside {path}. The session goes on, and may have missed the rules.')
@@ -163,11 +167,12 @@ def maintain(service, run) -> None:
     if tokens != row['context_tokens']:
         row = ops_panes.update_agent(service.conn, row['id'], context_tokens=tokens)
     path = handoff.path_for(service.cfg, run['role_id'], run['generation'])
+    resumed = ops_panes.reused_pane(service.conn, row) and handoff.valid(path)
     if tokens < service.cfg['director']['handoff_tokens']:
-        if row['handoff_state']:
+        if row['handoff_state'] and not resumed:
             _cancel(service, row, path)
         return
-    on_hand = bool(row['handoff_state']) and handoff.valid(path)
+    on_hand = resumed or (bool(row['handoff_state']) and handoff.valid(path))
     forced = tokens >= service.cfg['watch']['context_tokens']
     if on_hand or forced:
         _settle(service, run, row, path, on_hand, forced)

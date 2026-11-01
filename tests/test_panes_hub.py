@@ -94,6 +94,14 @@ class Wiring(unittest.TestCase):
         self.assertIsInstance(runtime.directors.adapter, PaneDirectorAdapter)
         self.assertIsInstance(runtime.panes, PaneService)
 
+    def test_panes_off_looks_for_a_director_left_in_a_pane(self):
+        with mock.patch('drover.pane_fault.left_running') as looked:
+            self.built(False)
+        looked.assert_called_once()
+        with mock.patch('drover.pane_fault.left_running') as looked:
+            self.built(True)
+        looked.assert_not_called()
+
     def test_the_runner_path_builds_no_client(self):
         with mock.patch('drover.herdr_client.from_config') as client:
             self.built(False)

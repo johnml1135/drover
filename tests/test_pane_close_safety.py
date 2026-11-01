@@ -240,13 +240,17 @@ class Isolation(PaneCloseBase):
         def processes(row):
             calls.append(1)
             if len(calls) == 1:
-                raise RuntimeError('boom')
+                raise RuntimeError(secret)
             return ok(row)
 
+        secret = 'boom'
         with self.assertLogs('drover.pane_close', 'WARNING') as logged:
             results = self.tick(herdr, 0, processes=processes)
         self.assertEqual([r['verdict'] for r in results], ['keep', 'wait'])
         self.assertIn('RuntimeError', logged.output[0])
+        self.assertIn('processes', logged.output[0])        # the traceback's frames
+        self.assertNotIn('boom', ''.join(logged.output))
+        self.assertEqual(len(self.port.events(kind='pane.notice')), 1)
 
     def test_a_bad_clock_setting_restarts_the_clocks(self):
         self.retired()
