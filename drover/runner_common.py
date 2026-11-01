@@ -11,7 +11,7 @@ POLL_S = 0.2
 WATCH_GLOBS = ("*.step*.log",)       # additional output files watched by existing worker runs
 STOP_FILE, STATUS_FILE, RECORD_FILE, OUT_FILE, RUNNER_LOG = "stop-request", "status.json", "record.json", \
     "out.log", "runner.log"
-STOP_REASONS = ("rotation", "requested")
+STOP_REASONS = ("rotation", "requested", "compaction")
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9]{16,64}$")
 DETACH_WAIT_S = 5

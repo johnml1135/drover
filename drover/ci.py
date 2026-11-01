@@ -26,6 +26,9 @@ else:
     from .ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
                             _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail)
 GIT_PROMPT_ENV = {'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
+COMPACTION_STOP = 'compaction'
+
+
 class CIError(RuntimeError):
     pass
 class CIInfrastructure(CIError):
@@ -94,6 +97,27 @@ def problems(receipt, repo, base_ref):
     elif not has_base:
         found.append(f'HEAD does not contain {base_ref} {base[:12]}; rebase and regate')
     return found
+
+
+def _unfinished(runs_dir):
+    """(request path, saved request, spec) of every saved CI that may have been issued and has no terminal status."""
+    for request in Path(runs_dir).glob('ci-*.json'):
+        saved = read_result(request) or {}
+        spec = (saved.get('context') or {}).get('spec')
+        if spec and saved.get('execution') != 'prepared':
+            status = runner.read_status(runs_dir, spec['run_id']) or {}
+            if not (status.get('nonce') == spec['nonce'] and status.get('state') in ('exited', 'killed', 'timeout')):
+                yield request, saved, spec
+
+
+def active_wsl(runs_dir):
+    """{run id: spec} of the landing CI running on the WSL side, which a compaction has to wind down like a run."""
+    return {spec['run_id']: spec for _, _, spec in _unfinished(runs_dir) if spec.get('placement') != 'windows'}
+
+
+def stop_for_compaction(runs_dir, spec):
+    """Stop one landing CI for the compaction. The runner records why, so the result spends no infrastructure retry."""
+    return runner.request_stop(runs_dir, spec['run_id'], COMPACTION_STOP, nonce=spec['nonce'])
 
 
 class CI:
@@ -170,22 +194,16 @@ class CI:
         """Stop saved group CI by nonce, including a hub restart during STOP."""
         from .directors import stop_intent
         from .port import DirectPort
-        for request in Path(self.runs_dir).glob('ci-*.json'):
-            saved = read_result(request) or {}
-            spec = (saved.get('context') or {}).get('spec')
-            if spec and saved.get('execution') != 'prepared':
-                status = runner.read_status(self.runs_dir, spec['run_id']) or {}
-                if status.get('nonce') == spec['nonce'] and status.get('state') in ('exited', 'killed', 'timeout'):
-                    continue
-                try:
-                    slots.lease_pin(conn, saved.get('ticket'))
-                except slots.SlotExpired:
-                    saved['held_reason'] = 'termination-uncertain: capacity reservation missing; reconcile original execution'
-                else:
-                    saved['held_reason'] = 'termination-uncertain: stop requested'
-                runner.write_json_atomic(request, saved)
-                stop_intent(DirectPort(conn), spec, epoch,
-                            lambda value: runner.request_stop(self.runs_dir, value['run_id'], nonce=value['nonce']))
+        for request, saved, spec in _unfinished(self.runs_dir):
+            try:
+                slots.lease_pin(conn, saved.get('ticket'))
+            except slots.SlotExpired:
+                saved['held_reason'] = 'termination-uncertain: capacity reservation missing; reconcile original execution'
+            else:
+                saved['held_reason'] = 'termination-uncertain: stop requested'
+            runner.write_json_atomic(request, saved)
+            stop_intent(DirectPort(conn), spec, epoch,
+                        lambda value: runner.request_stop(self.runs_dir, value['run_id'], nonce=value['nonce']))
 
     def resume(self, prog, checkout, *, conn=None, terminal_outcomes=False):
         """Finish any saved full CI before its checkout is rebuilt for a changed merge queue.
@@ -403,6 +421,11 @@ class CI:
             time.sleep(self.poll_s)
 
     def _classify(self, spec, execution, saved, request, commit, i):
+        status = runner.read_status(self.runs_dir, spec['run_id']) or {}
+        if status.get('nonce') == spec['nonce'] and (status.get('state'), status.get('reason')) == ('killed', COMPACTION_STOP):
+            # It says nothing about the host or the commit: the gate runs again after the window, at no retry's cost.
+            request.unlink(missing_ok=True)
+            raise CIDeferred('CI stopped for the overnight WSL compaction')
         evaluated = self.result(spec['run_id'], execution, spec)
         receipt = evaluated['receipt']
         if receipt is not None:

@@ -192,28 +192,35 @@ class RecoverySteps:
     def _compaction_drain(self, hold):
         """Wind WSL runs down for a compaction hold and answer the job in a file. The grace counts from the hold file,
         so a hub restart does not start it over: at WIND_DOWN_S each WSL run still open gets the durable nonce stop,
-        and _compaction_stopped requeues it when the runner reports the kill. Windows runs are not touched."""
+        and _compaction_stopped requeues it when the runner reports the kill. Landing CI on WSL gets the same grace and
+        its own stop; the landing service runs it again after the window. Windows runs are not touched."""
+        from . import ci
         from .directors import stop_intent
         p, places = self.port, self._placements()
         runs = {rid: spec for rid, spec in self._run_specs().items()
                 if (spec.get('placement') or places.get(rid, 'unknown')) != 'windows'}
+        runs_dir = self.pipeline.runs_dir
+        gates = ci.active_wsl(runs_dir)
         tasks = {rid: entry[1] for rid, entry in self.live.items()}
         tasks.update({run['id']: task['id'] for task, run in self._open_runs()})
 
         def mine(kind):
             return {e['data']['run']: e['task_id'] for e in p.events(kind) if e['data'].get('hold') == hold['id']}
         seen, killed = mine('compaction-wind-down'), mine('compaction-stop')
-        for rid in runs.keys() - seen.keys():
+        for rid in (runs.keys() | gates.keys()) - seen.keys():
             p.append_event('compaction-wind-down', {'run': rid, 'hold': hold['id']}, tasks.get(rid))
             seen[rid] = tasks.get(rid)
         if self.now() - hold['since'] >= compaction_hold.WIND_DOWN_S:
-            for rid, spec in runs.items():
-                if rid not in killed:   # recorded first: _finish needs it to tell this kill from a worker failure
-                    p.append_event('compaction-stop', {'run': rid, 'hold': hold['id']}, tasks.get(rid))
-                    killed[rid] = tasks.get(rid)
+            for rid in (runs.keys() | gates.keys()) - killed.keys():
+                # recorded first: _finish needs it to tell this kill from a worker failure
+                p.append_event('compaction-stop', {'run': rid, 'hold': hold['id']}, tasks.get(rid))
+                killed[rid] = tasks.get(rid)
+            for spec in runs.values():
                 stop_intent(p, spec, self._control_epoch, lambda value: self.launcher.cancel(value['run_id'], value['nonce']))
-        answer = dict(id=hold['id'], stopped=sorted(seen.keys() - killed.keys()), killed=sorted(killed),
-                      requeued=list(mine('compaction-requeued').values()), drained=not runs)
+            for spec in gates.values():
+                ci.stop_for_compaction(runs_dir, spec)
+        answer = dict(id=hold['id'], stopped=sorted(seen.keys() - killed.keys(), key=str), killed=sorted(killed, key=str),
+                      requeued=list(mine('compaction-requeued').values()), drained=not runs and not gates)
         try:
             compaction_hold.save_drain(config_mod.state_dir(), answer)
         except OSError:

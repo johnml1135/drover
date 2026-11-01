@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_cleanup, disk_runtime, disk_state, ledger, placement
-from drover import placement_exec, placement_git, placement_host, resources, usage
+from drover import ci, placement_exec, placement_git, placement_host, resources, runner, runner_supervise, usage
 from drover.launch import RunnerLauncher
 from drover.ledger import disk_notices
 from drover.port import DirectPort
@@ -727,9 +727,7 @@ class Polling(Hubbed):
             self.assertEqual(dispatch.LandingService.tick(service), {})
 
 
-class WindDown(Hubbed):
-    """The hub sees the file and winds WSL work down through the durable stop and the run requeue."""
-
+class Draining(Hubbed):
     def setUp(self):
         super().setUp()
         self.clock = Clock()
@@ -755,6 +753,10 @@ class WindDown(Hubbed):
 
     def ack(self):
         return compaction_hold.read_drain(self.state)
+
+
+class WindDown(Draining):
+    """The hub sees the file and winds WSL work down through the durable stop and the run requeue."""
 
     def outcome(self):
         return self.port.list_runs(self.tid)[0]['outcome']
@@ -909,6 +911,90 @@ class WindDown(Hubbed):
         with mock.patch.object(placement, 'cleanup_identity', return_value=dict(pid=999999, birth='absent')):
             d.tick()
         self.assertIsNone(compaction_hold.read(self.state))
+
+
+class LandingGate(Draining):
+    """Landing CI in WSL is no dispatcher run: it is found through the saved request the landing service keeps."""
+    GATE = 'ci-gate'
+    NONCE = 'f' * 32
+
+    def setUp(self):
+        super().setUp()
+        self.side('windows')
+        self.runs = Path(self.pipe.runs_dir)
+        self.request = self.save_gate('wsl', 'ci-1.json', self.GATE, self.NONCE)
+        self.gate_status('running')
+
+    def save_gate(self, platform, name, run_id, nonce, execution='issued'):
+        self.runs.mkdir(parents=True, exist_ok=True)
+        spec = dict(run_id=run_id, nonce=nonce, placement=platform)
+        request = self.runs / name
+        runner.write_json_atomic(request, dict(execution=execution, context=dict(spec=spec), ticket=None))
+        return request
+
+    def gate_status(self, state, reason=None, run_id=GATE, nonce=NONCE):
+        folder = runner.run_dir(str(self.runs), run_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        runner.write_json_atomic(folder / runner.STATUS_FILE, dict(nonce=nonce, state=state, reason=reason, run_id=run_id))
+
+    def test_the_drain_waits_for_a_running_gate_and_stops_it_after_the_grace(self):
+        self.hold()
+        self.clock.now += 299
+        self.d.tick()
+        self.assertFalse(self.ack()['drained'])
+        self.assertFalse((runner.run_dir(str(self.runs), self.GATE) / runner.STOP_FILE).exists())
+        self.clock.now += 1
+        self.d.tick()
+        self.assertFalse(self.ack()['drained'])
+        folder = runner.run_dir(str(self.runs), self.GATE)
+        self.assertEqual(runner_supervise.read_stop(folder, self.NONCE), ci.COMPACTION_STOP)    # the runner keeps the reason
+        self.assertEqual(self.ack()['killed'], [self.GATE])
+        self.gate_status('killed', ci.COMPACTION_STOP)
+        self.d.tick()
+        self.assertTrue(self.ack()['drained'])
+
+    def test_a_gate_that_ends_in_the_grace_is_only_stopped(self):
+        self.hold()
+        self.d.tick()
+        self.gate_status('exited')
+        self.d.tick()
+        ack = self.ack()
+        self.assertTrue(ack['drained'])
+        self.assertEqual((ack['stopped'], ack['killed']), ([self.GATE], []))
+
+    def test_a_windows_gate_and_an_unissued_gate_are_left_alone(self):
+        self.request.unlink()
+        self.save_gate('windows', 'ci-2.json', 'ci-win', 'a' * 32)
+        self.save_gate('wsl', 'ci-3.json', 'ci-new', 'b' * 32, execution='prepared')
+        self.hold()
+        self.d.tick()
+        self.assertTrue(self.ack()['drained'])
+
+    def test_a_night_with_a_gate_and_a_dispatcher_run_answers_the_job(self):
+        self.side('wsl')                # run ids are numbers and gate ids are text: the answer sorts both
+        self.hold()
+        self.d.tick()
+        self.assertEqual(self.ack()['stopped'], [self.rid, self.GATE])
+        self.clock.now += 300
+        self.d.tick()
+        self.assertEqual(self.ack()['killed'], [self.rid, self.GATE])
+
+    def result(self, reason):
+        """What the landing service makes of the runner's ending, from the saved files."""
+        self.gate_status('killed', reason)
+        gate = ci.CI(self.runs, launcher=mock.Mock())
+        spec = dict(run_id=self.GATE, nonce=self.NONCE, placement='wsl')
+        runner.write_json_atomic(runner.run_dir(str(self.runs), self.GATE) / 'plan.json',
+                                 dict(run_id=self.GATE, nonce=self.NONCE, platform='wsl', sha='a' * 40, kind='full'))
+        return gate._classify(spec, dict(status='error', returncode=None), dict(kind='full'), self.request, 'a' * 40, 0)
+
+    def test_a_gate_the_compaction_stopped_spends_no_infrastructure_retry(self):
+        with self.assertRaises(ci.CIDeferred):      # landing queues this, which leaves the recovery count alone
+            self.result(ci.COMPACTION_STOP)
+        self.assertFalse(self.request.exists())
+
+    def test_a_gate_stopped_for_any_other_reason_still_counts(self):
+        self.assertEqual(self.result('requested')['outcome'], 'infrastructure-failed')
 
 
 class Notice(unittest.TestCase):
