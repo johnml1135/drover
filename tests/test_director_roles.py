@@ -5,7 +5,7 @@ from pathlib import Path
 
 from drover.ledger import actions, ops
 from drover.ledger.db import connect
-from drover.notifications import Conflict, Notifications
+from drover.notifications import Conflict, Notifications, roles
 
 
 class DirectorRolesTests(unittest.TestCase):
@@ -249,6 +249,60 @@ class DirectorRolesTests(unittest.TestCase):
         self.assertEqual(held['reason'], 'token-budget-exhausted')
         self.assertEqual(self.service.role_state('director:budget')['tokens_reserved'], 40)
         self.assertEqual(self.service.reserve_wake('director:budget', 'wake:4', tokens=10, model='other')['reason'], 'model-not-authorized')
+
+    def wake_once(self, role, key='w'):
+        self.assertTrue(self.service.reserve_wake(role, key)['accepted'])
+
+    def test_default_wake_limit_is_6(self):
+        self.service.register('director:six')
+        for n in range(6):
+            self.assertTrue(self.service.reserve_wake('director:six', f'wake:{n}')['accepted'], n)
+        self.assertEqual(self.service.reserve_wake('director:six', 'wake:6')['reason'], 'wake-budget-exhausted')
+
+    def test_empty_history_wakes_at_once(self):
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
+        self.service.reserve_wake('director:a', 'held-only', model='x')  # refused: wakes=0, so still no history
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
+
+    def test_critical_delivery_uses_the_urgent_window(self):
+        self.wake_once('director:a')
+        self.time += 30
+        self.assertFalse(roles.wake_due(self.service, 'director:a'))
+        self.service.broadcast('owner', ['director:a'], 'stop the line', urgency='urgent')
+        self.service.project()
+        self.assertFalse(roles.wake_due(self.service, 'director:a'), 'inside the 60 s urgent window')
+        self.time += 31
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
+        self.time = 1000.0 + 599
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
+
+    def test_ordinary_wake_waits_the_whole_window(self):
+        self.wake_once('director:a')
+        self.time += 599
+        self.assertFalse(roles.wake_due(self.service, 'director:a'))
+        self.time += 1
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
+
+    def test_policy_windows_override_the_defaults(self):
+        self.service.register('director:fast', wake_window_s=100, urgent_window_s=5)
+        self.wake_once('director:fast')
+        self.time += 99
+        self.assertFalse(roles.wake_due(self.service, 'director:fast'))
+        self.time += 1
+        self.assertTrue(roles.wake_due(self.service, 'director:fast'))
+        self.service.broadcast('owner', ['director:fast'], 'now', urgency='urgent')
+        self.service.project()
+        self.service.reserve_wake('director:fast', 'w2')
+        self.time += 5
+        self.assertTrue(roles.wake_due(self.service, 'director:fast'))
+
+    def test_window_fields_are_validated(self):
+        for key in ('wake_window_s', 'urgent_window_s'):
+            for bad in (0, -1, 86401, True, 1.5, '10', None):
+                with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
+                    self.service.register('director:bad', **{key: bad})
+            self.service.register('director:edge' + key, **{key: 86400})
+            self.service.register('director:low' + key, **{key: 1})
 
     def test_replacement_requires_confirmed_death_is_once_and_preserves_child_state(self):
         task = ops.create_task(self.conn, 'Child', 'repo', initiating_role='director:a', scope_files=['fixture-254'])

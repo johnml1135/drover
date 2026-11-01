@@ -359,6 +359,13 @@ class DirectorRuntime:
             role_epoch = self.service.admission(role_id=role_id)['epoch']
             if role_id in active or not state['pending_wake']:
                 continue
+            # Replacing a director whose latest run on this generation failed is recovery, not a new wake.
+            last = self.conn.execute('SELECT d.generation,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
+                                     'WHERE d.role_id=? ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
+            recovering = bool(last and last['generation'] == state['generation']
+                              and last['outcome'] not in ('done', 'stopped', 'admission-held'))
+            if not recovering and not roles.wake_due(self.service, role_id):
+                continue  # Grouped: the wake stays pending and no budget is reserved.
             if callable(available):
                 slots = min(slots, available())
             reason = current['reason'] if not current['allowed'] else None
