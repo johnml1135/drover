@@ -4,7 +4,7 @@ Pane ids key `agents`, `panes` and `screens`. A screen is text, or a list read o
 repeating, for a screen that changes between reads. All three stay mutable during a test. `calls` holds every argv
 without the binary, and `kwargs` the keywords of each call. Set `closed` for a stopped server, `hang` for a call that
 times out (True for every call, or a set of (group, verb)), and `refuse[(group, verb)] = code` for a refusal from a
-running server.
+running server. `pane run` echoes as a shell does: the line stays on its prompt's row, under a new prompt.
 """
 import json
 import subprocess
@@ -40,7 +40,7 @@ class FakeHerdr:
             return _error(self.refuse[pair])
         handler = {('agent', 'get'): self._agent, ('agent', 'list'): self._agents, ('agent', 'read'): self._read,
                    ('pane', 'get'): self._pane, ('pane', 'list'): self._panes, ('pane', 'read'): self._read,
-                   ('pane', 'close'): self._close, ('tab', 'create'): self._tab_create,
+                   ('pane', 'close'): self._close, ('pane', 'run'): self._run, ('tab', 'create'): self._tab_create,
                    ('tab', 'list'): self._tabs, ('workspace', 'list'): self._workspaces}.get(pair)
         return handler(args) if handler else _result({})
 
@@ -65,6 +65,13 @@ class FakeHerdr:
         if isinstance(screen, list):
             screen = screen.pop(0) if len(screen) > 1 else screen[0]
         return 0, screen, ''
+
+    def _run(self, args):
+        screen = self.screens.get(args[2])
+        if isinstance(screen, str) and screen.strip():
+            prompt = screen.rstrip('\n').splitlines()[-1]
+            self.screens[args[2]] = f"{screen.rstrip(chr(10))}{args[3]}\n{prompt}"
+        return _result({})
 
     def _close(self, args):
         if args[2] not in self.panes:

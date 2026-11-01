@@ -24,12 +24,14 @@ __all__ = ['NATIVE_COMPACT', 'FIRST_TURN_S', 'brief', 'open_pane', 'repo_trusted
 
 FIRST_TURN_S = 90
 STARTUP_S = 60
+SHELL_PROMPT_S = 30         # a new tab's shell draws its prompt in its own time; Task 15 measures how long that is
 SHELL_BACK_S = 10           # the environment line must end before `agent start` finds a free shell
 POLL_S = 2
 SHELL_READS = 2             # a launch line takes a moment to become a process, so one read of a lone shell proves nothing
 RUNNING = ('starting', 'live', 'rotating', 'compaction')
 RESUMABLE = ('live', 'compaction')
 SHELL_BUSY = ('shell-not-alone', 'shell-line-not-empty')
+SHELL_NOT_READY = 'shell-not-ready'
 OWNERS_NOW = ('dialog', 'suspected-dialog', 'draft', 'occupant-changed')    # waiting cannot clear these
 DEFAULT_PROMPT = 'Read your inbox and commit a checkpoint.'
 _now = time.monotonic
@@ -79,7 +81,7 @@ def _notice(port, notice_id, title, body):
                          epic_title='Directors', actor='panes')
 
 
-def _fail(port, herdr, row, reason, *, notice=True) -> dict:
+def _fail(port, herdr, row, reason, *, notice=True, outcome='The pane is left as it is. Closing it frees the role.') -> dict:
     """End the row. Its writes close as `observed`, never `unsent`, so the launch claim stands."""
     for write in ops_panes.open_writes(port.conn, row['id']):
         ops_panes.finish_write(port.conn, write['id'], 'observed', 'launch-failed')
@@ -88,7 +90,7 @@ def _fail(port, herdr, row, reason, *, notice=True) -> dict:
                       reason=reason, shell_alone=_read_alone(herdr, row)), actor='panes')
     if notice:
         _notice(port, f"pane-launch:{row['id']}", 'An agent did not start in its pane',
-                f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: {reason}. The pane is left as it is.")
+                f"Seat {row['seat']} ({row['placement']}), pane {row['pane_id']}: {reason}. {outcome}")
     return failed
 
 
@@ -149,19 +151,44 @@ def _write_files(spec, seat, args, cfg):
                                      port=cfg['hub']['api_port'], distro=placement.distro(cfg['paths']['wsl_distro']))
 
 
-def _launch(port, herdr, row, launcher, args):
-    """The last write that went out. A PaneRefused means that write did not."""
-    line = "& '" + launcher.replace("'", "''") + "'"
-    written = pane_send.start_in_shell(port, herdr, row, line)
-    if row['placement'] == 'wsl' or written['state'] != 'sent':
-        return written
-    for _ in _ticks(SHELL_BACK_S):
+def _when_shell_is_free(seconds, write, late):
+    """`write` once the shell takes it. A refusal here means nothing went out, so asking again resends nothing."""
+    for _ in _ticks(seconds):
         try:
-            return pane_send.start_agent(port, herdr, row, row['name'], args)
+            return write()
         except PaneRefused as refused:
             if refused.reason not in SHELL_BUSY:
                 raise
-    raise PaneRefused('shell-not-back')
+    raise PaneRefused(late)
+
+
+def _launch(port, herdr, row, launcher, args):
+    """The last write that went out. A PaneRefused means that write did not.
+
+    Only a new tab is waited for. A pane being reused shows what it shows: one read, and a refusal goes to a fresh pane.
+    """
+    line = "& '" + launcher.replace("'", "''") + "'"
+    run = lambda: pane_send.start_in_shell(port, herdr, row, line)
+    written = run() if ops_panes.reused_pane(port.conn, row) else _when_shell_is_free(SHELL_PROMPT_S, run, SHELL_NOT_READY)
+    if row['placement'] == 'wsl' or written['state'] != 'sent':
+        return written
+    return _when_shell_is_free(SHELL_BACK_S, lambda: pane_send.start_agent(port, herdr, row, row['name'], args), 'shell-not-back')
+
+
+def _close_blank(port, herdr, row):
+    """Close a tab Drover opened that never showed a prompt. True only if it did: anything on it, and it stays."""
+    last = ops_panes.last_write(port.conn, row['id'])
+    if ops_panes.reused_pane(port.conn, row) or (last and last['state'] != 'unsent'):
+        return False
+    try:
+        pane = herdr.call('pane', 'get', row['pane_id'])['pane']
+        if not pane_send.shell_alone(herdr, row) or herdr.text('pane', 'read', row['pane_id'], '--source', 'visible').strip() or \
+                pane.get('focused') is not False or pane.get('terminal_id') != row['terminal_id']:
+            return False
+        herdr.call('pane', 'close', row['pane_id'])
+    except (PaneRefused, HerdrUnavailable, HerdrRefused, KeyError):
+        return False
+    return True
 
 
 def _dialog(screen):
@@ -238,13 +265,24 @@ def _settle(port, herdr, row, cfg) -> dict:
     return _fail(port, herdr, row, 'agent-not-ready')
 
 
+def _stall_reason(herdr, row):
+    """Herdr gives up on an agent held at a dialog too, and the owner needs to hear which."""
+    try:
+        return 'dialog' if _dialog(herdr.text('pane', 'read', row['pane_id'], '--source', 'visible')) else 'launch-stalled'
+    except (HerdrUnavailable, HerdrRefused):
+        return 'launch-stalled'
+
+
 def _launched(port, herdr, row, launcher, args, cfg) -> dict:
     try:
         written = _launch(port, herdr, row, launcher, args)
     except PaneRefused as refused:
+        if refused.reason == SHELL_NOT_READY and _close_blank(port, herdr, row):
+            _fail(port, herdr, row, refused.reason, outcome='Its blank tab was closed.')
+            return ops_panes.update_agent(port.conn, row['id'], state='gone')
         return _fail(port, herdr, row, refused.reason)
     if written['state'] != 'sent':
-        return _fail(port, herdr, row, 'launch-stalled')
+        return _fail(port, herdr, row, _stall_reason(herdr, row))
     return _settle(port, herdr, row, cfg)
 
 
@@ -345,7 +383,8 @@ def resume(port, herdr, row, spec, *, cfg) -> dict:
     """Relaunch the recorded session in its pane, on a new row and with no brief. Seat and placement come from the row.
 
     The old row goes `gone`, so a pane's history cannot pass for its present. The new row is not the pane's first, so
-    no startup dialog is answered here.
+    no startup dialog is answered here. A `failed` row comes back on any refusal, and the same pane is not tried again:
+    the role's next `start` opens a fresh pane once a read shows this one holds no agent.
     """
     if row.get('state') not in RESUMABLE or row.get('started_by') != 'drover' or not runner.valid_worker_session(row.get('session_id')):
         raise AdmissionHeld('pane-not-resumable')
@@ -357,6 +396,8 @@ def resume(port, herdr, row, spec, *, cfg) -> dict:
         raise AdmissionHeld('pane-open-write')
     if _terminal(herdr, row['pane_id']) != row['terminal_id']:
         raise AdmissionHeld('pane-occupant-changed')
+    if _read_alone(herdr, row) is not True:
+        raise AdmissionHeld('pane-agent-running')
     spec = dict(spec, backend=row['kind'], placement=row['placement'], seat=row['seat'], cwd=row['cwd'], run_id=row['run_id'])
     seat, args = _prepare(spec, cfg, resume_id=row['session_id'])
     fresh = ops_panes.record_agent(port.conn, **{name: row[name] for name in (

@@ -98,7 +98,6 @@ def agent_args(spec, *, model, effort, settings=None, resume=None) -> list:
         args = ['resume', resume] if resume else []
         args += ['--model', model, '-c', f'model_reasoning_effort={effort}', '-c', f'model_context_window={NATIVE_COMPACT}',
                  '-c', f'model_auto_compact_token_limit={NATIVE_COMPACT}', '-c', 'check_for_update_on_startup=false']
-    args += [str(arg) for arg in spec.get('extra_args') or ()]
     _reject_permission_bypass(args)
     return args
 

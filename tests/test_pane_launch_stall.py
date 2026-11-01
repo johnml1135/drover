@@ -22,6 +22,17 @@ class Stalled(Launching):
         self.assertEqual((row['state'], len(self.calls('agent', 'start'))), ('failed', 1))
         self.assertEqual(self.calls('agent', 'prompt'), [])
 
+    def test_a_stall_on_a_dialog_is_named_as_the_dialog(self):
+        fake = self.scene(boots=False)
+        fake.hang = {('agent', 'start')}
+
+        def blocked():
+            fake.processes = self.foreground
+            fake.screens[PANE] = 'Do you trust the files in this folder?\n'
+        fake.after[('agent', 'start', 1)] = blocked
+        self.assertEqual(self.start()['state'], 'failed')
+        self.assertEqual(self.reason(), 'dialog')
+
     def test_a_stalled_launch_is_read_and_the_read_is_on_record(self):
         self.stalled()
         row = self.start()
@@ -62,6 +73,101 @@ class Stalled(Launching):
         row = self.start()
         self.assertEqual((row['state'], self.calls('pane', 'run')), ('failed', []))
         self.assertEqual(len(self.notices()), 1)
+
+
+class ShellPrompt(Launching):
+    """A new tab draws its prompt when it is ready, so the launch waits for it, once, and leaves no blank tab behind."""
+
+    def blank(self):
+        fake = self.scene()
+        fake.screens[PANE] = ''
+        return fake
+
+    def test_a_slow_prompt_is_waited_for_and_the_launch_goes_once(self):
+        fake = self.blank()
+        self.turns()
+        fake.after[('pane', 'read', 3)] = lambda: fake.screens.update({PANE: PROMPT})
+        self.assertEqual(self.start()['state'], 'live')
+        self.assertEqual(len(self.calls('pane', 'run')), 1)
+
+    def test_a_prompt_that_never_comes_closes_the_blank_tab(self):
+        self.blank()
+        row = self.start()
+        self.assertEqual(self.calls('pane', 'run'), [])
+        self.assertEqual(self.calls('pane', 'close'), [['pane', 'close', PANE]])
+        self.assertEqual(self.reason(), 'shell-not-ready')
+        self.assertEqual((row['state'], self.rows()), ('gone', []))
+        self.assertIn('blank tab was closed', self.notices()[0]['body'])
+        self.assertLessEqual(self.sleep.call_count, pane_launch.SHELL_PROMPT_S)
+
+    def test_a_closed_tab_leaves_the_role_free(self):
+        fake = self.blank()
+        self.start()
+        fake.screens['w1:p2'] = PROMPT
+        self.assertEqual(self.start()['pane_id'], 'w1:p2')
+
+    def test_a_tab_that_is_not_blank_or_not_clearly_ours_stays(self):
+        cases = dict(typed=dict(screen=PROMPT + 'git status'), banner=dict(screen='PowerShell 7.5\n'),
+                     focused=dict(pane={'focused': True}), program=dict(processes=running('dotnet.exe')))
+        for count, (name, case) in enumerate(cases.items(), 1):
+            with self.subTest(name):
+                fake = self.scene()
+                fake.screens[PANE] = case.get('screen', '')
+                fake.processes = case.get('processes', LONE_SHELL)
+                real = fake._tab_create
+
+                def tab(args):
+                    answer = real(args)
+                    fake.panes[PANE].update(case.get('pane', {}))
+                    return answer
+                fake._tab_create = tab
+                row = self.start(self.spec(role_id=name, run_id=count))
+                self.assertEqual(row['state'], 'failed')
+                self.assertEqual(self.calls('pane', 'close'), [])
+                self.reset()
+
+    def test_a_close_that_fails_leaves_the_row_failed(self):
+        self.blank().refuse[('pane', 'close')] = 'pane_busy'
+        row = self.start()
+        self.assertEqual(row['state'], 'failed')
+        self.assertIn('Closing it frees the role.', self.notices()[0]['body'])
+
+    def test_herdr_closing_midway_keeps_the_tab(self):
+        fake = self.blank()
+        fake.after[('pane', 'read', 2)] = lambda: setattr(fake, 'closed', True)
+        row = self.start()
+        self.assertEqual((row['state'], self.calls('pane', 'close')), ('failed', []))
+
+    def test_a_tab_with_a_launch_on_record_is_never_closed(self):
+        fake = self.scene(boots=False)
+        row = self.start()
+        self.assertEqual((row['state'], fake.panes[PANE]['pane_id'], self.calls('pane', 'close')), ('failed', PANE, []))
+
+
+class EchoedLaunchLine(Launching):
+    """A shell leaves what it ran on screen. Drover's own line passes; anything else that looks like it does not."""
+
+    def test_a_windows_launch_passes_its_own_environment_line(self):
+        self.scene()
+        self.turns()
+        self.assertEqual(self.start()['state'], 'live')
+        self.assertEqual(len(self.calls('agent', 'start')), 1)
+
+    def test_a_line_drover_did_not_run_stops_the_agent_start(self):
+        fake = self.scene()
+        fake.after[('pane', 'run', 1)] = lambda: fake.screens.update({PANE: PROMPT + 'git push\n' + PROMPT})
+        self.assertEqual(self.start()['state'], 'failed')
+        self.assertEqual(self.calls('agent', 'start'), [])
+
+    def test_only_a_shell_write_on_this_pane_counts(self):
+        self.scene()
+        row = ops_panes.record_agent(self.conn, pane_id=PANE, kind='claude', seat='s', placement='windows', started_by='drover')
+        other = ops_panes.record_agent(self.conn, pane_id='w1:p9', kind='claude', seat='s', placement='windows', started_by='drover')
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, row['id'], 'brief', 'a')['id'], 'sent')
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, other['id'], 'shell', 'b')['id'], 'sent')
+        self.assertEqual(ops_panes.ran_on_pane(self.conn, PANE), set())
+        ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, row['id'], 'shell', 'c')['id'], 'sent')
+        self.assertEqual(len(ops_panes.ran_on_pane(self.conn, PANE)), 1)
 
 
 class OneAgentForARole(Launching):
@@ -240,12 +346,55 @@ class Resume(Launching):
         self.assertEqual(str(caught.exception), 'herdr-unavailable')
         self.assertEqual(self.rows()[0]['id'], row['id'])
 
-    def test_an_agent_still_in_the_pane_gets_no_command(self):
+    def test_an_agent_still_in_the_pane_holds_and_changes_nothing(self):
         old = self.live()
         self.fake.processes = running('wsl.exe')
         self.fake.screens[PANE] = IDLE
+        with self.assertRaises(AdmissionHeld) as caught:
+            self.resume(old)
+        self.assertEqual(str(caught.exception), 'pane-agent-running')
+        self.assertEqual(self.calls('pane', 'run'), [])
+        self.assertEqual([r['id'] for r in self.rows()], [old['id']])
+
+    def ran_before(self, old, line="& 'C:\\state\\panes\\7\\launch.ps1'"):
+        """The old launch's line is still on screen above the prompt, as a shell leaves it."""
+        write = ops_panes.note_write(self.conn, old['id'], 'shell', line)
+        ops_panes.finish_write(self.conn, write['id'], 'sent')
+        self.fake.screens[PANE] = f'{PROMPT}{line}\nagent output\n{PROMPT}'
+
+    def test_a_resume_passes_the_old_launch_line_on_screen(self):
+        old = self.live()
+        self.ran_before(old)
+        self.assertEqual(self.resume(old)['state'], 'live')
+        self.assertEqual(len(self.calls('pane', 'run')), 1)
+
+    def test_any_other_line_on_screen_refuses_with_no_wait(self):
+        old = self.live()
+        self.ran_before(old)
+        self.fake.screens[PANE] = PROMPT + 'claude --model opus\n' + self.fake.screens[PANE]
         row = self.resume(old)
-        self.assertEqual((row['state'], self.calls('pane', 'run')), ('failed', []))
+        self.assertEqual((row['state'], self.calls('pane', 'run'), self.sleep.call_count), ('failed', [], 0))
+        self.assertEqual(self.reason(), 'shell-line-not-empty')
+
+    def test_a_resume_that_refuses_falls_back_to_a_fresh_pane(self):
+        fake = self.fake_after_refused_resume()
+        row = self.start()
+        self.assertEqual(self.calls('tab', 'create')[0][:2], ['tab', 'create'])
+        self.assertEqual(row['pane_id'], 'w1:p2')
+        self.assertEqual({call[2] for call in self.calls('pane', 'run')}, {'w1:p2'})
+        self.assertEqual(fake.screens[PANE], PROMPT + 'typed\n' + PROMPT)
+
+    def fake_after_refused_resume(self):
+        old = self.live('claude', 'windows')
+        self.fake.screens[PANE] = PROMPT + 'typed\n' + PROMPT
+        self.fake.screens['w1:p2'] = PROMPT
+        self.assertEqual(self.resume(old)['state'], 'failed')
+        self.fake.after.clear()
+        return self.fake
+
+    def test_a_refused_resume_never_closes_the_pane(self):
+        self.fake_after_refused_resume()
+        self.assertEqual(self.calls('pane', 'close'), [])
 
     def test_a_stalled_resume_is_never_repeated(self):
         old = self.live()

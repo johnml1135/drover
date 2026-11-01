@@ -235,6 +235,54 @@ class Launch(Base):
                     self.assertIsNone(self.last())
                     self.reset()
 
+    def echoed(self, *lines, state='sent', kind='shell'):
+        for line in lines:
+            ops_panes.finish_write(self.conn, ops_panes.note_write(self.conn, self.row['id'], kind, line)['id'], state)
+
+    def test_a_line_drover_ran_on_this_pane_is_no_draft(self):
+        self.fresh(placement='windows', kind='claude')
+        self.run_one()
+        self.assertEqual(self.fake.screens[PANE], f'{PROMPT}{COMMAND}\n{PROMPT}')
+        self.assertEqual(self.agent()['state'], 'sent')
+
+    def test_only_a_whole_line_that_went_out_is_exempt(self):
+        cases = dict(prefix=COMMAND[:-3], extended=COMMAND + ' --more', other='git push --force origin main')
+        for name, line in cases.items():
+            with self.subTest(name):
+                self.fresh(f'{PROMPT}{line}\n{PROMPT}', placement='windows', kind='claude')
+                self.echoed(COMMAND)
+                self.refused(self.agent, 'shell-line-not-empty')
+                self.reset()
+
+    def test_a_line_on_record_that_did_not_go_out_is_not_exempt(self):
+        for state in ('unsent', 'observed'):
+            with self.subTest(state):
+                self.fresh(f'{PROMPT}{COMMAND}\n{PROMPT}', placement='windows', kind='claude')
+                self.echoed(COMMAND, state=state)
+                self.refused(self.agent, 'shell-line-not-empty')
+                self.reset()
+
+    def test_a_line_from_an_older_row_on_this_pane_is_exempt(self):
+        self.fresh(f'{PROMPT}{COMMAND}\n{PROMPT}', placement='windows', kind='claude')
+        self.echoed(COMMAND)
+        ops_panes.update_agent(self.conn, self.row['id'], state='gone')
+        self.row = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', kind='claude', seat='seat', placement='windows',
+                                          started_by='drover')
+        self.assertEqual(self.agent()['state'], 'sent')
+
+    def test_text_typed_as_a_brief_is_not_exempt(self):
+        self.fresh(f'{PROMPT}{COMMAND}\n{PROMPT}', placement='windows', kind='claude')
+        self.echoed(COMMAND, kind='brief')
+        self.refused(self.agent, 'shell-line-not-empty')
+
+    def test_a_wrapped_draft_still_refuses_with_a_line_on_record(self):
+        for tail in ('100%', '#', 'abc$'):
+            with self.subTest(tail):
+                self.fresh(f'{PROMPT}git commit -m "raise\n{tail}', placement='windows', kind='claude')
+                self.echoed(COMMAND)
+                self.refused(self.agent, 'shell-line-not-empty')
+                self.reset()
+
     def test_each_empty_prompt_passes(self):
         for screen in (PROMPT, 'history\nPS C:\\my repos\\x>', 'C:\\repos>', 'user@host:~/x$ ', 'history\n\n$ \n\n\n'):
             with self.subTest(screen):

@@ -415,14 +415,15 @@ def _starting(herdr, row, foreground):
     return screen
 
 
-def _shell_line_empty(herdr, row):
+def _shell_line_empty(port, herdr, row):
     rows = [line for line in _starting(herdr, row, _lone_shell).splitlines() if line.strip()]
     if not rows or not SHELL_PROMPT.fullmatch(rows[-1]):
         raise PaneRefused('shell-line-not-empty')
+    ran = ops_panes.ran_on_pane(port.conn, row['pane_id'])
     for above in rows[:-1]:     # a wrapped draft: its first row is a prompt with text, its tail may pass as a prompt
-        found = SHELL_PROMPT.match(above.rstrip())
-        if found and found.end() < len(above.rstrip()):
-            raise PaneRefused('shell-line-not-empty')
+        found = SHELL_PROMPT.match(above := above.rstrip())
+        if found and found.end() < len(above) and pane_screen.prompt_fingerprint(above[found.end():])[0] not in ran:
+            raise PaneRefused('shell-line-not-empty')   # only a whole line Drover ran here is known not to be a draft
 
 
 def shell_alone(herdr, row) -> bool:
@@ -469,7 +470,7 @@ def start_in_shell(port, herdr, row, command) -> dict:
     _check_text(command)
     row = _current(port, row)
     _refuse_open_write(port, row)
-    read = lambda: _shell_line_empty(herdr, row)
+    read = lambda: _shell_line_empty(port, herdr, row)
     read()
     return _write(port, herdr, row, 'shell', command, read, ('pane', 'run', row['pane_id'], command), once=LAUNCHES)
 
@@ -488,7 +489,7 @@ def start_agent(port, herdr, row, name, args=()) -> dict:
     if row['placement'] != 'windows':
         raise PaneRefused('not-windows')
     _refuse_open_write(port, row)
-    read = lambda: _shell_line_empty(herdr, row)
+    read = lambda: _shell_line_empty(port, herdr, row)
     read()
     argv = ('agent', 'start', name, '--kind', row['kind'], '--pane', row['pane_id'], '--', *args)
     return _write(port, herdr, row, 'start', name, read, argv, once=('start',))

@@ -116,11 +116,17 @@ class Args(unittest.TestCase):
         with_hook = self.args(spec(placement='wsl'), settings='/mnt/d/s/settings.json')
         self.assertEqual(with_hook[with_hook.index('--settings') + 1], '/mnt/d/s/settings.json')
 
-    def test_a_bypass_in_any_extra_argument_raises(self):
-        for extra in (['--dangerously-skip-permissions'], ['--permission-mode', 'bypassPermissions'],
-                      ['--allow-dangerously-skip-permissions=1']):
-            with self.subTest(extra), self.assertRaises(ValueError):
-                self.args(spec(extra_args=extra))
+    def test_a_bypass_as_model_or_effort_raises(self):
+        for value in ('--dangerously-skip-permissions', '--allow-dangerously-skip-permissions=1',
+                      '--permission-mode=bypassPermissions'):
+            with self.subTest(value), self.assertRaises(ValueError):
+                pane_files.agent_args(spec(), model=value, effort='high')
+            with self.subTest(value), self.assertRaises(ValueError):
+                pane_files.agent_args(spec(), model='m', effort=value)
+
+    def test_nothing_but_the_named_flags_reach_the_agent(self):
+        self.assertEqual(self.args(spec(extra_args=['--yolo'], sandbox='danger-full-access')),
+                         ['--model', 'm', '--effort', 'high', '--autocompact', '350k'])
 
     def test_a_resume_session_leads_the_arguments(self):
         self.assertEqual(self.args(spec(), resume='s1')[:2], ['--resume', 's1'])

@@ -32,7 +32,7 @@ class Holds(Launching):
 
     def test_permission_bypass_is_refused(self):
         self.scene()
-        self.held('permission-bypass-refused', self.spec(extra_args=['--dangerously-skip-permissions']))
+        self.held('permission-bypass-refused', self.spec(model='--dangerously-skip-permissions'))
         self.assertEqual(self.fake.calls, [])
 
     def test_codex_on_windows_stays_forbidden(self):
@@ -51,6 +51,13 @@ class Holds(Launching):
         fake = self.scene()
         fake._workspaces = lambda args: (0, '{"result": {"workspaces": []}}', '')
         self.held('herdr-no-workspace')
+
+    def test_a_spec_cannot_add_flags(self):
+        self.scene()
+        self.turns()
+        self.start(self.spec(extra_args=['--yolo'], sandbox='danger-full-access'))
+        self.assertNotIn('--yolo', self.calls('agent', 'start')[0])
+        self.assertNotIn('danger-full-access', self.calls('agent', 'start')[0])
 
     def test_a_refused_tab_holds_and_leaves_no_row(self):
         self.scene().refuse[('tab', 'create')] = 'workspace_not_found'
@@ -161,6 +168,11 @@ class Startup(Launching):
         row = self.start(self.spec('codex', 'wsl'))
         self.assertEqual(row['state'], 'failed')
         self.assertEqual(self.calls('pane', 'send-text'), [])
+
+    def test_the_notice_says_closing_the_pane_frees_the_role(self):
+        self.scene(boots=False)
+        self.start()
+        self.assertIn('Closing it frees the role.', self.notices()[0]['body'])
 
     def test_one_quiet_read_of_a_shell_does_not_fail_a_launch(self):
         fake = self.scene('codex', 'wsl', boots=False)
@@ -293,6 +305,7 @@ class Trust(Launching):
         self.assertEqual(len(self.calls('agent', 'start')), 1)
         self.assertEqual([c for c in self.fake.calls if c[:2] in (['pane', 'send-keys'], ['agent', 'prompt'])], [])
         self.assertEqual(len(self.notices()), 1)
+        self.assertEqual(self.reason(), 'dialog')
 
     def test_a_second_trust_dialog_stays_with_the_owner(self):
         fake = self.trust_scene()
