@@ -286,9 +286,7 @@ class NotificationAcceptanceTests(unittest.TestCase):
         self.assertIsNotNone(first['summary'])
         self.assertEqual(service.get_checkpoint('research')['checkpoint'], {'phase':'saved'})
         self.assertEqual([m['delivery_id'] for m in service.receive('research')], first['summary']['ids'])
-        clock = [1000. + 600]  # the replacement wake falls in a new grouping window
-        service.now = lambda: clock[0]
-        runtime = DirectorRuntime(DirectPort(conn), adapter, now=lambda: clock[0])
+        runtime = DirectorRuntime(DirectPort(conn), adapter, now=lambda:1000.)
         self.assertEqual(len(runtime.tick(service.admission(), capacity)['launched']), 1)
         second = adapter.invocations[1]
         self.assertEqual(second['returncode'], 0, second['requests'])

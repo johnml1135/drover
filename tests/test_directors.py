@@ -9,7 +9,7 @@ from unittest.mock import patch
 from drover.directors import DirectorRuntime, RunnerDirectorAdapter
 from drover.ledger import actions, ops
 from drover.ledger.db import connect
-from drover.notifications import Notifications
+from drover.notifications import Notifications, roles
 from drover.port import DirectPort
 from drover import usage
 
@@ -325,20 +325,55 @@ class DirectorRuntimeTests(unittest.TestCase):
 
     def test_burst_urgent_and_cap_keep_the_wake_pending_with_one_question(self):
         self.default_limit()
-        for minute in range(120):
+        launches = []
+        for tick_no in range(120):
             self.time += 30
-            if minute % 6 == 0 and minute < 120:
+            if tick_no % 6 == 0:
                 self.wake()
-            if self.time == 1000. + 30 * 60:
+            if tick_no == 59:
                 self.service.broadcast('owner', ['director:a'], 'critical', urgency='urgent')
             self.finish_all()
+            before = len(self.adapter.started)
             self.tick()
+            launches += [self.time] * (len(self.adapter.started) - before)
         # 20 events and one critical delivery over the hour, on one clock.
-        self.assertLessEqual(len(self.adapter.started), 6)
-        self.assertGreaterEqual(len(self.adapter.started), 2)
+        critical = [r for r in self.conn.execute('SELECT envelope FROM notification_inbox')
+                    if json.loads(r['envelope']).get('severity') == 'critical']
+        self.assertEqual(len(critical), 1)
+        # 600 s windows until the critical at 2800, then 60 s spacing until the cap of 6 stops it.
+        self.assertEqual(launches, [1030., 1630., 2230., 2800., 2860., 2920.])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM questions WHERE target_kind='director' "
                                            "AND status='open'").fetchone()[0], 1)
         self.assertEqual(self.service.role_state('director:a')['pending_wake'], 1)
+
+    def test_failed_director_is_replaced_without_waiting_for_the_window(self):
+        self.default_limit()
+        self.wake()
+        self.tick()
+        first = self.adapter.started[0]
+        self.adapter.states[first['nonce']] = 'gone'
+        self.adapter.handles[first['run_id']].result = {'status': 'error', 'usage': {}}
+        self.time += 60
+        self.tick()
+        self.assertEqual(len(self.adapter.started), 2)
+
+    def test_failed_or_held_launch_does_not_start_the_window(self):
+        from drover.launch import AdmissionHeld
+        self.default_limit()
+        self.wake()
+        def held():
+            raise AdmissionHeld('transient')
+        self.adapter.before_launch = held
+        self.tick()
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
+
+    def test_launch_with_unknown_effect_does_not_start_the_window(self):
+        self.default_limit()
+        self.wake()
+        self.adapter.fail_launch = True
+        self.tick()
+        self.assertEqual(len(self.adapter.started), 1)
+        self.assertTrue(roles.wake_due(self.service, 'director:a'))
 
     def test_capacity_and_allowance_refusal_preserve_wake_and_budget(self):
         self.wake()
@@ -364,7 +399,6 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertIn('uncertain', str(self.tick()))
         self.assertEqual(len(self.adapter.started), 1)
         self.adapter.states[first['nonce']] = 'gone'
-        self.time += 600
         self.tick()
         self.assertEqual(len(self.adapter.started), 2)
         self.assertEqual(self.adapter.started[1]['generation'], first['generation'] + 1)
@@ -374,12 +408,10 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.assertEqual(ops.get_task(self.conn, child['id'])['attempts'], 1)
         second = self.adapter.started[1]
         self.adapter.states[second['nonce']] = 'gone'
-        self.time += 600
         self.runtime = DirectorRuntime(self.port, self.adapter, now=lambda: self.time)
         self.assertIn('replacement-budget-exhausted', str(self.tick()))
         self.assertEqual(len(self.adapter.started), 2)
         self.wake()
-        self.time += 600
         self.runtime = DirectorRuntime(self.port, self.adapter, now=lambda: self.time)
         self.assertIn('replacement-budget-exhausted', str(self.tick()))
         self.assertEqual(len(self.adapter.started), 2)
@@ -391,7 +423,6 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.adapter.states[original['nonce']] = 'gone'
         self.adapter.capabilities = {**ControlledAdapter.capabilities, 'verified_resume': True, 'fresh_start': False}
         self.adapter.verify_resume = lambda spec: spec['nonce'] == original['nonce']
-        self.time += 600  # the next wake is grouped into a new window
         self.tick()
         resumed = self.adapter.started[1]
         self.assertEqual(resumed['mode'], 'resume')

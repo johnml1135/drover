@@ -94,7 +94,10 @@ def wake_due(service, role_id):
     No history means due at once. Held and coalesced entries carry wakes=0 and do not count.
     """
     conn = service.conn
-    last = conn.execute('SELECT MAX(created) FROM director_budget_entries WHERE role_id=? AND wakes>0',
+    # A launch that never reached running (still launching, or admission-held) does not start the window.
+    last = conn.execute('SELECT MAX(b.created) FROM director_budget_entries b WHERE b.role_id=? AND b.wakes>0 '
+                        "AND NOT EXISTS (SELECT 1 FROM director_runs d JOIN runs r ON r.id=d.run_id "
+                        "WHERE 'launch:'||d.nonce=b.request_key AND (d.state='launching' OR r.outcome='admission-held'))",
                         (role_id,)).fetchone()[0]
     if last is None:
         return True

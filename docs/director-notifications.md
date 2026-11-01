@@ -71,8 +71,8 @@ Defaults for a newly registered role and its subscriptions:
 | Pending routine/actionable limits | 1,000 / 10,000 per role |
 | Processing session / lease lifetime | 3,600 / 60 seconds |
 | Task action allowlist / allowed models | Empty / empty |
-| Wake / model token budget | 6 wakes per hour / 0 tokens |
-| Wake grouping window / urgent window | At most one wake per 600 seconds / 60 seconds while a critical delivery is unacknowledged |
+| Wake / model token budget | 6 wakes per hour / 0 tokens (a role that never stored a limit moves from 4 to 6; an explicit stored limit stays) |
+| Wake grouping window / urgent window | At most one wake per 600 seconds / 60 seconds while a critical delivery is unacknowledged; every role gets the window, a failed launch does not start it, and replacing a failed director is not held by it |
 | Issue recovery / automatic replacement limit | At most 2 attempts / 1 replacement |
 
 The normal profile sends issues and decisions immediately. It sends accepted
