@@ -214,6 +214,33 @@ class YankTests(BypassBase):
                 settle(self.conn, tid)
                 self.assertEqual(self.status(tid), states.CANCELLED)
 
+    def closed(self, status):
+        tid = self.task()['id']
+        if status == states.LANDED:
+            ledger_fixture.stage(self.conn, tid, 'landed')
+        else:
+            yank(self.conn, tid)
+            if status == states.CANCELLED:
+                abandon(self.conn, tid)
+        self.assertEqual(self.status(tid), status)
+        return tid
+
+    def test_start_run_refuses_a_worker_on_every_closed_status(self):
+        for status in states.CLOSED:
+            with self.subTest(status=status):
+                tid = self.closed(status)
+                before = len(ops.list_runs(self.conn, tid))
+                with self.assertRaisesRegex(IllegalTransition, status):
+                    ops.start_run(self.conn, tid, 'worker', 'local')
+                self.assertEqual(len(ops.list_runs(self.conn, tid)), before)
+
+    def test_start_run_still_records_other_roles_on_a_closed_task(self):
+        for status in states.CLOSED:
+            for role in ('gate', 'review', 'reviewer'):
+                with self.subTest(status=status, role=role):
+                    run = ops.start_run(self.conn, self.closed(status), role, 'local')
+                    ops.finish_run(self.conn, run, 'ok')
+
     def test_start_run_refused_after_yank(self):
         tid = self.task()['id']
         ledger_fixture.stage(self.conn, tid, 'claimed')

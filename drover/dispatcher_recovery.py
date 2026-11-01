@@ -191,7 +191,10 @@ class RecoverySteps:
     def _is_yanked(self, task_id):
         return self.port.get_task(task_id)['status'] == 'yanked'
 
-    def _end_if_yanked(self, run_id, task_id, **usage):
+    def _is_closed(self, task_id):
+        return self.port.get_task(task_id)['status'] in ('yanked', 'cancelled', 'landed')
+
+    def _end_if_yanked(self, run_id, task_id, release=True, **usage):
         """True when the owner yanked the task: its run ends `yanked` whatever it reported, and the task stays put. Every
         path that moves a task after a run ends asks here first. A retried finish finds the run already ended."""
         p = self.port
@@ -199,15 +202,16 @@ class RecoverySteps:
             return False
         if any(r['id'] == run_id and r['ended'] is None for r in p.list_runs(task_id)):
             p.finish_run(run_id, contract.YANKED, note='stopped by a yank', **usage)
-        self.ci_runners.release(task_id)
+        if release:
+            self.ci_runners.release(task_id)
         return True
 
-    def _unless_yanked(self, task_id, step, *args, **kw):
-        """Run a claim's admission or launch step; None when a yank refused its status move or its run."""
+    def _unless_closed(self, task_id, step, *args, **kw):
+        """Run a claim's admission or launch step; None when a closed task refused its status move or its run."""
         try:
             return step(*args, **kw)
         except ValueError:
-            if not self._is_yanked(task_id):
+            if not self._is_closed(task_id):
                 raise
             return None
 

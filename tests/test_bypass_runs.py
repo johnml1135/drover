@@ -105,6 +105,18 @@ class StoppingTheRun(YankBase):
         d2.tick()
         self.assert_stopped(tid, rid)
 
+    def test_stop_still_records_the_yank(self):
+        """A STOP returns from the tick early; the yank must already have been asked for."""
+        tid, rid = self.start()
+        self.yank(tid)
+        refused = dict(allowed=False, epoch=1, reason='stop')
+        with unittest.mock.patch.object(self.port, 'admission', return_value=refused):
+            out = self.d.tick()
+        self.assertEqual(out['control'], refused)
+        self.assertEqual(out['yanked'], [rid])
+        self.assertEqual([e['data']['run'] for e in self.events('launch-cancel')], [rid])
+        self.assertIn(rid, self.d.cancelling)
+
     def test_a_task_with_no_run_asks_for_nothing(self):
         tid = self.task()
         self.yank(tid)
@@ -259,8 +271,8 @@ class DuringTheLaunch(YankBase):
 
 
 class BetweenClaimAndLaunch(YankBase):
-    def assert_nothing_started(self, tid):
-        self.assertEqual(self.status(tid), 'yanked')
+    def assert_nothing_started(self, tid, status='yanked'):
+        self.assertEqual(self.status(tid), status)
         self.assertEqual(ops.list_runs(self.conn, tid), [])
         self.assertEqual(self.fl.specs, [])
         self.assertEqual(self.d.live, {})
@@ -279,6 +291,37 @@ class BetweenClaimAndLaunch(YankBase):
             self.d.tick()
         start.assert_not_called()
         self.assert_nothing_started(tid)
+
+    def settled_during_worktree(self, settle):
+        tid = self.task(size='S')
+        real = self.pipe.worktree
+
+        def worktree(task, where=None):
+            self.yank(task['id'])
+            settle(self.conn, task['id'])
+            return real(task, where)
+        self.pipe.worktree = worktree
+        self.d.tick()
+        self.assert_nothing_started(tid, 'cancelled')
+
+    def test_abandon_between_claim_and_launch_starts_nothing(self):
+        self.settled_during_worktree(ops.abandon)
+
+    def test_handback_between_claim_and_launch_starts_nothing(self):
+        self.settled_during_worktree(ops.handback)
+
+    def test_the_ledger_refuses_a_settled_task_after_the_read(self):
+        tid = self.task(size='S')
+        real = self.pipe.worktree
+
+        def worktree(task, where=None):
+            self.yank(task['id'])
+            ops.abandon(self.conn, task['id'])
+            return real(task, where)
+        self.pipe.worktree = worktree
+        with unittest.mock.patch.object(self.d, '_is_closed', side_effect=[False, True]):
+            self.d.tick()
+        self.assert_nothing_started(tid, 'cancelled')
 
     def test_a_ledger_refusal_of_the_run_starts_nothing(self):
         """The other order: the yank lands after that read, and the ledger refuses the run."""
@@ -310,7 +353,7 @@ class BetweenClaimAndLaunch(YankBase):
             self.yank(task['id'])
             return real(task, where)
         self.pipe.worktree = worktree
-        with unittest.mock.patch.object(self.d, '_is_yanked', side_effect=[False, True]):
+        with unittest.mock.patch.object(self.d, '_is_closed', side_effect=[False, True]):
             self.d.tick()
         self.assert_nothing_started(tid)
 
@@ -351,6 +394,35 @@ class BeforeAGateOrReview(YankBase):
         self.assert_no_run_of(tid, 'gate')
         self.assertNotIn(tid, self.d.ci_runners.tickets)
         self.assertEqual(self.events('gate-error'), [])
+
+    def test_a_settled_task_starts_no_gate(self):
+        tid = self.worker_done()
+        real = self.d.ci_runners.reserve
+
+        def reserve(task, **kw):
+            ticket = real(task, **kw)
+            self.conn.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task['id'],))
+            return ticket
+        with unittest.mock.patch.object(self.d.ci_runners, 'reserve', side_effect=reserve):
+            self.d.tick()
+        self.assertEqual([r for r in ops.list_runs(self.conn, tid) if r['role'] == 'gate'], [])
+        self.assertNotIn(tid, self.d.ci_runners.tickets)
+
+    def test_a_gate_launch_that_may_still_come_up_keeps_its_slot_after_yank(self):
+        tid = self.worker_done()
+
+        def launch_call(spec):
+            self.yank(tid)
+            raise launch.LaunchError('no answer', cancel_requested=True)
+        self.fl.launch = launch_call
+        self.d.tick()
+        gate = self.run_of(tid, 'gate')['id']
+        self.assert_stopped(tid, gate)
+        self.assertIn(tid, self.d.ci_runners.tickets)
+        self.assertEqual(self.d.cancelling[gate][0], tid)
+        self.assertEqual(self.events('launch-cancel')[-1]['data']['run'], gate)
+        self.d.tick()                                            # a clean scan shows no runner
+        self.assertNotIn(tid, self.d.ci_runners.tickets)
 
     def test_a_yank_as_the_review_prepares_starts_no_review(self):
         self.allow['codex'] = True

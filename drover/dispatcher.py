@@ -248,14 +248,14 @@ class Dispatcher(FinishSteps, GateSteps, ReviewSteps, LaunchSteps, RecoverySteps
                 break
             assert task["status"] == "claimed"
             skip.add(task["id"])                     # whatever happens to it, not again this tick
-            got = self._unless_yanked(task["id"], self._admit, task, policy, admitted)
+            got = self._unless_closed(task["id"], self._admit, task, policy, admitted)
             if got is None:
                 continue
             if isinstance(got, str):
                 skipped[got] = skipped.get(got, 0) + 1
                 continue
             route, placement, wt = got
-            if self._unless_yanked(task["id"], self._launch, task, route, policy, placement, cwd=wt) is not None \
+            if self._unless_closed(task["id"], self._launch, task, route, policy, placement, cwd=wt) is not None \
                     and task["id"] in [t for _, t, _ in self.live.values()]:
                 out["launched"].append(task["id"])
                 slots -= 1
