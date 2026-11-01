@@ -20,7 +20,8 @@ from .notifications import Conflict, Notifications
 from .notifications import roles
 
 REVIVED = 'revived'
-CLEAN_OUTCOMES = ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', 'compaction-fresh', REVIVED)  # none spends the replacement
+COMPACTION_FRESH = 'compaction-fresh'
+CLEAN_OUTCOMES = ('done', 'stopped', 'admission-held', 'rotated', 'pane-gone', COMPACTION_FRESH, REVIVED)  # none spends the replacement
 LAPSED = ('director-session-expired', 'control-epoch-changed')      # a resident's run outlasted its session or its fence
 HERDR_CLOSED = 'herdr-unavailable'
 LIVENESS_HOLDS = ('consumer-liveness-uncertain', 'consumer-observation-uncertain', 'adoption-uncertain',
@@ -432,8 +433,8 @@ class DirectorRuntime:
             # Replacing a director whose latest run on this generation failed is recovery, not a new wake.
             last = self.conn.execute('SELECT d.generation,r.outcome FROM director_runs d JOIN runs r ON r.id=d.run_id '
                                      'WHERE d.role_id=? ORDER BY d.run_id DESC LIMIT 1', (role_id,)).fetchone()
-            revived = bool(last and last['outcome'] == REVIVED)
-            if role_id in active or not (state['pending_wake'] or revived):
+            owed = bool(last and last['outcome'] in (REVIVED, COMPACTION_FRESH))    # a later reckoning may clear the wake, not this
+            if role_id in active or not (state['pending_wake'] or owed):
                 continue
             recovering = bool(last and last['generation'] == state['generation'] and last['outcome'] not in CLEAN_OUTCOMES)
             if not recovering and not roles.wake_due(self.service, role_id):
