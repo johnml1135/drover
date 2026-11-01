@@ -109,6 +109,12 @@ class BypassHubTests(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertEqual(self.status(tid), "ready")
 
+    def test_owner_pages_render_with_a_yanked_task(self):
+        self.store.yank_task(self.task(), "")
+        paths = [f"/plan?group={group}" for group in ("epic", "state", "repo", "model")]
+        for path in (*paths, "/plan?state=yanked", "/inbox", "/stats", "/landing", "/health", "/tree"):
+            self.assertEqual(self.owner.get(path).status_code, 200, path)
+
     def test_tree_dims_a_yanked_task(self):
         tid = self.task()
         self.store.yank_task(tid, "")
