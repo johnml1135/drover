@@ -19,9 +19,10 @@ goes, until later ticks settle it:
 A higher revision with no turn seen proves the agent acted, not that the wake did it. The write waits out UNVERIFIED_S for
 a turn and then ends `observed` with reason ACTED, unnoticed. ACTED and ROTATED mean the wake is over and claim no delivery.
 
-The key is `wake:<wake_position>:<checkpoint_revision>`, not the position alone. `reserve_wake` answers a key it knows from
-its stored receipt, so a director that commits with mail still pending would be woken again at the same position, free
-of the hourly limit and of the window.
+The key is `wake:<wake_position>:<checkpoint_revision>:<row id>`, not the position alone. `reserve_wake` answers a key it
+knows from its stored receipt, so a director that commits with mail still pending, or the next row of a role whose last
+agent never committed, would be woken at the same position free of the hourly limit and of the window, and a refusal
+would take back a wake that really went out. A repeated key now means only that a hub died before its send.
 """
 from . import compaction_hold, pane_launch, pane_screen, pane_send
 from .ledger import disk_notices, ops_panes, tx
@@ -84,7 +85,7 @@ def _send(service, row, role_id, state):
     except PaneRefused:
         return
     revision = state['checkpoint_revision']
-    key = f"wake:{state['wake_position']}:{revision}"
+    key = f"wake:{state['wake_position']}:{revision}:{row['id']}"
     if not service.notifications.reserve_wake(role_id, key).get('accepted'):
         _take_back(service, role_id, key)
         return

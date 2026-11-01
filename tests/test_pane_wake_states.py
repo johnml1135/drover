@@ -5,7 +5,7 @@ from unittest import mock
 from drover import pane_send, pane_wake
 from drover.ledger import ops_panes
 from drover.pane_wake import TEXT, WEDGED_S
-from tests.pane_send_support import CLAUDE_IDLE, DRAFT, IDLE, WORKING
+from tests.pane_send_support import CLAUDE_IDLE, DRAFT, IDLE, PANE, WORKING
 from tests.pane_wake_support import CLAUDE_WORKING, LATE, QUEUED, QUEUED_IDLE, WINDOW_S, Stage
 from tests.panes_support import ROLE
 
@@ -50,6 +50,29 @@ class Budget(Stage):
         self.time += 61                             # the default lease has gone
         self.deliver()
         self.assertEqual(len(self.sends()), 1)
+
+    def next_row(self):
+        """The role on a new row of the same pane, its first director having never committed."""
+        ops_panes.update_agent(self.conn, self.row['id'], state='retired')
+        self.row = ops_panes.record_agent(self.conn, pane_id=PANE, terminal_id='t1', session_id='s1', kind='claude', seat='seat',
+                                          placement='windows', started_by='drover', state='live', role_id=ROLE, run_id=2)
+        self.run_ = dict(run_id=2, role_id=ROLE)
+        self.time += WINDOW_S
+
+    def test_a_wake_on_the_next_row_is_charged_as_a_wake_of_its_own(self):
+        self.woken()
+        self.next_row()
+        self.deliver()
+        self.assertEqual(len(self.sends()), 1)
+        self.assertEqual(self.budget(), 2)
+
+    def test_a_refused_wake_on_the_next_row_takes_back_only_its_own_charge(self):
+        self.woken()
+        self.next_row()
+        self.fake.after[('pane', 'read', self.fake.seen[('pane', 'read')] + 1)] = lambda: self.fake.screens.update({PANE: DRAFT})
+        self.deliver()
+        self.assertEqual(self.sends(), [])
+        self.assertEqual(self.budget(), 1)
 
     def test_a_second_wake_at_the_same_position_is_charged_and_waits_its_window(self):
         self.woken()
