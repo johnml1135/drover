@@ -2,7 +2,7 @@
 import unittest
 from unittest import mock
 
-from drover import compaction_hold, config, pane_close, pane_files, pane_handoff, pane_launch, pane_wake
+from drover import compaction_hold, config, pane_close, pane_files, pane_handoff, pane_launch, pane_wake, panes
 from drover.directors import DirectorRuntime
 from drover.ledger import ops_panes
 from drover.notifications import roles
@@ -312,6 +312,44 @@ class Maintenance(Resident):
         self.tick()
         rows = self.conn.execute('SELECT kind,data FROM task_events').fetchall()
         self.assertNotIn(SECRET, str([dict(r) for r in rows]))
+
+
+class Sweep(Resident):
+    def retired(self, placement, cwd):
+        self.build()
+        self.row = ops_panes.record_agent(self.conn, pane_id='w1:p9', terminal_id='t9', kind='claude', seat='seat-c',
+                                          placement=placement, started_by='drover', cwd=cwd, state='retired')
+
+    def closing(self, up):
+        with mock.patch.object(panes, 'wsl_running', return_value=up) as running, \
+                mock.patch.object(panes.pane_close, 'tick', return_value=[]) as tick:
+            self.panes.sweep()
+        return running, tick
+
+    def test_a_wsl_checkout_is_not_read_while_wsl_is_down(self):
+        self.retired('wsl', '/home/me/repo')
+        self.closing(False)[1].assert_not_called()
+
+    def test_it_is_read_while_wsl_is_up(self):
+        self.retired('wsl', '/home/me/repo')
+        self.closing(True)[1].assert_called_once()
+
+    def test_it_goes_by_the_checkout_and_not_the_seat(self):
+        self.retired('windows', '/home/me/repo')
+        self.closing(False)[1].assert_not_called()
+
+    def test_only_a_retired_row_is_read(self):
+        self.retired('wsl', '/home/me/repo')
+        ops_panes.update_agent(self.conn, self.row['id'], state='failed')
+        running, tick = self.closing(False)
+        running.assert_not_called()
+        tick.assert_called_once()
+
+    def test_a_windows_pane_never_asks_after_wsl(self):
+        self.retired('windows', 'C:\\repos\\a')
+        running, tick = self.closing(False)
+        running.assert_not_called()
+        tick.assert_called_once()
 
 
 if __name__ == '__main__':

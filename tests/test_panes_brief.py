@@ -211,6 +211,47 @@ class Brief(Case):
         self.later()
         self.assertEqual(self.brief_write()['state'], 'observed')
 
+    def test_a_pane_that_will_not_read_past_every_deadline_ends_nothing(self):
+        self.up()
+        del self.fake.panes[PANE]['terminal_id']
+        self.later(pane_launch.STARTUP_S + 1)
+        self.assertEqual(self.row_now()['state'], 'live')
+
+    def advance(self, seconds):
+        return pane_launch.advance(self.port, self.herdr, self.row_now(), self.spec_, lambda: None, self.time + seconds, cfg=self.cfg)
+
+    def test_herdr_closing_at_the_send_ends_nothing(self):
+        self.up()
+        self.fake.closed = True
+        self.assertFalse(self.advance(pane_launch.STARTUP_S + 1))
+        self.assertEqual(self.row_now()['state'], 'live')
+
+    def test_herdr_closing_at_the_first_turn_ends_nothing(self):
+        self.up()
+        self.later()
+        self.fake.closed = True
+        self.assertFalse(self.advance(pane_launch.FIRST_TURN_S + 1))
+        self.assertEqual(self.row_now()['state'], 'live')
+
+    def test_a_brief_that_never_went_out_goes_again(self):
+        self.up()
+        write = ops_panes.note_write(self.conn, self.row['id'], 'brief', 'Drover: you are director role')
+        ops_panes.finish_write(self.conn, write['id'], 'unsent', 'screen-changed')
+        self.turns()
+        self.later()
+        self.assertEqual(len(self.briefs()), 1)
+
+    def test_no_hook_runs_for_an_agent_that_left(self):
+        self.up()
+        self.turns()
+        self.later()
+        wake, handoff = self.hooks()
+        del self.fake.agents[PANE]
+        self.fake.processes = LONE_SHELL
+        self.later()
+        wake.assert_not_called()
+        handoff.assert_not_called()
+
     def test_no_hook_runs_before_the_first_turn_is_proved(self):
         self.up()
         wake, handoff = self.hooks()

@@ -436,7 +436,7 @@ class DirectorRuntime:
             if role_id in active or not (state['pending_wake'] or revived):
                 continue
             recovering = bool(last and last['generation'] == state['generation'] and last['outcome'] not in CLEAN_OUTCOMES)
-            if not recovering and not revived and not roles.wake_due(self.service, role_id):
+            if not recovering and not roles.wake_due(self.service, role_id):
                 continue  # Grouped: the wake stays pending and no budget is reserved.
             if callable(available):
                 slots = min(slots, available())

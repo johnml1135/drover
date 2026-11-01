@@ -76,6 +76,18 @@ class ClosedBeforeALaunch(Case):
         self.assertIsNone(self.role()['held_reason'])
         self.assertEqual(self.open_questions(), 0)
 
+    def test_seeing_herdr_back_closes_the_outage_with_no_launch_to_do_it(self):
+        self.build()
+        self.fake.closed = True
+        self.wake()
+        self.ticks(1)
+        self.capacity['slots'] = 0
+        self.fake.closed = False
+        self.ticks(1)
+        event = next(e for e in self.port.events(kind='pane.notice') if e['data']['notice']['id'].startswith('pane-herdr-closed:'))
+        self.assertEqual(self.conn.execute('SELECT status FROM questions WHERE id=?', (event['data']['question'],)).fetchone()[0],
+                         'answered')
+
     def test_another_hold_is_not_answered_by_herdr_returning(self):
         self.build()
         self.hold('wake-budget-exhausted')
@@ -161,6 +173,17 @@ class LastingUnknown(Case):
             self.assertEqual(self.open_questions(), 0)
         self.assertEqual(len(self.notes('pane-unknown:')), 2)
 
+    def test_a_clear_read_closes_the_notice(self):
+        self.launched()
+        self.unreadable()
+        self.ticks(1)
+        self.ticks(2, panes.UNKNOWN_LIMIT_S)
+        self.readable()
+        self.ticks(1)
+        event = next(e for e in self.port.events(kind='pane.notice') if e['data']['notice']['id'].startswith('pane-unknown:'))
+        self.assertEqual(self.conn.execute('SELECT status FROM questions WHERE id=?', (event['data']['question'],)).fetchone()[0],
+                         'answered')
+
     def test_an_outage_is_not_counted(self):
         self.launched()
         self.fake.closed = True
@@ -211,6 +234,9 @@ class Lapsed(Case):
     def test_it_needs_no_mail_to_come_back(self):
         self.launched()
         self.exited()
+        self.conn.execute('UPDATE notification_inbox SET resolved=1')
+        self.conn.execute('UPDATE director_runtime SET pending_wake=0')
+        self.conn.commit()
         self.time += DAY_AND_A_BIT
         self.assertEqual(len(self.tick()['launched']), 1)
 
@@ -263,6 +289,26 @@ class Lapsed(Case):
         self.time += DAY_AND_A_BIT
         self.ticks(2)
         wake.assert_not_called()
+
+    def test_an_unreadable_pane_at_expiry_changes_nothing(self):
+        self.launched()
+        self.exited()
+        del self.fake.panes[PANE]['terminal_id']
+        self.time += DAY_AND_A_BIT
+        self.ticks(2)
+        self.assertIsNone(self.outcome())
+        self.assertEqual(self.row_now()['state'], 'live')
+
+    def test_a_guard_that_refuses_at_the_resume_writes_nothing(self):
+        self.launched()
+        self.exited()
+
+        def fenced():
+            raise AdmissionHeld('stop-work')
+        with self.assertRaises(AdmissionHeld):
+            self.adapter._resume(self.spec_, SECRET, fenced)
+        self.assertEqual(self.row_now()['state'], 'live')
+        self.assertEqual(len(self.calls('agent', 'start')), 1)
 
     def test_a_closed_herdr_at_expiry_changes_nothing_until_it_returns(self):
         self.launched()
@@ -391,38 +437,18 @@ class Lapsed(Case):
         self.assertIsNone(self.outcome())
 
 
-class Sweep(Case):
-    def retired(self, placement, cwd):
-        self.build()
-        self.row = ops_panes.record_agent(self.conn, pane_id='w1:p9', terminal_id='t9', kind='claude', seat='seat-c',
-                                          placement=placement, started_by='drover', cwd=cwd, state='retired')
-
-    def closing(self, up):
-        with mock.patch.object(panes, 'wsl_running', return_value=up) as running, \
-                mock.patch.object(panes.pane_close, 'tick', return_value=[]) as tick:
-            self.panes.sweep()
-        return running, tick
-
-    def test_a_wsl_checkout_is_not_read_while_wsl_is_down(self):
-        self.retired('wsl', '/home/me/repo')
-        self.closing(False)[1].assert_not_called()
-
-    def test_it_is_read_while_wsl_is_up(self):
-        self.retired('wsl', '/home/me/repo')
-        self.closing(True)[1].assert_called_once()
-
-    def test_it_goes_by_the_checkout_and_not_the_seat(self):
-        self.retired('windows', '/home/me/repo')
-        self.closing(False)[1].assert_not_called()
-
-    def test_a_windows_pane_never_asks_after_wsl(self):
-        self.retired('windows', 'C:\\repos\\a')
-        running, tick = self.closing(False)
-        running.assert_not_called()
-        tick.assert_called_once()
-
-
 class Paused(Case):
+    def test_any_other_fence_leaves_the_session_and_the_pane_unread(self):
+        self.launched()
+        self.time += 44000
+        first, reads = self.expiry(), len(self.calls('pane', 'get'))
+
+        def fenced():
+            raise AdmissionHeld('stop-work')
+        self.panes.maintain(self.run_row, fenced)
+        self.assertEqual(self.expiry(), first)
+        self.assertEqual(len(self.calls('pane', 'get')), reads)
+
     def test_a_pause_stops_wakes_and_hooks_and_keeps_the_session(self):
         self.launched()
         wake, handoff = self.hooks()
