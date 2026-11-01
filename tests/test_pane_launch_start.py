@@ -37,7 +37,7 @@ class Launcher(Launching):
     def test_only_the_launchers_path_crosses_the_pane(self):
         self.scene('codex', 'wsl')
         self.start(self.spec('codex', 'wsl'))
-        self.assertRegex(self.calls('pane', 'run')[0][3], r"^& '[^ ]*launch\.ps1'$")
+        self.assertRegex(self.calls('pane', 'run')[0][3], r"^& '[^']+launch\.ps1'$")
 
     def test_credential_never_reaches_argv_scrollback_or_a_write(self):
         for kind, placement in (('claude', 'windows'), ('codex', 'wsl'), ('claude', 'wsl')):

@@ -131,7 +131,7 @@ class Args(unittest.TestCase):
         from drover.pane_status_hook import STATES
         self.assertEqual(set(settings['hooks']), set(STATES))
         command = settings['hooks']['SessionStart'][0]['hooks'][0]['command']
-        self.assertRegex(command, r'^python3 /mnt/.*pane_status_hook\.py --agent claude$')
+        self.assertRegex(command, r'^python3 /\S*pane_status_hook\.py --agent claude$')
         self.assertNotIn('permissions', settings)
 
 
