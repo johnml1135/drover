@@ -48,6 +48,8 @@ class LaunchSteps:
         effort = route.get("effort") if role == "review" and route.get("effort") else effort_for(
             route["model"], route.get("effort"))
         if run_id is None:
+            if self._is_closed(task["id"]):
+                return None
             run_id = p.start_run(task["id"], role, route["backend"], route["model"], effort)
         elif not any(r['id'] == run_id and r['role'] == role and r['ended'] is None
                      for r in p.list_runs(task['id'])):
@@ -86,7 +88,7 @@ class LaunchSteps:
         except launch_mod.AdmissionHeld as error:
             if role == 'planner':
                 self.replanning.finish(run_id, {'status': contract.UNVERIFIED, 'text': '', 'usage': {}}, now=self.now())
-            else:
+            elif not self._end_if_yanked(run_id, task['id']):
                 p.finish_run(run_id, 'control-held', note=str(error))
                 if role == 'worker':
                     p.set_status(task['id'], 'ready', reason=str(error))
@@ -118,12 +120,19 @@ class LaunchSteps:
             if getattr(exc, 'missing', False) or isinstance(exc, FileNotFoundError):
                 self.unavailable[(route['backend'], placement)] = self.now()
             return None
-        p.finish_run(run_id, "launch-error", note=(f"launch failed: {exc}"[:270] + (" cancel-requested" if cancelled else "")))
-        if cancelled:
+        if cancelled and self._is_yanked(tid):        # recorded first: a yanked run carries no cancel-requested note
             self.cancelling[run_id] = (tid, placement, nonce)
             p.append_event("launch-cancel", {"run": run_id, "placement": placement}, tid)
+        yanked = self._end_if_yanked(run_id, tid, release=not cancelled)
+        if not yanked:
+            p.finish_run(run_id, "launch-error", note=(f"launch failed: {exc}"[:270] + (" cancel-requested" if cancelled else "")))
+            if cancelled:
+                self.cancelling[run_id] = (tid, placement, nonce)
+                p.append_event("launch-cancel", {"run": run_id, "placement": placement}, tid)
         if getattr(exc, "missing", False) or isinstance(exc, FileNotFoundError):
             self.unavailable[(route["backend"], placement)] = self.now()
+        if yanked:
+            return None
         streak = 0
         for r in reversed(p.list_runs(tid)):
             if r["outcome"] != "launch-error":
