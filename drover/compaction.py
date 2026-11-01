@@ -1,7 +1,8 @@
 """The overnight WSL compaction job, run once a night by the elevated task \\DroverCompaction.
 
-Order: hold, stop, kill, trim, shutdown, compact, restart, release. Once this run holds WSL it always restarts WSL and
-releases the hold, whatever failed. Each step is stored in the hold file first, so a crash leaves a record the hub can
+Order: lock, hold, stop, kill, trim, shutdown, compact, restart, release, unlock. The job takes the cleanup lock first:
+its kill would otherwise reach a cleanup worker mid removal. If a cleanup keeps the lock the night is skipped. Once this
+run holds WSL it always restarts WSL and releases the hold, whatever failed. Each step is stored in the hold file first, so a crash leaves a record the hub can
 release on its next start. The job cannot open the ledger (ADR-0001) and its workers are the hub's children, so the hub
 winds them down when it sees the hold (Dispatcher._compaction_drain) and answers in a file. The result is written to
 the state directory, and anything but `compacted` raises an Inbox notice.
@@ -21,6 +22,8 @@ DRAIN_WAIT_S = 7 * 60           # the hub's 5 minute grace, its kill and two dis
 DRAIN_POLL_S = 5
 AGENT_PROCESS = re.compile(r'\b(claude|codex)\b|drover\.(runner|placement)')
 NOTICE_TRIES = 30
+LOCK_WAIT_S = 30 * 60           # a running cleanup gets this long to finish; the job's task limit is 3 hours
+LOCK_POLL_S = 5
 
 
 def pane_stop(runtime):
@@ -38,6 +41,22 @@ class Runtime:
     def vhdx(self):
         """This distro's disk, from its registry entry."""
         return placement._wsl_vhdx_paths()[self.distro].removeprefix('\\\\?\\')
+
+    def lock(self):
+        """The cleanup lock, waited for up to LOCK_WAIT_S; None when it stays busy."""
+        deadline = self.clock() + LOCK_WAIT_S
+        while True:
+            lock = disk_state.CleanupLock(self.state_dir)
+            try:
+                lock.__enter__()
+                return lock
+            except OSError:
+                if self.clock() >= deadline:
+                    return None
+            self.sleep(LOCK_POLL_S)
+
+    def unlock(self, lock):
+        lock.__exit__(None, None, None)
 
     def claim(self, at):
         identity = placement.cleanup_identity()
@@ -183,18 +202,17 @@ def _compact(runtime, record, result):
     return runtime.compact(vhdx)
 
 
-def run(cfg=None, *, runtime=None, now=None) -> dict:
-    """One night's job. Returns status ('compacted', 'skipped' or 'failed'), stopped, killed, requeued, before_gb,
-    after_gb and errors."""
-    cfg = config.get() if cfg is None else cfg
-    runtime = Runtime(cfg) if runtime is None else runtime
-    at = runtime.clock() if now is None else now
-    result = dict(status='skipped', stopped=[], killed=[], requeued=[], before_gb=None, after_gb=None, errors=[])
-    record = runtime.claim(at)
-    if record is None:                  # this run holds nothing, so it has nothing to restart or release
+def _held(runtime, at, result):
+    """Hold WSL, compact and let go. Everything the cleanup lock has to cover."""
+    try:
+        record = runtime.claim(at)
+    except Exception as error:          # this run holds nothing, so it has nothing to restart or release
+        result.update(status='failed')
+        result['errors'].append(f'the hold could not be taken: {type(error).__name__}: {error}')
+        return
+    if record is None:
         result['errors'].append('another compaction still holds WSL')
-        report(config.state_dir(cfg), result, at)
-        return result
+        return
     result['status'] = 'failed'
     try:
         answer = _compact(runtime, record, result)
@@ -216,6 +234,26 @@ def run(cfg=None, *, runtime=None, now=None) -> dict:
         except Exception as error:      # the hold then ends by age
             result['status'] = 'failed'
             result['errors'].append(f'the hold was not released: {type(error).__name__}: {error}')
+
+
+def run(cfg=None, *, runtime=None, now=None) -> dict:
+    """One night's job. Returns status ('compacted', 'skipped' or 'failed'), stopped, killed, requeued, before_gb,
+    after_gb and errors. The hold starts when the lock is won: the hub's grace counts from it."""
+    cfg = config.get() if cfg is None else cfg
+    runtime = Runtime(cfg) if runtime is None else runtime
+    result = dict(status='skipped', stopped=[], killed=[], requeued=[], before_gb=None, after_gb=None, errors=[])
+    lock = runtime.lock()
+    at = runtime.clock() if now is None else now
+    if lock is None:
+        result['errors'].append(f'a disk cleanup kept its lock for {LOCK_WAIT_S // 60} minutes; WSL was left alone tonight')
+    else:
+        try:
+            _held(runtime, at, result)
+        finally:
+            try:
+                runtime.unlock(lock)
+            except Exception as error:      # a stale lock is reclaimed once this process is gone
+                result['errors'].append(f'the cleanup lock was not released: {type(error).__name__}: {error}')
     report(config.state_dir(cfg), result, at)
     return result
 

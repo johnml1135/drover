@@ -343,8 +343,9 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
             identity = placement.cleanup_identity()
         except (subprocess.SubprocessError, OSError):
             return result
-    # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick.
-    blocker = disk_state.lock_blocker(directory) if identity else None
+    # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick. The compaction holds that
+    # lock for its whole window, which is no stale lock, and the hold already defers every cleanup.
+    blocker = disk_state.lock_blocker(directory) if identity and not compacting else None
     def change(state):
         episodes = state.setdefault('episodes', {})
         applied = bool(state.get('automation', {}).get('apply', False))

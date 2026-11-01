@@ -157,7 +157,9 @@ not, so it is no dry report for `--apply`. Every purge outcome except `met` rais
 
 The overnight WSL compaction has no settings. `scripts/Install-CompactionTask.ps1` registers `\DroverCompaction`,
 nightly at 03:30, elevated, as the owner; a night the machine was off is not caught up. The task runs
-`python -m drover.compaction`, which holds WSL through `disk/compaction-active.json` in the state directory. While that
+`python -m drover.compaction`. It first takes the disk cleanup lock, waiting up to 30 minutes for a running cleanup; if
+the lock stays busy the night is skipped with an Inbox notice, and WSL is not touched. It keeps the lock to the end, so no
+cleanup runs in the window. It holds WSL through `disk/compaction-active.json` in the state directory. While that
 file is under 2 hours old, new WSL work is held, nothing on a timer calls `wsl.exe`, and a cleanup that falls due waits.
 The hub gives headless WSL runs 5 minutes from the start of the hold, then stops them and puts their tasks back on
 ready in their worktrees. The job then kills what is left, runs `fstrim` and `wsl --shutdown`, compacts the VHDX

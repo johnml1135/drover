@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_runtime, disk_state, ledger, placement
+from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_cleanup, disk_runtime, disk_state, ledger, placement
 from drover import placement_exec, placement_git, placement_host, resources, usage
 from drover.launch import RunnerLauncher
 from drover.ledger import disk_notices
@@ -342,6 +342,93 @@ class Skip(Job):
         compaction_hold.claim(self.state, at=NOW, pid=1, birth='b')
         compaction_hold.release(self.state, 'someone-else')
         self.assertIsNotNone(self.hold())
+
+
+class CleanupLock(Job):
+    """The real lock against a real holder: the job's kill matches a cleanup worker, so the two must never overlap."""
+    WORKER = '  77 python3 -c import json,sys;from drover.placement import cleanup_worker /home/j/drover 1f2e\n'
+
+    def locked(self):
+        return (self.state / 'disk-cleanup.lock').exists()
+
+    def test_a_running_cleanup_keeps_the_job_off_wsl_and_the_night_is_skipped(self):
+        self.fake.answers['ps -eo'] = done(self.WORKER)
+        with disk_state.CleanupLock(self.state):
+            answer = compaction.run(self.cfg, runtime=self.runtime())
+        self.assertEqual(answer['status'], 'skipped')
+        self.assertEqual(self.fake.calls, [])                       # no ps, no kill, no shutdown, no restart
+        self.assertIsNone(self.hold())
+        self.assertEqual(self.clock() - NOW, compaction.LOCK_WAIT_S)
+        self.assertEqual(self.report()['status'], 'skipped')
+        notice = next(iter(self.outbox().values()))['notice']
+        self.assertIn('skipped', notice['title'])
+        self.assertIn('cleanup', notice['body'])
+
+    def test_a_cleanup_that_ends_in_the_wait_loses_the_night_nothing(self):
+        lock = disk_state.CleanupLock(self.state).__enter__()
+        started = []
+        real = self.clock.sleep
+
+        def sleep(seconds):
+            real(seconds)
+            if self.clock() - NOW >= 600 and lock.acquired:
+                lock.__exit__(None, None, None)
+
+        class Watching(compaction.Runtime):
+            def wait_for_hub(self, record):
+                started.append(record['since'])
+                return dict(stopped=[], killed=[], requeued=[], drained=True)
+        job = Watching(self.cfg, run=self.fake, clock=self.clock, sleep=sleep)
+        job.vhdx = lambda: VHDX
+        self.assertEqual(compaction.run(self.cfg, runtime=job)['status'], 'compacted')
+        self.assertEqual(started, [NOW + 600])                      # the hub's grace was not spent waiting for the lock
+
+    def test_the_lock_is_held_to_the_release_and_no_cleanup_gets_in(self):
+        seen = []
+        test = self
+
+        class Watching(compaction.Runtime):
+            def wait_for_hub(self, record):
+                with test.assertRaises(BlockingIOError):
+                    disk_cleanup.run(test.cfg, runtime=object())
+                return dict(stopped=[], killed=[], requeued=[], drained=True)
+
+            def release(self, record):
+                seen.append(test.locked())
+                super().release(record)
+        self.assertEqual(self.run_job(Watching)['status'], 'compacted')
+        self.assertEqual(seen, [True])
+        self.assertFalse(self.locked())
+
+    def test_a_failed_night_still_lets_the_lock_go(self):
+        self.fake.answers['--shutdown'] = done('', 1)
+        self.assertEqual(self.run_job()['status'], 'failed')
+        self.assertFalse(self.locked())
+
+    def test_a_hold_that_cannot_be_taken_is_a_reported_failure(self):
+        class Refused(compaction.Runtime):
+            def claim(self, at):
+                raise OSError('state directory is unwell')
+        answer = self.run_job(Refused)
+        self.assertEqual(answer['status'], 'failed')
+        self.assertEqual(self.fake.calls, [])
+        self.assertFalse(self.locked())
+        self.assertEqual(self.report()['status'], 'failed')
+
+    def test_a_second_job_skips_without_touching_the_first_ones_lock(self):
+        compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth=placement.cleanup_identity()['birth'])
+        self.assertEqual(self.run_job()['status'], 'skipped')
+        self.assertFalse(self.locked())
+
+    def test_the_hub_raises_no_stale_lock_notice_for_the_job(self):
+        compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth='b')
+        tick = dict(reader=lambda path: 10.0, enqueue=mock.Mock(), wsl_used=lambda: None)
+        with disk_state.CleanupLock(self.state), \
+                mock.patch.object(placement, 'cleanup_identity', return_value=dict(pid=1, birth='b')):
+            disk.tick(self.cfg, now=NOW, **tick)
+            disk.tick(self.cfg, now=NOW + disk.LOCK_BACKOFF_S + 60, **tick)
+        self.assertEqual([ident for ident in self.outbox() if ident.startswith('lock:')], [])
+        tick['enqueue'].assert_not_called()
 
 
 class Recovery(Job):
