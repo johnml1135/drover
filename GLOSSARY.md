@@ -66,6 +66,18 @@ _Avoid_: Manual mode, director-lead
 One task taken completely outside Drover by the owner, a yank, so that Drover neither dispatches, watches nor reports on it until the owner hands it back. A director may carry it out on the owner's instruction, and disk cleanup still applies to its worktree.
 _Avoid_: Manual mode, third mode
 
+**Yanked task**:
+A task the owner took out by a Bypass. It is closed but undecided: it stays yanked until it is found merged or the owner abandons it, and tasks that depend on it keep waiting for that answer. While its run is still stopping, the owner can neither abandon it nor hand it back.
+_Avoid_: Cancelled (a yanked task is not yet cancelled), parked
+
+**Abandon**:
+The owner's decision that a yanked task will never be merged; the task becomes cancelled and whatever waited on it is released.
+_Avoid_: Drop, give up
+
+**Handback**:
+The owner's decision to return a yanked task's work to Drover: a new draft task with the same goal, acceptance criteria and scope, which needs the owner's approval before it runs. The old task is cancelled and tasks that depended on it now wait on the new one.
+_Avoid_: Resume, re-queue
+
 **Compaction stop**:
 The escalating stop that clears the Linux side before overnight compaction: ask agents to stop, interrupt them, then kill what remains. Agents are told to continue once compaction is done.
 _Avoid_: Drain, shutdown
@@ -304,6 +316,9 @@ _Avoid_: Garden deletion
 - Main advances by compare-and-swap, and the owner's checkout files and index are never touched.
 - Merging is local; pushing is optional, off by default, and a failed push never undoes a merge.
 - Borrowing another seat for a director, installs, safety rules and deployments need the owner and are never tuned automatically.
+- A yanked task is closed, not decided: it is never dispatched, and dependents wait until it is found merged or abandoned.
+- A closed task that was not merged keeps its worktree for three days after its last activity; its branch is always kept.
+- A merge made outside Drover is recorded only when git shows the task's own recorded commit on main; a decider's answer counts only when it names a real commit on main, and anything unclear becomes one Inbox question.
 - Deleting a task is owner-only; imported backlog items start proposed and need owner approval.
 - Only the hub opens the ledger; a database file is never shared across the Windows and WSL boundary.
 

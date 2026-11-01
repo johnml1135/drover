@@ -83,6 +83,14 @@ Inspect origins with `python -m drover config explain scripts --repo NAME`, or i
 Packaged examples are loaded only with `DROVER_EXAMPLES=1`, when no private `repos/` directory exists. A legacy
 `programs/` directory is read with a deprecation warning; move its files into `repos/` when convenient.
 
+### Dispatch settings and Bypass
+
+Each epic is either Drover dispatch or Director dispatch (see [vocabulary](GLOSSARY.md)); set it on the epic page, with a
+global default at `/dispatch/default`. A task in a Director-dispatched epic starts only after its director or the owner
+picks it. The owner can also yank one task out of Drover from its page, then abandon it or hand it back. Settings and
+the rollout steps are in [dispatch rollout](docs/operations/dispatch-rollout.md). Drover needs git 2.40 or later for its
+merge checks; when git fails or the answer is unknown, it records nothing and holds nothing.
+
 ### Approve a task
 
 Import a proposed backlog through the hub API (`POST /api/v1/import`) or create a task through `POST /api/v1/tasks`
