@@ -16,6 +16,7 @@ from .ops_common import (
     json,
     scopes,
     stamp,
+    states,
     tx,
 )
 from .ops_tasks import (
@@ -118,6 +119,8 @@ def start_run(conn, task_id, role, backend, model=None, effort=None, policy_vers
         t = get_task(conn, task_id)
         if role == 'director' or role.startswith('director:') or t.get('internal'):
             raise PermissionError('director runs require the supervised runtime')
+        if role == 'worker' and t['status'] == states.YANKED:  # claimed, then yanked before the launch reached here
+            raise states.IllegalTransition(f'{task_id} is yanked; no worker may start')
         from ..notifications.controls import task_admission
         control = task_admission(conn, task_id)
         if not control['allowed']:
