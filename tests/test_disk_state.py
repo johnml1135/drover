@@ -56,6 +56,36 @@ except BlockingIOError:
                 first.kill()
                 first.communicate(timeout=10)
 
+    def test_release_outlasts_a_brief_reader_of_the_owner_record(self):
+        # Windows refuses to delete a file another thread has open; a live holder's lock is never reclaimed.
+        from drover.disk_state import CleanupLock
+        lock = self.state / 'disk-cleanup.lock'
+        for name in ('unlink', 'rmdir'):
+            with self.subTest(name), patch('drover.disk_state.time.sleep'):
+                real = getattr(Path, name)
+                refusals = iter([True, True, False])
+
+                def refusing(path, *args, real=real, refusals=refusals, **kwargs):
+                    if next(refusals, False):
+                        raise PermissionError(13, 'in use', str(path))
+                    return real(path, *args, **kwargs)
+                with patch.object(Path, name, refusing):
+                    with CleanupLock(self.state):
+                        pass
+                self.assertFalse(lock.exists())
+
+    def test_release_gives_up_loudly_when_the_reader_never_leaves(self):
+        from drover import disk_state
+        lock = self.state / 'disk-cleanup.lock'
+
+        def refusing(path, *args, **kwargs):
+            raise PermissionError(13, 'in use', str(path))
+        with patch.object(disk_state, 'RELEASE_WAIT_S', 0), patch.object(Path, 'unlink', refusing):
+            with self.assertRaises(PermissionError):
+                with disk_state.CleanupLock(self.state):
+                    pass
+        self.assertTrue((lock / 'owner.json').exists())
+
     def test_manifest_failure_prevents_removal(self):
         # Build a real settled checkout; fsync failure must block its removal.
         from tests.test_disk_worktrees import WorktreeCase

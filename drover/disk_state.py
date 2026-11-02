@@ -29,6 +29,20 @@ def holder_dead(owner: dict) -> bool:
 
 
 _HOOK = None  # tests inject interleavings here
+RELEASE_WAIT_S = 5.0
+
+
+def _outlast_readers(remove):
+    """Windows refuses to delete a file or folder something has open, and contenders read owner.json. Waiting
+    matters: a live holder's lock is never reclaimed, so a release lost to one brief reader holds until a restart."""
+    deadline = time.monotonic() + RELEASE_WAIT_S
+    while True:
+        try:
+            return remove()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 def _step(name):
@@ -161,8 +175,8 @@ class CleanupLock:
             # Never unlink a replacement holder's directory.
             if json.loads(owner.read_text(encoding='utf-8')).get('token') != self.token:
                 raise RuntimeError(f'cleanup lock ownership changed: {self.path}')
-            owner.unlink()
-            self.path.rmdir()
+            _outlast_readers(owner.unlink)
+            _outlast_readers(self.path.rmdir)
             self.acquired = False
 
 
