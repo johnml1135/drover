@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from . import ownership, placement, repos
+from . import git_worktrees, ownership, placement, repos
 from .disk_paths import deadline_row, worktree_roots, facts, item, result, safe_path, within, disposable_match, repository_tree
 
 
@@ -47,17 +47,7 @@ def rescue_at(repo, ref, head):
 
 
 def entries(repo):
-    rows = []
-    for block in git(repo, 'worktree', 'list', '--porcelain', '-z').split('\0\0'):
-        row = {}
-        for field in block.split('\0'):
-            key, _, value = field.partition(' ')
-            if key:
-                row[key] = value
-        if 'worktree' in row:
-            row['worktree'] = placement.cleanup_path(row['worktree'])
-            rows.append(row)
-    return rows
+    return list(git_worktrees.listing(repo, timeout_s=git_worktrees.LISTING_TIMEOUT_S).rows)
 
 
 def registration_identity(entry):
@@ -244,7 +234,7 @@ def settled(request: dict, *, runtime=None) -> dict:
             out['items'].append(deadline_row(request, machine, [], request['repos'][number:], 'settled_deadline'))
             break
         try:
-            listed = entries(machine['repo'])
+            listed = request['_listings'].of(machine['repo']).rows
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             out['errors'].append(dict(repo=machine['repo'], error=str(error)))
             continue

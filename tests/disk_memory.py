@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_cleanup, disk_worktrees, ownership, placement, repos
+from drover import config, disk_cleanup, disk_worktrees, git_worktrees, ownership, placement, repos
 from tests.disk_fixture import DiskCase
 
 
@@ -161,7 +161,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
             return [dict(repos.read_machine(p), remote='origin', default_branch='main')
                     for p in sorted(self.repos_dir.glob('*.toml'))]
         bindings = [(disk_cleanup, '_repos', machines),
-                    (disk_worktrees, 'entries', lambda p: repository(p).entries()),
+                    (git_worktrees, 'listing', lambda p, **_: git_worktrees.Listing(str(p), tuple(repository(p).entries()))),
                     (disk_worktrees, 'status', lambda p, **kw: repository(p).status(p, **kw)),
                     (disk_worktrees, 'merged', lambda m, h: h in repository(m['repo']).merged_heads),
                     (disk_worktrees, 'outputs_at', lambda m, p: list(repository(m['repo']).policy)),

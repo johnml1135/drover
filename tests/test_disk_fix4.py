@@ -5,7 +5,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_worktrees, ownership, placement
+from drover import disk_worktrees, git_worktrees, ownership, placement
 from drover.disk_side import serve
 from tests import test_disk_fix2 as fix2
 from tests.disk_fixture import DiskCase
@@ -81,7 +81,7 @@ class UncertaintyReports(WorktreeCase):
                 request = fix2.PathSafety.request(self, 5)
                 request['repos'] = [dict(name='alpha', repo=str(self.r.repo),
                     worktrees=str(self.trees), remote='origin', default_branch='main')]
-                real_status, real_entries = disk_worktrees.status, disk_worktrees.entries
+                real_status, real_listing = disk_worktrees.status, git_worktrees.listing
                 def status(repo, **kwargs):
                     if str(repo) == str(path):
                         if unknown == 'status-timeout':
@@ -89,16 +89,16 @@ class UncertaintyReports(WorktreeCase):
                         if unknown == 'status':
                             raise ValueError('repository unavailable')
                     return real_status(repo, **kwargs)
-                def entries(repo):
+                def listing(repo, **options):
                     if unknown == 'listing' and str(repo) == str(self.r.repo):
-                        raise ValueError('repository unavailable')
-                    return real_entries(repo)
+                        raise git_worktrees.RegistrationsUnknown('repository unavailable')
+                    return real_listing(repo, **options)
                 proof = SimpleNamespace(busy=lambda p: unknown == 'process' and p == str(path),
                                         reason='process visibility unavailable', unknown=True)
                 with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                         patch.object(placement, 'cleanup_processes', return_value=proof), \
                         patch.object(disk_worktrees, 'status', side_effect=status), \
-                        patch.object(disk_worktrees, 'entries', side_effect=entries):
+                        patch.object(git_worktrees, 'listing', side_effect=listing):
                     result = serve(request)
                 self.assertTrue(target.exists(), result)
                 reported_path = str(self.r.repo if unknown == 'listing' else path)

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from drover import disk_budget, disk_worktrees
+from tests.disk_fixture import listing_answers, stage_request
 
 MACHINE = dict(name='alpha', repo='/repo')
 OTHER = dict(name='beta', repo='/other')
@@ -19,11 +20,11 @@ class SettledDeadline(unittest.TestCase):
             return dict(items=[dict(path=seen[-1], action='keep', reason_code='fresh')], errors=[], reclaimed_bytes=0)
         request = dict(apply=True, now=0, state_dir='state', repos=list(repos), paths=dict(worker_timeout_s=100), **extra)
         with patch.object(disk_budget, '_clock', lambda: next(clock)), \
-                patch.object(disk_worktrees, 'entries', return_value=listed), \
+                listing_answers(listed), \
                 patch.object(disk_worktrees, 'registrations', return_value={}), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]), \
                 patch('drover.disk_cleanup.evaluate', side_effect=evaluate):
-            return disk_worktrees.settled(request), seen
+            return disk_worktrees.settled(stage_request(request)), seen
 
     def test_late_run_reports_what_it_did_not_reach_as_an_item(self):
         out, seen = self.run_settled(step=20)

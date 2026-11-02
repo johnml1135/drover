@@ -2,6 +2,7 @@
 from pathlib import Path
 from unittest import mock
 
+from tests.disk_fixture import stage_request
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 from tests.test_disk_worktrees import WorktreeCase as GitWorktreeCase
 from tests.tiers import integration
@@ -274,7 +275,7 @@ class OutputsContracts(GitWorktreeCase):
 class Revalidation(WorktreeCase):
     def test_apply_still_revalidates_registrations_fresh(self):
         """A registration made after the first pass protects the unit: removal never reads the run's cached list."""
-        from drover import disk_paths, disk_worktrees
+        from drover import disk_paths, git_worktrees
         tree = self.worktree('late registration')
         output = tree / 'generated' / 'result'
         output.parent.mkdir()
@@ -282,8 +283,12 @@ class Revalidation(WorktreeCase):
         self.age(tree, 4 * 86400)
         request, proof = self.stage5_request(apply=True)
         request['_processes'] = proof
-        real, extra = disk_worktrees.entries, []
-        with mock.patch.object(disk_worktrees, 'entries', side_effect=lambda repo: real(repo) + extra), \
+        real, extra = git_worktrees.listing, []
+
+        def listing(repo, **options):
+            return git_worktrees.Listing(repo, real(repo, **options).rows + tuple(extra))
+        request = stage_request(request)
+        with mock.patch.object(git_worktrees, 'listing', side_effect=listing), \
                 mock.patch.object(disk_paths.placement, 'cleanup_processes', return_value=proof), \
                 mock.patch.object(disk_paths.placement, 'physical_disk_path', return_value=str(self.root)):
             from drover.disk_inventory import Inventory

@@ -9,7 +9,7 @@ from unittest import mock
 from drover import placement
 from tests.gitfix import sh
 from tests.test_disk_worktrees import WorktreeCase
-from tests.disk_fixture import MemoryCleanupCase
+from tests.disk_fixture import MemoryCleanupCase, listing_answers
 from tests.tiers import integration
 
 
@@ -88,7 +88,7 @@ class Removal(MemoryCleanupCase):
             return [dict(worktree=o['row']['path'], locked=o['row']['side_lock'])
                     for o in self.evidence.observe(dict(now=self.now, tasks=self.tasks))]
         before = registrations('repo')
-        with mock.patch.object(disk_worktrees, 'entries', side_effect=registrations):
+        with listing_answers(registrations):
             # The real detector sees the nested registration even without a gitfile.
             outer['nested'] = disk_worktrees.overlaps_worktrees(request, outer_path, outer_path)
             self.assertTrue(outer['nested'])
@@ -368,7 +368,7 @@ class RegisteredListing(MemoryCleanupCase):
         listing = [dict(worktree='/w/outer'), dict(worktree='/w/outer/generated/inner'), dict(worktree='/w/solo')]
         request = dict(repos=[dict(repo='one'), dict(repo='two')])
         registered = [placement.cleanup_parts(e['worktree']) for _ in request['repos'] for e in listing]
-        with mock.patch.object(disk_worktrees, 'entries', return_value=listing) as fresh:
+        with listing_answers(listing) as fresh:
             for target, own in (('/w/outer/generated', '/w/outer'), ('/w/outer', '/w/outer'), ('/w/solo/bin', '/w/solo'),
                                 ('/w/free/bin', '/w/free'), ('/w', '/w/solo'), ('/w/outer/generated/inner/x', '/w/outer')):
                 with self.subTest(target=target):

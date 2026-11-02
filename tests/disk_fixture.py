@@ -10,11 +10,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, placement
+from drover import config, git_worktrees, placement
+from drover.git_worktrees import Listing, Listings
 from tests.gitfix import clean_parent
 
 DAY = 86400
 GIB = 1024 ** 3
+
+
+def listing_answers(answer):
+    """Patch `git_worktrees.listing`: `answer` is the rows, or a function of the repo that gives them or raises."""
+    rows = answer if callable(answer) else lambda repo: answer
+    return patch.object(git_worktrees, 'listing', side_effect=lambda repo, **_: Listing(str(repo), tuple(rows(repo))))
+
+
+def stage_request(request):
+    """`request` as `disk_side.serve` hands it to a stage, for a test that calls the stage itself."""
+    return dict(request, _listings=Listings([machine['repo'] for machine in request['repos']]))
 
 
 def empty_result():

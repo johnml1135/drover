@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import disk_state, placement
-from tests.disk_fixture import DiskCase
+from tests.disk_fixture import DiskCase, listing_answers, stage_request
 
 
 class Processes(DiskCase):
@@ -270,15 +270,15 @@ class SafetyDecisions(DiskCase):
     def test_nested_registrations_and_approved_selection_normalize_spelling(self):
         from drover import disk_worktrees
         request = dict(repos=[dict(repo=r'H:\repo')], apply=False, approved_path=r'\\?\H:\tree')
-        with patch.object(disk_worktrees, 'entries', return_value=[dict(worktree='/mnt/h/tree/nested')]):
+        with listing_answers([dict(worktree='/mnt/h/tree/nested')]):
             self.assertTrue(disk_worktrees.overlaps_worktrees(request, r'H:\TREE', '/mnt/h/tree'))
-        with patch.object(disk_worktrees, 'entries', return_value=[dict(worktree='/mnt/h/tree')]):
+        with listing_answers([dict(worktree='/mnt/h/tree')]):
             self.assertFalse(disk_worktrees.overlaps_worktrees(request, r'H:\tree/out', r'\\?\H:\TREE'))
         row = dict(path='/mnt/h/tree', reason_code='orphan', action='keep')
-        with patch.object(disk_worktrees, 'entries', return_value=[dict(worktree='/mnt/h/tree')]), \
+        with listing_answers([dict(worktree='/mnt/h/tree')]), \
                 patch.object(disk_worktrees, 'inspect', return_value=row), \
                 patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda req, machine, value: dict(row=value)):
-            result = disk_worktrees.settled(request)
+            result = disk_worktrees.settled(stage_request(request))
         self.assertEqual(result['items'][0]['action'], 'candidate')
 
     def test_remove_revalidation_finds_registration_with_variant_spelling(self):
@@ -289,7 +289,8 @@ class SafetyDecisions(DiskCase):
         request = dict(repos=[machine], now=self.now)
         selected = dict(path=r'H:\tree', repo='/mnt/h/repo', reason_code='unsettled')
         listed = dict(worktree=r'\\?\H:\TREE')
-        with patch.object(disk_worktrees, 'entries', side_effect=[[listed], [dict(worktree='/mnt/h/tree')]]), \
+        answers = iter(([listed], [dict(worktree='/mnt/h/tree')]))
+        with listing_answers(lambda repo: next(answers)), \
                 patch.object(disk_worktrees, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
             result = disk_worktrees.remove(request, selected)
         self.assertTrue(check.called)

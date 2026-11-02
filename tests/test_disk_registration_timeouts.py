@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import disk_registrations, disk_worktrees, placement
+from tests.disk_fixture import listing_answers, stage_request
 
 TIMEOUT = subprocess.TimeoutExpired(['git'], 60)
 MACHINE = dict(name='alpha', repo='/repo')
@@ -77,12 +78,12 @@ class ReregisterFailure(unittest.TestCase):
 class UnknownLostFolders(unittest.TestCase):
     def test_lost_timeout_records_the_error_and_judges_no_orphans(self):
         listed = [dict(worktree='/repo')]
-        with patch.object(disk_worktrees, 'entries', return_value=listed), \
+        with listing_answers(listed), \
                 patch.object(disk_registrations, 'protect', return_value=[]), \
                 patch.object(disk_registrations, 'lost', side_effect=TIMEOUT), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]) as unlisted, \
                 patch('drover.disk_cleanup.evaluate', return_value=dict(items=[], errors=[], reclaimed_bytes=0)):
-            out = disk_worktrees.settled(dict(request(), repos=[MACHINE]), runtime=None)
+            out = disk_worktrees.settled(stage_request(dict(request(), repos=[MACHINE])), runtime=None)
         self.assertEqual([e['repo'] for e in out['errors']], ['/repo'])
         unlisted.assert_not_called()
 

@@ -346,19 +346,18 @@ def deadline_row(request, machine, left, later, reason='output_deadline'):
 def disposable_rows(request, out, *, deadline=None):
     """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row already in `out`; calling
     remove() runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept, never yielded.
-    Registrations are listed once for the run to judge a first pass; remove() lists them afresh. Past `deadline`
-    (a disk_budget clock time) it stops between units with an `output_deadline` row, so the worker can still answer."""
+    Past `deadline` (a disk_budget clock time) it stops between units with an `output_deadline` row, so the worker can answer."""
     from . import disk_budget
-    from .disk_worktrees import entries, tracked_at, overlaps_worktrees, status
+    from .disk_worktrees import tracked_at, overlaps_worktrees, status
     budget = bool(request.get('budget'))
     late = lambda: deadline is not None and disk_budget._clock() >= deadline
     try:
-        registered = [placement.cleanup_parts(e['worktree']) for m in request['repos'] for e in entries(m['repo'])]
+        registered = [placement.cleanup_parts(e['worktree']) for found in request['_listings'].every() for e in found.rows]
     except (OSError, ValueError, subprocess.SubprocessError):
-        registered = None       # each unit lists afresh and reports the failure on its own row
+        registered = None       # the failed repo stays unknown; units in the others list afresh for their own rows
     for number, machine in enumerate(request['repos']):
         try:
-            listed = entries(machine['repo'])
+            listed = request['_listings'].of(machine['repo']).rows
             for position, entry in enumerate(listed):
                 if late():
                     out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:]))
@@ -432,7 +431,7 @@ def report(request: dict) -> dict:
     """One bounded summary per worktree/folder; this stage never mutates."""
     from . import ownership
     from .disk_inventory import Inventory
-    from .disk_worktrees import entries, status, task_facts, merged, head_at
+    from .disk_worktrees import status, task_facts, merged, head_at
     inventory = request.get('_inventory') or Inventory(request['now'])
     out = result()
     budgeted = set()
@@ -443,7 +442,7 @@ def report(request: dict) -> dict:
         return row
     for machine in request['repos']:
         try:
-            listed = entries(machine['repo'])
+            listed = request['_listings'].of(machine['repo']).rows
             for entry in listed:
                 path = Path(placement.native(entry['worktree']))
                 if not placement.cleanup_contains(request, entry['worktree']):

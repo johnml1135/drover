@@ -1,4 +1,4 @@
-"""Seam guards R1 to R6: an AST walk of `drover/` and `hub/`, pinned shrink-only by seam_exceptions.json."""
+"""Seam guards R1 to R6 and R8: an AST walk of `drover/` and `hub/`, pinned shrink-only by seam_exceptions.json."""
 import ast
 from collections import Counter
 from functools import lru_cache
@@ -186,7 +186,15 @@ def r6(path, node, aliases, inside):
     return int(any(project_module(name) for name in imported(path, node, aliases)))
 
 
-RULES = {'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5, 'R6': r6}
+def r8(path, node, aliases, inside):
+    if path == 'drover/git_worktrees.py' or not isinstance(node, (ast.Call, ast.List, ast.Tuple)):
+        return 0
+    parts = node.args if isinstance(node, ast.Call) else node.elts
+    values = [part.value if isinstance(part, ast.Constant) else None for part in parts]
+    return int(('worktree', 'list') in zip(values, values[1:]))
+
+
+RULES = {'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5, 'R6': r6, 'R8': r8}
 
 
 def rule_violations(rule, sources):
@@ -285,6 +293,14 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.found('R6', 'drover/ci.py', text), [])
         self.assertEqual(self.found('R6', 'drover/disk_paths.py', 'class C:\n    from . import repos\n'), [])
 
+    def test_r8_sees_the_literal_in_a_call_a_list_and_a_tuple(self):
+        for text in ("git(repo, 'worktree', 'list', '--porcelain')", "args = ['worktree', 'list']",
+                     "args = ('-C', repo, 'worktree', 'list')", 'git("worktree", "list")'):
+            self.assertEqual(self.found('R8', 'drover/x.py', text), [('<module>', 1)], text)
+        for text in ("git(repo, 'worktree', 'add', 'list')", "git('list', 'worktree')", "git('worktree', name)"):
+            self.assertEqual(self.found('R8', 'hub/x.py', text), [], text)
+        self.assertEqual(self.found('R8', 'drover/git_worktrees.py', "git(repo, 'worktree', 'list')"), [])
+
 
 class Seams(unittest.TestCase):
     def test_rows_equal_the_manifest(self):
@@ -295,3 +311,16 @@ class Seams(unittest.TestCase):
         reasons = {tuple(row[key] for key in KEYS): row.get('reason') for row in manifest(EXCEPTIONS)}
         for key in actual:
             self.assertTrue(str(reasons.get(key) or '').strip(), key)
+
+    def rows_of(self, rule):
+        return {key[1:]: count for key, count in found_rows().items() if key[0] == rule}
+
+    def test_r8_literal_only_in_git_worktrees_and_its_exceptions(self):
+        self.assertEqual(self.rows_of('R8'), {
+            ('drover/cleanup.py', 'checked_out_anywhere'): 1, ('drover/origin.py', 'fast_forward'): 1,
+            ('drover/pipeline.py', 'Repository.inventory'): 1, ('drover/placement.py', 'unlock_worktree'): 1,
+            ('hub/task_views.py', 'probe'): 1})
+
+    def test_r5_git_worktrees_reaches_placement_at_load_and_nothing_else(self):
+        rows = {where: count for where, count in self.rows_of('R5').items() if where[0] == 'drover/git_worktrees.py'}
+        self.assertEqual(rows, {('drover/git_worktrees.py', '<module>'): 1})

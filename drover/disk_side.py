@@ -4,12 +4,14 @@ import subprocess
 import sys
 
 from . import placement
+from .git_worktrees import Listings
 
 
 def serve(request: dict) -> dict:
     request = placement.cleanup_scope(request)
     from .disk_inventory import Inventory, compact
     request['_inventory'] = Inventory(request['now'], request)
+    request['_listings'] = Listings([m['repo'] for m in request['repos']])
     proof = None
     if request['stage'] in (2, 3, 4, 5):
         proof = request['_processes'] = placement.cleanup_processes(request=request)

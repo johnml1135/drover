@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_paths, disk_runtime, disk_side, disk_worktrees, placement
+from drover import config, disk_paths, disk_runtime, disk_side, git_worktrees, placement
 from drover import placement_host, placement_paths, placement_worker
 from tests.disk_budget_fixture import BudgetCase
 from tests.disk_fixture import DiskCase
@@ -135,12 +135,12 @@ class OutputStageCost(BudgetCase):
             self.age(tree, 4 * 86400)
 
     def listings(self, **paths):
-        real, calls = disk_worktrees.entries, []
+        real, calls = git_worktrees.listing, []
 
-        def counting(repo):
+        def counting(repo, **options):
             calls.append(repo)
-            return real(repo)
-        with patch.object(disk_worktrees, 'entries', side_effect=counting):
+            return real(repo, **options)
+        with patch.object(git_worktrees, 'listing', side_effect=counting):
             self.stage5(**paths)
         return len(calls)
 
@@ -150,6 +150,7 @@ class OutputStageCost(BudgetCase):
         self.trees_with(3, 6)
         many = self.listings()
         self.assertEqual(few, many)
+        self.assertEqual(few, 1)
 
     def test_outputs_deadline_returns_partial_report_instead_of_worker_timeout(self):
         self.trees_with(4, 1)
@@ -178,19 +179,18 @@ class OutputStageCost(BudgetCase):
         self.assertEqual(late[0]['repos'], [])
         self.assertEqual(late[0]['count'], 2)
 
-    def test_failed_registration_listing_makes_each_unit_list_afresh(self):
+    def test_a_failed_listing_stays_failed_for_the_stage_and_keeps_the_repo(self):
         self.trees_with(2, 2)
-        baseline = self.listings()
-        real, calls = disk_worktrees.entries, []
+        real, calls = git_worktrees.listing, []
 
-        def flaky(repo):
+        def flaky(repo, **options):
             calls.append(repo)
             if len(calls) == 1:
-                raise OSError('listing failed')
-            return real(repo)
-        with patch.object(disk_worktrees, 'entries', side_effect=flaky):
+                raise git_worktrees.RegistrationsUnknown('listing failed')
+            return real(repo, **options)
+        with patch.object(git_worktrees, 'listing', side_effect=flaky):
             answer = self.stage5()
-        self.assertEqual(answer['errors'], [])
-        self.assertFalse([i for i in answer['items'] if i.get('reason_code') == 'repository_unavailable'])
-        self.assertEqual(len([i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']), 2)
-        self.assertGreater(len(calls), baseline)
+        self.assertEqual([e['reason_code'] for e in answer['errors']], ['repository_unavailable'])
+        self.assertEqual([i['reason_code'] for i in answer['items'] if i.get('path') == str(self.r.repo)], ['repository_unavailable'])
+        self.assertFalse([i for i in answer['items'] if i.get('reason_code') == 'declared_disposable'])
+        self.assertEqual(len(calls), 1)

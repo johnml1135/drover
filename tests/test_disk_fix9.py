@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_paths, disk_state, disk_worktrees, placement
-from tests.disk_fixture import DiskCase
+from tests.disk_fixture import DiskCase, listing_answers, stage_request
 
 
 class Processes(DiskCase):
@@ -51,10 +51,10 @@ class Approval(DiskCase):
                     request = dict(repos=[dict(repo=prefix + 'repo')], apply=False,
                                    approved_path=prefix + approved)
                     row = dict(path=path, reason_code='orphan', action='keep')
-                    with patch.object(disk_worktrees, 'entries', return_value=[dict(worktree=path)]), \
+                    with listing_answers([dict(worktree=path)]), \
                             patch.object(disk_worktrees, 'inspect', return_value=row), \
                             patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value: dict(row=value)):
-                        answer = disk_worktrees.settled(request)
+                        answer = disk_worktrees.settled(stage_request(request))
                     self.assertEqual(bool(answer['items']), windows and equal_on_windows)
 
 
@@ -99,7 +99,7 @@ class DefaultBranchPolicy(DiskCase):
                 patch.object(placement, 'cleanup_contains', return_value=True),
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)),
                 patch.object(placement, 'git', side_effect=self.git), patch('drover.placement_git.git', side_effect=self.git),
-                patch.object(disk_worktrees, 'entries', return_value=[self.entry])):
+                listing_answers([self.entry])):
             context.start()
             self.addCleanup(context.stop)
 
@@ -132,7 +132,7 @@ class DefaultBranchPolicy(DiskCase):
         return subprocess.CompletedProcess(args, code, answer, 'default branch unreadable' if code else '')
 
     def test_old_worktree_uses_main_policy_and_own_tracked_index(self):
-        answer = disk_paths.outputs(self.request)
+        answer = disk_paths.outputs(stage_request(self.request))
         self.assertFalse(self.bin.exists(), answer)
         self.assertTrue(self.tracked.exists())
         self.assertTrue(self.src.exists())
@@ -140,7 +140,7 @@ class DefaultBranchPolicy(DiskCase):
 
     def test_feature_policy_cannot_widen_default_branch_declarations(self):
         self.feature = 'schema_version=1\n[cleanup]\ndisposable=["bin", "src/**"]\n'
-        answer = disk_paths.outputs(self.request)
+        answer = disk_paths.outputs(stage_request(self.request))
         self.assertTrue(self.src.exists(), answer)
         self.assertFalse(self.bin.exists())
         self.assertTrue(all('old-head:' not in str(args) for repo, args in self.reads))
@@ -149,7 +149,7 @@ class DefaultBranchPolicy(DiskCase):
         for branch, contents in (('missing', self.main), ('main', None), ('main', '<invalid policy>')):
             with self.subTest(branch=branch):
                 self.machine['default_branch'], self.main = branch, contents
-                answer = disk_paths.outputs(self.request)
+                answer = disk_paths.outputs(stage_request(self.request))
                 self.assertTrue(self.bin.exists(), answer)
                 self.assertTrue(self.src.exists())
                 self.assertEqual(answer['items'][0]['reason_code'], 'output_evidence_unavailable')
@@ -172,7 +172,7 @@ class DefaultBranchPolicy(DiskCase):
 
     def test_explicit_local_default_branch_ref_has_the_same_policy(self):
         self.machine['default_branch'] = 'refs/heads/main'
-        answer = disk_paths.outputs(self.request)
+        answer = disk_paths.outputs(stage_request(self.request))
         self.assertFalse(self.bin.exists(), answer)
         self.assertTrue(self.src.exists())
 

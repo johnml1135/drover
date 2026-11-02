@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.registration_trace import CASES, materialize, recorded, rows_of
-from drover import disk_worktrees, placement_git
+from drover import placement_git
+from drover.git_worktrees import RegistrationsUnknown, listing
 from drover.placement_paths import cleanup_path
 
 RAW = (Path(__file__).parent / 'registration_trace.json').read_text(encoding='utf-8')
@@ -34,18 +35,18 @@ class Replay(unittest.TestCase):
     def test_every_case_in_section_5_3_is_recorded_for_both_git_versions(self):
         self.assertEqual({c: set(TRACE[c]) for c in TRACE}, {c: {'windows', 'wsl'} for c in CASES})
 
-    def test_entries_parses_each_recorded_listing(self):
+    def test_listing_parses_each_recorded_listing(self):
         for case, side in every(True):
             with self.subTest(case=case, side=side):
                 answer = recorded(case, side, ROOT)
                 with git_answers(answer):
-                    self.assertEqual(disk_worktrees.entries(ROOT / 'repo'), answer['rows'])
+                    self.assertEqual(listing(ROOT / 'repo', timeout_s=400.0).rows, tuple(answer['rows']))
 
-    def test_entries_raises_for_each_recorded_failure(self):
+    def test_listing_raises_for_each_recorded_failure(self):
         for case, side in every(False):
             with self.subTest(case=case, side=side):
-                with git_answers(recorded(case, side, ROOT)), self.assertRaises(ValueError):
-                    disk_worktrees.entries(ROOT / 'repo')
+                with git_answers(recorded(case, side, ROOT)), self.assertRaises(RegistrationsUnknown):
+                    listing(ROOT / 'repo', timeout_s=400.0)
 
     def test_the_cases_no_admin_file_shows_fail_the_listing_on_both_sides(self):
         for case in ALWAYS_FAIL:
@@ -64,7 +65,7 @@ class Rows(unittest.TestCase):
         self.assertEqual([(row['worktree'], 'detached' in row) for row in rows_of(twins)],
                          [('<EXT4>/main', False), ('<EXT4>/wt', False), ('<EXT4>/wt', True)])
         with git_answers(dict(code=0, stdout=twins)):
-            self.assertEqual(len(disk_worktrees.entries(ROOT / 'repo')), 3)
+            self.assertEqual(len(listing(ROOT / 'repo', timeout_s=400.0).rows), 3)
 
 
 class Placeholders(unittest.TestCase):
