@@ -11,7 +11,8 @@ from tests.tiers import integration
 
 @integration
 class ScopeBase(unittest.TestCase):
-    def setUp(self):
+    def fresh(self):
+        """A new repository, worktree and task, so no scenario sees another's commits."""
         self.fix = Repo()
         self.addCleanup(self.fix.cleanup)
         self.tmp = tempfile.TemporaryDirectory()
@@ -36,19 +37,19 @@ class ScopeBase(unittest.TestCase):
     def land(self, **kw):
         return self.pipe(**kw).commit_ready(self.task, 1, "m", base=self.base)
 
-    def test_merged_newer_main_is_not_out_of_scope(self):
+    def scenario_merged_newer_main_is_not_out_of_scope(self):
         self.work()
         self.newer_main()
         self.fix.git("merge", "-q", "--no-edit", "main", cwd=self.wt)
         self.assertEqual(self.land(), self.fix.git("rev-parse", "HEAD", cwd=self.wt))
 
-    def test_rebase_onto_newer_main_is_not_out_of_scope(self):
+    def scenario_rebase_onto_newer_main_is_not_out_of_scope(self):
         self.work()
         self.newer_main()
         self.fix.git("rebase", "-q", "main", cwd=self.wt)
         self.assertEqual(self.land(), self.fix.git("rev-parse", "HEAD", cwd=self.wt))
 
-    def test_real_out_of_scope_file_on_a_merged_branch_is_refused(self):
+    def scenario_real_out_of_scope_file_on_a_merged_branch_is_refused(self):
         self.work()
         self.work("other.txt")
         self.newer_main()
@@ -57,7 +58,7 @@ class ScopeBase(unittest.TestCase):
             self.land()
         self.assertEqual(cm.exception.paths, ["other.txt"])
 
-    def test_real_out_of_scope_file_on_top_of_a_rebase_is_refused(self):
+    def scenario_real_out_of_scope_file_on_top_of_a_rebase_is_refused(self):
         self.work()
         self.newer_main()
         self.fix.git("rebase", "-q", "main", cwd=self.wt)
@@ -66,7 +67,7 @@ class ScopeBase(unittest.TestCase):
             self.land()
         self.assertEqual(cm.exception.paths, ["other.txt"])
 
-    def test_unresolved_base_branch_falls_back_to_the_launch_snapshot(self):
+    def scenario_unresolved_base_branch_falls_back_to_the_launch_snapshot(self):
         self.work()
         self.newer_main()
         self.fix.git("merge", "-q", "--no-edit", "main", cwd=self.wt)
@@ -74,7 +75,7 @@ class ScopeBase(unittest.TestCase):
             self.land(default_branch="no-such-branch")
         self.assertEqual(cm.exception.paths, ["newmain.txt"])
 
-    def test_the_configured_base_branch_is_used_not_main(self):
+    def scenario_the_configured_base_branch_is_used_not_main(self):
         self.fix.git("branch", "trunk", "main")
         self.work()
         self.fix.git("checkout", "-q", "trunk")
@@ -82,6 +83,15 @@ class ScopeBase(unittest.TestCase):
         self.fix.git("checkout", "-q", "main")
         self.fix.git("merge", "-q", "--no-edit", "trunk", cwd=self.wt)
         self.assertEqual(self.land(default_branch="trunk"), self.fix.git("rev-parse", "HEAD", cwd=self.wt))
+
+    def test_scope_check_judges_only_the_workers_own_changes(self):
+        # One test, six scenarios: each is a real-git check with its own repository (see fresh), run as a subtest.
+        scenarios = [name for name in dir(self) if name.startswith("scenario_")]
+        self.assertEqual(len(scenarios), 6)
+        for name in scenarios:
+            with self.subTest(scenario=name):
+                self.fresh()
+                getattr(self, name)()
 
 
 if __name__ == "__main__":

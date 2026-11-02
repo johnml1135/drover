@@ -26,7 +26,9 @@ INTEGRATION_TARGET = 20
 # to the owner). The owner target is INTEGRATION_TARGET.
 # 208: the three real Windows priority and affinity tests of test_disk_cpu_limit.RealWindows start child processes; they
 # are marked integration instead of faked, because the real API is what they prove (ruling recorded in the task-15 report).
-INTEGRATION_CEILING = 208
+# 209: the six real-git scope checks of test_scope_base are one subtest-based test; a real-git scope check is the only
+# coverage of that path.
+INTEGRATION_CEILING = 209
 
 # Files over MAX_LINES, pinned at their current line counts (wc -l). Shrink-only: never add a file.
 OVER = {

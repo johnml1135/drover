@@ -212,7 +212,8 @@ class DispatcherSeats(unittest.TestCase):
                 self.assertEqual(ntpath.normpath(spec['env']['CLAUDE_CONFIG_DIR']), account)
                 real_launcher = launch.RunnerLauncher(runs_dir='R:/runs', drover_dir='R:/repos/acme-lib',
                                                      windows=True, which=lambda n: 'R:/bin/claude.exe')
-                cmd, env = real_launcher.command(spec, Path('R:/runs') / str(spec['run_id']), ['claude'])
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as run_dir:
+                    cmd, env = real_launcher.command(spec, Path(run_dir), ['claude'])
                 if placement == 'wsl':
                     self.assertIn('CLAUDE_CONFIG_DIR=/mnt/r/Users/acme/.claude', cmd)
                 else:

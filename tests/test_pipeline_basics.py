@@ -23,6 +23,7 @@ from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
 from tests.pipeline_fixture import MemoryRepo, MemoryRepository, CheckoutGit, finish_gate, read_checkouts
 
+from tests.test_launch_runner import split_worker
 from tests.test_pipeline import Base, PolicyBase, FakeHandle, result, policy_prog as prog_dict
 
 
@@ -69,10 +70,12 @@ class WslBins(unittest.TestCase):
         self.assertEqual(la.wsl_exe(["claude", "-p"]), ["/home/u/.local/bin/claude", "-p"])
         self.assertEqual(la.wsl_exe(["codex", "exec"]), ["codex", "exec"])      # not absolute: bare name
         self.assertEqual(la.wsl_exe(["gitx"]), ["gitx"])
-        cmd, _ = la.command({"placement": "wsl", "cwd": "R:\\x", "run_id": 1, "nonce": "n" * 16}, Path("/tmp/d"),
-                            ["claude", "-p"])
-        self.assertIn("/home/u/.local/bin/claude", cmd)
-        self.assertNotIn("claude", cmd[cmd.index("--") + 1:][:0] + ["x"][:0] or ["x"])
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:
+            cmd, _ = la.command({"placement": "wsl", "cwd": "R:\\x", "run_id": 1, "nonce": "n" * 16}, Path(t),
+                                ["claude", "-p"])
+            _, worker = split_worker(cmd)
+        self.assertIn("/home/u/.local/bin/claude", worker)
+        self.assertNotIn("claude", worker)
 
     def test_service_reads_the_ledger_settings(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:

@@ -93,6 +93,7 @@
    "errors": [
     {
      "error": "Expecting value: line 1 column 1 (char 0)",
+     "exit_status": 0,
      "output": "not json",
      "reason_code": "worker_failed",
      "termination_confirmed": true,
@@ -132,6 +133,7 @@
   ],
   "persisted": {
    "error": "Expecting value: line 1 column 1 (char 0)",
+   "exit_status": 0,
    "output": "not json",
    "reason_code": "worker_failed",
    "termination_confirmed": true,
@@ -202,7 +204,8 @@
   "answer": {
    "errors": [
     {
-     "error": "boom",
+     "error": "boom | worker exited with status 3 (0x3)",
+     "exit_status": 3,
      "output": "partial",
      "reason_code": "worker_error",
      "termination_confirmed": true,
@@ -241,7 +244,8 @@
    }
   ],
   "persisted": {
-   "error": "boom",
+   "error": "boom | worker exited with status 3 (0x3)",
+   "exit_status": 3,
    "output": "partial",
    "reason_code": "worker_error",
    "termination_confirmed": true,
@@ -532,7 +536,8 @@
   "answer": {
    "errors": [
     {
-     "error": "",
+     "error": "worker exited with status 3 (0x3)",
+     "exit_status": 3,
      "output": "",
      "reason_code": "worker_error",
      "termination_confirmed": true,
@@ -628,7 +633,8 @@
    }
   ],
   "persisted": {
-   "error": "",
+   "error": "worker exited with status 3 (0x3)",
+   "exit_status": 3,
    "output": "",
    "reason_code": "worker_error",
    "termination_confirmed": true,
@@ -639,7 +645,8 @@
  "windows_to_wsl_unproven_startup": {
   "answer": {
    "message": {
-    "error": "",
+    "error": "worker exited with status 3 (0x3)",
+    "exit_status": 3,
     "output": "",
     "reason_code": "worker_error",
     "termination_confirmed": false,
@@ -733,7 +740,8 @@
    }
   ],
   "persisted": {
-   "error": "",
+   "error": "worker exited with status 3 (0x3)",
+   "exit_status": 3,
    "output": "",
    "reason_code": "worker_error",
    "termination_confirmed": false,
