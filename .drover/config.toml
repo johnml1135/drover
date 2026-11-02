@@ -16,7 +16,6 @@ idle_s = 1500
 [review]
 backend = "claude"
 model = "sonnet-5.5"
-seat = "claude-personal"
 effort = "high"
 
 [land]
