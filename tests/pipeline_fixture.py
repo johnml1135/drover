@@ -180,6 +180,9 @@ class MemoryRepository:
     def ancestor(self, path, base, tip):
         return self.fixture(path).ancestor(base, tip)
 
+    def fork_point(self, path, ref, tip):
+        return None
+
     def branch(self, path):
         return self.fixture(path).checkouts[str(path)]
 

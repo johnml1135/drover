@@ -71,6 +71,14 @@ class Repository:
         return [p for p in git(repo, "diff", "--name-only", "--no-renames", "-z",
                                f"{base}...{tip}", check=True).stdout.split("\0") if p]
 
+    def fork_point(self, repo, ref, tip):
+        """Where `tip`'s history meets `ref`; None when Git cannot say."""
+        try:
+            result = git(repo, "merge-base", ref, tip)
+        except Exception:
+            return None
+        return (result.stdout.strip() or None) if result.returncode == 0 else None
+
     def changed_docs_only(self, repo, base, tip, globs):
         return ci.changed_docs_only(repo, base, tip, globs)
 
@@ -188,7 +196,7 @@ class Pipeline:
             if sha is not None and paths: raise CommitRefused("worktree has uncommitted changes", paths)
             scope = [re.sub(r":\d+(?:-\d+)?$", "", s.replace("\\", "/")).removeprefix("./").rstrip("/")
                      for s in task.get("scope_files") or []]
-            changed = set(paths) | set(self.repository.changed_paths(repo, base, head))
+            changed = set(paths) | set(self.scope_changed(repo, prog, base, head))
             outside = sorted(p for p in changed if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope))
             if outside:
                 raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
@@ -198,7 +206,7 @@ class Pipeline:
                 if (self.repository.changes(repo) or self.repository.head(repo) != head
                         or not self.repository.ancestor(repo, base, head)):
                     raise CommitRefused("worktree changed after Drover committed this run")
-                outside = sorted(p for p in self.repository.changed_paths(repo, base, head)
+                outside = sorted(p for p in self.scope_changed(repo, prog, base, head)
                                  if not any(fnmatchcase(p, s) or p.startswith(s + "/") for s in scope))
                 if outside:
                     raise CommitRefused("out-of-scope changes: " + ", ".join(outside), outside)
@@ -206,6 +214,16 @@ class Pipeline:
             return head
         except ci.CIError as error:
             raise WorktreeRefused(str(error)) from error
+
+    def scope_changed(self, repo, prog, base, head):
+        """Paths the worker changed since its history met the current base branch.
+
+        Files that arrived by taking in newer main are not the worker's. The fork point replaces the launch
+        snapshot only when it cannot be older than it, so a failure never widens what passes."""
+        fork = self.repository.fork_point(repo, self.base_ref(prog), head) if prog else None
+        if fork and fork != base and self.repository.ancestor(repo, base, fork):
+            base = fork
+        return self.repository.changed_paths(repo, base, head)
 
     # ---- switch and config ---------------------------------------------------------------------------
     def enabled(self):
