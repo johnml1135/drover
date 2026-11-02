@@ -103,7 +103,7 @@ class Tree:
         path.write_bytes(text.encode('utf-8'))
 
     def pointer(self, form):
-        self.write('gitdir', spellings(self.root)[form] + tail + '\n')
+        self.write('gitdir', spellings(self.root)[form] + '/wt/.git\n')
 
     def native(self):
         return str(self.root).replace('\\', '/').rstrip('/')
