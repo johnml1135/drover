@@ -69,6 +69,12 @@ def temp_goes_busy(s):
     s.fresh = lambda: s.busy_paths.add(str(path))
 
 
+def temp_root_becomes_a_link(s):
+    """Ancestors are proven once, so only the fresh `safe_path` of the entry sees its root turn into a link."""
+    temp(s, 'old')
+    s.fresh = lambda: s.links.add(s.temp_root)
+
+
 def temp_grows(s):
     path = temp(s, 'old/a')
     s.fresh = lambda: s.file(path.parent / 'b', 'more than it was')
@@ -99,6 +105,7 @@ TEMP = dict(
     temp_busy_with_reason=on(2, temp_busy_with_reason),
     temp_goes_busy=mid(2, temp_goes_busy),
     temp_grows=mid(2, temp_grows),
+    temp_root_becomes_a_link=mid(2, temp_root_becomes_a_link),
     temp_root_partial=on(2, budget_for_root),
     temp_root_on_another_drive=on(2, lambda s: s.elsewhere.add(temp(s, 'old').parent)),
     temp_root_is_a_link=on(2, lambda s: s.links.add(temp(s, 'old').parent)),

@@ -306,7 +306,7 @@ class SceneTree(DiskCase):
         for name, text in self.commits[commit][0].items():
             self.file(path / name, text)
 
-    def register(self, common, path, head, lock, name=None):
+    def admin_files(self, common, path, head, lock, name=None):
         admin = common / 'worktrees' / (name or path.name)
         admin.mkdir()
         self.write(admin / 'gitdir', (path / '.git').as_posix() + '\n')
@@ -314,6 +314,10 @@ class SceneTree(DiskCase):
         self.write(admin / 'commondir', '../..\n')
         if lock:
             self.write(admin / 'locked', lock)
+        return admin
+
+    def register(self, common, path, head, lock, name=None):
+        admin = self.admin_files(common, path, head, lock, name)
         path.mkdir(parents=True, exist_ok=True)
         self.write(path / '.git', f'gitdir: {admin.as_posix()}\n')
         return admin
@@ -353,9 +357,9 @@ class SceneTree(DiskCase):
         return path
 
     def registered_only(self, path, name, head='ref: refs/heads/main'):
-        """A registration of `path`, whose own `.git` is not written yet: a listing names it, and a look at the folder cannot."""
-        self.register(self.common(), path, head, None, name)
-        (path / '.git').unlink()
+        """A registration of `path`, whose own `.git` is not written yet: a listing names it, and a look at the folder cannot.
+        Admin files alone: anything written in the folder changes its mtime, so the fingerprint would refuse before the listing."""
+        self.admin_files(self.common(), path, head, None, name)
 
     def exclude(self, *names):
         self.write(self.common() / 'info' / 'exclude', ''.join(n + '\n' for n in names))

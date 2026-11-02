@@ -20,11 +20,11 @@ HOLDING = frozenset((
     'process_out_of_scope', 'process_visibility_unavailable', 'process_query_timeout', 'process_busy', 'temp_root_partial',
     'temp_root_elapsed', 'drive_unproven', 'output_evidence_unavailable', 'repository_unavailable', 'output_deadline',
     'budget_not_needed', 'budget_shortfall', 'budget_deadline', 'budget_used_unknown', 'budget_processes_unknown',
-    'worktree_inventory', 'untracked_or_ignored', 'merged_live_task', 'unlisted_folder', 'declared_report'))
+    'worktree_inventory', 'untracked_or_ignored', 'unlisted_folder', 'declared_report'))
 # Kept today, yet time, an approval, or a later reading turns them into an act; `budget_usage` is the figure a budget notice is
-# judged on. A row may leave this set for HOLDING, never enter it from there.
+# judged on, and `merged_live_task` tells the owner work is merged. A row may leave this set for HOLDING, never enter it from there.
 ON_THE_CLOCK = frozenset(('orphan', 'unsettled', 'settled', 'missing', 'quarantine_elapsed', 'lost_registration', 'temp_retained',
-                          'budget_usage'))
+                          'budget_usage', 'merged_live_task'))
 
 
 @dataclass(frozen=True)

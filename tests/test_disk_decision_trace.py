@@ -5,7 +5,8 @@ import json
 import unittest
 
 from drover.disk_cleanup import decide
-from tests.disk_trace import TRACE, collect, compare
+from drover.disk_worktrees import identity
+from tests.disk_trace import TRACE, Scene, collect, compare
 from tests.disk_trace_compare import HOLDING, KEPT, ON_THE_CLOCK
 
 TRACE_DATA = json.loads(TRACE.read_text(encoding='utf-8'))
@@ -147,6 +148,17 @@ class Trace(unittest.TestCase):
         self.assertEqual(kept - HOLDING - ON_THE_CLOCK, set())
         self.assertEqual(HOLDING & ON_THE_CLOCK, set())
 
+    def test_a_registration_alone_leaves_the_folder_as_it_was(self):
+        """Touch the folder and the fingerprint refuses first, so `quarantine_unlisted_registered` would prove nothing of the listing."""
+        with Scene() as scene:
+            path = scene.folder('stray')
+            before = identity(path)
+            scene.registered_only(path, 'stray')
+            self.assertEqual(identity(path), before)
+
+    def test_a_temp_root_turned_link_mid_stage_keeps_what_is_under_it(self):
+        self.assertEqual(TRACE_DATA['temp_root_becomes_a_link.applied']['deleted'], [])
+
     def test_a_stray_is_kept_when_it_goes_busy_or_is_registered_mid_stage(self):
         names = 'quarantine_unlisted_goes_busy.elapsed', 'quarantine_unlisted_registered.elapsed'
         self.assertEqual(sorted(recorded(*names)), sorted(names))
@@ -216,6 +228,10 @@ class Compare(unittest.TestCase):
         self.assertEqual(directions(scene(rows=[row('keep', 'dirty')]), scene(rows=[row('keep', 'brand_new')])),
                          ['towards_deletion'])
         self.assertEqual(directions(scene(), scene(rows=[row('report', 'brand_new')])), ['towards_deletion'])
+
+    def test_a_row_that_drives_a_notice_is_not_merely_a_report(self):
+        for reason in ('merged_live_task', 'budget_usage'):
+            self.assertEqual(directions(scene(), scene(rows=[row('keep', reason)])), ['towards_deletion'], reason)
 
     def test_lost_keep_row_is_towards_deletion(self):
         self.assertEqual(directions(scene(rows=[row('keep')]), scene()), ['towards_deletion'])
