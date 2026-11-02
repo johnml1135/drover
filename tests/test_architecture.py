@@ -26,14 +26,13 @@ def manifest(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-@lru_cache(maxsize=1)
-def trees():
+@lru_cache(maxsize=None)
+def parsed(top):
     paths = []
-    for top in ('drover', 'hub', 'tests'):
-        for folder, dirs, files in os.walk(ROOT / top):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__'
-                       and not (Path(folder, d) / 'pyvenv.cfg').exists()]
-            paths.extend(Path(folder, name) for name in files if name.endswith('.py'))
+    for folder, dirs, files in os.walk(ROOT / top):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__'
+                   and not (Path(folder, d) / 'pyvenv.cfg').exists()]
+        paths.extend(Path(folder, name) for name in files if name.endswith('.py'))
     with ThreadPoolExecutor(max_workers=8) as pool:
         texts = list(pool.map(lambda path: path.read_text(encoding='utf-8'), paths))
     # Only old Drover modules can be debt in tests; skip files that cannot name or load one.
@@ -41,6 +40,11 @@ def trees():
     return {path.relative_to(ROOT).as_posix(): ast.parse(text, filename=str(path))
             for path, text in zip(paths, texts)
             if path.parts[-2] != 'tests' or any(marker in text for marker in markers)}
+
+
+@lru_cache(maxsize=1)
+def trees():
+    return {path: tree for top in ('drover', 'hub', 'tests') for path, tree in parsed(top).items()}
 
 
 def module(path):

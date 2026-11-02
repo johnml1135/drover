@@ -24,7 +24,7 @@ def empty_result():
 class DiskCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='disk-contract-', dir=clean_parent())
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.discard_tree)
         self.root = Path(self.tmp.name)
         self.state = self.root / 'state'
         self.repos_dir = self.state / 'repos'
@@ -51,6 +51,9 @@ class DiskCase(unittest.TestCase):
                         patch.object(config, 'get', return_value=self.cfg)):
             context.start()
             self.addCleanup(context.stop)
+
+    def discard_tree(self):
+        self.tmp.cleanup()
 
     def busy(self, path):
         path = Path(path)

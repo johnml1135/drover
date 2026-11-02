@@ -1,10 +1,14 @@
 """A temp tree of real repositories and admin files, and `TraceGit`, the git that reads every answer from it."""
 import json
+import os
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
-from drover import ownership, placement
+from drover import disk_state, ownership, placement
 from tests.disk_fixture import DAY, DiskCase
 
 NOW = 2_000_000_000.
@@ -29,6 +33,23 @@ def task_at(path):
 
 def terminal(task, state):
     return dict(tasks=dict(tasks=[dict(id=task, terminal=True, live=False, state=state)]))
+
+
+class NoLock:
+    """`disk_state._StateLock` for a scene, which is one thread: its create, read back, unlink cycle cost the most of any one step."""
+    def __init__(self, state_dir):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+
+def quick_state():
+    """No scene sees a lock or an fsync; the state and the manifest stay real files. Slice 2's `durable` repoints these."""
+    return [patch.object(disk_state, '_StateLock', NoLock), patch.object(os, 'fsync', lambda fd: None)]
 
 
 class Failed(Exception):
@@ -261,6 +282,8 @@ class TraceGit:
 
 class SceneTree(DiskCase):
     """A temp tree of real repositories and admin files; builders here, and what TraceGit asks of it."""
+    pool, deletions = None, None        # `deleting_behind`'s
+
     def __init__(self):
         super().__init__()
         self.setUp()
@@ -274,6 +297,7 @@ class SceneTree(DiskCase):
         self.links, self.unreadable, self.foreign, self.used_gb, self.free_gb = set(), set(), set(), [None], [10.]
         self.process_facts, self.budget_side = dict(unreadable=[], query_failure=None, out_of_scope=0), self.side
         self.git = TraceGit(self)
+        (self.state / 'disk').mkdir()      # `_StateLock` made it, and `NoLock` does not
         self.repo()
 
     def write(self, path, text):
@@ -290,6 +314,12 @@ class SceneTree(DiskCase):
 
     def __exit__(self, *_):
         self.doCleanups()
+
+    def discard_tree(self):
+        if self.deletions is None:
+            super().discard_tree()
+        else:
+            self.deletions.append(self.pool.submit(self.tmp.cleanup))
 
     def common(self, name='alpha'):
         return self.root / 'repos' / name / '.git'
@@ -389,3 +419,17 @@ class SceneTree(DiskCase):
         for place, prefix, message in self.refused:
             if command.startswith(prefix) and (place is None or Path(place) == where):
                 raise Failed(128, message)
+
+
+@contextmanager
+def deleting_behind():
+    """Finished trees go on one thread while this lasts, each only once its patches have stopped. Leaving waits for every one of
+    them and raises what a deletion raised, so nothing stays in temp unseen."""
+    deletions = SceneTree.deletions = []
+    with ThreadPoolExecutor(max_workers=1) as SceneTree.pool:
+        try:
+            yield
+        finally:
+            SceneTree.deletions = None
+    for deletion in deletions:
+        deletion.result()

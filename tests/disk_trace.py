@@ -16,8 +16,8 @@ from unittest.mock import patch
 from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_git, placement_proof
 from tests.disk_fixture import DAY, DiskCase
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
-from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree,
-                                    TraceGit, active, task_at, terminal)  # noqa: F401  TraceGit is part of this interface
+from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree, TraceGit,
+                                    active, deleting_behind, quick_state, task_at, terminal)  # noqa: F401  TraceGit: this interface
 from tests.disk_trace_stages import STAGE_SCENES
 from tests.placement_trace import normalize
 
@@ -79,7 +79,7 @@ class Scene(SceneTree):
             self.each_run()
         patches = [patch.object(module, 'subprocess', self.git) for module in PATCH_TARGETS]
         patches += [patch.object(*where, self.at_removal(getattr(*where))) for where in (REMOVAL, OUTPUT_REMOVAL)]
-        patches += [patch.object(placement_proof, '_CleanupProcesses', self.proof),
+        patches += [*quick_state(), patch.object(placement_proof, '_CleanupProcesses', self.proof),
                     patch.object(placement, 'physical_disk_path', self.physical),
                     patch.object(placement, 'worktree_side', self.owner_side),
                     patch.object(placement, 'cleanup_link', self.link),
@@ -87,7 +87,7 @@ class Scene(SceneTree):
                     patch.object(placement, 'cleanup_free', self.free_reading),
                     patch.object(disk_budget, 'SIDE', self.budget_side),
                     patch.object(disk_budget, '_clock', lambda: self.clock),
-                    patch('uuid.uuid4', return_value=SimpleNamespace(hex='0' * 32))]
+                    patch('uuid.uuid4', lambda: SimpleNamespace(hex='0' * 32))]
         for item in patches:
             item.start()
         try:
@@ -461,6 +461,7 @@ SEQUENCES = (quarantine, quarantine_reset, quarantine_identity, quarantine_unlis
              quarantine_unlisted_other_side, quarantine_unlisted_holds_a_repository)
 
 
+@deleting_behind()
 def collect():
     trace = {}
     for name, build in SCENES.items():

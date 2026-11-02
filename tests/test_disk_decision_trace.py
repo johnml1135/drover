@@ -2,12 +2,15 @@
 import ast
 import inspect
 import json
+import threading
 import unittest
+from types import SimpleNamespace
 
 from drover.disk_cleanup import decide
 from drover.disk_worktrees import identity
 from tests.disk_trace import TRACE, Scene, collect, compare
 from tests.disk_trace_compare import HOLDING, KEPT, ON_THE_CLOCK
+from tests.disk_trace_scene import deleting_behind
 
 TRACE_DATA = json.loads(TRACE.read_text(encoding='utf-8'))
 EMPTY = dict(rows=[], errors=[], journal=[], deleted=[])
@@ -200,6 +203,27 @@ class Trace(unittest.TestCase):
     def test_a_cache_leaf_on_another_drive_is_kept_at_the_listing(self):
         for label in ('dry', 'applied'):
             self.keeps(f'cache_kept.{label}', '<TMP>/holds_other_drive/old', 'protected')
+
+
+class DeletingBehind(unittest.TestCase):
+    def test_a_tree_goes_on_another_thread_and_is_gone_on_leaving(self):
+        seen = []
+        with deleting_behind():
+            with Scene() as scene:
+                root, delete = scene.root, scene.tmp.cleanup
+                scene.tmp = SimpleNamespace(cleanup=lambda: (seen.append(threading.current_thread()), delete()))
+        self.assertEqual(len(seen), 1)
+        self.assertIsNot(seen[0], threading.current_thread())
+        self.assertFalse(root.exists())
+
+    def test_a_refused_deletion_surfaces_on_leaving(self):
+        def refused():
+            delete()
+            raise PermissionError('held open')
+        with self.assertRaises(PermissionError):
+            with deleting_behind():
+                with Scene() as scene:
+                    delete, scene.tmp = scene.tmp.cleanup, SimpleNamespace(cleanup=refused)
 
 
 def removal(path='<TMP>/w', **row_extra):

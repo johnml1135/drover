@@ -4,7 +4,7 @@ from collections import Counter
 from functools import lru_cache
 import unittest
 
-from tests.test_architecture import ROOT, call_name, compare, manifest, module, trees
+from tests.test_architecture import ROOT, call_name, compare, manifest, module, parsed
 
 EXCEPTIONS = ROOT / 'tests/seam_exceptions.json'
 KEYS = ('rule', 'module', 'where')
@@ -203,7 +203,7 @@ def rule_violations(rule, sources):
 
 @lru_cache(maxsize=1)
 def found_rows():
-    sources = {path: tree for path, tree in trees().items() if path.startswith(('drover/', 'hub/'))}
+    sources = {**parsed('drover'), **parsed('hub')}
     return Counter({tuple(row[key] for key in KEYS): row['count']
                     for rule in RULES for row in rule_violations(rule, sources)})
 
