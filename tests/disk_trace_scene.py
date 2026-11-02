@@ -8,7 +8,11 @@ from drover import ownership, placement
 from tests.disk_fixture import DAY, DiskCase
 
 NOW = 2_000_000_000.
-MERGED, TIP, FEATURE = '1' * 40, '2' * 40, '3' * 40     # MERGED is an ancestor of TIP, the remote default branch
+MERGED, EARLIER, TIP, FEATURE = '1' * 40, '4' * 40, '2' * 40, '3' * 40    # MERGED, EARLIER: ancestors of TIP, the remote default
+PICKED, PARTLY_PICKED, SQUASHED, CLEAN_MERGE = '5' * 40, '6' * 40, '7' * 40, '8' * 40
+CHERRY = {PICKED: f'- {PICKED}\n', PARTLY_PICKED: f'- {PICKED}\n+ {PARTLY_PICKED}\n'}   # others: `+`, not upstream
+BASE_TREE = 'a' * 40
+MERGE_TREES = {SQUASHED: BASE_TREE, CLEAN_MERGE: 'b' * 40}      # others conflict
 TREE = {'README.md': 'sentinel\n'}
 EXPIRE = 'worktreePruneExpire'
 
@@ -68,6 +72,8 @@ class TraceGit:
         raise Failed(128, 'fatal: not a git repository')
 
     def resolve(self, gitdir, common, name):
+        if name.endswith('^{tree}'):
+            return BASE_TREE
         name = name.removesuffix('^{commit}')
         if name in self.scene.commits:
             return name
@@ -136,10 +142,12 @@ class TraceGit:
         return ''
 
     def do_cherry(self, where, args, work, env):
-        return f'+ {args[1]}\n'
+        return CHERRY.get(args[1], f'+ {args[1]}\n')
 
     def do_merge_tree(self, where, args, work, env):
-        raise Failed(1, '')       # a conflict: the branch's content is not already in the base
+        if args[-1] not in MERGE_TREES:
+            raise Failed(1, '')
+        return MERGE_TREES[args[-1]] + '\n'
 
     def do_hash_object(self, where, args, work, env):
         return '4' * 40 + '\n'
@@ -220,7 +228,8 @@ class SceneTree(DiskCase):
         self.setUp()
         self.cfg['paths']['wsl_worktrees'] = str(self.root / 'wsl')
         self.machines, self.refused, self.elsewhere = [], [], set()
-        self.commits = {MERGED: (TREE, ()), TIP: (TREE, (MERGED,)), FEATURE: (TREE, ())}
+        self.commits = {commit: (TREE, ()) for commit in (MERGED, EARLIER, FEATURE, PICKED, PARTLY_PICKED, SQUASHED, CLEAN_MERGE)}
+        self.commits[TIP] = (TREE, (MERGED, EARLIER))
         self.declared, self.midstage, self.process_reason, self.clock, self.journal_seen = [], None, None, 0., 0
         self.git = TraceGit(self)
         self.repo()
@@ -264,7 +273,8 @@ class SceneTree(DiskCase):
         (path / '.git').write_text(f'gitdir: {admin.as_posix()}\n', encoding='utf-8')
         return admin
 
-    def worktree(self, name, *, repo='alpha', commit=MERGED, detached=False, lock='side', owner='session:w', at=None, extra=()):
+    def worktree(self, name, *, repo='alpha', commit=MERGED, detached=False, lock='side', owner='session:w', at=None, extra=(),
+                 lease=NOW + 400 * DAY):
         """A linked worktree, leased to `owner` (None for no tag), locked with this side's name unless `lock` says else."""
         path = at or self.root / 'worktrees' / f'{repo}.worktrees' / name
         common = self.common(repo)
@@ -276,9 +286,12 @@ class SceneTree(DiskCase):
         for relative in extra:
             self.file(path / relative)
         if owner:
-            (admin / ownership.TAG).write_text(json.dumps(dict(
-                v=2, repo=repo, owner=owner, created=NOW - 30 * DAY, lease_until=NOW + 400 * DAY)), encoding='utf-8')
+            self.tag(name, repo, owner, lease)
         return path
+
+    def tag(self, name, repo, owner, lease=NOW + 400 * DAY):
+        (self.common(repo) / 'worktrees' / name / ownership.TAG).write_text(json.dumps(dict(
+            v=2, repo=repo, owner=owner, created=NOW - 30 * DAY, lease_until=lease)), encoding='utf-8')
 
     def folder(self, name, extra=()):
         """A plain folder under the worktree root, holding the repo's HEAD, registered nowhere."""
@@ -301,9 +314,13 @@ class SceneTree(DiskCase):
         exclude = common / 'info' / 'exclude'
         return exclude.read_text(encoding='utf-8').split() if exclude.exists() else []
 
-    def move(self, name):
-        """The worktree's registration changes: it now has another branch checked out."""
-        (self.common() / 'refs/heads/moved').write_text(FEATURE + '\n', encoding='utf-8')
+    def advance(self, name):
+        """The worktree's branch moves to another commit that is still merged; only its head differs."""
+        (self.common() / 'refs/heads' / name).write_text(EARLIER + '\n', encoding='utf-8')
+
+    def move(self, name, commit=MERGED):
+        """The worktree's registration changes: it now has another branch checked out, at `commit`."""
+        (self.common() / 'refs/heads/moved').write_text(commit + '\n', encoding='utf-8')
         (self.common() / 'worktrees' / name / 'HEAD').write_text('ref: refs/heads/moved\n', encoding='utf-8')
 
     def refuse(self, command, message, where=None):

@@ -9,15 +9,15 @@ import json
 import os
 import shutil
 import sys
-from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_git
-from tests.disk_fixture import DAY
-from tests.disk_trace_scene import FEATURE, NOW, TIP, SceneTree, TraceGit  # noqa: F401  TraceGit is part of this interface
+from tests.disk_fixture import DAY, DiskCase
+from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
+from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree,
+                                    TraceGit)  # noqa: F401  TraceGit is part of this interface
 from tests.placement_trace import normalize
 
 TRACE = Path(__file__).with_name('disk_decision_trace.json')
@@ -32,7 +32,9 @@ class Scene(SceneTree):
                                     == placement.cleanup_parts(p) for p in self.elsewhere) else str(self.root)
 
     def proof(self, **_):
-        return SimpleNamespace(busy=self.busy, reason=self.process_reason)
+        """A snapshot, as the real one is: going busy after it shows only in a fresh proof."""
+        seen = SimpleNamespace(busy_paths=set(self.busy_paths))
+        return SimpleNamespace(busy=lambda path: DiskCase.busy(seen, path), reason=self.process_reason)
 
     def serve(self, apply, now, approved, timeout, tasks):
         request = dict(stage=4, mode='on-demand', apply=apply, now=now, drive=dict(path=str(self.root), name='trace'),
@@ -147,8 +149,34 @@ def revalidation_dirty(s):
 
 
 def revalidation_registration(s):
+    """Still settled on its new branch, so only the comparison of the selected identity stops the removal."""
     s.worktree('w')
     s.midstage = lambda request: s.move('w')
+
+
+def revalidation_unsettled(s):
+    s.worktree('w')
+    s.midstage = lambda request: s.move('w', FEATURE)
+
+
+def revalidation_head(s):
+    s.worktree('w')
+    s.midstage = lambda request: s.advance('w')
+
+
+def revalidation_tag(s):
+    s.worktree('w')
+    s.midstage = lambda request: s.tag('w', 'alpha', 'session:other')
+
+
+def revalidation_busy(s):
+    path = s.worktree('w')
+    s.midstage = lambda request: s.busy_paths.add(str(path))
+
+
+def rescue_ref_fails(s):
+    s.worktree('w', detached=True)
+    s.refuse('update-ref', 'fatal: cannot lock ref')
 
 
 def prune_expiry_unset(s):
@@ -166,6 +194,9 @@ def lost_registration(s):
 
 
 def repo_cannot_be_listed(s):
+    """Alpha holds a settled worktree and a stray folder; unknown, neither is judged. Beta carries on without it."""
+    s.worktree('a')
+    s.folder('stray')
     s.repo('beta')
     s.worktree('b', repo='beta')
     s.refuse('worktree list', 'fatal: listing failed', s.common().parent)
@@ -188,11 +219,12 @@ def settled_deadline_at_a_worktree(s):
 
 
 def approved_removal(s):
-    s.worktree('other', commit=FEATURE)
+    """The settled neighbour stays: an approval is for its one target."""
+    s.worktree('neighbour')
     return dict(approved=s.worktree('w', commit=FEATURE))
 
 
-# Each is built twice, dry and applied; what a build returns, when a dict, goes to the record. The main checkout's own
+# Each is built once and served dry, then applied; what a build returns, when a dict, goes to the record. The main checkout's own
 # row is in every scene, so `main_checkout` is the bare one.
 SCENES = dict(
     main_checkout=lambda s: None,
@@ -210,9 +242,14 @@ SCENES = dict(
     orphan=lambda s: s.worktree('w', owner=None),
     settled=lambda s: s.worktree('w'),
     settled_detached=lambda s: s.worktree('w', detached=True),
+    settled_by_cherry=lambda s: s.worktree('w', commit=PICKED),
+    settled_by_equal_tree=lambda s: s.worktree('w', commit=SQUASHED),
     settled_terminal=lambda s: s.worktree('w', commit=FEATURE, owner='drover:T1') and terminal('T1', 'landed'),
     closed_and_recent=lambda s: s.age(s.worktree('w', commit=FEATURE, owner='drover:T1'), DAY) and terminal('T1', 'yanked'),
     unsettled=lambda s: s.worktree('w', commit=FEATURE),
+    unsettled_partly_picked=lambda s: s.worktree('w', commit=PARTLY_PICKED),
+    unsettled_clean_merge=lambda s: s.worktree('w', commit=CLEAN_MERGE),
+    lease_expired=lambda s: s.worktree('w', lease=NOW - DAY),
     ignored_content_orphan=lambda s: ignored(s, 'cache', owner=None),
     ignored_content_at_removal=lambda s: ignored(s, 'cache'),
     ignored_declared=ignored_declared,
@@ -221,9 +258,14 @@ SCENES = dict(
     identity_changed=identity_changed,
     revalidation_dirty=revalidation_dirty,
     revalidation_registration=revalidation_registration,
+    revalidation_unsettled=revalidation_unsettled,
+    revalidation_head=revalidation_head,
+    revalidation_tag=revalidation_tag,
+    revalidation_busy=revalidation_busy,
     revalidation_locked_by_protect=lambda s: s.worktree('w', lock=None),
     prune_expiry_unset=prune_expiry_unset,
     removal_fails=removal_fails,
+    rescue_ref_fails=rescue_ref_fails,
     unlisted=lambda s: s.folder('stray'),
     unlisted_untracked=lambda s: s.folder('stray', extra=['scratch.txt']),
     unlisted_live=lambda s: active(s.folder('stray')),
@@ -235,6 +277,7 @@ SCENES = dict(
     settled_deadline_at_a_repo=settled_deadline_at_a_repo,
     settled_deadline_at_a_worktree=settled_deadline_at_a_worktree,
     approved_removal=approved_removal,
+    approved_dirty=lambda s: dict(approved=s.worktree('w', extra=['scratch.txt'])),
     approved_past_the_deadline=lambda s: dict(approved=s.worktree('w', owner=None), timeout=0),
 )
 
@@ -280,7 +323,23 @@ def quarantine_unlisted_goes_live(s):
     return steps(s, ('started', 0, True, None), ('elapsed', 3, True, wake))
 
 
-SEQUENCES = (quarantine, quarantine_reset, quarantine_identity, quarantine_unlisted, quarantine_unlisted_goes_live)
+def touched_at_removal(s, path):
+    """A file touched between selection and removal: the row's keys are equal, and only the fingerprint can refuse."""
+    def touch():
+        s.midstage = lambda request: s.age(path / 'README.md', DAY)
+    return steps(s, ('started', 0, True, None), ('elapsed', 3, True, touch))
+
+
+def quarantine_touched(s):
+    return touched_at_removal(s, s.worktree('w', owner=None))
+
+
+def quarantine_unlisted_touched(s):
+    return touched_at_removal(s, s.folder('stray'))
+
+
+SEQUENCES = (quarantine, quarantine_reset, quarantine_identity, quarantine_unlisted, quarantine_unlisted_goes_live,
+             quarantine_touched, quarantine_unlisted_touched)
 
 
 def collect():
@@ -294,76 +353,6 @@ def collect():
         with Scene() as scene:
             trace.update({f'{sequence.__name__}.{label}': row for label, row in sequence(scene).items()})
     return trace
-
-
-@dataclass(frozen=True)
-class Change:
-    scenario: str
-    part: str
-    old: object
-    new: object
-    direction: str
-
-
-EMPTY = dict(rows=[], errors=[], journal=[], deleted=[])
-WEIGHT = dict(candidate=1, removed=2)
-
-
-def weight(row):
-    return WEIGHT.get(row['action'], 0)
-
-
-def row_direction(old, new):
-    if new is None:     # a kept row gone means a protection may be gone with it
-        return 'towards_keep' if old and weight(old) else 'towards_deletion'
-    if old is None:
-        return 'towards_deletion' if weight(new) else 'report_added'
-    if weight(new) != weight(old):
-        return 'towards_deletion' if weight(new) > weight(old) else 'towards_keep'
-    if new['reason_code'] == old['reason_code']:
-        return 'neutral'
-    return 'towards_deletion' if weight(new) else 'towards_keep'      # a removal on a new ground is never assumed equal
-
-
-def paired(before, after):
-    """Rows by path and reason, then what is left by path, so a changed reason reads as one changed row."""
-    left, pairs, unmatched = list(after), [], []
-    for row in before:
-        match = next((r for r in left if (r['path'], r['reason_code']) == (row['path'], row['reason_code'])), None)
-        (left.remove(match), pairs.append((row, match))) if match else unmatched.append(row)
-    for row in unmatched:
-        match = next((r for r in left if r['path'] == row['path']), None)
-        if match:
-            left.remove(match)
-        pairs.append((row, match))
-    return pairs + [(None, row) for row in left]
-
-
-def lost_and_new(before, after):
-    old, new = Counter(json.dumps(r, sort_keys=True) for r in before), Counter(json.dumps(r, sort_keys=True) for r in after)
-    return [json.loads(r) for r in (old - new).elements()], [json.loads(r) for r in (new - old).elements()]
-
-
-def compare_scene(name, before, after):
-    changes = [Change(name, 'row', old, new, row_direction(old, new)) for old, new in paired(before['rows'], after['rows'])
-               if old != new]
-    lost, new = lost_and_new(before['errors'], after['errors'])
-    changes += [Change(name, 'error', row, None, 'towards_deletion') for row in lost]
-    changes += [Change(name, 'error', None, row, 'report_added') for row in new]
-    lost, new = lost_and_new(before['journal'], after['journal'])
-    done = {r['path'] for r in after['journal'] if r['phase'] == 'completed'}
-    changes += [Change(name, 'journal', row, None, 'towards_deletion' if row['phase'] != 'completed' and row['path'] in done
-                       else 'towards_keep') for row in lost]
-    changes += [Change(name, 'journal', None, row, 'towards_deletion' if row['phase'] == 'completed' else 'report_added')
-                for row in new]
-    changes += [Change(name, 'deleted', path, None, 'towards_keep') for path in before['deleted'] if path not in after['deleted']]
-    changes += [Change(name, 'deleted', None, path, 'towards_deletion') for path in after['deleted'] if path not in before['deleted']]
-    return changes
-
-
-def compare(old, new):
-    """Every difference between two recordings with its direction. Where a difference cannot be shown harmless, it stops."""
-    return [change for name in sorted({*old, *new}) for change in compare_scene(name, old.get(name, EMPTY), new.get(name, EMPTY))]
 
 
 def write():
