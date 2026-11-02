@@ -5,16 +5,19 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
 from . import placement
 from .placement import KILL_AFTER_S
 from .runner_common import (POLL_S, WATCH_GLOBS, STOP_FILE, STATUS_FILE, RECORD_FILE, OUT_FILE,
-                            STOP_REASONS, NONCE_RE, scratch_path, now_iso, run_dir, write_json_atomic, read_status)
+                            STOP_REASONS, NONCE_RE, TERMINAL_WAIT_S, scratch_path, now_iso, run_dir, write_json_atomic, read_status)
 from .runner_record import scan_record
 
 # ---- supervising ------------------------------------------------------------------------------------------
+ROUTINE_WAIT_S = 0.5     # a heartbeat is retried at the next sample, so it must not hold the watchdog loop long
+
 class Status:
     def __init__(self, path, run_id, nonce):
         self.path = path
@@ -25,6 +28,28 @@ class Status:
     def set(self, **kw):
         self.d.update(kw)
         write_json_atomic(self.path, self.d)
+
+    def routine(self, **kw):
+        """A heartbeat or progress update: a write that cannot land is skipped, and the next update carries it."""
+        self.d.update(kw)
+        try:
+            write_json_atomic(self.path, self.d, ROUTINE_WAIT_S)
+            return True
+        except OSError:
+            return False
+
+    def terminal(self, **kw):
+        """The write that records the outcome. It waits out a reader for TERMINAL_WAIT_S; if the status file still
+        cannot be replaced, the outcome goes to stderr (runner.log when detached) and the caller still returns it, so
+        the runner's exit code and output keep what the worker did."""
+        self.d.update(kw)
+        try:
+            write_json_atomic(self.path, self.d, TERMINAL_WAIT_S)
+            return True
+        except OSError as e:
+            print(f"runner: could not write the terminal status {self.path}: {e!r}", file=sys.stderr)
+            print(json.dumps(self.d), file=sys.stderr, flush=True)
+            return False
 
 
 def _read_stop_file(d):
@@ -174,14 +199,14 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
     watch = None
     try:
         with placement.cleanup_process_record(d.parent.parent, cwd, pid=proc.pid):
-            st.set(state="running", pid=proc.pid)
+            st.terminal(state="running", pid=proc.pid)   # the next heartbeat repeats it if it cannot land
             watch = open(out, "rb")        # an open handle's size is exact on Windows, where stat() can lag
             t0 = last_change = time.monotonic()
             size, outcome, watched = 0, None, ()
             while proc.poll() is None:
                 now = time.monotonic()
                 if peaks.last is None or now - peaks.last[0] >= 1:
-                    st.set(peaks=dict(peaks.sample()), heartbeat=now_iso())
+                    st.routine(peaks=dict(peaks.sample()), heartbeat=now_iso())
                 watch.seek(0, 2)
                 if watch.tell() != size:
                     size, last_change = watch.tell(), now
@@ -206,9 +231,14 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
             rc = proc.wait()
             state, reason = outcome or ("exited", None)
             rec = scan_record(out)
+            record_error = None
             if rec:
-                write_json_atomic(d / RECORD_FILE, rec)
-            st.set(state=state, reason=reason, exit_code=rc, ended=now_iso(), peaks=dict(peaks.sample()))
+                try:
+                    write_json_atomic(d / RECORD_FILE, rec, TERMINAL_WAIT_S)
+                except OSError as e:        # out.log still holds the record; the outcome below matters more
+                    record_error = repr(e)
+            st.terminal(state=state, reason=reason, exit_code=rc, ended=now_iso(), peaks=dict(peaks.sample()),
+                        **({"record_error": record_error} if record_error else {}))
     except BaseException:
         try:
             tree.kill(min(kill_after, 3))       # never leave the worker running unsupervised
