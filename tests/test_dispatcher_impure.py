@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -116,10 +117,13 @@ class FailClosed(Base):
         self.addCleanup(setattr, dispatcher, "IS_WINDOWS", orig)
         out = io.StringIO()
         with contextlib.redirect_stdout(out), mock.patch('drover.disk.tick', return_value={
-                'drives': [], 'pause': False, 'critical_tokens': []}):
+                'drives': [], 'pause': False, 'critical_tokens': []}), \
+                mock.patch.dict(os.environ, DROVER_RESOURCES_FAKE='{"platform": "windows"}'), \
+                mock.patch('drover.placement.wsl_used_gb') as measured:
             rc = dispatcher.main(["--db", str(Path(self.tmp.name) / "m.db"), "--once", "--json", "--lock", lock])
         self.assertEqual(rc, 0)
         self.assertTrue(json.loads(out.getvalue())["paused"])        # dispatch_enabled defaults to false
+        measured.assert_not_called()   # a real reading would sit in the shared cache and hold the WSL gates of later tests
 
     def test_main_refuses_off_windows(self):
         import io
