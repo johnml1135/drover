@@ -6,6 +6,7 @@ import unittest
 
 from drover.disk_cleanup import decide
 from tests.disk_trace import TRACE, collect, compare
+from tests.disk_trace_compare import HOLDING, KEPT, ON_THE_CLOCK
 
 TRACE_DATA = json.loads(TRACE.read_text(encoding='utf-8'))
 EMPTY = dict(rows=[], errors=[], journal=[], deleted=[])
@@ -26,6 +27,15 @@ def reasons_in_decide():
 
 def reasons_in(trace):
     return {row['reason_code'] for scene in trace.values() for row in scene['rows']}
+
+
+def rejections_in(trace):
+    return {row['rejection'] for scene in trace.values() for row in scene['rows'] if 'rejection' in row}
+
+
+def recorded(*names):
+    """The named scenarios, leaving out any not yet recorded, so a test names what is missing and does not raise."""
+    return {name: TRACE_DATA[name] for name in names if name in TRACE_DATA}
 
 
 def row(action, reason='orphan', path='<TMP>/w', **extra):
@@ -86,6 +96,70 @@ class Trace(unittest.TestCase):
         for name, scenario in TRACE_DATA.items():
             if name.endswith('.dry'):
                 self.assertEqual((scenario['deleted'], scenario['journal']), ([], []), name)
+
+    def test_every_output_evidence_rejection_has_a_scenario(self):
+        self.assertLessEqual({'main_checkout', 'not_directory', 'unsafe_path', 'owner_side', 'physical_drive',
+                              'process using worktree', 'windows process using worktree', 'idle'}, rejections_in(TRACE_DATA))
+
+    def test_every_rejection_keeps_what_it_rejects(self):
+        kept = recorded('output_rejected.applied', 'output_kept.applied')
+        self.assertEqual(len(kept), 2)
+        self.assertLessEqual({'not_directory', 'unsafe_path', 'owner_side', 'physical_drive', 'process using worktree', 'idle'},
+                             rejections_in(kept))
+        self.assertEqual([scene['deleted'] for scene in kept.values()], [[], []])
+
+    def test_idle_waiver_is_pinned_both_ways(self):
+        """A drive at hold or critical waives it; a lesser level, or a budget at any level, never does."""
+        waived = recorded('output_idle_hold.applied', 'output_idle_critical.applied')
+        self.assertEqual(len(waived), 2)
+        self.assertEqual(rejections_in(waived), {'main_checkout'})
+        self.assertTrue(all(scene['deleted'] for scene in waived.values()))
+        names = 'output_idle.applied', 'output_idle_warn.applied', 'output_idle_queue.applied', 'budget_idle_at_critical.applied'
+        kept = recorded(*names)
+        self.assertEqual(sorted(kept), sorted(names))
+        self.assertTrue(all('idle' in rejections_in({name: scene}) and not scene['deleted'] for name, scene in kept.items()))
+
+    def test_every_stage_has_a_scenario_and_every_deadline_row_appears(self):
+        self.assertLessEqual({'settled_deadline', 'output_deadline', 'budget_deadline'}, reasons_in(TRACE_DATA))
+        self.assertLessEqual({'stale_temp', 'temp_retained', 'temp_root_elapsed', 'temp_root_partial', 'declared_cache',
+                              'folder_cache', 'declared_disposable', 'drive_unproven', 'output_evidence_unavailable',
+                              'repository_unavailable', 'budget_not_needed', 'budget_shortfall', 'budget_used_unknown',
+                              'budget_processes_unknown', 'worktree_inventory', 'untracked_or_ignored', 'budget_usage',
+                              'merged_live_task', 'unlisted_folder', 'declared_report'}, reasons_in(TRACE_DATA))
+
+    def test_a_path_tracked_mid_purge_keeps_its_whole_folder(self):
+        self.assertEqual(TRACE_DATA['budget_becomes_tracked.applied']['deleted'], [])
+
+    def test_a_budget_that_cannot_be_measured_removes_nothing(self):
+        names = 'budget_used_unknown.applied', 'budget_processes_unknown.applied', 'report_rows.applied'
+        self.assertEqual(sorted(recorded(*names)), sorted(names))
+        for name in names:
+            self.assertEqual(TRACE_DATA[name]['deleted'], [], name)
+        usage = [row['path'] for row in TRACE_DATA['report_rows.dry']['rows'] if row['reason_code'] == 'budget_usage']
+        self.assertTrue([path for path in usage if path.endswith('/w')])
+        self.assertFalse([path for path in usage if path.endswith('/partial')])
+
+    def test_every_holding_reason_has_a_scenario(self):
+        self.assertLessEqual(HOLDING, reasons_in(TRACE_DATA))
+
+    def test_every_kept_reason_recorded_is_classified(self):
+        kept = {row['reason_code'] for scene in TRACE_DATA.values() for row in scene['rows'] if row['action'] in KEPT}
+        self.assertEqual(kept - HOLDING - ON_THE_CLOCK, set())
+        self.assertEqual(HOLDING & ON_THE_CLOCK, set())
+
+    def test_a_stray_is_kept_when_it_goes_busy_or_is_registered_mid_stage(self):
+        names = 'quarantine_unlisted_goes_busy.elapsed', 'quarantine_unlisted_registered.elapsed'
+        self.assertEqual(sorted(recorded(*names)), sorted(names))
+        for name in names:
+            self.assertEqual(TRACE_DATA[name]['deleted'], [], name)
+
+    def test_a_scene_that_guards_a_task5_mutant_deletes_nothing_today(self):
+        names = ('stale_task_snapshot.applied', 'future_task_snapshot.applied', 'ignored_holds_a_repository.applied',
+                 'lease_for_another_repo.applied', 'quarantine_unlisted_other_side.elapsed', 'removal_leaves_the_drive.applied',
+                 'removal_becomes_a_link.applied')
+        self.assertEqual(sorted(recorded(*names)), sorted(names))
+        for name in names:
+            self.assertEqual(TRACE_DATA[name]['deleted'], [], name)
 
 
 def removal(path='<TMP>/w', **row_extra):
@@ -177,6 +251,20 @@ class Compare(unittest.TestCase):
         old, new = scene(**removal()), scene(**removal())
         new['one']['rows'] = []
         self.assertEqual(directions(old, new), ['towards_deletion'])
+
+    def test_a_partial_shrink_spares_nothing_of_one_removal(self):
+        """The folder stays, the registration still goes: nothing was spared, whatever the row and journal say."""
+        old = removal()
+        old['deleted'] = ['<TMP>/admin', '<TMP>/w']
+        changes = compare(scene(**old), scene(deleted=['<TMP>/admin']))
+        self.assertEqual({change.direction for change in changes}, {'towards_deletion'})
+
+    def test_a_partial_shrink_spares_nothing_of_a_second_removal(self):
+        """A really spared, B unreported and unjournalled while its registration still goes: fail closed on both."""
+        first, second = removal('<TMP>/a'), removal('<TMP>/b')
+        old = dict(rows=first['rows'] + second['rows'], deleted=['<TMP>/a', '<TMP>/adminb'], journal=first['journal'] + second['journal'])
+        changes = compare(scene(**old), scene(rows=[row('keep', 'dirty', '<TMP>/a')], deleted=['<TMP>/adminb']))
+        self.assertEqual({change.direction for change in changes}, {'towards_deletion'})
 
     def test_a_removal_with_no_row_or_journal_left_still_stops_if_its_folder_goes(self):
         """`missing`: the row names a path that never shows in `deleted`, which holds only the admin directory."""

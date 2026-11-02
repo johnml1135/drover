@@ -13,16 +13,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_git
+from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_git, placement_proof
 from tests.disk_fixture import DAY, DiskCase
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
 from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree,
-                                    TraceGit)  # noqa: F401  TraceGit is part of this interface
+                                    TraceGit, active, terminal)  # noqa: F401  TraceGit is part of this interface
+from tests.disk_trace_stages import STAGE_SCENES
 from tests.placement_trace import normalize
 
 TRACE = Path(__file__).with_name('disk_decision_trace.json')
 PATCH_TARGETS = (placement_git, disk_paths)     # each module whose `subprocess` TraceGit replaces; Tasks 15, 16 repoint it
 REMOVAL = (disk_worktrees, 'remove')            # where a mid-stage change lands: after selection, before revalidation
+OUTPUT_REMOVAL = (disk_paths, 'remove_output')  # the same for a disposable path
+WORKTREE_SIDE, CLEANUP_LINK = placement.worktree_side, placement.cleanup_link
 
 
 class Scene(SceneTree):
@@ -32,27 +35,57 @@ class Scene(SceneTree):
                                     == placement.cleanup_parts(p) for p in self.elsewhere) else str(self.root)
 
     def proof(self, **_):
-        """A snapshot, as the real one is: going busy after it shows only in a fresh proof."""
+        """A snapshot, as the real one is: going busy after it shows only in a fresh proof. `fresh`, a change, lands just before the
+        first fresh one. It stands in for the class, so the real `cleanup_processes` carries its diagnostics into the request."""
+        self.proofs += 1
+        change, self.fresh = (self.fresh, None) if self.proofs > 1 else (None, self.fresh)
+        if change:
+            change()
         seen = SimpleNamespace(busy_paths=set(self.busy_paths))
-        return SimpleNamespace(busy=lambda path: DiskCase.busy(seen, path), reason=self.process_reason)
+        return SimpleNamespace(busy=lambda path: DiskCase.busy(seen, path), reason=self.process_reason, **self.process_facts)
 
-    def serve(self, apply, now, approved, timeout, tasks):
-        request = dict(stage=4, mode='on-demand', apply=apply, now=now, drive=dict(path=str(self.root), name='trace'),
-                       repos=self.machines, paths=dict(self.cfg['disk_cleanup'], worker_timeout_s=timeout),
-                       state_dir=str(self.state), tasks={'active_worktrees': [], 'tasks': [], 'at': now, **tasks})
-        if approved:
-            request['approved_path'] = str(approved)
-        real = getattr(*REMOVAL)
+    def owner_side(self, path, lock=None):
+        return self.other_side if str(path) in self.foreign else WORKTREE_SIDE(path, lock)
 
-        def remove(request, selected, **options):
+    def link(self, path):
+        """`links` read as links, on any host; `unreadable` cannot be looked at."""
+        if Path(path) in self.unreadable:
+            raise PermissionError('unreadable')
+        return Path(path) in self.links or CLEANUP_LINK(path)
+
+    def used(self, *_, **__):
+        return self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+
+    def free_reading(self, path):
+        return self.free_gb.pop(0) if len(self.free_gb) > 1 else self.free_gb[0]
+
+    def at_removal(self, real):
+        def remove(request, *selected, **options):
             change, self.midstage = self.midstage, None
             if change:
                 change(request)
-            return real(request, selected, **options)
+            return real(request, *selected, **options)
+        return remove
 
+    def serve(self, apply, now, approved, timeout, tasks, stage=4, level=None, mode='on-demand', budget=None):
+        drive = dict(path=str(self.root), name='trace', warn_gb=150., **(dict(level=level) if level else {}))
+        request = dict(stage=stage, mode=mode, apply=apply, now=now, drive=drive, repos=self.machines,
+                       paths=dict(self.cfg['disk_cleanup'], worker_timeout_s=timeout), state_dir=str(self.state),
+                       tasks={'active_worktrees': [], 'tasks': [], 'at': now, **tasks}, budget=budget)
+        if approved:
+            request['approved_path'] = str(approved)
+        self.proofs, self.readings = 0, list(self.used_gb)
+        if self.each_run:
+            self.each_run()
         patches = [patch.object(module, 'subprocess', self.git) for module in PATCH_TARGETS]
-        patches += [patch.object(*REMOVAL, remove), patch.object(placement, 'cleanup_processes', self.proof),
+        patches += [patch.object(*where, self.at_removal(getattr(*where))) for where in (REMOVAL, OUTPUT_REMOVAL)]
+        patches += [patch.object(placement_proof, '_CleanupProcesses', self.proof),
                     patch.object(placement, 'physical_disk_path', self.physical),
+                    patch.object(placement, 'worktree_side', self.owner_side),
+                    patch.object(placement, 'cleanup_link', self.link),
+                    patch.object(placement, 'wsl_used_gb', self.used),
+                    patch.object(placement, 'cleanup_free', self.free_reading),
+                    patch.object(disk_budget, 'SIDE', self.budget_side),
                     patch.object(disk_budget, '_clock', lambda: self.clock),
                     patch('uuid.uuid4', return_value=SimpleNamespace(hex='0' * 32))]
         for item in patches:
@@ -64,8 +97,13 @@ class Scene(SceneTree):
                 item.stop()
 
     def tree(self):
-        return {Path(folder, name) for folder, dirs, files in os.walk(self.root) for name in dirs + files
-                if self.state not in Path(folder, name).parents and Path(folder, name) != self.state}
+        """Every path but the state directory's, which is the stage's to write."""
+        found = set()
+        for folder, dirs, files in os.walk(self.root):
+            if folder == str(self.root):
+                dirs.remove(self.state.name)
+            found.update(os.path.join(folder, name) for name in dirs + files)
+        return found
 
     def journal(self):
         manifest = self.state / 'disk-cleanup-manifest.jsonl'
@@ -73,11 +111,11 @@ class Scene(SceneTree):
         fresh, self.journal_seen = rows[self.journal_seen:], len(rows)
         return [json.loads(row) for row in fresh]
 
-    def record(self, *, apply, now=NOW, approved=None, timeout=1800, tasks=None):
+    def record(self, *, apply, now=NOW, approved=None, timeout=1800, tasks=None, **stage):
         before, self.clock = self.tree(), 0.
-        answer = self.serve(apply, now, approved, timeout, tasks or {})
-        gone = before - self.tree()
-        rows = [frozen_row(row) for row in answer['items']]
+        answer = self.serve(apply, now, approved, timeout, tasks or {}, **stage)
+        gone = {Path(path) for path in before - self.tree()}
+        rows = sorted((frozen_row(row) for row in answer['items']), key=lambda row: json.dumps(row, sort_keys=True))
         errors = [{k: e[k] for k in ('path', 'repo', 'action', 'reason_code', 'error') if k in e} for e in answer['errors']]
         trace = dict(rows=rows, errors=errors, journal=self.journal(),
                      deleted=sorted(str(p) for p in gone if p.parent not in gone))
@@ -92,20 +130,21 @@ class Scene(SceneTree):
         return {self.side: '<SIDE>', self.other_side: '<OTHER>'}.get(value, value) if isinstance(value, str) else value
 
 
+def rejection(error):
+    """An output rejection's fixed words: its detail names paths and hosts, and the idle limit is configuration."""
+    words = error.removeprefix('not an eligible owning-side worktree: ').split(' (')[0]
+    return 'idle' if words.startswith('worktree idle') else words
+
+
 def frozen_row(row):
-    """(path, action, reason_code), a deadline row's count, and head, branch, side_lock where a row may delete."""
-    frozen = {key: row[key] for key in ('path', 'action', 'reason_code', 'count') if key in row}
+    """(path, action, reason_code), a deadline row's count, a cache command's argv and result, an output rejection's words,
+    and head, branch, side_lock where a row may delete. Rows are sorted: folder order is the host's."""
+    frozen = {key: row[key] for key in ('path', 'action', 'reason_code', 'count', 'argv', 'returncode') if key in row}
     if row['action'] in ('candidate', 'removed'):
         frozen.update({key: row.get(key) for key in ('head', 'branch', 'side_lock')})
+    if row.get('reason_code') == 'output_evidence_unavailable':
+        frozen['rejection'] = rejection(row['error'])
     return frozen
-
-
-def active(path):
-    return dict(tasks=dict(active_worktrees=[str(path)]))
-
-
-def terminal(task, state):
-    return dict(tasks=dict(tasks=[dict(id=task, terminal=True, live=False, state=state)]))
 
 
 def busy_process_reason(s):
@@ -137,10 +176,17 @@ def nested_worktree(s):
     s.worktree('inner', at=s.worktree('outer') / 'inner')
 
 
+def ignored_holds_a_repository(s):
+    """Declared and ignored, and still no removal: a repository inside the folder is not disposable."""
+    s.declared.append('bin')
+    s.exclude('bin')
+    s.worktree('w', extra=['bin/inner/.git/HEAD'])
+
+
 def identity_changed(s):
     """The registration moves between removal's two readings of it."""
     s.worktree('w')
-    s.midstage = lambda request: setattr(s.git, 'after_status', lambda: s.move('w'))
+    s.midstage = lambda request: s.git.after.update(status=lambda: s.move('w'))
 
 
 def revalidation_dirty(s):
@@ -174,6 +220,26 @@ def revalidation_busy(s):
     s.midstage = lambda request: s.busy_paths.add(str(path))
 
 
+def removal_changes(s, change):
+    """`change` lands after every check of the worktree, at the last git call before the removal's own path check."""
+    path = s.worktree('w')
+    s.midstage = lambda request: s.git.after.update({'ls-tree': lambda: change(path)})
+
+
+def stale_task_snapshot(s, age=1000):
+    """A terminal task in a snapshot too old to trust: its worktree counts as live."""
+    s.worktree('w', owner='drover:T1')
+    answer = terminal('T1', 'landed')
+    answer['tasks']['at'] = NOW - age
+    return answer
+
+
+def lease_for_another_repo(s):
+    """Settled and leased, but the lease names a repo this worktree is not in."""
+    s.worktree('w', owner=None)
+    s.tag('w', 'alpha', 'session:w', claims='beta')
+
+
 def rescue_ref_fails(s):
     s.worktree('w', detached=True)
     s.refuse('update-ref', 'fatal: cannot lock ref')
@@ -191,6 +257,11 @@ def removal_fails(s):
 def lost_registration(s):
     s.lost('lost')
     (s.common() / 'refs/heads/lost').write_text(TIP + '\n', encoding='utf-8')
+
+
+def lost_registration_fails(s):
+    lost_registration(s)
+    s.refuse('worktree add', 'fatal: cannot add')
 
 
 def repo_cannot_be_listed(s):
@@ -250,6 +321,13 @@ SCENES = dict(
     unsettled_partly_picked=lambda s: s.worktree('w', commit=PARTLY_PICKED),
     unsettled_clean_merge=lambda s: s.worktree('w', commit=CLEAN_MERGE),
     lease_expired=lambda s: s.worktree('w', lease=NOW - DAY),
+    lease_for_another_repo=lease_for_another_repo,
+    stale_task_snapshot=stale_task_snapshot,
+    future_task_snapshot=lambda s: stale_task_snapshot(s, -1),
+    ignored_holds_a_repository=ignored_holds_a_repository,
+    removal_leaves_the_drive=lambda s: removal_changes(s, s.elsewhere.add),
+    removal_becomes_a_link=lambda s: removal_changes(s, s.links.add),
+    lost_registration_fails=lost_registration_fails,
     ignored_content_orphan=lambda s: ignored(s, 'cache', owner=None),
     ignored_content_at_removal=lambda s: ignored(s, 'cache'),
     ignored_declared=ignored_declared,
@@ -279,6 +357,7 @@ SCENES = dict(
     approved_removal=approved_removal,
     approved_dirty=lambda s: dict(approved=s.worktree('w', extra=['scratch.txt'])),
     approved_past_the_deadline=lambda s: dict(approved=s.worktree('w', owner=None), timeout=0),
+    **STAGE_SCENES,
 )
 
 
@@ -338,8 +417,38 @@ def quarantine_unlisted_touched(s):
     return touched_at_removal(s, s.folder('stray'))
 
 
+def quarantine_unlisted_goes_busy(s):
+    path = s.folder('stray')
+
+    def wake():
+        s.midstage = lambda request: s.busy_paths.add(str(path))
+    return steps(s, ('started', 0, True, None), ('elapsed', 3, True, wake))
+
+
+def quarantine_unlisted_registered(s):
+    """Listed from mid-stage on, with no `.git` yet: only the listing at removal sees it, not a look at the folder."""
+    path = s.folder('stray')
+
+    def wake():
+        s.midstage = lambda request: s.registered_only(path, 'stray')
+    return steps(s, ('started', 0, True, None), ('elapsed', 3, True, wake))
+
+
+def quarantine_unlisted_other_side(s):
+    """A folder the other side owns, under a root this side can read: a WSL worker on a Windows drive, say."""
+    s.foreign.add(str(s.folder('stray')))
+    return steps(s, ('started', 0, True, None), ('elapsed', 3, True, None))
+
+
+def quarantine_unlisted_holds_a_repository(s):
+    """Git never lists a work tree's own `.git`, so only the look for one sees this is no plain folder."""
+    s.folder('stray', extra=['.git/HEAD'])
+    return steps(s, ('started', 0, True, None), ('elapsed', 3, True, None))
+
+
 SEQUENCES = (quarantine, quarantine_reset, quarantine_identity, quarantine_unlisted, quarantine_unlisted_goes_live,
-             quarantine_touched, quarantine_unlisted_touched)
+             quarantine_touched, quarantine_unlisted_touched, quarantine_unlisted_goes_busy, quarantine_unlisted_registered,
+             quarantine_unlisted_other_side, quarantine_unlisted_holds_a_repository)
 
 
 def collect():
@@ -347,8 +456,9 @@ def collect():
     for name, build in SCENES.items():
         with Scene() as scene:
             options = build(scene)
-            for label, apply in (('dry', False), ('applied', True)):     # a report changes nothing, so one tree serves both
-                trace[f'{name}.{label}'] = scene.record(apply=apply, **(options if isinstance(options, dict) else {}))
+            options = options if isinstance(options, dict) else {}
+            for label, apply in (('dry', False), ('applied', True))[options.pop('applied_only', False):]:     # a report changes nothing
+                trace[f'{name}.{label}'] = scene.record(apply=apply, **options)
     for sequence in SEQUENCES:
         with Scene() as scene:
             trace.update({f'{sequence.__name__}.{label}': row for label, row in sequence(scene).items()})

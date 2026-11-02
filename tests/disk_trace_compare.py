@@ -17,7 +17,14 @@ HOLDING = frozenset((
     'other_side_or_lock_note', 'other_drive', 'main_checkout', 'busy', 'process visibility unavailable', 'protected', 'dirty',
     'live_owner', 'ignored_content', 'nested_worktree', 'identity_changed', 'revalidation_changed', 'unavailable',
     'lost_registration_unproven', 'lost_registration_failed', 'settled_deadline', 'unlocked_worktree', 'prune_expiry_unset',
-    'process_out_of_scope', 'process_visibility_unavailable', 'process_query_timeout'))
+    'process_out_of_scope', 'process_visibility_unavailable', 'process_query_timeout', 'process_busy', 'temp_root_partial',
+    'temp_root_elapsed', 'drive_unproven', 'output_evidence_unavailable', 'repository_unavailable', 'output_deadline',
+    'budget_not_needed', 'budget_shortfall', 'budget_deadline', 'budget_used_unknown', 'budget_processes_unknown',
+    'worktree_inventory', 'untracked_or_ignored', 'merged_live_task', 'unlisted_folder', 'declared_report'))
+# Kept today, yet time, an approval, or a later reading turns them into an act; `budget_usage` is the figure a budget notice is
+# judged on. A row may leave this set for HOLDING, never enter it from there.
+ON_THE_CLOCK = frozenset(('orphan', 'unsettled', 'settled', 'missing', 'quarantine_elapsed', 'lost_registration', 'temp_retained',
+                          'budget_usage'))
 
 
 @dataclass(frozen=True)
@@ -40,8 +47,10 @@ def going(scene):
 
 
 def spared(before, after):
-    """Paths provably no longer going: gone from every witness, and the scene really deletes less."""
-    return going(before) - going(after) if set(before['deleted']) - set(after['deleted']) else set()
+    """Paths provably no longer going: gone from every witness, and none of the scene's deletions left. A partial shrink spares
+    nothing: a registration still deleted with its folder kept, or one removal refused beside another, is for the lead to read."""
+    deleted = set(before['deleted'])
+    return going(before) - going(after) if deleted and not deleted & set(after['deleted']) else set()
 
 
 def row_direction(old, new, safe):
