@@ -46,11 +46,11 @@ The plan expected 0 spawns outside `tests.IMPURE`. Two modules really do spawn t
 
 `_caller_module` returns the innermost `tests.test_*` frame, so a spawn in a base class or helper imported from an `IMPURE` module counts as that module's. The default tier's guard therefore passes both modules, and `tests.IMPURE` understates what spawns.
 
-The same rule works the other way: 9 modules in `tests.IMPURE` spawn nothing themselves. They are `test_allowance`, `test_decide`, `test_decide_devices`, `test_disk_worktrees`, `test_hub_api_listener`, `test_hub_api_tasks`, `test_landing`, `test_landing_repository` and `test_tool_discovery`. Some host base classes that other modules use, and taking such a host off the list makes its importers fail. None of this was changed here.
+The same rule works the other way: 9 modules in `tests.IMPURE` spawn nothing themselves. They are `test_allowance`, `test_decide`, `test_decide_devices`, `test_disk_worktrees`, `test_hub_api_listener`, `test_hub_api_tasks`, `test_landing`, `test_landing_repository` and `test_tool_discovery`. Some host base classes that other modules use, and taking such a host off the list makes its importers fail. `tests.IMPURE` also admits real sleeps, as in `test_decide`, so 0 spawns does not mean a module is free to leave the list. None of this was changed here.
 
 ### Conversion candidates: top 15 by spawns
 
-These 15 modules make 2652 of the 3832 spawns (69%). Test-side spawns come from fixture code in `tests/`. Production-side spawns come through `drover/`, `hub/` or `scripts/`, which can still be setup, so the last column is a reading of the module and not a measurement. `test_wizard` and `test_disk_state` tie at 90.
+These 15 modules make 2752 of the 3832 spawns (72%). Test-side spawns come from fixture code in `tests/`. Production-side spawns come through `drover/`, `hub/` or `scripts/`, which can still be setup, so the last column is a reading of the module and not a measurement. `test_wizard` and `test_disk_state` tie at 90.
 
 | Rank | Module | Spawns | Test side | Production side | Setup or point |
 |---:|---|---:|---:|---:|---|
@@ -61,9 +61,9 @@ These 15 modules make 2652 of the 3832 spawns (69%). Test-side spawns come from 
 | 5 | `test_notification_fences` | 206 | 74 | 132 | Setup. The subject is STOP barriers; `LandingCase` repos are scenery. |
 | 6 | `test_garden` | 205 | 71 | 134 | Setup. Stage 4 selection over `WorktreeCase` repos; a slice 6 `StageEvidence` candidate, though it is not named in the plan. |
 | 7 | `test_hub_runtime_integrity` | 183 | 19 | 164 | Point, as rank 1. |
-| 8 | `test_disk_worktree_add` | 150 | 30 | 120 | Mixed. Tagging a real linked checkout is the point; `LandingCase` is setup. |
+| 8 | `test_disk_worktree_add` | 150 | 30 | 120 | Mixed. Tagging a real linked checkout is the point; `DiskCase` in three classes and `LandingCase` in one are setup. |
 | 9 | `test_disk_report` | 134 | 34 | 100 | Setup. Two tests over `WorktreeCase`; a slice 6 candidate. |
-| 10 | `test_disk_policy` | 133 | 58 | 75 | Setup. Committed outputs are read through real git; a slice 4 candidate. |
+| 10 | `test_disk_policy` | 133 | 58 | 75 | Setup. Committed disposable paths are read through real git; a slice 4 candidate. |
 | 11 | `test_config_migration` | 102 | 48 | 54 | Setup. `RepoCase` plus the repository loader's git reads; not named in the plan. |
 | 12 | `test_repo_scopes` | 100 | 27 | 73 | Setup, as rank 11; not named in the plan. |
 | 13 | `test_deploy_hub` | 92 | 27 | 65 | Point. Moving a deploy between real commits; service and process steps are already injected. |
@@ -71,6 +71,8 @@ These 15 modules make 2652 of the 3832 spawns (69%). Test-side spawns come from 
 | 15 | `test_disk_state` | 90 | 27 | 63 | Setup, except the Python helpers in the cross-process lock test, which are the point. |
 
 Note on ranks 1, 4 and 7: together they are 936 spawns, 24% of B, and sit behind `hub/runtime`'s local `git`. The plan's Test Time table lists `test_hub_runtime_paths` as a slice 4 candidate for process-level fakes of `git_client`, but ruling 15 keeps that module off `git_client`. It can convert only by faking `hub/runtime`'s own call, or it stays, with its reason in the slice report.
+
+Four other modules the plan's table names have no default-tier spawns to remove: `test_landing_repository` has no default-tier tests, and `test_disk_worktrees`, `test_disk_registration_timeouts` and `test_disk_settled_deadline` show 0 spawns. Converting them cannot lower B's spawn count.
 
 ### Per module
 
