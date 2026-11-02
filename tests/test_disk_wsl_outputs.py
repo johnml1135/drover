@@ -165,3 +165,32 @@ class OutputStageCost(BudgetCase):
         left = {Path(name).name for name in late[0]['worktrees']}
         self.assertFalse(evaluated & left)
         self.assertEqual(len(left) + len(evaluated), 4)
+
+    def test_deadline_between_units_of_one_worktree_names_it_and_the_rest(self):
+        self.trees_with(2, 3)
+        self.clock_step = 25.       # the deadline, 25 + 80 s, passes after the second unit of the first worktree
+        answer = self.stage5(apply=True, worker_timeout_s=100)
+        late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
+        done = [i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']
+        self.assertEqual((len(late), len(done), answer['errors']), (1, 2, []))
+        self.assertEqual({Path(i['root']).name for i in done}, {Path(late[0]['worktrees'][0]).name})
+        self.assertEqual(len(late[0]['worktrees']), 2)
+        self.assertEqual(late[0]['repos'], [])
+        self.assertEqual(late[0]['count'], 2)
+
+    def test_failed_registration_listing_makes_each_unit_list_afresh(self):
+        self.trees_with(2, 2)
+        baseline = self.listings()
+        real, calls = disk_worktrees.entries, []
+
+        def flaky(repo):
+            calls.append(repo)
+            if len(calls) == 1:
+                raise OSError('listing failed')
+            return real(repo)
+        with patch.object(disk_worktrees, 'entries', side_effect=flaky):
+            answer = self.stage5()
+        self.assertEqual(answer['errors'], [])
+        self.assertFalse([i for i in answer['items'] if i.get('reason_code') == 'repository_unavailable'])
+        self.assertEqual(len([i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']), 2)
+        self.assertGreater(len(calls), baseline)

@@ -1,10 +1,11 @@
 """A slow folder must not void a repo's cleanup report: a git timeout is one folder's unproven row, not the repo's."""
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import disk_registrations, disk_worktrees
+from drover import disk_registrations, disk_worktrees, placement
 
 TIMEOUT = subprocess.TimeoutExpired(['git'], 60)
 MACHINE = dict(name='alpha', repo='/repo')
@@ -41,6 +42,36 @@ class FolderTimeouts(unittest.TestCase):
                 patch.object(disk_registrations, 'reregister', side_effect=TIMEOUT):
             rows = disk_registrations.report(request(apply=True), MACHINE, [], found('one'), None)
         self.assertEqual((rows[0]['action'], rows[0]['reason_code']), ('keep', 'lost_registration_failed'))
+
+
+class ReregisterFailure(unittest.TestCase):
+    """reregister's own handler: remove the temporary worktree, and always journal `failed`."""
+    def run_reregister(self, removal):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, tmp, True)
+        orphan = tmp / 'orphan'
+        orphan.mkdir()
+        (orphan / '.git').write_text('gitdir: x', encoding='utf-8')
+        records = []
+        store = type('Store', (), dict(append=lambda self, r: records.append(r)))()
+
+        def add(repo, place, *args, **kwargs):
+            Path(place).mkdir(parents=True)
+            raise TIMEOUT
+        with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(placement, 'git', side_effect=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b', store)
+        return records, git
+
+    def test_failure_removes_the_temporary_worktree_and_journals_failed(self):
+        records, git = self.run_reregister(lambda *a, **k: None)
+        self.assertEqual(git.call_count, 1)
+        self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
+
+    def test_second_timeout_in_the_removal_still_journals_failed(self):
+        records, git = self.run_reregister(TIMEOUT)
+        self.assertEqual(git.call_count, 1)
+        self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
 
 
 class UnknownLostFolders(unittest.TestCase):

@@ -273,9 +273,11 @@ def reregister(request, machine, path, target, branch, store):
             raise ValueError('registration did not take')
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-        if not moved and place.exists():
-            placement.git(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout=60)
-        store.append(dict(record, phase='failed'))
+        try:
+            if not moved and place.exists():
+                placement.git(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout=60)
+        finally:
+            store.append(dict(record, phase='failed'))
         raise
     finally:
         for leftover in (place, holder):    # empty by now; rmdir never removes content

@@ -314,7 +314,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             _save_report(state_dir, result)
         except OSError as error:
             result['errors'].append(dict(reason_code='report_persistence_failed', error=str(error)))
-        # Only a report of every stage authorizes apply; a stage 5 of one claim is not that report.
+        # Every stage must have run; one that ended at its deadline leaves unreached worktrees alone, and each removal is re-proven.
         if not apply and not drive_stages_skipped and all(e.get('reason_code') == 'excluded_repo' for e in result['errors']):
             disk_state.update(state_dir, lambda state: state.update(report_scope=key))
     return result

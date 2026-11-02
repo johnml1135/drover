@@ -1,6 +1,7 @@
 """The budget purge in folders, on the other side, at the stop level and when it triggers again."""
 import json
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
@@ -166,6 +167,16 @@ class Folders(LocalSide):
         gone = [p for p in paths if not p.exists()]
         self.assertEqual(gone, paths[:2])
         self.assertEqual(self.receipt()['reclaimed_bytes'], 2 * SIZE)
+        self.assertEqual(self.receipt()['budget'], 'deadline')
+
+    def test_deadline_with_a_candidate_in_hand_still_names_the_unreached_worktrees(self):
+        paths = [self.output(name, (9 - i) * DAY) for i, name in enumerate('abcd')]
+        self.cfg['disk_cleanup']['worker_timeout_s'] = 100
+        self.clock_step = 30.     # the 80 s deadline passes as the second worktree's candidate is yielded
+        result = self.purge()
+        late = [i for i in result['items'] if i['reason_code'] == 'output_deadline']
+        self.assertEqual(len(late), 1)
+        self.assertEqual([Path(w).name for w in late[0]['worktrees']], ['b', 'c', 'd'])    # 'a' was reached
         self.assertEqual(self.receipt()['budget'], 'deadline')
 
     def test_deadline_while_gathering_removes_nothing_and_is_not_partial(self):

@@ -70,10 +70,7 @@ def purge(request: dict) -> dict:
     for row, removal in disposable_rows(request, out, deadline=until):
         remove[id(row)] = removal
         pending.append(row)
-        if _clock() >= until:
-            late = True
-            break
-    late = late or any(i.get('reason_code') == 'output_deadline' for i in out['items'])    # gathering ran out of time
+    late = any(i.get('reason_code') == 'output_deadline' for i in out['items'])    # gathering ran out of time
     used, short = _used(), None
     while used is not None:
         short = need_bytes(used, target)
