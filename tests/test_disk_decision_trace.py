@@ -173,6 +173,34 @@ class Trace(unittest.TestCase):
         for name in names:
             self.assertEqual(TRACE_DATA[name]['deleted'], [], name)
 
+    def keeps(self, name, path, reason):
+        """`name` is recorded, keeps `path` for `reason` and deletes nothing there."""
+        self.assertIn(name, TRACE_DATA)
+        rows = [(row['action'], row['reason_code']) for row in TRACE_DATA[name]['rows'] if row.get('path') == path]
+        self.assertEqual(rows, [('keep', reason)], name)
+        self.assertNotIn(path, TRACE_DATA[name]['deleted'], name)
+
+    def test_a_stray_with_an_edited_tracked_file_stays(self):
+        for label in ('dry', 'applied'):
+            self.keeps(f'unlisted_edited.{label}', '<TMP>/worktrees/alpha.worktrees/stray', 'unavailable')
+
+    def test_a_tag_written_after_inspect_read_it_stops_the_removal(self):
+        self.keeps('identity_changed_by_tag.applied', '<TMP>/worktrees/alpha.worktrees/w', 'identity_changed')
+
+    def test_a_task_row_naming_a_path_keeps_the_worktree_and_what_is_under_it(self):
+        for label, unit in (('dry', 'bin'), ('applied', 'bin/x')):     # a dry status collapses the folder
+            self.keeps(f'busy_task_at_path.{label}', '<TMP>/worktrees/alpha.worktrees/w', 'busy')
+            self.keeps(f'output_task_at_path.{label}', f'<TMP>/worktrees/alpha.worktrees/w/{unit}', 'live_owner')
+
+    def test_a_temp_entry_holding_a_protected_root_is_protected(self):
+        for label in ('dry', 'applied'):
+            for path in ('<TMP>/worktrees', '<TMP>/repos'):
+                self.keeps(f'temp_holds_a_worktree_root.{label}', path, 'protected')
+
+    def test_a_cache_leaf_on_another_drive_is_kept_at_the_listing(self):
+        for label in ('dry', 'applied'):
+            self.keeps(f'cache_kept.{label}', '<TMP>/holds_other_drive/old', 'protected')
+
 
 def removal(path='<TMP>/w', **row_extra):
     """The recorded shape of one removal: row, journal and deletion, each a separate witness."""

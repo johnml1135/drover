@@ -8,7 +8,7 @@ import shutil
 import subprocess
 
 from tests.disk_fixture import DAY
-from tests.disk_trace_scene import FEATURE, TRACKS_BIN, active
+from tests.disk_trace_scene import FEATURE, TRACKS_BIN, active, task_at
 
 TIMEOUT = subprocess.TimeoutExpired(['trace-cache'], 120)
 
@@ -101,6 +101,7 @@ TEMP = dict(
     temp_kept=on(2, temp_kept),
     temp_in_a_repository=on(2, temp_in_a_repository),
     temp_under_a_worktree_root=on(2, temp_under_a_worktree_root),
+    temp_holds_a_worktree_root=on(2, lambda s: s.folder('stray') and declare_temp(s, s.root)),
     temp_in_the_state_directory=on(2, temp_in_the_state_directory),
     temp_busy_with_reason=on(2, temp_busy_with_reason),
     temp_goes_busy=mid(2, temp_goes_busy),
@@ -157,6 +158,7 @@ def cache_kept(s):
     cache_folder(s, 'old', 'sub/HEAD', root='holds_repository')
     cache_folder(s, 'old', '.venv/x', root='holds_venv')
     s.links.add(cache_folder(s, 'old', root='holds_link') / 'old')
+    s.elsewhere.add(cache_folder(s, 'old', root='holds_other_drive') / 'old')
     return active(cache_folder(s, 'old', root='live') / 'old')
 
 
@@ -345,6 +347,7 @@ OUTPUTS = dict(
     output_local_declared=on(5, output_local_declared),
     output_rejected=on(5, output_rejected),
     output_kept=on(5, output_kept),
+    output_task_at_path=on(5, lambda s: task_at(output(s))),
     output_idle=on(5, output_recent),
     output_idle_warn=on(5, output_recent, level='warn', applied_only=True),
     output_idle_queue=on(5, output_recent, level='queue', applied_only=True),

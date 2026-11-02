@@ -255,6 +255,7 @@ class Rules(unittest.TestCase):
             self.assertEqual(self.found('R4', f'drover/{name}.py', text), [('f', 3)])
         for name in ('disk_removal', 'disk_state', 'disk_cleanup_notices', 'ci'):
             self.assertEqual(self.found('R4', f'drover/{name}.py', text), [])
+        self.assertEqual(self.found('R4', 'drover/disk_temp.py', 'from shutil import rmtree as drop\ndrop(p)'), [('<module>', 1)])
 
     def test_r5_direction_rule_goes_live_with_its_module(self):
         at_load = [('<module>', 1)]
@@ -265,6 +266,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.found('R5', 'drover/process.py', 'from . import compaction_hold, placement_paths'), [])
         self.assertEqual(self.found('R5', 'drover/process.py', 'from .placement import git'), at_load)
         self.assertEqual(self.found('R5', 'drover/git_client.py', 'from . import placement_git, process'), [])
+        self.assertEqual(self.found('R5', 'drover/git_client.py', 'from . import config'), at_load)
         self.assertEqual(self.found('R5', 'drover/git_worktrees.py', 'from . import git_client, placement'), at_load)
         self.assertEqual(self.found('R5', 'drover/disk_stage.py', 'from . import durable'), at_load)
         self.assertEqual(self.found('R5', 'drover/disk_authority.py', 'from . import config, disk_state'), [])

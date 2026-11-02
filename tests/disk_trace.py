@@ -17,7 +17,7 @@ from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement
 from tests.disk_fixture import DAY, DiskCase
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
 from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree,
-                                    TraceGit, active, terminal)  # noqa: F401  TraceGit is part of this interface
+                                    TraceGit, active, task_at, terminal)  # noqa: F401  TraceGit is part of this interface
 from tests.disk_trace_stages import STAGE_SCENES
 from tests.placement_trace import normalize
 
@@ -189,6 +189,13 @@ def identity_changed(s):
     s.midstage = lambda request: s.git.after.update(status=lambda: s.move('w'))
 
 
+def identity_changed_by_tag(s):
+    """The tag changes once `inspect` has read it: the row still agrees with itself, and only a second read of the tag differs."""
+    s.worktree('w')
+    s.midstage = lambda request: s.git.after.update(status=lambda: s.tag('w', 'alpha', 'session:other'))
+    return dict(applied_only=True)
+
+
 def revalidation_dirty(s):
     path = s.worktree('w')
     s.midstage = lambda request: s.file(path / 'new.txt')
@@ -306,6 +313,7 @@ SCENES = dict(
     busy_process_reason=busy_process_reason,
     busy_live_task=lambda s: active(s.worktree('w')),
     busy_unknown_task=lambda s: s.worktree('w', owner='drover:T9'),
+    busy_task_at_path=lambda s: task_at(s.worktree('w')),
     protected=lambda s: s.worktree('w', at=s.root / 'elsewhere' / '.venv' / 'w'),
     missing=missing,
     dirty=lambda s: s.worktree('w', extra=['scratch.txt']),
@@ -334,6 +342,7 @@ SCENES = dict(
     nested_worktree=nested_worktree,
     under_main_checkout=lambda s: s.worktree('w', at=s.common().parent / 'sub' / 'w'),
     identity_changed=identity_changed,
+    identity_changed_by_tag=identity_changed_by_tag,
     revalidation_dirty=revalidation_dirty,
     revalidation_registration=revalidation_registration,
     revalidation_unsettled=revalidation_unsettled,
@@ -346,6 +355,7 @@ SCENES = dict(
     rescue_ref_fails=rescue_ref_fails,
     unlisted=lambda s: s.folder('stray'),
     unlisted_untracked=lambda s: s.folder('stray', extra=['scratch.txt']),
+    unlisted_edited=lambda s: s.file(s.folder('stray') / 'README.md', 'edited\n'),
     unlisted_live=lambda s: active(s.folder('stray')),
     unlisted_not_a_folder=lambda s: s.file(s.root / 'worktrees/alpha.worktrees/stray.txt'),
     lost_registration=lost_registration,

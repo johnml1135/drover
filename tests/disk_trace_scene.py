@@ -22,6 +22,11 @@ def active(path):
     return dict(tasks=dict(active_worktrees=[str(path)]))
 
 
+def task_at(path):
+    """A live task named by its path alone: no tag or `active_worktrees` entry says so."""
+    return dict(tasks=dict(tasks=[dict(id='T9', terminal=False, live=True, worktree=str(path))]))
+
+
 def terminal(task, state):
     return dict(tasks=dict(tasks=[dict(id=task, terminal=True, live=False, state=state)]))
 
