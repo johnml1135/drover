@@ -350,3 +350,7 @@ Sorted by spawns, then seconds. Tests and seconds are for the default tier; seco
 ## Checkpoints
 
 No checkpoint has run yet.
+
+## After slice 0
+
+Taken on 0b5de66 by the same `scripts/test.py -j 4 --durations 10`: `Ran 3901 tests (26 skipped) in 269 modules, wall 266.2s, 0 failed modules`. The integration tier: `Ran 209 tests (14 skipped) in 269 modules, wall 284.5s, 0 failed modules`. `test_disk_decision_trace` 14.5 s, `test_seams` 3.3 s. Available memory was short and varied, so these seconds compare loosely with the baseline. The census stopped at 199 of 269 modules for low memory, so this row has no spawn total: 197 of 198 modules match the baseline, and `test_garden_branch` read 279 against 280.
