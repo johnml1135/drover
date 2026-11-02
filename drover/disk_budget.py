@@ -14,6 +14,11 @@ DEADLINE_SHARE = 0.8     # of worker_timeout_s: a purge ends itself in time to r
 _clock = time.monotonic
 
 
+def deadline(request: dict) -> float:
+    """The `_clock` time by which a stage ends itself, DEADLINE_SHARE of the worker's time limit from now."""
+    return _clock() + request['paths'].get('worker_timeout_s', 1800) * DEADLINE_SHARE
+
+
 def need_bytes(used_gb, target_gb) -> int:
     """Bytes to clear to bring used space down to the target; 0 when it is already there."""
     return max(0, math.ceil((used_gb - target_gb) * GIB))
@@ -60,14 +65,15 @@ def purge(request: dict) -> dict:
         out['budget'] = dict(status='processes_unknown', used_gb=None, target_gb=target, shortfall_bytes=None)
         return out
     limit = request['paths'].get('worker_timeout_s', 1800) * DEADLINE_SHARE
-    deadline = _clock() + limit
+    until = deadline(request)
     remove, pending, late = {}, [], False
-    for row, removal in disposable_rows(request, out):
+    for row, removal in disposable_rows(request, out, deadline=until):
         remove[id(row)] = removal
         pending.append(row)
-        if _clock() >= deadline:
+        if _clock() >= until:
             late = True
             break
+    late = late or any(i.get('reason_code') == 'output_deadline' for i in out['items'])    # gathering ran out of time
     used, short = _used(), None
     while used is not None:
         short = need_bytes(used, target)
@@ -80,7 +86,7 @@ def purge(request: dict) -> dict:
             freed = sum(row['bytes'] for row in batch)
             used, short = used - freed / GIB, max(0, short - freed)
             break
-        if _clock() >= deadline:
+        if _clock() >= until:
             late = True
             break
         pending = [row for row in pending if row is not batch[0]]

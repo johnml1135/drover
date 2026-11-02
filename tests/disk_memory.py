@@ -205,6 +205,21 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
     def cleanup(self, *, apply=False, mode='on-demand'):
         return self.run_cleanup(apply=apply, mode=mode, real=True)
 
+    def stage5_request(self, *, apply=False, **paths):
+        from types import SimpleNamespace
+        request = dict(stage=5, mode='on-demand', apply=apply, now=self.now, repos=disk_cleanup._repos(self.cfg),
+                       drive=dict(path=str(self.root), level='ok'),
+                       paths=dict(temp_roots=[], report_roots=[], caches=[], **paths), state_dir=str(self.state))
+        return request, SimpleNamespace(busy=lambda p: False)
+
+    def stage5(self, *, apply=False, **paths):
+        """The output stage as the worker serves it, on this side, with no process holding anything."""
+        from drover import disk_side
+        request, proof = self.stage5_request(apply=apply, **paths)
+        with patch.object(placement, 'cleanup_processes', return_value=proof), \
+                patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
+            return disk_side.serve(request)
+
     def branches(self):
         return dict(self.r.refs)
 

@@ -1,5 +1,6 @@
 """Only committed output declarations authorize stage-five deletion."""
 from pathlib import Path
+from unittest import mock
 
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 from tests.test_disk_worktrees import WorktreeCase as GitWorktreeCase
@@ -268,3 +269,30 @@ class OutputsContracts(GitWorktreeCase):
         self.cleanup()
         self.cleanup(apply=True)
         self.assertFalse(data.exists())
+
+
+class Revalidation(WorktreeCase):
+    def test_apply_still_revalidates_registrations_fresh(self):
+        """A registration made after the first pass protects the unit: removal never reads the run's cached list."""
+        from drover import disk_paths, disk_worktrees
+        tree = self.worktree('late registration')
+        output = tree / 'generated' / 'result'
+        output.parent.mkdir()
+        output.write_text('rebuildable')
+        self.age(tree, 4 * 86400)
+        request, proof = self.stage5_request(apply=True)
+        request['_processes'] = proof
+        real, extra = disk_worktrees.entries, []
+        with mock.patch.object(disk_worktrees, 'entries', side_effect=lambda repo: real(repo) + extra), \
+                mock.patch.object(disk_paths.placement, 'cleanup_processes', return_value=proof), \
+                mock.patch.object(disk_paths.placement, 'physical_disk_path', return_value=str(self.root)):
+            from drover.disk_inventory import Inventory
+            request['_inventory'] = Inventory(request['now'], request)
+            out = disk_paths.result()
+            rows = disk_paths.disposable_rows(request, out)
+            row, remove = next(rows)
+            self.assertEqual(row['action'], 'candidate')
+            extra.append(dict(worktree=str(output / 'nested'), HEAD='x'))
+            remove()
+        self.assertEqual(output.read_text(), 'rebuildable')
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'output_evidence_unavailable'))

@@ -475,14 +475,14 @@ def unlisted(request, machine, listed, skip=()):
     return out
 
 
-def overlaps_worktrees(request, target, own):
-    """Registrations protect descendants even when their pointer or folder is broken."""
+def overlaps_worktrees(request, target, own, *, registered=None):
+    """Registrations protect descendants even when their pointer or folder is broken. `registered`, a list of
+    cleanup_parts tuples listed earlier in the run, spares a first-pass decision the listing; None lists afresh,
+    as every revalidation before a deletion must."""
     target_parts = placement.cleanup_parts(str(target))
     own_parts = placement.cleanup_parts(str(own))
-    for machine in request['repos']:
-        for entry in entries(machine['repo']):
-            other = placement.cleanup_parts(entry['worktree'])
-            if other != own_parts and (other[:len(target_parts)] == target_parts or
-                                       target_parts[:len(other)] == other):
-                return True
-    return False
+    if registered is None:
+        registered = [placement.cleanup_parts(entry['worktree']) for machine in request['repos']
+                      for entry in entries(machine['repo'])]
+    return any(other != own_parts and (other[:len(target_parts)] == target_parts or
+                                       target_parts[:len(other)] == other) for other in registered)

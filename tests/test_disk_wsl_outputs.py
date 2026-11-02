@@ -9,8 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_paths, disk_runtime, disk_side, placement
+from drover import config, disk_paths, disk_runtime, disk_side, disk_worktrees, placement
 from drover import placement_host, placement_paths, placement_worker
+from tests.disk_budget_fixture import BudgetCase
 from tests.disk_fixture import DiskCase
 from tests.disk_memory import MemoryWorktreeCase
 
@@ -119,3 +120,48 @@ class WindowsHubOutputs(MemoryWorktreeCase):
         self.assertEqual(receipts[0]['context']['vhdx_dir'], '/mnt/h/')
         self.assertIsNone(receipts[-1]['context']['vhdx_dir'])
         self.assertTrue(output.exists(), 'dry run must preserve declared outputs')
+
+
+class OutputStageCost(BudgetCase):
+    """Stage 5 must finish on a busy machine: registrations are listed once per run, and a deadline ends it early."""
+    def trees_with(self, count, units):
+        for i in range(count):
+            tree = self.worktree(f'w{self.tree_count}')
+            (tree / 'generated').mkdir()
+            for u in range(units):
+                path = tree / 'generated' / f'unit-{u}'
+                path.write_text('x')
+                self.outputs.append(path)
+            self.age(tree, 4 * 86400)
+
+    def listings(self, **paths):
+        real, calls = disk_worktrees.entries, []
+
+        def counting(repo):
+            calls.append(repo)
+            return real(repo)
+        with patch.object(disk_worktrees, 'entries', side_effect=counting):
+            self.stage5(**paths)
+        return len(calls)
+
+    def test_outputs_list_registrations_once_per_run(self):
+        self.trees_with(3, 2)
+        few = self.listings()
+        self.trees_with(3, 6)
+        many = self.listings()
+        self.assertEqual(few, many)
+
+    def test_outputs_deadline_returns_partial_report_instead_of_worker_timeout(self):
+        self.trees_with(4, 1)
+        self.clock_step = 20.       # deadline 20 + 0.8 * 100 s; the repo, then each worktree, takes 20 s to reach
+        answer = self.stage5(worker_timeout_s=100)
+        late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
+        self.assertEqual(len(late), 1)
+        self.assertEqual(answer['errors'], [])
+        done = [i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']
+        self.assertTrue(done)
+        self.assertLess(len(done), 4)
+        evaluated = {Path(i['root']).name for i in done}
+        left = {Path(name).name for name in late[0]['worktrees']}
+        self.assertFalse(evaluated & left)
+        self.assertEqual(len(left) + len(evaluated), 4)

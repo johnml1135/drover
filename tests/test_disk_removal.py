@@ -360,3 +360,19 @@ class RemovalContracts(WorktreeCase):
             self.now += 3 * 86400
             self.cleanup(apply=True)
             self.assertFalse(path.exists(), 'released owner gets a fresh full grace period')
+
+
+class RegisteredListing(MemoryCleanupCase):
+    def test_overlaps_worktrees_with_registered_matches_fresh_listing(self):
+        from drover import disk_worktrees
+        listing = [dict(worktree='/w/outer'), dict(worktree='/w/outer/generated/inner'), dict(worktree='/w/solo')]
+        request = dict(repos=[dict(repo='one'), dict(repo='two')])
+        registered = [placement.cleanup_parts(e['worktree']) for _ in request['repos'] for e in listing]
+        with mock.patch.object(disk_worktrees, 'entries', return_value=listing) as fresh:
+            for target, own in (('/w/outer/generated', '/w/outer'), ('/w/outer', '/w/outer'), ('/w/solo/bin', '/w/solo'),
+                                ('/w/free/bin', '/w/free'), ('/w', '/w/solo'), ('/w/outer/generated/inner/x', '/w/outer')):
+                with self.subTest(target=target):
+                    expected = disk_worktrees.overlaps_worktrees(request, target, own)
+                    fresh.reset_mock()
+                    self.assertEqual(disk_worktrees.overlaps_worktrees(request, target, own, registered=registered), expected)
+                    fresh.assert_not_called()

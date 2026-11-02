@@ -336,15 +336,33 @@ def output_units(names, path, tracked, declarations, whole):
     return units
 
 
-def disposable_rows(request, out):
+def deadline_row(request, machine, left, later):
+    """The one item a stage that ran out of time ends with: the worktrees it did not reach, and the repos after them.
+    An item, not an error: removal re-proves every path, so a worktree not evaluated is simply not removed."""
+    return dict(item(machine['repo'], request, 'output_deadline', count=len(left) + len(later),
+                     worktrees=[e['worktree'] for e in left], repos=[m['repo'] for m in later]), action='report')
+
+
+def disposable_rows(request, out, *, deadline=None):
     """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row already in `out`; calling
-    remove() runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept, never yielded."""
+    remove() runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept, never yielded.
+    Registrations are listed once for the run to judge a first pass; remove() lists them afresh. Past `deadline`
+    (a disk_budget clock time) it stops between units with an `output_deadline` row, so the worker can still answer."""
+    from . import disk_budget
     from .disk_worktrees import entries, tracked_at, overlaps_worktrees, status
     budget = bool(request.get('budget'))
-    for machine in request['repos']:
+    late = lambda: deadline is not None and disk_budget._clock() >= deadline
+    try:
+        registered = [placement.cleanup_parts(e['worktree']) for m in request['repos'] for e in entries(m['repo'])]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        registered = None       # each unit lists afresh and reports the failure on its own row
+    for number, machine in enumerate(request['repos']):
         try:
             listed = entries(machine['repo'])
-            for entry in listed:
+            for position, entry in enumerate(listed):
+                if late():
+                    out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:]))
+                    return
                 try:
                     evidence = output_evidence(request, machine, entry)
                     path, head, tag, declarations = evidence
@@ -358,7 +376,7 @@ def disposable_rows(request, out):
                     tracked = set(tracked_at(path))
                     touched = set()     # shared by this worktree's removals, in whatever order they run
                     units = output_units(dirty + ignored, path, tracked, declarations, budget)
-                    for target, names in units.items():
+                    for count, (target, names) in enumerate(units.items(), 1):
                         def row_for(where):
                             return item(where, request, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
                         row, measured = row_for(target), {}
@@ -367,7 +385,7 @@ def disposable_rows(request, out):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, request):
                                 row['reason_code'] = 'live_owner'
-                            elif overlaps_worktrees(request, target, path):
+                            elif overlaps_worktrees(request, target, path, registered=registered):
                                 row['reason_code'] = 'protected'
                             else:
                                 proven = set()
@@ -389,6 +407,9 @@ def disposable_rows(request, out):
                         out['items'].append(row)
                         if row['action'] == 'candidate':
                             yield row, partial(remove_output, request, out, machine, entry, evidence, touched, target, measured, row)
+                        if count < len(units) and late():
+                            out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:]))
+                            return
                 except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
                     out['items'].append(item(entry['worktree'], request, 'output_evidence_unavailable',
                                              repo=machine['repo'], error=str(error)))
@@ -399,8 +420,9 @@ def disposable_rows(request, out):
 
 def outputs(request: dict) -> dict:
     """Remove only declared ignored/untracked files; source edits always survive."""
+    from .disk_budget import deadline
     out = result()
-    for _, remove in disposable_rows(request, out):
+    for _, remove in disposable_rows(request, out, deadline=deadline(request)):
         if request['apply']:
             remove()
     return out
