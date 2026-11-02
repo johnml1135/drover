@@ -1,0 +1,2656 @@
+{
+ "/mnt": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<MNT>/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "prunable": "gitdir file points to non-existent location",
+     "worktree": "<MNT>/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <MNT>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000prunable gitdir file points to non-existent location\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<MNT>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "prunable": "gitdir file points to non-existent location",
+     "worktree": "<MNT>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <MNT>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000prunable gitdir file points to non-existent location\u0000\u0000"
+  }
+ },
+ "absolute": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "bare repos": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/HEAD": "ref: refs/heads/main\n",
+     "repo/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/worktrees/wt/commondir": "../..\n",
+     "repo/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "bare": "",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000bare\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/HEAD": "ref: refs/heads/main\n",
+    "repo/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/worktrees/wt/commondir": "../..\n",
+    "repo/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "bare": "",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000bare\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/HEAD": "ref: refs/heads/main\n",
+     "repo/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n",
+     "repo/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/worktrees/wt/commondir": "../..\n",
+     "repo/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "bare": "",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000bare\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/HEAD": "ref: refs/heads/main\n",
+    "repo/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n",
+    "repo/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/worktrees/wt/commondir": "../..\n",
+    "repo/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "bare": "",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000bare\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "broken config": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core\n\tbroken\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core\n\tbroken\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "commondir a directory": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "<UNREADABLE>",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "<UNREADABLE>",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "commondir empty": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "commondir missing": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "0000000000000000000000000000000000000000",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 0000000000000000000000000000000000000000\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "0000000000000000000000000000000000000000",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 0000000000000000000000000000000000000000\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "commondir wrong": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../../../elsewhere/.git\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../../../elsewhere/.git\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "detached": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "detached": "",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000detached\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "detached": "",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000detached\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "detached": "",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000detached\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "detached": "",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000detached\u0000\u0000"
+  }
+ },
+ "directory vanishing": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt": "<VANISHED>",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt": "<VANISHED>",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+  }
+ },
+ "drive-letter": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "prunable": "gitdir file points to non-existent location",
+     "worktree": "<EXT4>/repo/.git/worktrees/wt/<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/repo/.git/worktrees/wt/<DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000prunable gitdir file points to non-existent location\u0000\u0000"
+  }
+ },
+ "empty gitdir": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+  }
+ },
+ "ext4": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "prunable": "gitdir file points to non-existent location",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000prunable gitdir file points to non-existent location\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "garbage HEAD": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "not a head\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "0000000000000000000000000000000000000000",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 0000000000000000000000000000000000000000\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "not a head\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "0000000000000000000000000000000000000000",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 0000000000000000000000000000000000000000\u0000\u0000"
+  }
+ },
+ "locked unreadable": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "<UNREADABLE>",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "<UNREADABLE>",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000"
+  }
+ },
+ "locked with a reason": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "wsl\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "locked": "wsl",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000locked wsl\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "wsl\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "locked": "wsl",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000locked wsl\u0000\u0000"
+  }
+ },
+ "locked with trailing blank lines": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "wsl\n\n\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "locked": "wsl",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000locked wsl\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "wsl\n\n\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "locked": "wsl",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000locked wsl\u0000\u0000"
+  }
+ },
+ "locked without a reason": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "locked": "",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000locked\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "repo/.git/worktrees/wt/locked": "",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "locked": "",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000locked\u0000\u0000"
+  }
+ },
+ "main HEAD garbage": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "not a head\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "not a head\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "main HEAD missing": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "main checkout": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000"
+  }
+ },
+ "main refs missing": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ },
+ "missing directory": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "prunable": "gitdir file points to non-existent location",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000prunable gitdir file points to non-existent location\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "prunable": "gitdir file points to non-existent location",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000prunable gitdir file points to non-existent location\u0000\u0000"
+  }
+ },
+ "only locked": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/ghost/locked": "wsl\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/ghost/locked": "wsl\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "pointer without /.git": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "relative": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 1\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n[extensions]\n\trelativeWorktrees = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "../../../../wt/.git\n",
+     "wt/.git": "gitdir: ../repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 1\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n[extensions]\n\trelativeWorktrees = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "../../../../wt/.git\n",
+    "wt/.git": "gitdir: ../repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 1\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[extensions]\n\trelativeWorktrees = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "../../../../wt/.git\n",
+     "wt/.git": "gitdir: ../repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 1\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[extensions]\n\trelativeWorktrees = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "../../../../wt/.git\n",
+    "wt/.git": "gitdir: ../repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "stray file": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/stray": "not an admin directory\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<DRIVE>:/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<DRIVE>:/wt"
+    }
+   ],
+   "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 0,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/stray": "not an admin directory\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/main",
+     "worktree": "<EXT4>/repo"
+    },
+    {
+     "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+     "branch": "refs/heads/wt",
+     "worktree": "<EXT4>/wt"
+    }
+   ],
+   "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+  }
+ },
+ "unknown extension": {
+  "windows": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+     "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<DRIVE>:/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<DRIVE>:/wt"
+     }
+    ],
+    "stdout": "worktree <DRIVE>:/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <DRIVE>:/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 1\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n[extensions]\n\tdroverunknown = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<DRIVE>:/wt/.git\n",
+    "wt/.git": "gitdir: <DRIVE>:/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  },
+  "wsl": {
+   "before": {
+    "files": {
+     "repo/.git/HEAD": "ref: refs/heads/main\n",
+     "repo/.git/config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n",
+     "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+     "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+     "repo/.git/worktrees/wt/commondir": "../..\n",
+     "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+     "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+    },
+    "rows": [
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/main",
+      "worktree": "<EXT4>/repo"
+     },
+     {
+      "HEAD": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5",
+      "branch": "refs/heads/wt",
+      "worktree": "<EXT4>/wt"
+     }
+    ],
+    "stdout": "worktree <EXT4>/repo\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/main\u0000\u0000worktree <EXT4>/wt\u0000HEAD 5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\u0000branch refs/heads/wt\u0000\u0000"
+   },
+   "code": 128,
+   "files": {
+    "repo/.git/HEAD": "ref: refs/heads/main\n",
+    "repo/.git/config": "[core]\n\trepositoryformatversion = 1\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[extensions]\n\tdroverunknown = true\n",
+    "repo/.git/refs/heads/main": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/refs/heads/wt": "5f7e5e71aed7bfe06ef9ecc18a6c1e45273bffa5\n",
+    "repo/.git/worktrees/wt/HEAD": "ref: refs/heads/wt\n",
+    "repo/.git/worktrees/wt/commondir": "../..\n",
+    "repo/.git/worktrees/wt/gitdir": "<EXT4>/wt/.git\n",
+    "wt/.git": "gitdir: <EXT4>/repo/.git/worktrees/wt\n"
+   },
+   "rows": [],
+   "stdout": ""
+  }
+ }
+}
