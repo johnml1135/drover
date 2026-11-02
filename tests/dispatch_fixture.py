@@ -30,7 +30,7 @@ class FakePipeline:
         self.prog['review'].update(backend='codex', model='gpt-6.1-sol', high_risk_model='gpt-6.1-sol', seat=None)
         self.ci = FixtureCI(self.runs_dir, resource_check=resources_go)
         self.current_head = lambda: 'a' * 40
-        self.repository = SimpleNamespace(resolve=lambda path, ref: 'b' * 40)
+        self.repository = SimpleNamespace(head=lambda path: 'b' * 40)
     def all_repos(self):
         return {'p': self.prog}
 

@@ -2,8 +2,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from drover import pipeline, repos
+from drover.dispatcher_launch import LaunchSteps
 from tests.gitfix import Repo
 from tests.test_pipeline import policy_prog
 from tests.tiers import integration
@@ -84,10 +86,44 @@ class ScopeBase(unittest.TestCase):
         self.fix.git("merge", "-q", "--no-edit", "trunk", cwd=self.wt)
         self.assertEqual(self.land(default_branch="trunk"), self.fix.git("rev-parse", "HEAD", cwd=self.wt))
 
+    def start(self):
+        """The snapshot the dispatcher records as the run begins in this worktree."""
+        port = SimpleNamespace(get_task=lambda tid: self.task, set_status=lambda *a, **k: self.fail("sent to owner"))
+        steps = SimpleNamespace(port=port, pipeline=self.pipe())
+        return LaunchSteps._output_snapshot(steps, self.task, str(self.wt))["base"]
+
+    def land_from_start(self, base):
+        return self.pipe().commit_ready(self.task, 1, "m", base=base)
+
+    def scenario_reused_worktree_behind_main_accepts_the_workers_commit(self):
+        self.newer_main()
+        base = self.start()
+        self.assertEqual(base, self.fix.git("rev-parse", "HEAD", cwd=self.wt))
+        self.work()
+        self.assertEqual(self.land_from_start(base), self.fix.git("rev-parse", "HEAD", cwd=self.wt))
+
+    def scenario_commits_of_earlier_runs_stay_in_scope_checking(self):
+        self.work("other.txt")
+        base = self.start()
+        self.work()
+        with self.assertRaises(pipeline.CommitRefused) as cm:
+            self.land_from_start(base)
+        self.assertEqual(cm.exception.paths, ["other.txt"])
+
+    def scenario_history_below_the_run_start_cannot_be_rewritten(self):
+        self.work()
+        base = self.start()
+        self.fix.git("reset", "-q", "--hard", "main", cwd=self.wt)
+        self.task["scope_files"] = ["rewritten.txt"]
+        self.work("rewritten.txt")
+        with self.assertRaises(pipeline.CommitRefused) as cm:
+            self.land_from_start(base)
+        self.assertIn("does not descend", str(cm.exception))
+
     def test_scope_check_judges_only_the_workers_own_changes(self):
-        # One test, six scenarios: each is a real-git check with its own repository (see fresh), run as a subtest.
+        # One test, nine scenarios: each is a real-git check with its own repository (see fresh), run as a subtest.
         scenarios = [name for name in dir(self) if name.startswith("scenario_")]
-        self.assertEqual(len(scenarios), 6)
+        self.assertEqual(len(scenarios), 9)
         for name in scenarios:
             with self.subTest(scenario=name):
                 self.fresh()

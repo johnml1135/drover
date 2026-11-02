@@ -216,14 +216,13 @@ class Pipeline:
             raise WorktreeRefused(str(error)) from error
 
     def scope_changed(self, repo, prog, base, head):
-        """Paths the worker changed since its history met the current base branch.
+        """Paths the branch changed since its history met the current base branch.
 
-        Files that arrived by taking in newer main are not the worker's. The fork point replaces the launch
-        snapshot only when it cannot be older than it, so a failure never widens what passes."""
+        Files that arrived by taking in newer main are not the worker's. The run base is where this run began, which
+        can be above commits of earlier runs, so the fork point is the start whenever Git can name it: those commits
+        stay judged. Without a fork point the run base is used."""
         fork = self.repository.fork_point(repo, self.base_ref(prog), head) if prog else None
-        if fork and fork != base and self.repository.ancestor(repo, base, fork):
-            base = fork
-        return self.repository.changed_paths(repo, base, head)
+        return self.repository.changed_paths(repo, fork or base, head)
 
     # ---- switch and config ---------------------------------------------------------------------------
     def enabled(self):

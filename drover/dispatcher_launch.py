@@ -27,6 +27,21 @@ class LaunchSteps:
                 if r and r.get("acted") and r.get("answer"):
                     self.port.waiting.request_replan(dep, "stale-brief", {"landed": e["task_id"]})
 
+    def _output_snapshot(self, task, cwd):
+        """What commit_ready later judges the run's output against, or None after sending the task to the owner.
+        The base is the worktree's HEAD as the run begins, not the tip of main: a reused worktree can sit on an older
+        main, and the check is that the worker's commits descend from where this run started. Scope is measured
+        from the fork point with the default branch (Pipeline.scope_changed), so earlier runs' commits stay covered."""
+        p = self.port
+        current = p.get_task(task['id'])
+        try:
+            self.pipeline.repo(current)
+            base = self.pipeline.repository.head(cwd)
+        except Exception as error:
+            p.set_status(task['id'], 'needs-owner', reason=f'run base cannot be verified: {error}'[:300])
+            return None
+        return {'base': base, 'scope_files': current.get('scope_files') or [], 'worktree': current.get('worktree')}
+
     def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
         """Start one run of `role` (worker or review) for the brief `b`; returns its run id, or None on a launch error."""
         p = self.port
@@ -36,15 +51,9 @@ class LaunchSteps:
             return None
         output_snapshot = None
         if role == 'worker' and task.get('write', True):
-            current = p.get_task(task['id'])
-            try:
-                prog = self.pipeline.repo(current)
-                base = self.pipeline.repository.resolve(cwd, self.pipeline.base_ref(prog))
-            except Exception as error:
-                p.set_status(task['id'], 'needs-owner', reason=f'run base cannot be verified: {error}'[:300])
+            output_snapshot = self._output_snapshot(task, cwd)
+            if output_snapshot is None:
                 return None
-            output_snapshot = {'base': base, 'scope_files': current.get('scope_files') or [],
-                               'worktree': current.get('worktree')}
         effort = route.get("effort") if role == "review" and route.get("effort") else effort_for(
             route["model"], route.get("effort"))
         if run_id is None:

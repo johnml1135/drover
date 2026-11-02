@@ -75,7 +75,7 @@ class FakeRepoPipeline(Base):
 
     def setUp(self):
         super().setUp()
-        self.pipe.repository.resolve = lambda path, ref: 'b' * 40
+        self.pipe.repository.head = lambda path: 'b' * 40
 
     def repo(self, platforms, gate_platform="windows"):
         self.prog.update(repo(self.prog["repo"], self.prog["worktrees"], platforms, gate_platform))
