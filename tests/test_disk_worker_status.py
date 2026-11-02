@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import disk_runtime
+from drover import disk_runtime, placement
 
 
 class WorkerExitStatusTests(unittest.TestCase):
@@ -29,6 +29,15 @@ class WorkerExitStatusTests(unittest.TestCase):
         self.assertIn('ImportError: boom', error['error'])
         self.assertEqual(error['exit_status'], 1)
         self.assertNotEqual(error['error'].strip(), '')
+
+    def test_worker_starts_without_inheriting_a_console(self):
+        """A console that died with the shell must not reach the worker."""
+        flags = dict(creationflags=0x08000000)
+        with tempfile.TemporaryDirectory() as state, patch.object(placement, 'NO_WINDOW', flags), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(['worker'], 1, '', '')) as run:
+            disk_runtime.cleanup_call('windows', dict(stage=1, apply=False, now=time.time(), state_dir=state, repos=[],
+                                                      tasks={}, drive=dict(path=state), paths={}))
+        self.assertEqual(run.call_args_list[0].kwargs['creationflags'], 0x08000000)
 
 
 if __name__ == '__main__':

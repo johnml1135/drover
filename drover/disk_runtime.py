@@ -91,7 +91,7 @@ def cleanup_call(side: str, request: dict) -> dict:
             command = placement.wsl_control(command[1:])
         done = subprocess.run(command, input=json.dumps(request),
                               capture_output=True, text=True, timeout=request['paths'].get('worker_timeout_s', 1800), shell=False,
-                              env={**os.environ, 'DROVER_RUN_ID': token})
+                              env={**os.environ, 'DROVER_RUN_ID': token}, **placement.NO_WINDOW)
         output, detail, exit_status = done.stdout, text(done.stderr), done.returncode
         if done.returncode:
             # A worker killed by the loader or OS says nothing on stderr; the status is then the only clue.
