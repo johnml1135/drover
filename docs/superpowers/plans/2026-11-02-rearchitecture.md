@@ -30,6 +30,7 @@ Every task's requirements include this section. The controller gives it, with Co
 - **Ruling 13.** "A file reader must never be the authority that something may go. Real `git worktree list --porcelain -z` stays the authority for selection and for repo-level failure: it runs once per repo per stage run, across all configured repos, on a long timeout set from the measurements, and any failure leaves that repo wholly unknown as today (nothing in it removed, no stamp). `git_worktrees` reads admin files only for the fresh proof at removal, and is compared with that stage's listing, including `locked`, branch and resolved HEAD, for the target's repo and for nesting in every repo. It can only refuse: any difference, unreadable field or missing file is keep. It never adds a registration git did not list, and a registration git listed that it cannot read is unknown."
 - Ruling 14 narrows ruling 13 for non-target rows: compare the pointer and a readable `locked` and `commondir`, not branch, lock text or tip.
 - Ruling 5: if review changes the four commits up to 92ce946, stop and report BLOCKED: the trace is re-recorded.
+- Ruling 15: the frozen `hub/reload_protocol` and `hub/runtime` import no `durable`, `process` or `git_client`, whatever section 5 says. Ruling 16: the hand-run recorder plus the default-tier replay meet section 10's real-git check.
 
 **Tests**
 - Test command, from the worktree: `DROVER_TESTS=integration H:/repos/drover.deploy/hub/.venv/Scripts/python.exe -m unittest ...`
@@ -42,7 +43,7 @@ Every task's requirements include this section. The controller gives it, with Co
 **Guards, every slice**
 - `tests/architecture_import_allowlist.json` gains no rows: 1,833 rows and 7,353 bindings are the maximum. Rows may be renamed one for one, or deleted.
 - `MAX_LINES` stays 500. A touched file near the cap must shrink: `pipeline` 491, `ci` 494, `config` 493, `disk_paths` 493, `disk_worktrees` 497, `disk` 489, `resources` 492.
-- `OVER` stays or falls: `hub/runtime` falls, and the guard then needs its pin lowered in that commit.
+- `OVER` stays or falls. `hub/runtime` and `hub/reload_protocol` keep their local code (ruling 15): neither may grow, and a pin is lowered only in a commit that shrinks its file.
 - `tests/seam_exceptions.json` is asserted equal, so a row goes in the commit that makes it false.
 
 **Commit rule.** One declarative sentence, blank line, then `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Stage named files only.
@@ -66,6 +67,7 @@ Inputs the design implies and no design-listed test covers, most likely first. E
 ```bash
 cd H:/repos/drover.worktrees/rearchitecture; PY=H:/repos/drover.deploy/hub/.venv/Scripts/python.exe
 mods(){ (cd tests && grep -lE "$1" test_*.py | sed 's/\.py$//;s/^/tests./'); }
+changed(){ { git diff --name-only --diff-filter=d HEAD -- 'tests/test_*.py'; git ls-files -o --exclude-standard -- 'tests/test_*.py'; } | sed 's/\.py$//;s#/#.#'; }
 GUARDS="tests.test_seams tests.test_guards tests.test_architecture"
 ```
 
@@ -82,10 +84,10 @@ Passes on a final `OK`, skips allowed.
 **Purity line.** The verify command cannot check purity: with `DROVER_TESTS=integration` set, `tests/__init__.py` installs no purity guard and defines no `tests.IMPURE`, and `DefaultTierPurity` is skipped. So a new test that spawns git would pass it. Every task that adds or changes a test module also runs that module in the default tier. Migration tasks (15 to 19, 23 to 28) run it over all of `$M`: an unchanged test can still patch a function production stopped calling, and then run real git without any failure under the verify command.
 
 ```bash
-env -u DROVER_TESTS $PY -m tests.tiers <new or changed modules> tests.test_guards
+env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
 ```
 
-Passes on `OK`. A failure reading `default tier must not use subprocess` means the test is real-process: fake it. `tests.test_placement` and other `IMPURE` modules run here only if they were changed.
+`changed` names every test module this commit adds or changes, so it runs before the commit. Passes on `OK`. A failure reading `default tier must not use subprocess` means the test is real-process: fake it. `tests.test_placement` and other `IMPURE` modules run here only if they were changed.
 
 **Red for a move.** A task that only moves code has no behaviour to fail, so its red is a guard. It adds the old qualified name to `tests/architecture_removed_symbols.json` under `qualified_names`, or deletes the old `tests/seam_exceptions.json` row. It also adds a test importing from the new home. The failure must name the old symbol, or show `ImportError` for the new one.
 
@@ -111,6 +113,7 @@ Passes on `OK`. A failure reading `default tier must not use subprocess` means t
 2. It appends the times to the test-times report, by the method in Task 1.
 3. It starts three separate fresh Opus reviewers, read-only: no edits, no commits, no test runs, no `git checkout` or `switch`. They may read, grep and use `git show`, `git diff`, `git log`. Each gets the spec, this plan, `LAST_CP..HEAD` as a commit range, and the slice reports since `LAST_CP`.
 4. Findings go to a fresh Opus implementer, red first, then a scoped re-review by a fresh reviewer of the same role. All are fixed before the next slice starts. A finding the fixer disputes goes to the session lead, and is not dropped.
+5. Its last step commits the checkpoint report and the test-times row, after any fixes. That commit is `LAST_CP` for the next checkpoint.
 
 | Reviewer | Also gets | Must answer | Passes when |
 |---|---|---|---|
@@ -221,7 +224,7 @@ Ruling 6 applies. No cleanup runs, and `.drover` is not read, so the repo list i
   class Rules(unittest.TestCase):                # one planted source per rule
       def test_r1_sees_import_dunder_import_and_placement_subprocess(self):
           for text in ('import subprocess', "__import__('subprocess')", 'placement.subprocess.run([])'):
-              self.assertEqual(rows('R1', {'drover/x.py': text})[0]['module'], 'drover/x.py')
+              self.assertEqual(rule_violations('R1', {'drover/x.py': text})[0]['module'], 'drover/x.py')
       def test_r2_sees_replace_rename_and_one_argument_path_replace(self): ...
       def test_r2_ignores_two_argument_str_replace(self): ...
       def test_r3_sees_git_argv_outside_placement_git(self): ...
@@ -233,8 +236,8 @@ Ruling 6 applies. No cleanup runs, and `.drover` is not read, so the repo list i
       def test_rows_equal_the_manifest(self): ...       # shrink-only, as `compare`
       def test_every_row_has_a_reason(self): ...
   ```
-- [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams`. It must fail with `FileNotFoundError` for `tests/seam_exceptions.json`, or list the real importers.
-- [ ] **Step 3: Implement** `rule_violations` as an AST walk over `drover/` and `hub/`. Worded per section 13, including R4's module list. R3's `Answer.NO` part reads function bodies. `scripts/deploy_hub.py` and `scripts/test.py` are outside. Write the manifest from what the tree shows at 92ce946, each row with a reason: 51 R1 importers, so expect that row count [M]. R6's count is whatever the tree shows.
+- [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams`. Every test must fail with `NameError` for `rule_violations`.
+- [ ] **Step 3: Implement** `rule_violations` as an AST walk over `drover/` and `hub/`. Worded per section 13, including R4's module list. R3's `Answer.NO` part reads function bodies. `scripts/deploy_hub.py` and `scripts/test.py` are outside. Write the manifest from what the tree shows at 92ce946, each row with a reason. R1 has 51 importing modules [M], and 53 rows by an import walk, because `disk_cleanup` and `hub/auth` each import in two places; the manifest holds what the rule finds. R6's count is whatever the tree shows.
 - [ ] **Step 4: Green.** `DROVER_TESTS=integration $PY -m unittest $GUARDS`, then `env -u DROVER_TESTS $PY -m tests.tiers tests.test_seams tests.test_guards`.
 - [ ] **Step 5: Commit** `tests/test_seams.py tests/seam_exceptions.json`: "The seam guards pin every subprocess, replace, git argv, deletion and deferred import exception as it stands at the base."
 
@@ -244,7 +247,7 @@ Ruling 6 applies. No cleanup runs, and `.drover` is not read, so the repo list i
 - Create: `tests/registration_trace.py`, `tests/registration_trace.json`, `tests/test_registration_trace.py`
 
 **Interfaces:**
-- Produces: `tests.registration_trace.CASES: dict[str, Case]`; `record(side) -> dict`, hand-run only; `materialize(case_name, root) -> Path`, which rebuilds a case's admin tree from recorded file bytes and uses no git; `recorded(case_name, side) -> dict(before=dict(stdout, rows, files), code, stdout, rows, files)`: `before` is the good listing and admin bytes taken before the damage, for Task 9's compare.
+- Produces: `tests.registration_trace.CASES: dict[str, Case]`; `record(side) -> dict`, hand-run only; `materialize(case_name, side, root, *, damaged=True) -> Path`, which rebuilds a case's admin tree as that side recorded it, damaged or as `before`, from recorded file bytes and uses no git; `recorded(case_name, side, root=None) -> dict(before=dict(stdout, rows, files), code, stdout, rows, files)`, with placeholders expanded against `root` when one is given: `before` is the good listing and admin bytes taken before the damage, for Task 9's compare.
 
 The recorder runs real git by hand. It is not a `test_*` module, it is never imported at load by a test that spawns, and nothing marks it integration. So `INTEGRATION_CEILING` does not move.
 
@@ -261,7 +264,7 @@ The recorder runs real git by hand. It is not a `test_*` module, it is never imp
           self.assertNotRegex(RAW, r'[A-Za-z]:[\\/]|/mnt/|/home/')
   ```
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_registration_trace` fails with `ModuleNotFoundError` for `tests.registration_trace`.
-- [ ] **Step 3: Implement.** `CASES` are exactly the fixture of section 5.3: relative, absolute, drive-letter, `/mnt` and ext4 pointers; a pointer without `/.git`; locked with and without a reason, with trailing blank lines, and unreadable; `commondir` empty, a directory, wrong and missing; detached; garbage `HEAD`; main `HEAD` garbage or missing; main `refs` missing; broken `config`; an unknown repository extension; missing directory; empty `gitdir`; an admin directory with only `locked`; a stray file; a directory vanishing mid-read; bare repos; main checkout. `record` builds each with real git in a temp tree, stores the listing and admin-file bytes as `before`, damages it, runs the listing again, and stores exit code, stdout, parsed rows and admin-file bytes, with paths replaced by placeholders. `unreadable` and `vanishing` are stored as markers, replayed by patching the read.
+- [ ] **Step 3: Implement.** `CASES` are exactly the fixture of section 5.3: relative, absolute, drive-letter, `/mnt` and ext4 pointers; a pointer without `/.git`; locked with and without a reason, with trailing blank lines, and unreadable; `commondir` empty, a directory, wrong and missing; detached; garbage `HEAD`; main `HEAD` garbage or missing; main `refs` missing; broken `config`; an unknown repository extension; missing directory; empty `gitdir`; an admin directory with only `locked`; a stray file; a directory vanishing mid-read; bare repos; main checkout. `record` builds each with real git in a temp tree, stores the listing and admin-file bytes as `before`, damages it, runs the listing again, and stores exit code, stdout, parsed rows and admin-file bytes, with paths replaced by placeholders. `unreadable` and `vanishing` are stored as markers: `materialize` renders `unreadable` as a directory at that name, so the open fails with no patch, and `vanishing` as absent. Placeholders keep a pointer's form (`<DRIVE>:/...`, `<MNT>/...`), so the drive-letter and `/mnt` cases stay apart. `CASES` keys are the fixture's words, among them `broken config`, `unknown extension` and `main refs missing`, which Task 9's `UNSEEN` names.
 - [ ] **Step 4: Record by hand.** From the worktree: `env -u DROVER_TESTS $PY -m tests.registration_trace --side windows`, then the same under WSL with `--side wsl`, using a WSL interpreter and a temp tree on ext4. Temp trees only. Then green: `DROVER_TESTS=integration $PY -m unittest tests.test_registration_trace $GUARDS`, and the purity line for `tests.test_registration_trace`.
 - [ ] **Step 5: Commit** the three files: "A hand-recorded registration trace pins what Windows and WSL git do over the whole damage fixture, and the default tier replays it."
 
@@ -272,7 +275,7 @@ The recorder runs real git by hand. It is not a `test_*` module, it is never imp
 
 **Interfaces:**
 - Consumes: `tests.disk_fixture`; `tests.placement_trace.normalize` for placeholders.
-- Produces: `disk_trace.collect() -> dict`; `Scene`, a builder of a temp tree holding real admin files; `TraceGit`, which stands in for `subprocess` at one patched module and answers by meaning, not order; `disk_trace.compare(old, new) -> list[Change]` with `Change.direction` in `('towards_keep', 'report_added', 'towards_deletion', 'neutral')`; CLI `python -m tests.disk_trace --write | --compare OLD NEW`; `disk_trace.PATCH_TARGETS`, the one tuple later slices repoint (Tasks 15, 16, 33).
+- Produces: `disk_trace.collect() -> dict`; `Scene`, a builder of a temp tree holding real admin files; `TraceGit`, which stands in for `subprocess` at each module in `PATCH_TARGETS`, at the base `placement_git` and `disk_paths`, and answers by meaning, not order; `disk_trace.compare(old, new) -> list[Change]` with `Change.direction` in `('towards_keep', 'report_added', 'towards_deletion', 'neutral')`; CLI `python -m tests.disk_trace --write | --compare OLD NEW`; `disk_trace.PATCH_TARGETS`, the one tuple later slices repoint (Tasks 15, 16).
 
 `TraceGit` derives `worktree list` from the admin files, so slice 1's proof reads a tree that agrees with the listing. It answers `status`, `rev-parse`, `ls-files`, `repos.load`'s reads, `read-tree`, `diff`, `update-ref`, and it applies `worktree remove`, `lock` and `unlock` to the tree. `cleanup_processes` is faked, because `disk_side.serve` calls it at :15. `uuid4`, `now` and the clock are fixed.
 
@@ -283,8 +286,8 @@ The recorder runs real git by hand. It is not a `test_*` module, it is never imp
           self.assertEqual(collect(), json.loads(TRACE.read_text()))
       def test_trace_is_host_neutral(self):
           self.assertNotRegex(TRACE.read_text(), r'[A-Za-z]:[\\/]|/mnt/|drover-')
-      def test_each_scenario_freezes_rows_journal_and_deletions(self):
-          keys = {'rows', 'journal', 'deleted'}          # rows: (path, action, reason_code), head, branch, side_lock
+      def test_each_scenario_freezes_rows_errors_journal_and_deletions(self):
+          keys = {'rows', 'errors', 'journal', 'deleted'}          # rows: (path, action, reason_code), head, branch, side_lock
           for scene in TRACE_DATA.values(): self.assertEqual(set(scene), keys)
       def test_head_is_not_frozen_on_kept_rows(self): ...
       def test_every_decide_reason_has_a_scenario(self):
@@ -296,9 +299,10 @@ The recorder runs real git by hand. It is not a `test_*` module, it is never imp
       def test_new_deleted_path_is_towards_deletion_whatever_the_row_says(self): ...
       def test_added_report_row_is_report_added(self): ...
       def test_changed_keep_reason_is_towards_keep(self): ...
+      def test_lost_error_row_is_towards_deletion_and_a_new_one_is_report_added(self): ...
   ```
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_disk_decision_trace` fails with `ModuleNotFoundError` for `tests.disk_trace`.
-- [ ] **Step 3: Implement** the harness, running today's `disk_side.serve` for stage 4, dry and applied. Scenarios: every `decide` reason (`other_side_or_lock_note`, `other_drive`, `main_checkout`, `busy` by process and by live task, `protected`, `missing`, `dirty`, `orphan`, `settled`, `live_owner`, `ignored_content`, `quarantine_elapsed`, `revalidation_changed`, `nested_worktree`, `identity_changed`); each quarantine step (started, reset, elapsed, identity changed); lost registration; approved removal; a target under a main checkout; `unlisted` folder; `settled_deadline` in both places; a repo that cannot be listed.
+- [ ] **Step 3: Implement** the harness, running today's `disk_side.serve` for stage 4, dry and applied. Scenarios: every `decide` reason (`other_side_or_lock_note`, `other_drive`, `main_checkout`, `busy` by process and by live task, `protected`, `missing`, `dirty`, `orphan`, `settled`, `live_owner`, `ignored_content`, `quarantine_elapsed`, `nested_worktree`, `identity_changed`, and `revalidation_changed` twice: `current` no longer a candidate at disk_worktrees.py:342-344, a worktree gone dirty mid-stage, which the proof cannot see and which keeps the reason through Task 10, and a mid-stage registration change, the one Task 10 may move); each quarantine step (started, reset, elapsed, identity changed); lost registration; approved removal; a target under a main checkout; `unlisted` folder; `settled_deadline` in both places; a repo that cannot be listed.
 - [ ] **Step 4: Record and green.** `env -u DROVER_TESTS $PY -m tests.disk_trace --write`, read the JSON row by row against today's code, then `DROVER_TESTS=integration $PY -m unittest tests.test_disk_decision_trace $GUARDS`, and the purity line. Time must be under 10 s.
 - [ ] **Step 5: Commit** the three files: "The decision trace freezes stage 4's rows, journal and deletions through disk_side.serve with git faked at the process edge."
 
@@ -326,11 +330,16 @@ The recorder runs real git by hand. It is not a `test_*` module, it is never imp
 
 ### Task 7: Checkpoint after slice 0
 
+**Files:**
+- Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-checkpoint-0.md`
+- Modify: `docs/superpowers/reviews/2026-11-02-rearchitecture-test-times.md`
+
 Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 
 - [ ] **Step 1: Run the protocol.** Spawn counts in the checkpoint report must equal Task 1's: nothing changed in production. Confirm with `git diff --stat 92ce946 -- drover hub`, which must print nothing.
 - [ ] **Step 2: Reviewer focus.** Completeness: every `reason_code`, `output_evidence` rejection, deadline row and fixture case of sections 5.3 and 10 is pinned, and the trace would change if a rule did. Scope: no production change, and R1 to R6 only. Efficiency: `test_seams` and the trace test against target, and duplicated scenarios. There is no production hot path yet.
 - [ ] **Step 3: Fix findings**, by the protocol, then record `Task 7: complete`.
+- [ ] **Step 4: Commit** both reports: "The slice 0 checkpoint records its test times and its three reviews."
 
 ## Slice 1: real listing, fresh proof
 
@@ -364,6 +373,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   def test_two_spellings_of_one_repo_list_once_and_share_removed(self):   # Review Focus 5
       listings = Listings(['/repo', '/repo/']); listings.of('/repo'); listings.of('/repo/')
       self.assertEqual(len(fake.calls), 1)
+      listings.removed('/repo/', path); self.assertIsNone(listings.of('/repo').row(path))
   ```
   Repoint `test_entries_*` in `tests/test_registration_trace.py` to `listing`.
   Add to `tests/test_seams.py`: `test_r8_literal_only_in_git_worktrees_and_its_exceptions`, and the R5 row test for `git_worktrees`.
@@ -373,7 +383,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   ```bash
   M="tests.test_git_worktrees tests.test_registration_trace tests.test_disk_decision_trace $(mods 'entries|_listings')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_git_worktrees tests.test_registration_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
   The decision trace must not change here: stage order and error rows stay. A fake of `entries` in a changed test moves to `listing`, and the old patch goes.
 - [ ] **Step 5: Commit**: "Each stage run now lists each repo once on a 400 s timeout and keeps a failure for every later use."
@@ -384,7 +394,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 - Modify: `drover/git_worktrees.py`, `tests/test_git_worktrees.py`, `tests/test_registration_trace.py`, `tests/test_seams.py`
 
 **Interfaces:**
-- Consumes: `Listings`, `Listings.common_dir`; `registration_trace.materialize`; Task 2's survey.
+- Consumes: `Listings`, `Listings.common_dir`; `registration_trace.materialize`, `recorded`; Task 2's survey.
 - Produces, as section 5.3: `Refusal(repo, worktree, why, detail)`; `Proof(refused, reach)`; `AdminFiles`; `parse(admin, files)`; `prove(listings, repo, worktree, *, pointer: bool, timeout_s: float, side=None) -> Proof`. `prove` applies the table's middle column itself, so `Proof.refused` holds only what refuses this removal: an unknown pointer (`worktree=None`) in another repo is not in it. `why` then picks the row: `'changed'` as today, `'unknown'` is `registration_unknown`.
 
 - [ ] **Step 1: Failing tests**, temp trees, no fake of the reader:
@@ -396,7 +406,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
       def test_any_row_locked_or_commondir_bad_refuses_every_removal(self): ...
       def test_main_head_unlike_main_row_refuses_every_removal(self): ...
       def test_reftable_directory_refuses_every_removal(self): ...
-      def test_read_past_timeout_refuses_every_removal(self): ...
+      def test_read_past_timeout_refuses_every_removal(self): ...      # timeout_s=0, a detached target, so no tip spawns
       def test_listed_row_with_no_admin_directory_refuses_every_removal(self): ...
       def test_pointer_the_listing_lacks_refuses_every_removal(self): ...
       def test_own_stage_removed_and_repaired_are_not_differences(self): ...
@@ -419,23 +429,23 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
       def test_detached_target_spawns_no_tip(self): ...
       def test_common_dir_is_one_spawn_per_repo_per_stage(self): ...
       def test_failed_listing_anywhere_raises_from_prove(self): ...
-      def test_tip_failure_raises_git_failure(self): ...
+      def test_tip_failure_raises_registrations_unknown_and_keeps_the_row(self): ...   # Task 23 restates it to GitFailed
   ```
-  In `tests/test_registration_trace.py`, the design's real-git test, as replay. The real git ran by hand in Task 4, nothing real runs here, and `INTEGRATION_CEILING` does not move:
+  In `tests/test_registration_trace.py`, the design's real-git test, as replay (ruling 16). The real git ran by hand in Task 4, nothing real runs here, and `INTEGRATION_CEILING` does not move:
   ```python
   def test_prove_refuses_wherever_recorded_git_exited_non_zero(self):
-      # for each case and side with code != 0: materialize, prove against the last good listing -> refused
+      # for each case and side with code != 0: materialize(case, side, root), prove against recorded(case, side, root)['before'] -> refused
       # except the cases no admin file shows, named exactly:
       UNSEEN = {'broken config', 'unknown extension', 'main refs missing'}
   def test_prove_agrees_wherever_the_recorded_row_is_whole(self): ...
   ```
   Add `test_r9_only_named_callers_reach_prove_and_nothing_names_parse` to `tests/test_seams.py`.
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_git_worktrees tests.test_registration_trace` fails with `ImportError`/`AttributeError` for `prove` and `parse`.
-- [ ] **Step 3: Implement** by section 5.3's reading rules: `_read_admin(common_dir: str, *, timeout_s: float) -> dict[str, AdminFiles]` reads in-process on 8 threads, a read past `timeout_s` refuses, `parse` pure. `prove` calls `listings.every()` first. Read bytes, decode strictly, and refuse on failure. Never add a row.
+- [ ] **Step 3: Implement** by section 5.3's reading rules: `_read_admin(common_dir: str, *, timeout_s: float) -> dict[str, AdminFiles]` reads in-process on 8 threads, a read past `timeout_s` refuses, `parse` pure. `prove` calls `listings.every()` first. Read bytes, decode strictly, and refuse on failure. Never add a row. A failed tip goes through `placement.git`, so it raises `RegistrationsUnknown` until Task 23.
 - [ ] **Step 4: Green.**
   ```bash
   DROVER_TESTS=integration $PY -m unittest tests.test_git_worktrees tests.test_registration_trace $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_git_worktrees tests.test_registration_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
   If `UNSEEN` would need another case, report BLOCKED: that is a gap in ruling 14's accepted list.
 - [ ] **Step 5: Commit**: "The fresh proof reads every repo's admin files, compares them with the stage listing and can only refuse."
@@ -465,7 +475,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   def test_proof_rows_exist_only_in_applied_runs(self): ...
   ```
   Add `drover.disk_worktrees.entries` and `drover.disk_registrations._entries` to `qualified_names`.
-- [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_disk_fresh_proof tests.test_architecture`. The architecture test must name `entries`, and the first test must show a removal that reached `worktree list`.
+- [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_disk_fresh_proof tests.test_architecture`. The architecture test must name `entries`, and `test_one_removal_lists_nothing_and_proves_once` must show a removal that reached `worktree list`.
 - [ ] **Step 3: Implement**, per section 10's slice 1:
   - At disk_worktrees :312 and disk_paths :290, a row from the stage listing with no git. No row on a registered candidate keeps.
   - At :333 and :302, one `prove`; `pointer` is False for a `missing` candidate.
@@ -485,7 +495,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   ```bash
   M="tests.test_disk_fresh_proof tests.test_disk_decision_trace tests.test_git_worktrees $(mods 'entries|registered=|overlaps_worktrees|disk_memory')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_fresh_proof tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 6: Timing, read-only.** From WSL, time `git_worktrees._read_admin` alone over drover, PanGloss and motif on `/mnt/h`. Do not time `prove`: its `every()` runs real listings of up to 265 s. No cleanup. Compare with section 2.5's 7.2 s, and write it in the slice report with the changed trace rows: owner check 8 reads this figure.
 - [ ] **Step 7: Slice exit.** `listing` is once per repo per stage; both removal paths take one proof; R8's five, R9 live, R5's one temporary row; removed symbols added; trace check clean. Commit: "Removal now takes its row from the stage listing and one fresh proof, so a repo's listing cost is paid once per stage."
@@ -526,14 +536,14 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 - [ ] **Step 4: Green.**
   ```bash
   DROVER_TESTS=integration $PY -m unittest tests.test_durable tests.test_runner_status_write $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_durable tests.test_runner_status_write tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "One durable module now publishes, moves and removes files with a stated wait for a brief Windows reader."
 
 ### Task 12: Runner files, compaction hold, disk state
 
 **Files:**
-- Modify: `drover/runner_common.py` and the 20 `write_json_atomic` call sites, `drover/compaction_hold.py`, `drover/disk_state.py`, `tests/fakeci.py`, `tests/test_disk_state.py`, `tests/test_compaction_hold.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
+- Modify: `drover/runner_common.py` and the 20 `write_json_atomic` call sites, `drover/compaction_hold.py`, `drover/disk_state.py`, `tests/fakeci.py`, `tests/test_durable.py`, `tests/test_disk_state.py`, `tests/test_compaction_hold.py`, `tests/__init__.py`, `tests/test_guards.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
 
 **Interfaces:**
 - Consumes: `durable`.
@@ -556,36 +566,36 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   ```bash
   M="tests.test_durable tests.test_disk_state tests.test_compaction_hold tests.test_runner_status_write tests.test_artifact_records tests.test_runner $(mods 'write_json_atomic|_retried|_outlast_readers|save_file')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_durable tests.test_disk_state tests.test_compaction_hold tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "Run files, the compaction hold and disk state now write through durable, and their three retry idioms are gone."
 
 ### Task 13: Remaining writers and moves
 
 **Files:**
-- Modify: `drover/allowance.py`, `drover/handoff.py`, `drover/launch_handle.py`, `drover/wizard_files.py`, `drover/config.py`, `drover/disk_schedule.py`, `drover/placement_git.py`, `hub/reload_protocol.py`, `drover/disk_registrations.py`, `drover/disk_cleanup.py`, `tests/test_reload_protocol.py`, `tests/seam_exceptions.json`
+- Modify: `drover/allowance.py`, `drover/handoff.py`, `drover/launch_handle.py`, `drover/wizard_files.py`, `drover/config.py`, `drover/disk_schedule.py`, `drover/placement_git.py`, `drover/disk_registrations.py`, `drover/disk_cleanup.py`, `tests/test_durable.py`, `tests/seam_exceptions.json`
 - Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-slice-2.md`
 
 **Interfaces:**
 - Consumes: `durable`.
+- `hub/reload_protocol.atomic_json` stays local (ruling 15): `test_standalone_import` pins a stdlib-only module. No Windows reader reaches its target, so it takes no copy of the retry: its one production caller, hub/runtime.py:483, writes into a private `mkdtemp` staging directory before the rename.
 
-- [ ] **Step 1: Red.** Delete the R2 rows of these modules, leaving disk_state:119's `<function>`, hub/runtime:496's and task_access:83's. Add:
+- [ ] **Step 1: Red.** Delete the R2 rows of these modules, leaving disk_state:119's `<function>`, hub/runtime:496's, task_access:83's and `hub/reload_protocol`'s `atomic_json`, whose reason now states the ruling and the staging directory. Add:
   ```python
   # tests/test_durable.py
   def test_launch_handle_tail_swallows_oserror_and_waits_routine(self): ...
-  def test_reload_atomic_json_publishes_with_directory_sync(self): ...
   def test_registration_move_is_one_attempt(self): ...      # NO_WAIT at disk_registrations:266
   ```
-  The two patches of `hub.reload_protocol.os.replace` in `tests/test_reload_protocol.py` **move** to `durable.os.replace`. `test_artifact_records`' temp pattern must still match; change nothing there.
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_durable tests.test_reload_protocol`. `test_seams` must name each module still calling `os.replace`.
-- [ ] **Step 3: Implement** by the wait table. `_native_metadata_io` ORDINARY with sync. `placement_git._METADATA_IO` stays, with a docstring saying the guard cannot see it. Moves: handoff:110, disk_registrations:266 and disk_cleanup:81 use `durable.move`. `compaction_hold.claim`, `owner.json` and `reload_protocol`'s create-once requests stay. `hub/reload_protocol.py` must shrink or stay: `OVER` pins 571, and lower it if it fell.
+  `test_artifact_records`' temp pattern must still match; change nothing there.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_durable`. `test_seams` must name each module still calling `os.replace`.
+- [ ] **Step 3: Implement** by the wait table. `_native_metadata_io` ORDINARY with sync. `placement_git._METADATA_IO` stays, with a docstring saying the guard cannot see it. Moves: handoff:110, disk_registrations:266 and disk_cleanup:81 use `durable.move`. `compaction_hold.claim`, `owner.json` and `reload_protocol`'s create-once requests stay. `hub/reload_protocol.py` is not touched, so its `OVER` pin of 571 stands.
 - [ ] **Step 4: Green.**
   ```bash
-  M="tests.test_durable tests.test_reload_protocol tests.test_allowance tests.test_handoff tests.test_launch_runner_handle tests.test_wizard tests.test_config_layout tests.test_disk_schedule tests.test_disk_registrations tests.test_disk_cleanup tests.test_disk_decision_trace"
+  M="tests.test_durable tests.test_allowance tests.test_handoff tests.test_launch_runner_handle tests.test_wizard tests.test_config_layout tests.test_disk_schedule tests.test_disk_registrations tests.test_disk_cleanup tests.test_disk_decision_trace"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_durable tests.test_reload_protocol tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
-- [ ] **Step 5: Slice exit.** All 15 replaces go through `durable`; R2 holds three stated renames; the three symbols removed; trace check prints nothing. Write the slice report. Commit: "Every temp-then-replace writer and file move now goes through durable, leaving three stated renames outside it."
+- [ ] **Step 5: Slice exit.** Every replace but R2's goes through `durable`; R2 holds three stated renames and `atomic_json`; the three symbols removed; trace check prints nothing. Write the slice report. Commit: "Every temp-then-replace writer and file move outside the frozen bootstrap now goes through durable, leaving four stated exceptions."
 
 ## Slice 3a: `process`, placement and disk callers
 
@@ -597,7 +607,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 - Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-slice-3a.md`
 
 **Interfaces:**
-- Produces, as section 5.1: `Kind`; `Command(argv, timeout_s, cwd=None, env=None, stdin=None, sink=None)`; `Result(kind, code, out, err, elapsed_s, detail)` with `.ok`, `.stdout`, `.stderr`; `CommandTooLong(ValueError)`; `run(command) -> Result`; `NO_WINDOW`. `wsl_argv` arrives in Task 20.
+- Produces, as section 5.1: `Kind`; `Command(argv, timeout_s, cwd=None, env=None, stdin=None, sink=None)`; `Result(kind, code, out, err, elapsed_s, detail)` with `.ok`, `.stdout`, `.stderr`; `CommandTooLong(ValueError)`; `run(command) -> Result`; `NO_WINDOW`; `list2cmdline`, a plan addition to section 5.1, for placement_host:321, disk_schedule_steps:64 and `wsl_argv`. `wsl_argv` arrives in Task 20.
 - Produces in `tests/fakeci.py`: `process_options(timeout, *, cwd=None, env=None, input=None, sink=None) -> dict`, the one statement of `process.run`'s fixed options.
 
 - [ ] **Step 1: Fix the lists.** Read-only, before anything moves. Write in the slice report: every call with no timeout today (section 5.1's table is what the review found, not proof of a complete list), and every `text=True` site without an `encoding`, marking which keep locale decoding through `Result.out`.
@@ -615,44 +625,48 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   def test_str_and_bytes_payloads_reach_the_child(self): ...
   def test_sink_takes_stdout(self): ...
   def test_every_command_carries_no_shell_and_the_console_flag(self):
-      self.assertEqual(process_options(5)['shell'], False)
-      self.assertEqual(process_options(5).get('creationflags'), process.NO_WINDOW.get('creationflags'))
+      with mock.patch.object(process.subprocess, 'run', return_value=done) as spawn: run(cmd)
+      seen = spawn.call_args.kwargs                                      # what process.run really passed
+      self.assertIs(seen['shell'], False)
+      self.assertEqual(seen.get('creationflags'), process.NO_WINDOW.get('creationflags'))
   def test_base_exception_propagates(self): ...
   def test_a_process_failure_raises_nothing(self): ...
+  def test_list2cmdline_quotes_as_subprocess_does_under_the_fake(self): ...
   ```
   In `tests/test_seams.py`: the live R5 rule for `process`, imports only `placement_paths` and `compaction_hold`. `compaction_hold` is reached from Task 20.
 - [ ] **Step 3: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_process` fails with `ModuleNotFoundError` for `drover.process`.
-- [ ] **Step 4: Implement.** Ordering: spawn, wait, elapsed check. `run` calls `subprocess.run` once, with one fixed option set. A required timeout with no default on `Command`.
+- [ ] **Step 4: Implement.** Ordering: spawn, wait, elapsed check. `run` calls `subprocess.run` once, with one fixed option set. A required timeout with no default on `Command`. `list2cmdline` is bound at import, `from subprocess import list2cmdline`, because `FakeCommands` refuses any unscripted call through `process.subprocess`.
 - [ ] **Step 5: Green.**
   ```bash
   DROVER_TESTS=integration $PY -m unittest tests.test_process $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_process tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 6: Commit**, with the slice report: "One process module now runs each short-lived command with a required timeout, no shell, the console flag and one outcome."
 
 ### Task 15: Placement callers
 
 **Files:**
-- Modify: `drover/placement_exec.py`, `drover/placement_git.py`, `drover/placement.py`, `drover/placement_host.py`, `drover/placement_process.py`, `drover/placement_worker.py`, `tests/disk_trace.py`, `tests/test_guards.py`, `tests/placement_trace.json`, `tests/seam_exceptions.json`
+- Modify: `drover/placement_exec.py`, `drover/placement_git.py`, `drover/placement.py`, `drover/placement_host.py`, `drover/placement_process.py`, `drover/placement_proof.py`, `drover/placement_worker.py`, `tests/disk_trace.py`, `tests/test_guards.py`, `tests/test_process.py`, `tests/test_git_worktrees.py`, `tests/test_registration_trace.py`, `tests/placement_trace.json`, `tests/seam_exceptions.json`
 - Modify: tests that patch these modules' `subprocess`
 
 **Interfaces:**
 - Consumes: `process.run`, `Command`, `process_options`.
-- `placement.git` and `placement_git.git` keep their conventions until Task 28, with `placement_git.py:119`'s `runner or subprocess.run` gone.
+- `placement.git` and `placement_git.git` keep their conventions until Task 28, with `placement_git.py:119`'s `runner or subprocess.run` gone. Those conventions still need `subprocess.TimeoutExpired` and `CompletedProcess`, so `placement_git` keeps its import and its R1 row until Task 28.
+- `_cim_rows` raises the builtin `TimeoutError`, an `OSError`, on `kind == 'timed_out'`. placement_process:415 and placement_proof:118 test for it in place of `subprocess.TimeoutExpired`, so `process_query_timeout` stays.
 - `disk_trace.PATCH_TARGETS` swaps `placement_git` for `process`, because git now reaches the fake there. The decision trace itself must not change.
 
-- [ ] **Step 1: Red.** Delete R1 rows for `placement_git`, `placement`, `placement_host`, `placement_process`, `placement_worker`. Keep `placement_exec`'s: ADR-0002. Restate the fakes per Conventions. In `tests/test_guards.py`, `test_patch_is_local_...` is **rewritten** against `process`, asserting `process.subprocess` is restored, and `test_patched_git_preserves_...` has its fake restated at `process`. `test_git_helper_uses_...` tests `gitfix.sh`, not production code, and stays as it is (section 5.2). Add:
+- [ ] **Step 1: Red.** Delete R1 rows for `placement`, `placement_host`, `placement_process`, `placement_worker`. Keep `placement_exec`'s: ADR-0002. Restate the fakes per Conventions, including those Tasks 8 and 9 put at `placement_git.subprocess` in `tests/test_git_worktrees.py` and `tests/test_registration_trace.py`, which no longer reach git. In `tests/test_guards.py`, `test_patch_is_local_...` is **rewritten** against `process`, asserting `process.subprocess` is restored, and `test_patched_git_preserves_...` and the gate test's `options` at :259 are restated at `process`. `test_git_helper_uses_...` tests `gitfix.sh`, not production code, and stays as it is (section 5.2). Add:
   ```python
   # tests/test_process.py
   def test_placement_exec_155_placement_git_221_placement_168_go_through_process(self): ...    # one fake, three call sites
   def test_reg_and_icacls_output_keep_non_ascii_paths(self): ...      # placement_host:72, placement_process sites: decoded from Result.out by locale
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_guards tests.test_process`. `test_seams` must name the five modules, and the guard tests must show `unused command expectations`.
-- [ ] **Step 3: Migrate** the sites of section 5.1's Placement row: placement_exec:155, placement_git:221, placement:168, placement_host:72, :131, placement_process:100, :134, :310, placement_worker:167. Where `Result` replaces a catch tuple, the tuple goes, and it loses `subprocess` where that was its only use. `placement_host`'s three `run=` defaults go, and its tests take `process`-level fakes. Sites not in the Task 14 list stay out.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_guards tests.test_process`. `test_seams` must name the four modules, and the guard tests must show `unused command expectations`.
+- [ ] **Step 3: Migrate** the sites of section 5.1's Placement row: placement_exec:155, placement_git:221, placement:168, placement_host:72, :131, placement_process:100, :134, :310, placement_worker:167. Where `Result` replaces a catch tuple, the tuple goes, and it loses `subprocess` where that was its only use. `placement_host`'s three `run=` defaults go, and its tests take `process`-level fakes. placement_host:321 calls `process.list2cmdline`. The `NO_WINDOW` imports at placement_git:22, placement_host:18 and placement_process:16 go with their last use. Sites not in the Task 14 list stay out.
 - [ ] **Step 4: Re-record** `tests/placement_trace.json` from `placement_trace.collect()`, in its existing format. Only `kwargs` may change: `text` goes. Read the diff, and put the summary in the slice report. Any change in a command or an answer: report BLOCKED.
 - [ ] **Step 5: Green.**
   ```bash
-  M="tests.test_process tests.test_placement tests.test_disk_decision_trace $(mods "placement(_exec|_git|_host|_process|_worker)?\.subprocess|'subprocess\.run'|placement_host")"
+  M="tests.test_process tests.test_placement tests.test_disk_decision_trace tests.test_git_worktrees tests.test_registration_trace tests.test_disk_fix6 tests.test_disk_fix7 $(mods "placement(_exec|_git|_host|_process|_worker)?\.subprocess|patch\(placement_git|'subprocess\.run'|placement_host")"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
   env -u DROVER_TESTS $PY -m tests.tiers $M tests.test_guards
   ```
@@ -661,7 +675,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 ### Task 16: Disk callers
 
 **Files:**
-- Modify: `drover/disk_runtime.py`, `drover/disk_side.py`, `drover/disk_paths.py`, `tests/disk_trace.py`, `tests/placement_trace.json`, `tests/seam_exceptions.json`, `tests/test_disk_trim.py`, `tests/test_disk_worker_status.py`
+- Modify: `drover/disk_runtime.py`, `drover/disk_side.py`, `drover/disk_paths.py`, `tests/disk_trace.py`, `tests/placement_trace.json`, `tests/seam_exceptions.json`, `tests/test_disk_trim.py`, `tests/test_disk_worker_status.py`, `tests/__init__.py`, `tests/test_guards.py`
 
 **Interfaces:**
 - Consumes: `process.run`.
@@ -670,12 +684,12 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 - [ ] **Step 1: Red.** Delete R1 rows for `disk_runtime`, `disk_side`. `disk_paths` keeps its row until 6c if only exception types remain; state which. Add:
   ```python
   # tests/test_disk_worker_status.py
-  def test_cleanup_worker_starts_with_the_console_flag(self): ...       # defect 7: both disk_runtime:92 and :141
+  def test_cleanup_worker_starts_with_the_console_flag(self): ...       # both disk_runtime:92 and :141, through process
   def test_worker_timeout_keeps_todays_error_row(self): ...
   # tests/test_disk_trim.py, test restated
   def test_trim_failure_and_timeout_keep_trim_unavailable(self): ...
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_disk_worker_status tests.test_disk_trim`. `test_seams` must name `disk_runtime` and `disk_side`, and the flag test must fail on :92.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_disk_worker_status tests.test_disk_trim`. `test_seams` must name `disk_runtime` and `disk_side`, and the flag test must fail with `unused command expectations` or a real-process refusal, because the command does not yet reach `process`: 92ce946 already passes the flag at disk_runtime.py:94 and :142.
 - [ ] **Step 3: Migrate** disk_runtime:92, :141, disk_side:44, disk_paths:161. `disk_runtime`'s rc and output semantics are unchanged: `Result.kind == 'timed_out'` takes today's `TimeoutExpired` branch, `.stdout` the partial output. If `test_disk_trim` has no real spawn left, remove it from `tests.IMPURE` and lower `IMPURE_CEILING` in this commit.
 - [ ] **Step 4: Re-record** `tests/placement_trace.json`, as Task 15. `git diff --exit-code $SLICE_BASE -- tests/disk_decision_trace.json` must print nothing.
 - [ ] **Step 5: Green.**
@@ -684,7 +698,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
   env -u DROVER_TESTS $PY -m tests.tiers $M tests.test_guards
   ```
-- [ ] **Step 6: Slice exit.** R1 lost each module that dropped `subprocess`, trace check clean, slice report complete. Commit: "Cleanup's worker start and its other short-lived commands now run through process, so no cleanup worker can inherit a console."
+- [ ] **Step 6: Slice exit.** R1 lost each module that dropped `subprocess`, trace check clean, slice report complete. Commit: "Cleanup's worker start and its other short-lived commands now run through process."
 
 ## Slice 3b: `process`, remaining callers
 
@@ -696,10 +710,10 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 
 **Interfaces:**
 - Consumes: `process.run`.
-- `decisions._git` keeps its raw shape over `process` until Task 26. `pane_files.py:80` stays an R3 row.
+- `decisions._git` keeps its raw shape over `process` until Task 26. `pane_files.py:80` stays an R3 row. `resources` and `pane_files` keep their R1 rows until Task 18, because their `run=subprocess.run` defaults stay.
 
-- [ ] **Step 1: Red.** Delete these R1 rows, restate fakes per Conventions, and add `test_resources_145_keeps_locale_decoding` to `tests/test_resources.py`, from Task 14's list.
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_resources tests.test_stats tests.test_task_context tests.test_wizard_detection tests.test_decisions tests.test_pane_launch_files`. Must name the seven modules.
+- [ ] **Step 1: Red.** Delete R1 rows for `task_context`, `wizard_detect`, `decide`, `stats`, `decisions`, restate fakes per Conventions, and add `test_resources_145_keeps_locale_decoding` to `tests/test_resources.py`, from Task 14's list.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_resources tests.test_stats tests.test_task_context tests.test_wizard_detection tests.test_decisions tests.test_pane_launch_files`. Must name the five modules.
 - [ ] **Step 3: Migrate** the "Other drover" row of section 5.1. `resources` is at 492: it must shrink. The stale exception types go with each site.
 - [ ] **Step 4: Green.**
   ```bash
@@ -712,7 +726,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 ### Task 18: Injected `run=` defaults
 
 **Files:**
-- Modify: `drover/compaction.py`, `drover/compaction_vhd.py`, `drover/herdr_client.py`, `drover/launch.py`, `drover/pane_files.py`, `drover/resources.py`, `drover/usage.py`, `drover/wsl_cache_reclaim.py`, `drover/seat_paths.py`, `drover/disk_schedule.py`, `tests/seam_exceptions.json`, the tests passing `run=` or `runner=` to them
+- Modify: `drover/compaction.py`, `drover/compaction_vhd.py`, `drover/herdr_client.py`, `drover/launch.py`, `drover/pane_files.py`, `drover/resources.py`, `drover/usage.py`, `drover/wsl_cache_reclaim.py`, `drover/seat_paths.py`, `drover/disk_schedule.py`, `drover/disk_schedule_steps.py`, `tests/seam_exceptions.json`, `tests/test_compaction.py`, `tests/test_disk_schedule.py`, the tests passing `run=` or `runner=` to them
 
 **Interfaces:**
 - Consumes: `process.run`.
@@ -726,10 +740,10 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   def test_schedule_install_times_out_at_600_seconds_and_reports_failed(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_compaction tests.test_disk_schedule tests.test_herdr_client tests.test_usage tests.test_wsl_cache_reclaim`. `test_seams` must name them, and the restated tests must fail with `TypeError` or `unused command expectations`.
-- [ ] **Step 3: Migrate.** Remove those parameters, every test argument with them, and each module's `import subprocess` when only exception types remain. Commands with no timeout take `LONG` as a local `600.0` here, and `git_client.LONG` is not imported before Task 22.
+- [ ] **Step 3: Migrate.** Remove those parameters, every test argument with them, and each module's `import subprocess` when only exception types remain. disk_schedule_steps:64 calls `process.list2cmdline`. Commands with no timeout take `LONG` as a local `600.0` here and in Task 19, because `git_client.LONG` does not exist before Task 22.
 - [ ] **Step 4: Green.**
   ```bash
-  M="tests.test_compaction tests.test_compaction_hub tests.test_pane_compaction_job tests.test_disk_schedule tests.test_disk_linux_schedule tests.test_herdr_client tests.test_launch_runner tests.test_usage tests.test_wsl_cache_reclaim tests.test_seat_paths_contract tests.test_seats tests.test_resources tests.test_pane_launch_files"
+  M="tests.test_compaction tests.test_compaction_hub tests.test_pane_compaction_job tests.test_disk_schedule tests.test_disk_fix6 tests.test_disk_linux_schedule tests.test_herdr_client tests.test_launch_runner tests.test_usage tests.test_wsl_cache_reclaim tests.test_seat_paths_contract tests.test_seats tests.test_resources tests.test_pane_launch_files"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
   env -u DROVER_TESTS $PY -m tests.tiers $M tests.test_guards
   ```
@@ -738,15 +752,16 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 ### Task 19: Hub callers
 
 **Files:**
-- Modify: `hub/__main__.py`, `hub/auth.py`, `hub/runtime.py`, `hub/task_views.py`, `hub/watchdog.py`, `tests/test_guards.py`, `tests/seam_exceptions.json`, hub tests patching these
+- Modify: `hub/__main__.py`, `hub/auth.py`, `hub/runtime.py`, `hub/task_views.py`, `hub/watchdog.py`, `tests/test_hub_runtime.py`, `tests/test_hub_watchdog.py`, `tests/seam_exceptions.json`, hub tests patching these
 
 **Interfaces:**
 - Consumes: `process.run`.
-- `hub/watchdog:27`, the keep-alive, stays outside. `hub/runtime._git` keeps its shape until Task 27, taking `LONG`, a guess, with `sink` bounding the archive.
+- `hub/watchdog:27`, the keep-alive, stays outside.
+- `hub/runtime` is frozen (ruling 15): `tests/test_hub_runtime_paths.py:229` forbids importing `drover`. It keeps `subprocess`, its `NO_WINDOW` and `_git`, with its R1 and R3 rows. `_git` gains `timeout=600.0` in place, section 5.1's `LONG`, a guess. A timeout raises `TimeoutExpired`, a `SubprocessError`, which the handlers at :360, :516 and :535 hold; any other caller fails as a missing git does today.
 
-- [ ] **Step 1: Red.** Delete R1 rows for `hub/__main__`, `hub/auth`, `hub/runtime`, `hub/task_views`; `hub/watchdog` keeps its row. Restate fakes. Add to `tests/test_hub_runtime.py`: `test_archive_stays_bounded_through_sink`, `test_hub_git_read_takes_600_seconds`. Add to `tests/test_hub_watchdog.py`: `test_watchdog_17_runs_through_process`.
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_hub_runtime tests.test_hub_watchdog`. Must name the four modules.
-- [ ] **Step 3: Migrate** the Hub row of section 5.1. `hub/auth:28` keeps locale decoding. `hub/runtime.py`'s `NO_WINDOW` goes, and `hub/runtime.py` falls: lower its `OVER` pin in `tests/test_guards.py` to the new count.
+- [ ] **Step 1: Red.** Delete R1 rows for `hub/__main__`, `hub/auth`, `hub/task_views`; `hub/watchdog` and `hub/runtime` keep theirs, and `hub/runtime`'s R1 and R3 reasons now state the frozen bootstrap. Restate fakes. Add to `tests/test_hub_runtime.py`: `test_hub_git_read_takes_600_seconds`, faked at `hub.runtime`'s own `subprocess`. Add to `tests/test_hub_watchdog.py`: `test_watchdog_17_runs_through_process`.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_hub_runtime tests.test_hub_watchdog`. Must name the three modules.
+- [ ] **Step 3: Migrate** the Hub row of section 5.1. `hub/auth:28` keeps locale decoding. `hub/runtime.py` stays at exactly 612 lines, its `OVER` pin: the timeout goes on the existing line.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_hub_runtime tests.test_hub_runtime_integrity tests.test_hub_runtime_paths tests.test_hub_watchdog tests.test_task_views tests.test_authority_http tests.test_web_perf"
@@ -758,10 +773,10 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
 ### Task 20: `wsl_control` moves; `NO_WINDOW` has one home
 
 **Files:**
-- Modify: `drover/process.py`, `drover/placement_exec.py`, `drover/pane_status_hook.py` (no change expected, verify only), `tests/test_process.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
+- Modify: `drover/process.py`, `drover/placement_exec.py`, `drover/placement.py`, `drover/placement_host.py`, `drover/compaction.py`, `drover/disk_runtime.py`, `drover/pane_files.py`, `drover/wsl_cache_reclaim.py`, `hub/watchdog.py`, `drover/pane_status_hook.py` (no change expected, verify only), `tests/test_process.py`, `tests/test_compaction_hold.py`, `tests/test_compaction_hub.py`, `tests/test_disk_fix6.py`, `tests/test_disk_worker_status.py`, `tests/test_herdr_client.py`, `tests/test_pane_launch_files.py`, `tests/test_runner_detach.py`, `tests/test_wsl_cache_reclaim.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
 
 **Interfaces:**
-- Produces: `process.wsl_argv(args: Sequence[str]) -> list[str]`, today's `wsl_control` with its hold check, raising `WslOffline` or `CommandTooLong` at build.
+- Produces: `process.wsl_argv(args: Sequence[str]) -> list[str]`, today's `wsl_control` with its hold check, raising `WslOffline` or `CommandTooLong` at build; `process.CREATE_NO_WINDOW`, which `placement_exec` imports.
 
 - [ ] **Step 1: Failing tests**, `tests/test_process.py`:
   ```python
@@ -770,20 +785,24 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   def test_run_makes_no_hold_check(self): ...      # literal ['wsl.exe', '--shutdown'] runs while phase='offline'
   def test_watchdog_keep_alive_is_refused_offline_at_build(self): ...      # hub/watchdog:27 through WSL.command
   ```
-  Add `drover.placement_exec.wsl_control` to `qualified_names`, and `NO_WINDOW` in `hub/runtime.py` as a scoped binding.
+  Add `drover.placement_exec.wsl_control` to `qualified_names`.
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_process tests.test_architecture`. Must fail with `AttributeError` for `wsl_argv` and name `wsl_control`.
-- [ ] **Step 3: Implement.** Move `wsl_control`; `placement_exec`'s `compaction_hold` import goes. `process` gains its `compaction_hold` import, and `compaction_hold` already reaches `durable`, so no cycle. `process.NO_WINDOW` is used by `spawn_worker` and `detach`. `placement_exec.py:29,:41` definitions go. `pane_status_hook` keeps its literal: standalone.
+- [ ] **Step 3: Implement.** Move `wsl_control`; `placement_exec`'s `compaction_hold` import goes. `process` gains its `compaction_hold` import, and `compaction_hold` already reaches `durable`, so no cycle. Every caller takes `wsl_argv`: compaction.py:123, :129; disk_runtime.py:73, :91; pane_files.py:17, :48, :61; placement.py:31; placement_exec.py:104; placement_host.py:21, :131, :143, :335; wsl_cache_reclaim.py:65, :71; hub/watchdog.py:11, :17; and the tests patching it. `placement_exec.py:29,:41` definitions go: `spawn_worker` and `detach` (:83, :131) read `process.CREATE_NO_WINDOW`, and `placement.py:28` stops re-exporting both names. `hub/watchdog.py:28`'s kept `Popen` reads `process.NO_WINDOW`. `hub/runtime` keeps its own (ruling 15). `pane_status_hook` keeps its literal: standalone.
 - [ ] **Step 4: Green.**
   ```bash
-  M="tests.test_process tests.test_placement tests.test_wsl_worker_argv tests.test_runner_detach tests.test_hub_watchdog tests.test_compaction_hold tests.test_pane_status_hook"
+  M="tests.test_process tests.test_placement tests.test_wsl_worker_argv tests.test_runner_detach tests.test_hub_watchdog tests.test_compaction_hold tests.test_compaction tests.test_compaction_hub tests.test_disk_fix6 tests.test_disk_worker_status tests.test_herdr_client tests.test_pane_launch_files tests.test_wsl_cache_reclaim tests.test_pane_status_hook"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_process tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
-- [ ] **Step 5: Slice exit.** Every other short-lived command runs through `process`; `NO_WINDOW` only in `process` and `placement_exec`; trace check prints nothing. Commit, with the slice report: "The WSL argv check now lives in process, so the console flag has one definition and the compaction hold left placement."
+- [ ] **Step 5: Slice exit.** Every other short-lived command runs through `process`; the flag is defined only in `process` and the frozen `hub/runtime`, and the standalone hook keeps its literal; `placement_exec` and `hub/watchdog` read `process`'s; trace check prints nothing. Commit, with the slice report: "The WSL argv check now lives in process, so the application has one console flag and the compaction hold left placement."
 
 ### Task 21: Checkpoint after slice 3b
 
-Runs the Checkpoint protocol with `LAST_CP` as Task 7's commit, covering slices 1, 2, 3a, 3b.
+**Files:**
+- Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-checkpoint-3b.md`
+- Modify: `docs/superpowers/reviews/2026-11-02-rearchitecture-test-times.md`
+
+Runs the Checkpoint protocol with `LAST_CP` as Task 7's report commit, covering slices 1, 2, 3a, 3b.
 
 - [ ] **Step 1: Run the protocol.** Update the census for every module touched. Targets: the row after slice 3b.
 - [ ] **Step 2: Reviewer focus.**
@@ -791,6 +810,7 @@ Runs the Checkpoint protocol with `LAST_CP` as Task 7's commit, covering slices 
   - Scope: section 10 rows 1 to 3b; `tests/placement_trace.json` changed only in `kwargs`; `tests/disk_decision_trace.json` changed only in slice 1, and each row is in that report; `entries`, `registered=`, `write_json_atomic`, `wsl_control` and 12 sites' missing console flags are gone.
   - Efficiency hot paths: one listing per repo per stage; one `prove` per removal; `durable` reading no clock on a landing write; `Status.routine`'s fsync-free path; `process.run`'s overhead over `subprocess.run`, one dataclass and one clock read.
 - [ ] **Step 3: Fix findings**, by the protocol, then record `Task 21: complete`.
+- [ ] **Step 4: Commit** both reports: "The slice 3b checkpoint records its test times and its three reviews."
 
 ## Slice 4: `git_client`
 
@@ -800,11 +820,11 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 
 **Files:**
 - Create: `drover/git_client.py`, `tests/test_git_client.py`, `docs/superpowers/reviews/2026-11-02-rearchitecture-slice-4.md`
-- Modify: `drover/placement_git.py`, `tests/test_seams.py`
+- Modify: `tests/test_seams.py`
 
 **Interfaces:**
-- Consumes: `process.run`; `placement_git._git_command`.
-- Produces, as section 5.2: `Answer`; `Why`; `GitReply`; `GitDone`; `GitFailed(OSError)` with `args_, why, code, err, out`; `QUICK, NORMAL, FETCH, LONG = 30.0, 60.0, 120.0, 600.0`; `ask(repo, *args, timeout_s, no, env=None, side=None, sink=None) -> GitReply`; `out(repo, *args, timeout_s, env=None, side=None, error=None) -> str`; `mutate(repo, *args, timeout_s, env=None, side=None) -> GitDone`; `argv(repo, args, side=None) -> list[str]`; `request_git`.
+- Consumes: `process.run`; `placement_git._git_command`, `request_git`, `git_spawns`, `git_spawn_lock`.
+- Produces, as section 5.2: `Answer`; `Why`; `GitReply`; `GitDone`; `GitFailed(OSError)` with `args_, why, code, err, out`; `QUICK, NORMAL, FETCH, LONG = 30.0, 60.0, 120.0, 600.0`; `ask(repo, *args, timeout_s, no, env=None, side=None, sink=None) -> GitReply`; `out(repo, *args, timeout_s, env=None, side=None, error=None) -> str`; `mutate(repo, *args, timeout_s, env=None, side=None) -> GitDone`; `argv(repo, args, side=None) -> list[str]`; `request_git`, the same object as `placement_git`'s until Task 28.
 
 - [ ] **Step 1: Failing tests**, `tests/test_git_client.py`, default tier:
   ```python
@@ -827,32 +847,33 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
   def test_spawn_counts_stay_for_the_hub_performance_log(self): ...
   def test_argv_equals_the_journals_restore_argv(self): ...
   ```
-  In `tests/test_seams.py`: the live R5 rule for `git_client`.
+  In `tests/test_seams.py`: the live R5 rule for `git_client`, and `test_r5_placement_git_imports_no_git_client_but_its_stated_rows`. The rule is that `placement_git` imports no `git_client`, so each import is a finding, and only function-level rows may stand in the manifest. Task 27 adds them.
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_git_client` fails with `ModuleNotFoundError` for `drover.git_client`.
-- [ ] **Step 3: Implement.** Ordering: `placement_git` for argv and env, `process.run`, count. Path mapping stays in `placement_git`. `placement_git.git` is untouched until Task 28.
+- [ ] **Step 3: Implement.** Ordering: `placement_git` for argv and env, `process.run`, count. Path mapping stays in `placement_git`. `placement_git.git` is untouched until Task 28, and `placement_git` cannot import `git_client` at load. So both routes count in one place: `git_client` imports `request_git` and increments `placement_git.git_spawns` under `placement_git.git_spawn_lock`. Task 27 repoints `hub/app`, and Task 28 moves the definitions.
 - [ ] **Step 4: Green.**
   ```bash
   DROVER_TESTS=integration $PY -m unittest tests.test_git_client tests.test_placement $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_git_client tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "One git client now answers yes, no or unknown, and a timeout means one thing to every caller."
 
 ### Task 23: `git_worktrees` swaps; four listings move
 
 **Files:**
-- Modify: `drover/git_worktrees.py`, `drover/placement.py`, `hub/task_views.py`, `drover/cleanup.py`, `drover/pipeline.py`, `tests/test_git_worktrees.py`, `tests/test_task_views.py`, `tests/seam_exceptions.json`
+- Modify: `drover/git_worktrees.py`, `drover/placement.py`, `hub/task_views.py`, `drover/cleanup.py`, `drover/pipeline.py`, `tests/test_git_worktrees.py`, `tests/test_task_views.py`, `tests/__init__.py`, `tests/test_guards.py`, `tests/seam_exceptions.json`
 
 **Interfaces:**
 - Consumes: `git_client.out`.
-- `git_worktrees` now imports `git_client`, and R5's temporary row goes. `listing(..., timeout_s=NORMAL)` serves `placement.unlock_worktree`; `QUICK`-class values stay as each caller has them today.
+- `git_worktrees` now imports `git_client`, and R5's temporary row goes. `listing`'s required `timeout_s` is `NORMAL` for `placement.unlock_worktree`, `LONG` for `pipeline.inventory` and `cleanup.checked_out_anywhere`, and 1 s for `hub/task_views.probe`, as today. A failed tip now raises `GitFailed`.
 
-- [ ] **Step 1: Red.** Delete R5's temporary row and R8's rows for cleanup:49, pipeline:106, placement:153, hub/task_views:120. Restate `tests/test_git_worktrees.py`'s fakes at `process`. Add:
+- [ ] **Step 1: Red.** Delete R5's temporary row and R8's rows for cleanup:49, pipeline:106, placement:153, hub/task_views:120. Restate the expected timeouts in `tests/test_git_worktrees.py`, and its tip test as `test_tip_failure_raises_git_failure`. Add:
   ```python
   def test_inventory_returns_empty_on_a_failed_listing(self): ...       # pipeline.inventory, today's behaviour
   def test_probe_keeps_its_one_second_timeout(self): ...                # hub/task_views.probe
   def test_checked_out_anywhere_and_unlock_worktree_use_listing(self): ...
+  def test_inventory_and_checked_out_anywhere_list_on_600_seconds(self): ...
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_git_worktrees`. Must name the four literals and the R5 row.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams tests.test_git_worktrees`. Must name the four literals and the R5 row, and the tip test must fail on its type.
 - [ ] **Step 3: Migrate.** `origin.fast_forward` (:27) keeps its literal: R8's one row. Behaviour is unchanged at all four callers; `native` normalises as Review 3 checked. If `tests.test_task_views` has no real spawn left, remove it from `tests.IMPURE` and lower the ceiling.
 - [ ] **Step 4: Green.**
   ```bash
@@ -865,13 +886,13 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 ### Task 24: `pipeline`, `replan`, `landing`, `landing_batch`
 
 **Files:**
-- Modify: `drover/pipeline.py`, `drover/replan.py`, `drover/landing.py`, `drover/landing_batch.py`, `tests/architecture_removed_symbols.json`, tests naming `pipeline.git`, `landing_batch.git`, `timed_git`, rc 124
+- Modify: `drover/pipeline.py`, `drover/replan.py`, `drover/landing.py`, `drover/landing_batch.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`, `tests/test_landing.py`, `tests/test_replan_batches.py`, `tests/test_pipeline_worktrees.py`, tests naming `pipeline.git`, `landing_batch`'s calls, `timed_git`, rc 124
 
 **Interfaces:**
 - Consumes: `ask`, `out`, `mutate`, `LONG`.
-- `contained` returns `Answer`. `pipeline.Repository` keeps its methods. `error=` gives `WorktreeRefused` with today's stderr tail, and `CIError`.
+- `landing_batch`'s own calls and `landing.py`'s migrate here, but `landing_batch.git` stays for `landing_control` (:10, :18, :43, :44, :174, :204) until Task 25. `contained` returns `Answer`. `pipeline.Repository` keeps its methods. `error=` gives `WorktreeRefused` with today's stderr tail, and `CIError`.
 
-- [ ] **Step 1: Red.** Add `drover.pipeline.git`, `drover.landing_batch.git`, `drover.landing.timed_git` to `qualified_names`. Tests that assert rc 124, or a `TimeoutExpired` from `timed_git`, **die**, each replaced in place by an `Answer` assertion. Add:
+- [ ] **Step 1: Red.** Add `drover.pipeline.git`, `drover.landing.timed_git` to `qualified_names`. Delete R1 rows for `landing` and `pipeline`. Tests that assert rc 124, or a `TimeoutExpired` from `timed_git`, **die**, each replaced in place by an `Answer` assertion. Add:
   ```python
   # tests/test_landing.py
   def test_landing_256_raises_as_not_contained_when_unknown(self): ...
@@ -880,9 +901,9 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
   def test_cherry_pick_conflict_is_still_a_conflict(self): ...
   # tests/test_pipeline_worktrees.py
   def test_every_check_true_site_raises_worktree_refused_with_stderr_tail(self): ...   # pipeline :72 :89 :92 :142 :145 :146 :151 :155-157, replan :49
-  def test_inventory_and_other_reads_take_600_seconds(self): ...
+  def test_reads_without_a_timeout_take_600_seconds(self): ...
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_landing tests.test_replan_batches tests.test_pipeline_worktrees`. Must name the three symbols, and the new tests must fail on rc 124.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_landing tests.test_replan_batches tests.test_pipeline_worktrees`. Must name the two symbols and the two R1 modules, and the new tests must fail on rc 124.
 - [ ] **Step 3: Migrate** by the section 5.2 table and section 5.1's no-timeout rows. `pipeline` is at 491: it must shrink. Record each handler.
 - [ ] **Step 4: Green.**
   ```bash
@@ -895,12 +916,12 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 ### Task 25: `origin` and `ControlledGit`
 
 **Files:**
-- Modify: `drover/origin.py`, `drover/landing_control.py`, `drover/placement.py` (`add_worktree`), `drover/pane_close.py`, `tests/test_origin_sync.py`, `tests/test_landing_recovery.py`, `tests/architecture_removed_symbols.json`
+- Modify: `drover/origin.py`, `drover/landing_control.py`, `drover/landing_batch.py`, `drover/landing.py`, `drover/placement.py` (`add_worktree`), `drover/pane_close.py`, `tests/test_origin_sync.py`, `tests/test_landing_recovery.py`, `tests/__init__.py`, `tests/test_guards.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`, tests naming `landing_batch.git`
 
 **Interfaces:**
 - Produces: `origin` functions take `git=git_client`, an object with `ask`, `out`, `mutate`; `landing_control.ControlledGit(conn, epoch)` with those three, guarding `merge`, `update-ref` and `push` by `args[0]`; `pane_close:234` takes a function shaped like `ask`; `placement.add_worktree(..., error=)` with `LONG` inside.
 
-- [ ] **Step 1: Red.** Add `drover.origin.git` and `drover.landing_control._controlled_git` to `qualified_names`. Restate `tests/test_origin_sync.py` around a `FakeGit` object with the three methods, replacing real repos where git is only setup. Add:
+- [ ] **Step 1: Red.** Add `drover.origin.git`, `drover.landing_batch.git` and `drover.landing_control._controlled_git` to `qualified_names`. Delete R1 rows for `origin` and `landing_batch`. Restate `tests/test_origin_sync.py` around a `FakeGit` object with the three methods, replacing real repos where git is only setup. Add:
   ```python
   def test_cas_on_main_stays_a_mutate(self): ...
   def test_non_zero_update_ref_raises_main_moved(self): ...
@@ -909,8 +930,8 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
   def test_controlled_git_guards_merge_update_ref_push_only(self): ...   # tests/test_landing_recovery.py
   def test_add_worktree_keeps_no_60_second_limit(self): ...              # LONG, its two callers
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_origin_sync tests.test_landing_recovery`. Must name both symbols, with `TypeError` for `git=`.
-- [ ] **Step 3: Migrate.** `landing.py:225`, `hub/store_ui.py:303`, `landing_control.py:52,:192` and `pipeline.py:421` still catch `SyncError`: confirm and record. If `tests.test_origin_sync` is now pure, take it out of `tests.IMPURE` and lower the ceiling.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_origin_sync tests.test_landing_recovery`. Must name the three symbols and the two R1 modules, with `TypeError` for `git=`.
+- [ ] **Step 3: Migrate.** `landing_control`'s own reads (:43, :44, :174, :204) leave `landing_batch.git` for `git_client`, `LONG` where they have no timeout and `CIError` by `error=`, so `landing_batch.git` goes. landing.py:15 stops importing `_controlled_git`. `landing.py:225`, `hub/store_ui.py:303`, `landing_control.py:52,:192` and `pipeline.py:421` still catch `SyncError`: confirm and record. If `tests.test_origin_sync` is now pure, take it out of `tests.IMPURE` and lower the ceiling.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_origin_sync tests.test_landing_recovery tests.test_landing tests.test_landing_repository tests.test_landing_diagnosis tests.test_pane_close tests.test_pane_close_safety tests.test_disk_worktree_add tests.test_wsl_worktree"
@@ -922,13 +943,13 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 ### Task 26: `ci`, `cleanup`, disk git, small callers
 
 **Files:**
-- Modify: `drover/ci.py`, `drover/cleanup.py`, `drover/disk_worktrees.py`, `drover/disk_paths.py`, `drover/disk_registrations.py`, `drover/dispatch_hold.py`, `drover/task_access.py`, `drover/decisions.py`, `drover/brief.py`, `drover/context_files.py`, `drover/repos.py`, `tests/architecture_removed_symbols.json`, tests naming these functions
+- Modify: `drover/ci.py`, `drover/cleanup.py`, `drover/disk_worktrees.py`, `drover/disk_paths.py`, `drover/disk_registrations.py`, `drover/dispatch_hold.py`, `drover/task_access.py`, `drover/decisions.py`, `drover/brief.py`, `drover/context_files.py`, `drover/repos.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`, `tests/test_disk_fresh_proof.py`, `tests/test_ci_policy.py`, `tests/test_decisions.py`, `tests/test_task_access.py`, `tests/test_dispatch_hold.py`, tests naming these functions
 
 **Interfaces:**
 - Consumes: `ask`, `out`, `mutate`.
 - `disk_worktrees.git` deleted: `error=` gives `ValueError`, so disk_registrations.py:66 and the disk tuples stay. `repository_config` uses `git_client` here, still in `disk_paths`, and catches `GitFailed` as an `OSError` for its fail-closed `True`.
 
-- [ ] **Step 1: Red.** Add `drover.ci.git`, `drover.cleanup.git`, `drover.disk_worktrees.git`, and the private names `drover.dispatch_hold._git`, `drover.task_access._git`, `drover.decisions._git` to `qualified_names`. Add:
+- [ ] **Step 1: Red.** Add `drover.ci.git`, `drover.cleanup.git`, `drover.disk_worktrees.git`, and the private names `drover.dispatch_hold._git`, `drover.task_access._git`, `drover.decisions._git` to `qualified_names`. Delete R1's `dispatch_hold` row and R3's `decisions._git` row. Add:
   ```python
   # tests/test_disk_fresh_proof.py
   def test_git_failure_after_unlock_restores_the_marker_and_journals_failed(self): ...   # disk_worktrees.py:381, ruling 12
@@ -941,8 +962,8 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
   # tests/test_dispatch_hold.py
   def test_unknown_is_not_read_as_no(self): ...
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_disk_fresh_proof tests.test_ci_policy tests.test_decisions tests.test_task_access tests.test_dispatch_hold`. Must name the six symbols.
-- [ ] **Step 3: Migrate** by the section 5.2 table. `cleanup.git` and `_git_ok` take `LONG`, as read-only scans with `GIT_OPTIONAL_LOCKS=0`. `ci.py:119` stays an R3 row. `ci`, `disk_worktrees` and `disk_paths` stay under the cap.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_fresh_proof tests.test_ci_policy tests.test_decisions tests.test_task_access tests.test_dispatch_hold`. Must name the six symbols and both rows' modules.
+- [ ] **Step 3: Migrate** by the section 5.2 table. `cleanup.git` and `_git_ok` take `LONG`, as read-only scans with `GIT_OPTIONAL_LOCKS=0`. `ci.py:119` stays an R3 row. `ci`, `disk_worktrees` and `disk_paths` must shrink.
 - [ ] **Step 4: Green.**
   ```bash
   M="$(mods 'ci\.git|cleanup\.git|_git_ok|disk_worktrees\.git|dispatch_hold|task_access|decisions\._git|context_files|ci_fixture') tests.test_ci_policy tests.test_disk_decision_trace tests.test_disk_fresh_proof tests.test_disk_removal tests.test_disk_registrations"
@@ -954,21 +975,19 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 ### Task 27: `outside_land`, ledger, hub, placement internals
 
 **Files:**
-- Modify: `drover/outside_land.py`, `drover/ledger/ops_outside.py`, `hub/runtime.py`, `hub/task_views.py`, `hub/app.py`, `drover/placement.py`, `drover/placement_git.py`, `tests/architecture_import_allowlist.json`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`
+- Modify: `drover/outside_land.py`, `drover/ledger/ops_outside.py`, `hub/task_views.py`, `hub/app.py`, `drover/placement.py`, `drover/placement_git.py`, `tests/test_outside_land.py`, `tests/architecture_import_allowlist.json`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`
 
 **Interfaces:**
-- `outside_land._out` stays three lines over `ask`. `GitUnknown` deleted: callers catch `GitFailed`. `hub/runtime._git` stays as a wrapper over `ask`. `hub/task_views.git` deleted. `placement_git.reachable` and `worktree_metadata` import `git_client` inside the function: a stated R5 row.
+- `outside_land._out` stays three lines over `ask`. `GitUnknown` deleted: callers catch `GitFailed`. `hub/runtime._git` stays as it is, frozen (ruling 15). `hub/task_views.git` deleted. `placement_git.reachable` and `worktree_metadata` import `git_client` inside the function: a stated R5 row.
 
-- [ ] **Step 1: Red.** Add `drover.outside_land.GitUnknown` to `qualified_names`. `hub/task_views.git` is a nested function at :112, so no removed-symbol row can see it: delete its R3 row instead. Add:
+- [ ] **Step 1: Red.** Add `drover.outside_land.GitUnknown` to `qualified_names`. `hub/task_views.git` is a nested function at :112, so no removed-symbol row can see it: delete its R3 row instead. Delete R1 rows for `outside_land` and `ledger/ops_outside`. Add:
   ```python
   # tests/test_outside_land.py
   def test_459_timeout_takes_stuck_and_resume(self): ...          # e.why == 'timeout'
   def test_459_any_other_failure_logs_as_464(self): ...
-  # tests/test_hub_runtime.py
-  def test_hub_git_scrubs_git_env_and_maps_failure_to_refuse(self): ...
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest $GUARDS tests.test_outside_land tests.test_hub_runtime`. `test_architecture` must name `GitUnknown`, and `test_seams` must name `hub/task_views.py`.
-- [ ] **Step 3: Migrate.** `ledger/ops_outside` importing `drover.placement` swaps one allowlist row for `drover.git_client`: same row count. The `hub/app.py` read of `request_git` moves. `add_worktree`, `unlock_worktree`, `reachable`, `worktree_metadata` use `git_client`.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest $GUARDS tests.test_outside_land`. `test_architecture` must name `GitUnknown`, and `test_seams` must name `hub/task_views.py`, `outside_land` and `ledger/ops_outside`.
+- [ ] **Step 3: Migrate.** `ledger/ops_outside` importing `drover.placement` swaps one allowlist row for `drover.git_client`: same row count. `hub/app.py` imports `request_git` from `git_client`. `add_worktree`, `unlock_worktree`, `reachable`, `worktree_metadata` use `git_client`, and R5's two function-level `placement_git` rows land with those imports.
 - [ ] **Step 4: Green.**
   ```bash
   M="$(mods 'outside_land|GitUnknown|ops_outside') tests.test_hub_runtime tests.test_hub_runtime_paths tests.test_hub_runtime_integrity tests.test_task_views tests.test_web_perf tests.test_placement"
@@ -980,33 +999,38 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 ### Task 28: `placement.git` goes; R3 final; conversions
 
 **Files:**
-- Modify: `drover/placement_git.py`, `drover/placement.py`, `tests/test_guards.py`, `tests/__init__.py`, `tests/test_seams.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`, every test naming `placement.git`
+- Modify: `drover/placement_git.py`, `drover/placement.py`, `drover/git_client.py`, `tests/test_git_client.py`, `tests/test_web_perf.py`, `tests/test_guards.py`, `tests/__init__.py`, `tests/test_seams.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`, every test naming `placement.git`
 
 **Interfaces:**
-- `placement_git.git` and `placement.git` are deleted; `GIT_TIMED_OUT` deleted. Later tasks reach git only through `git_client`.
+- `placement_git.git` and `placement.git` are deleted; `GIT_TIMED_OUT` deleted. `request_git`, `git_spawns` and `git_spawn_lock` move to `git_client`, and tests/test_web_perf.py:281-283 reads them there. Later tasks reach git only through `git_client`.
 
-- [ ] **Step 1: Red.** Add `drover.placement_git.git`, `drover.placement.git` and the remaining private functions of section 10's row 4 to `qualified_names`. Delete R3's and R1's rows that this makes false. Rewrite `tests/test_guards.py`'s `test_patched_git_preserves_missing_executable_result` against `git_client`: the missing-executable case asserts `Answer.UNKNOWN`, `why='unavailable'`, and no rc 127.
+- [ ] **Step 1: Red.** Add `drover.placement_git.git`, `drover.placement.git` and the remaining private functions of section 10's row 4 to `qualified_names`. Delete R3's and R1's rows that this makes false, `placement_git`'s R1 row among them. Rewrite `tests/test_guards.py`'s `test_patched_git_preserves_missing_executable_result` against `git_client`: the missing-executable case asserts `Answer.UNKNOWN`, `why='unavailable'`, and no rc 127. It now says what Task 22's `test_missing_git_is_unavailable_not_127` says, so that test goes in this commit.
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_guards`. Must name `placement.git`.
 - [ ] **Step 3: Delete** them, and move every remaining test fake of `placement.git` to process-level fakes: the 53 test files of section 11 not already moved. Tests asserting rc 124 or 127 that remain die with their `Answer` replacement.
-- [ ] **Step 4: Convert.** From Task 1's candidates, for each module where git is setup and not the point: `test_task_access`, `test_disk_branch`, `test_disk_policy`, `test_disk_ownership`, `test_disk_caches`, `test_hub_runtime_paths`. Replace real git with `FakeCommands.patch(process)` or `pipeline.Repository` facts, in place, one commit per module. Each commit removes the module from `tests.IMPURE`, or converts `@integration` tests, and lowers the constant in that commit. A test whose point is real git stays: name it in the report. Do not add a parallel test.
+- [ ] **Step 4: Convert.** From Task 1's candidates, for each module where git is setup and not the point: `test_task_access`, `test_disk_branch`, `test_disk_policy`, `test_disk_ownership`, `test_disk_caches`, `test_hub_runtime_paths`. Replace real git with `FakeCommands.patch(process)` or `pipeline.Repository` facts, in place, one commit per module. Each commit removes the module from `tests.IMPURE`, or converts `@integration` tests, and lowers the constant in that commit. A test whose point is real git stays: name it in the report. `test_hub_runtime_paths` fakes at `hub.runtime`, which is frozen, and stays in `tests.IMPURE`: its frozen-module test spawns real Python on purpose. Do not add a parallel test.
 - [ ] **Step 5: Green.**
   ```bash
-  M="$(mods 'placement\.git|placement_git\.git|GIT_TIMED_OUT') tests.test_git_client tests.test_process tests.test_disk_decision_trace tests.test_placement"
+  M="$(mods 'placement\.git|placement_git\.git|GIT_TIMED_OUT') tests.test_git_client tests.test_web_perf tests.test_process tests.test_disk_decision_trace tests.test_placement"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
   env -u DROVER_TESTS $PY -m tests.tiers $M tests.test_guards
   ```
-- [ ] **Step 6: Slice exit.** All git goes through `git_client`; R3 final with its `Answer.NO` check; R8 at one row; R5's `placement_git` row in; R1 shrunk; slice 4's removed symbols added; handler list complete in the report; trace check prints nothing. Commit: "The 15 git functions are gone, and placement.git with them, so one git client answers for the whole tree."
+- [ ] **Step 6: Slice exit.** All git but the frozen `hub/runtime._git` goes through `git_client`; R3 final with its `Answer.NO` check; R8 at one row; R5's two `placement_git` rows in; R1 shrunk; slice 4's removed symbols added; handler list complete in the report; trace check prints nothing. Commit: "The per-module git functions are gone, and placement.git with them, so one git client answers for everything but the frozen bootstrap."
 
 ### Task 29: Checkpoint after slice 4
 
-Runs the Checkpoint protocol with `LAST_CP` as Task 21's commit.
+**Files:**
+- Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-checkpoint-4.md`
+- Modify: `docs/superpowers/reviews/2026-11-02-rearchitecture-test-times.md`
+
+Runs the Checkpoint protocol with `LAST_CP` as Task 21's report commit.
 
 - [ ] **Step 1: Run the protocol.** Census for every converted module. Targets: the row after slice 4.
 - [ ] **Step 2: Reviewer focus.**
   - Completeness: section 5.2 invariants and every row of its table; section 5.1's no-timeout table; every entry of the handler list has a reason, and `disk_worktrees.py:381` has its test.
-  - Scope: section 10 row 4; R3's two rows, ci:119 and pane_files:80, and no others; R8 at origin:27; allowlist row count not grown; no `Answer` truth-tested; no `timeout_s` missing.
+  - Scope: section 10 row 4; R3's three rows, ci:119, pane_files:80 and `hub/runtime._git`, and no others; R8 at origin:27; allowlist row count not grown; no `Answer` truth-tested; no `timeout_s` missing.
   - Efficiency hot paths: `ask` over `process.run`, argv build once; the hub's performance-log counts unchanged; `pipeline.Repository`'s reads; no read gained a spawn. Also which real-git tests remain, and why.
 - [ ] **Step 3: Fix findings**, by the protocol, then record `Task 29: complete`.
+- [ ] **Step 4: Commit** both reports: "The slice 4 checkpoint records its test times and its three reviews."
 
 ## Slice 5: the stage run
 
@@ -1048,7 +1072,7 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
 - [ ] **Step 5: Green.**
   ```bash
   DROVER_TESTS=integration $PY -m unittest tests.test_disk_stage $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_stage tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 6: Commit**, with the slice report: "A typed stage request and one stage clock now state what a stage is asked and how long it has."
 
@@ -1058,13 +1082,13 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
 - Modify: `drover/disk_stage.py`, `tests/test_disk_stage.py`
 
 **Interfaces:**
-- Produces, as section 6.1: `StageRun` with `request, clock, evidence, scope_errors`, `stopped`, `reclaimed_bytes`, `add`, `error`, `reclaimed`, `checkpoint`, `stop(reason, machine, left, later)`, `finish(**extra)`; `StageAbandoned(BaseException)`; `read_rows(output: bytes) -> StageAnswer`; `StageAnswer`. `StageRun.__init__(request, clock, *, out: BinaryIO, root_of: Callable[[dict], str])`: `root_of` is the step `disk_side` passes in, built from `compact`.
+- Produces, as section 6.1: `StageRun` with `request, clock, evidence, scope_errors`, `stopped`, `reclaimed_bytes`, `add`, `error`, `reclaimed`, `checkpoint`, `stop(reason, machine, left, later)`, `finish(**extra)`; `StageAbandoned(BaseException)`; `read_rows(output: bytes) -> StageAnswer`; `StageAnswer`. `StageRun.__init__(request, clock, *, out: BinaryIO, root_of: Callable[[dict], str], limit: int)`: `root_of` is the step `disk_side` passes in, built from `compact`, and `limit` is `disk_inventory.LIMIT`, passed the same way, because `disk_stage` may import neither. `stop`'s `machine` may be None, for a stage with no repo in hand, and the row's `path` is then `request.drive['path']`. `read_rows` has no exit status: it sets `complete` from the `end` line, and `cleanup_call` clears it on a non-zero exit (Task 33).
 - Wire: `{"v":1,"row":{...}}`, `"error"`, `"more"`, `"reclaimed"`, `"end"`, one per line.
 
 - [ ] **Step 1: Failing tests**, with a `BytesIO` for stdout:
   ```python
   def test_a_stage_killed_mid_run_keeps_its_settled_rows(self):
-      answer = read_rows(lines[:3] + b'{"v":1,"ro'); self.assertEqual((len(answer.items), answer.complete, answer.partial), (2, False, True))
+      answer = read_rows(b''.join(lines[:2]) + b'{"v":1,"ro'); self.assertEqual((len(answer.items), answer.complete, answer.partial), (2, False, True))
   def test_a_cut_inside_a_multibyte_character_is_a_partial_last_line(self): ...
   def test_a_malformed_complete_line_raises_value_error(self): ...
   def test_a_line_with_no_v_key_raises_value_error(self): ...          # the old single-object answer
@@ -1077,22 +1101,22 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
           try: run.checkpoint()
           except Exception: self.fail('held by except Exception')
   def test_stop_writes_one_row_and_sets_partial_and_stopped(self): ...
-  def test_end_with_a_nonzero_exit_is_not_complete(self): ...          # read_rows then the runtime's exit
+  def test_stop_with_no_machine_writes_the_drive_path(self): ...
   def test_reclaimed_uses_end_when_complete_and_last_line_otherwise(self): ...
   def test_end_carries_peak_and_budget(self): ...
   ```
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_disk_stage`. Must fail with `AttributeError`/`ImportError` for `StageRun`.
-- [ ] **Step 3: Implement.** `add` caps as it goes (`dirty`, `ignored`, `excluded` to `LIMIT`; at most `LIMIT` whole rows per `compact` group). Flush per `checkpoint`. A row is whole on one line, with `ensure_ascii=True`, so a stage's non-UTF-8 path survives.
+- [ ] **Step 3: Implement.** `add` caps as it goes (`dirty`, `ignored`, `excluded` to `limit`; at most `limit` whole rows per `compact` group). Flush per `checkpoint`. A row is whole on one line, with `ensure_ascii=True`, so a stage's non-UTF-8 path survives.
 - [ ] **Step 4: Green.** Same commands as Task 30.
 - [ ] **Step 5: Commit**: "A stage run now sends each settled row as a line, so a killed worker's rows survive it."
 
 ### Task 32: Plain arguments for placement and inventory
 
 **Files:**
-- Modify: `drover/placement.py`, `drover/placement_proof.py`, `drover/disk_inventory.py`, `drover/disk_paths.py`, `drover/disk_stage.py`, `drover/disk_temp.py`, `drover/disk_worktrees.py`, `drover/disk_budget.py`, `drover/disk_registrations.py`, `drover/pane_close.py`, `drover/disk_cleanup.py`, `tests/architecture_removed_symbols.json`, tests of these
+- Modify: `drover/placement.py`, `drover/placement_proof.py`, `drover/disk_inventory.py`, `drover/disk_paths.py`, `drover/disk_stage.py`, `drover/disk_temp.py`, `drover/disk_worktrees.py`, `drover/disk_budget.py`, `drover/disk_registrations.py`, `drover/pane_close.py`, `drover/disk_cleanup.py`, `drover/disk_side.py`, `tests/architecture_removed_symbols.json`, `tests/test_disk_scope.py`, tests of these
 
 **Interfaces:**
-- Produces, as section 6.1: `cleanup_contains(drive_path, path)`; `cleanup_scope(drive_path, paths) -> (scoped_paths, scope_errors)`; `cleanup_processes(*, paths=None, state_dir=None, inventory_id=None, stage=None, drive=None, budget=False, clear_ignored=False, proc_root=None, cim=None, windows=None)` returning its diagnostics; `Inventory(now, side, drive_path, state_dir, inventory_id, ...)`; `compact(items, policy, repos)`; `disk_stage.item`, `result`, `within`, moved. `item` keeps its unused `request` until Task 35.
+- Produces, as section 6.1: `cleanup_contains(drive_path, path)`; `cleanup_scope(drive_path, paths) -> (scoped_paths, scope_errors)`; `cleanup_processes(*, paths=None, state_dir=None, inventory_id=None, stage=None, drive=None, budget=False, clear_ignored=False, proc_root=None, cim=None, windows=None)` returning its diagnostics; `cleanup_windows_proof(*, paths, state_dir, budget)`, a plan addition to section 6.1, because `_CleanupProcesses` loses the dict; `Inventory(now, side, drive_path, state_dir, inventory_id, ...)`; `compact(items, policy, repos)`; `disk_stage.item`, `result`, `within`, moved. `item` keeps its unused `request` until Task 35.
 
 - [ ] **Step 1: Red.** Add `drover.disk_paths.item`, `.result`, `.within` to `qualified_names`. Add:
   ```python
@@ -1101,14 +1125,15 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
   def test_cleanup_processes_cache_key_keeps_stage_and_drive(self): ...     # two stages do not share a snapshot
   def test_cleanup_processes_budget_and_clear_ignored_change_what_counts(self): ...
   def test_cleanup_processes_returns_diagnostics_and_mutates_nothing(self): ...
+  def test_cleanup_windows_proof_takes_plain_arguments(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_disk_scope`. Must name the three symbols, with `TypeError` on the plain call.
-- [ ] **Step 3: Implement.** Change signatures and every caller, which unwrap the dict where they still hold one; pane_close.py:133 and disk_cleanup.py:119 pass theirs the same way. Decisions do not move here: no trace change.
+- [ ] **Step 3: Implement.** Change signatures and every caller, which unwrap the dict where they still hold one: disk_side.py:10, :12, :15, :20, which keeps `request['_process_diagnostics']` filled from the returned diagnostics until Task 33; pane_close.py:133, and disk_cleanup.py:119 through `cleanup_windows_proof`. Decisions do not move here: no trace change.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_scope tests.test_disk_decision_trace tests.test_disk_stage tests.test_placement tests.test_pane_close_safety $(mods 'cleanup_processes|cleanup_scope|cleanup_contains|Inventory\(|compact\(')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_scope tests.test_disk_decision_trace tests.test_disk_stage tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "Placement and the inventory now take plain arguments, so neither needs the request dict."
 
@@ -1116,7 +1141,7 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
 
 **Files:**
 - Create: `drover/disk_evidence.py`, `tests/test_disk_evidence.py`
-- Modify: `drover/disk_side.py`, `drover/placement_worker.py`, `drover/disk_runtime.py`, `drover/disk_cleanup.py`, `tests/disk_trace.py`, `tests/disk_fixture.py`, `tests/placement_trace.py`, `tests/placement_trace.json`, `tests/test_disk_worker_status.py`
+- Modify: `drover/disk_side.py`, `drover/placement_worker.py`, `drover/disk_runtime.py`, `drover/disk_cleanup.py`, `tests/disk_trace.py`, `tests/disk_fixture.py`, `tests/placement_trace.py`, `tests/placement_trace.json`, `tests/test_disk_worker_status.py`, `tests/seam_exceptions.json`
 
 **Interfaces:**
 - Consumes: `StageRun`, `StageClock`, `Listings`.
@@ -1136,24 +1161,24 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
   def test_partial_answer_does_not_set_answer_so_evidence_branch_runs(self): ...
   def test_rows_are_saved_whole_in_their_own_key_of_worker_error(self): ...
   def test_unconfirmed_termination_still_raises_with_rows_saved(self): ...
-  def test_nonzero_exit_with_an_end_line_keeps_rows_and_complete_false(self): ...
+  def test_nonzero_exit_with_an_end_line_keeps_rows_and_complete_false(self): ...   # and partial true
   def test_claim_keeps_pid_run_id_request_and_drops_completed_result(self): ...  # O9
   ```
 - [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_disk_evidence tests.test_disk_worker_status`. Must fail with `ModuleNotFoundError` for `drover.disk_evidence`, and the worker tests on the old answer.
-- [ ] **Step 3: Implement.** `serve`: clock, scope, evidence, proof, stage through a stage table replacing the `if` chain and the five function-level imports, `finish`. `serve` stays the only name `placement_worker` imports. Replace `json.dump` at placement_worker.py:99 and the copy at :98. `cleanup_call`: `StageRequest.for_side` for :39-59, `read_rows` for the answer; the termination proof is unchanged in meaning and order. `disk_cleanup` builds `StageRequest`s, `dataclasses.replace` in place of `dict(request, ...)`. `tests/disk_fixture.py`'s `runtime.call` deep-copies and adapts in one place. Repoint `disk_trace` through the new `serve`, reading rows back with `read_rows`.
+- [ ] **Step 3: Implement.** `serve`: clock, scope, evidence, proof, stage through a stage table replacing the `if` chain and the five function-level imports, whose R6 rows go in this commit, `finish`. `serve` stays the only name `placement_worker` imports, and the `__main__` block at disk_side.py:69-70 goes: `placement_worker` is the only entry. Replace `json.dump` at placement_worker.py:99 and the copy at :98. `cleanup_call`: `StageRequest.for_side` for :39-59, `read_rows` for the answer, then on a non-zero exit `complete` False and `partial` True; the termination proof is unchanged in meaning and order. `disk_cleanup` builds `StageRequest`s, `dataclasses.replace` in place of `dict(request, ...)`. `tests/disk_fixture.py`'s `runtime.call` deep-copies and adapts in one place. Repoint `disk_trace` through the new `serve`, reading rows back with `read_rows`. `StageEvidence`'s `processes=` default binds at definition and `serve` takes no evidence, so the harness patches `disk_side.StageEvidence` with `partial(StageEvidence, processes=fake)`.
 - [ ] **Step 4: Re-record** `tests/placement_trace.json`: answers now come from lines, and the recorded `answers` fixtures are re-recorded in `tests/placement_trace.py`. Decisions must not change. The decision trace must still match without re-record: if it differs, stop and find out why.
 - [ ] **Step 5: Green.**
   ```bash
   M="tests.test_disk_evidence tests.test_disk_worker_status tests.test_disk_stage tests.test_disk_decision_trace tests.test_placement $(mods 'cleanup_call|disk_side|runtime\(|_serve_stage')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_evidence tests.test_disk_worker_status tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 6: Commit**: "The stage worker now streams rows, and a timed-out worker's rows are kept with its termination proof unchanged."
 
 ### Task 34: Stages 4, 5 and the budget purge on the run
 
 **Files:**
-- Modify: `drover/disk_worktrees.py`, `drover/disk_paths.py`, `drover/disk_budget.py`, `drover/disk_side.py`, `tests/test_disk_settled_deadline.py`, `tests/test_disk_budget.py`, `tests/test_disk_budget_folders.py`, `tests/disk_budget_fixture.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
+- Modify: `drover/disk_worktrees.py`, `drover/disk_paths.py`, `drover/disk_budget.py`, `drover/disk_side.py`, `tests/test_disk_stage.py`, `tests/test_disk_settled_deadline.py`, `tests/test_disk_budget.py`, `tests/test_disk_budget_folders.py`, `tests/disk_budget_fixture.py`, `tests/disk_decision_trace.json`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
 
 **Interfaces:**
 - Consumes: `run.clock`, `run.stop`, `run.add`, `run.evidence`, `run.stopped`, `run.reclaimed_bytes`.
@@ -1174,7 +1199,7 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
   ```bash
   M="tests.test_disk_stage tests.test_disk_settled_deadline tests.test_disk_decision_trace tests.test_disk_fresh_proof $(mods 'disk_budget|disposable_rows|settled\(|outputs\(|purge\(')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_stage tests.test_disk_settled_deadline tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
   Before this, re-record as the slice header says: only rows this task moves may change, each towards keeping or a report row. The clock starts earlier, so stages stop sooner, and `can_mutate()` can keep a worktree before `planned`.
 - [ ] **Step 5: Commit**: "Stages 4 and 5 and the budget purge now take their time from one clock and stop at one row."
@@ -1182,27 +1207,26 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
 ### Task 35: Stages 2, 3 and 6 on the run; the bridge goes
 
 **Files:**
-- Modify: `drover/disk_temp.py`, `drover/disk_paths.py`, `drover/disk_side.py`, `drover/disk_inventory.py`, `tests/test_disk_temp_budget.py`, `tests/test_disk_stage.py`, `tests/seam_exceptions.json`
+- Modify: `drover/disk_temp.py`, `drover/disk_paths.py`, `drover/disk_side.py`, `drover/disk_inventory.py`, `drover/disk_stage.py`, `drover/disk_worktrees.py`, `drover/disk_registrations.py`, `tests/test_disk_temp_budget.py`, `tests/test_disk_stage.py`, `tests/test_disk_trim.py`, `tests/disk_decision_trace.json`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`
 
 **Interfaces:**
-- Produces: `temporary(run)`, `caches(run)`, `report(run)`; `_temp_facts`, `_temp_children`, `_temp_deadline` become locals, `within` the per-root budget.
+- Produces: `temporary(run)`, `caches(run)`, `report(run)`; `trim(run)` in `disk_side`, stage 1, which until now ran inside `_serve` through the bridge; `_temp_facts`, `_temp_children`, `_temp_deadline` become locals, `within` the per-root budget.
 
-- [ ] **Step 1: Failing tests.** `test_disk_temp_budget` keeps its assertions with a `StageClock`. Add to `tests/test_disk_stage.py`:
+- [ ] **Step 1: Failing tests.** Add `drover.disk_side._bridge` to `qualified_names`. `test_disk_temp_budget` keeps its assertions with a `StageClock`, and `test_disk_trim` is restated on `trim(run)`. Add to `tests/test_disk_stage.py`:
   ```python
   def test_stage_2_stops_at_the_line_with_temp_deadline(self): ...
   def test_stage_3_stops_at_the_line_with_cache_deadline(self): ...
   def test_stage_6_stops_at_the_line_with_report_deadline(self): ...
   def test_report_rows_are_built_before_add(self): ...       # no append then update or pop at disk_paths :442 :457 :465 :475
   def test_incomplete_budget_usage_never_leaves_the_worker(self): ...
-  def test_bridge_is_gone(self): self.assertFalse(hasattr(disk_side, '_bridge'))
   ```
-- [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_disk_stage tests.test_disk_temp_budget`. Must fail on the three deadline reason codes and on `_bridge`.
-- [ ] **Step 3: Implement.** All 9 underscore keys are gone from the request. `item` drops its unused `request`. R6 falls. Stage 6 gains a line and stages 2, 3 and 6 a clock, so re-record as the slice header says. `disk_stage` direction rule stays true: `item`, `result`, `within` need only `placement_paths`.
+- [ ] **Step 2: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_disk_stage tests.test_disk_temp_budget tests.test_disk_trim`. Must fail on the three deadline reason codes, and name `_bridge`.
+- [ ] **Step 3: Implement.** `trim(run)` joins the stage table, so the bridge carries nothing and goes. All 9 underscore keys are gone from the request. `item` drops its unused `request` at every caller in `disk_paths`, `disk_temp`, `disk_worktrees` and `disk_registrations`. R6 falls. Stage 6 gains a line and stages 2, 3 and 6 a clock, so re-record as the slice header says. `disk_stage` direction rule stays true: `item`, `result`, `within` need only `placement_paths`.
 - [ ] **Step 4: Green.**
   ```bash
-  M="tests.test_disk_stage tests.test_disk_decision_trace tests.test_disk_temp_budget tests.test_disk_temp tests.test_disk_caches tests.test_disk_report $(mods 'temporary\(|caches\(|report\(|_temp_')"
+  M="tests.test_disk_stage tests.test_disk_decision_trace tests.test_disk_temp_budget tests.test_disk_trim tests.test_disk_temp tests.test_disk_caches tests.test_disk_report $(mods 'temporary\(|caches\(|report\(|_temp_')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_stage tests.test_disk_temp_budget tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "Every stage now runs on one clock, the request dict's underscore keys are gone, and the temporary bridge with them."
 
@@ -1235,7 +1259,7 @@ Commits inside this slice keep the suite green through one temporary bridge, `di
   ```bash
   M="tests.test_disk_stage tests.test_disk_notices tests.test_disk_decision_trace tests.test_disk_cleanup tests.test_disk_fresh_proof tests.test_disk_hub tests.test_placement"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_stage tests.test_disk_notices tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 6: Slice exit.** All stages have one clock and keep their rows; `disk_evidence` holds inventory, proof, diagnostics, `Listings`; `can_mutate()` guards `planned`; symbols of row 5 removed; R6 fell; changed rows in the slice report; trace check clean. Commit: "A stage cut off at its deadline is now partial, so it stamps nothing and leaves budget judgement alone."
 
@@ -1246,7 +1270,7 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
 ### Task 37: `disk_inventory` takes the path facts
 
 **Files:**
-- Modify: `drover/disk_inventory.py`, `drover/disk_paths.py`, `drover/disk_temp.py`, `drover/disk_worktrees.py`, `tests/test_seams.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`, tests patching these names
+- Modify: `drover/disk_inventory.py`, `drover/disk_paths.py`, `drover/disk_temp.py`, `drover/disk_worktrees.py`, `drover/disk_registrations.py`, `tests/test_disk_evidence.py`, `tests/test_seams.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`, tests patching these names
 
 **Interfaces:**
 - Produces: `disk_inventory.worktree_roots`, `safe_path`, `repository_root`, `repository_config`, moved unchanged. `repository_config` keeps a fixed `NORMAL`, and any failure answers True (3M1).
@@ -1255,16 +1279,17 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   ```python
   # tests/test_disk_evidence.py
   def test_path_facts_live_in_disk_inventory(self):
-      from drover.disk_inventory import repository_config, repository_root, safe_path, worktree_roots
+      for name in ('repository_config', 'repository_root', 'safe_path', 'worktree_roots'):
+          self.assertEqual(getattr(disk_inventory, name).__module__, 'drover.disk_inventory')
   def test_repository_config_answers_true_on_any_git_failure(self): ...
   ```
-- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_evidence`. Must name the four symbols, with `ImportError` from the new home.
-- [ ] **Step 3: Move.** `disk_inventory.py:9` and :70 lose their `disk_paths` imports; `disk_paths`, `disk_temp`, `disk_worktrees` import from `disk_inventory`. It ends near 240 lines. R6 falls by one.
+- [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_evidence`. Must name the four symbols, and the test must fail on the old home.
+- [ ] **Step 3: Move.** `disk_inventory.py:9` and :70 lose their `disk_paths` imports; `disk_paths`, `disk_temp`, `disk_worktrees`, `disk_registrations` import from `disk_inventory`. It ends near 240 lines. R6 falls by one.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_evidence tests.test_disk_decision_trace $(mods 'worktree_roots|safe_path|repository_root|repository_config')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_evidence tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "The path facts now live in disk_inventory, so disk_evidence and disk_authority can import them with no cycle."
 
@@ -1281,17 +1306,16 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   def test_read_steps_take_patience_not_60_seconds(self):      # clock near the line: fake sees the clamped timeout on status, head, gitdir, tracked
   def test_a_failed_read_raises_and_the_row_is_kept(self): ...
   def test_only_report_only_runs_reuse_the_inventory(self): ...
-  def test_snapshot_takes_fresh_processes_never_processes(self): ...
   def test_fresh_snapshot_is_none_past_900_seconds(self): ...
   def test_needs_idle_gate_route_reads_fresh_snapshot(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_disk_evidence`. Must name the three symbols, and the patience test must show 60.
-- [ ] **Step 3: Move** `head_at`, `gitdir_at`, `tracked_at`, `status`, `outputs_at`, `facts`, `task_facts`, `merged`, `fresh_snapshot`, `identity`, `snapshot`, `registration_identity`, adding `clock.patience(NORMAL)` on each read. Callers use `run.evidence`. Removal's mutating steps stay fixed until 6c.
+- [ ] **Step 3: Move** `head_at`, `gitdir_at`, `tracked_at`, `status`, `outputs_at`, `facts`, `task_facts`, `merged`, `fresh_snapshot`, `identity`, `snapshot`, `registration_identity`, adding `clock.patience(NORMAL)` on each read. Callers use `run.evidence`. `snapshot` keeps its own new `placement.cleanup_processes` call until Task 39. `evaluate`'s deferred import of `registration_identity`, disk_cleanup_decisions.py:130, goes: R6 falls here. Removal's mutating steps stay fixed until 6c.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_evidence tests.test_disk_decision_trace tests.test_disk_fresh_proof $(mods 'disk_worktrees|disk_paths|disk_memory|disk_fixture')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_evidence tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "One stage run's evidence reads now live in disk_evidence and take their time from the stage clock."
 
@@ -1302,7 +1326,7 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
 - Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-slice-6a.md`
 
 **Interfaces:**
-- Produces, as section 7.1: `FreshRegistrations(refused, overlaps)`, `FreshProcesses(proof)`, each refusing construction without this module's private token; `fresh_processes()`; `fresh_registrations(repo, target, own, *, pointer) -> FreshRegistrations`.
+- Produces, as section 7.1: `FreshRegistrations(refused, overlaps)`, `FreshProcesses(proof)`, each refusing construction without this module's private token; `StageEvidence.fresh_processes()`; `StageEvidence.fresh_registrations(repo, target, own, *, pointer) -> FreshRegistrations`.
 
 - [ ] **Step 1: Red.** Add `drover.disk_worktrees.overlaps_worktrees` to `qualified_names`; change R9's rule so `disk_evidence` is the only caller. Add:
   ```python
@@ -1312,15 +1336,16 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   def test_overlaps_comes_from_proof_reach_as_overlaps_worktrees_did(self): ...
   def test_a_repo_whose_listing_failed_raises_in_any_repo(self): ...
   def test_fresh_processes_is_always_a_new_snapshot(self): ...
+  def test_snapshot_takes_fresh_processes_never_processes(self): ...
   def test_proof_timeout_is_patience(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_evidence`. Must name `overlaps_worktrees` and show `disk_worktrees` calling `prove`.
-- [ ] **Step 3: Implement.** Removal callers take `fresh_registrations`. `Listings` construction reads as section 7.1.
+- [ ] **Step 3: Implement.** Removal callers take `fresh_registrations`, and `snapshot` takes `evidence.fresh_processes()`. `Listings` construction reads as section 7.1.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_evidence tests.test_disk_decision_trace tests.test_disk_fresh_proof tests.test_disk_removal tests.test_disk_outputs tests.test_git_worktrees"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_evidence tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Slice exit.** `disk_evidence` whole, R9's caller is `disk_evidence` alone, `disk_inventory` imports no `disk_paths`, row 6a's symbols removed, trace check prints nothing. Commit, with the slice report: "Removal now needs a fresh proof object that only disk_evidence can make."
 
@@ -1342,24 +1367,24 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   def test_authority_writes_only_quarantine_state(self): ...      # AST: no write, unlink, rmtree in disk_authority
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_authority`. Must name both symbols, with `ModuleNotFoundError` for the new home.
-- [ ] **Step 3: Move** them, byte for byte in `decide`'s body. The `evaluate` deferred import goes: R6 falls. `disk_cleanup_decisions` falls to about 30 lines.
+- [ ] **Step 3: Move** them, byte for byte in `decide`'s body. `disk_cleanup_decisions` falls to about 30 lines.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_authority tests.test_disk_decision_trace tests.test_disk_quarantine $(mods 'decide_and_store|CleanupState|disk_cleanup_decisions')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_authority tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "Selection and grace now live in disk_authority, and the state adapter in disk_state, with no behaviour changed."
 
 ### Task 41: Disposable rules
 
 **Files:**
-- Modify: `drover/disk_authority.py`, `drover/disk_paths.py`, `drover/disk_preflight.py`, `drover/disk_budget.py`, `tests/test_disk_authority.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`
+- Modify: `drover/disk_authority.py`, `drover/disk_paths.py`, `drover/disk_preflight.py`, `drover/disk_budget.py`, `drover/disk_worktrees.py`, `drover/disk_temp.py`, `tests/test_disk_authority.py`, `tests/test_disk_fix8.py`, `tests/test_disk_wsl_outputs.py`, `tests/test_disk_elevated.py`, `tests/test_disk_fix3.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`
 
 **Interfaces:**
 - Produces, as section 7.2: `rule_disposable`, `rule_disposable_fresh(run, machine, registration, processes: FreshProcesses, *, touched=())`, `rule_unit`, `rule_unit_fresh(run, unit, proof: FreshRegistrations)`, `DisposableUnit`, `protected_path`, `repository_tree`, `live_tree`, `disposable_match`, `ignored_outside`. `Ruling.facts` carries `(path, head, tag, declarations)`.
 
-- [ ] **Step 1: Red.** Add `drover.disk_paths.output_evidence` to `qualified_names`. Add to `tests/test_disk_authority.py`:
+- [ ] **Step 1: Red.** Add `drover.disk_paths.output_evidence` to `qualified_names`. A rule stops raising (section 7.2), so these four **are rewritten** against `Ruling`: test_disk_fix8.py:267, test_disk_wsl_outputs.py:36, test_disk_elevated.py:95, test_disk_fix3.py:23. Add to `tests/test_disk_authority.py`:
   ```python
   def test_a_rule_returns_a_ruling_and_never_raises_to_mean_no(self):
       # one subTest per output_evidence rejection, through a StageEvidence fake
@@ -1370,12 +1395,12 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   def test_rule_unit_fresh_reads_overlaps_and_refused(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_disk_authority`. Must name `output_evidence`, with `AttributeError` for `rule_disposable`.
-- [ ] **Step 3: Move.** `output_evidence`'s `fresh=True` branch becomes `rule_disposable_fresh`. `check_cache_folders` imports `repository_tree` inside the function: an R6 end row. `disk_paths` falls towards 215 lines.
+- [ ] **Step 3: Move.** `output_evidence`'s `fresh=True` branch becomes `rule_disposable_fresh`. `ignored_outside` leaves disk_worktrees.py:297, and `disk_worktrees` and `disk_temp` import these names from `disk_authority`. `check_cache_folders` imports `repository_tree` inside the function: an R6 end row. `disk_paths` falls towards 215 lines.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_authority tests.test_disk_decision_trace tests.test_disk_fresh_proof $(mods 'output_evidence|disposable_match|protected_path|live_tree|repository_tree|ignored_outside') tests.test_config"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_authority tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "Every disposable-path rule now lives in disk_authority and answers with a ruling instead of raising."
 
@@ -1402,7 +1427,7 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   ```bash
   M="tests.test_disk_authority tests.test_disk_decision_trace tests.test_disk_temp tests.test_disk_caches tests.test_disk_yanked tests.test_disk_quarantine $(mods 'quarantine|inspect\(|needs_idle_gate|unlisted_live|temp_facts|folder_cache')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_authority tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Slice exit.** Every rule of section 7.2's map is where it says; authority import rule live; row 6b's symbols removed; trace check prints nothing. Commit, with the slice report: "Every rule that says whether a path may go now lives in disk_authority, and the paths-worktrees cycle is gone."
 
@@ -1437,7 +1462,7 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   ```bash
   M="tests.test_disk_fresh_proof tests.test_disk_decision_trace tests.test_disk_removal tests.test_disk_quarantine tests.test_disk_worktrees $(mods 'disk_worktrees\.remove|remove\(request')"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_fresh_proof tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
   The trace must not change. The two restore-path tests add assertions to rows that today's trace does not reach. If one does reach it, report BLOCKED.
 - [ ] **Step 5: Commit**: "Worktree removal now lives in disk_removal, with every mutating step capped and a failed restore still journalled."
@@ -1445,7 +1470,7 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
 ### Task 44: Disposable, temp and cache removal
 
 **Files:**
-- Modify: `drover/disk_removal.py`, `drover/disk_paths.py`, `drover/disk_temp.py`, `tests/test_disk_removal.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`
+- Modify: `drover/disk_removal.py`, `drover/disk_paths.py`, `drover/disk_temp.py`, `drover/disk_budget.py`, `tests/test_disk_removal.py`, `tests/seam_exceptions.json`, `tests/architecture_removed_symbols.json`
 
 **Interfaces:**
 - Produces: `remove_disposable(run, unit: DisposableUnit) -> None`, `remove_temp_entry(run, row, path) -> None`, `remove_cache_file(run, row, path, info) -> None`.
@@ -1458,51 +1483,56 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   def test_stage_abandoned_never_raised_inside_remove(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_removal`. Must name `remove_output` and the R4 modules.
-- [ ] **Step 3: Move** `remove_output`, `prune_emptied`, and the delete lines in `disk_temp` and `folder_cache`. `DisposableUnit` stays in `disk_authority`, with the `partial` at disk_paths.py:409 replaced by it, field for field.
+- [ ] **Step 3: Move** `remove_output`, `prune_emptied`, and the delete lines in `disk_temp` and `folder_cache`. `DisposableUnit` stays in `disk_authority`, with the `partial` at disk_paths.py:409 replaced by it, field for field: `purge` holds the unit and calls `remove_disposable(run, unit)` where disk_budget.py:90 calls `removal`.
 - [ ] **Step 4: Green.**
   ```bash
   M="tests.test_disk_removal tests.test_disk_decision_trace tests.test_disk_outputs tests.test_disk_wsl_outputs tests.test_disk_temp tests.test_disk_temp_budget tests.test_disk_caches tests.test_disk_budget tests.test_disk_budget_folders"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_disk_removal tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 5: Commit**: "Every deletion by path in the disk family now happens in disk_removal."
 
 ### Task 45: Guards complete; conversions
 
 **Files:**
-- Modify: `tests/test_seams.py`, `tests/seam_exceptions.json`, `tests/__init__.py`, `tests/test_guards.py`, disk test modules being converted, `docs/superpowers/reviews/2026-11-02-rearchitecture-slice-6c.md`
+- Modify: `drover/disk.py`, `drover/disk_cleanup.py`, `drover/disk_paths.py`, `drover/disk_registrations.py`, `drover/disk_state.py`, `drover/disk_worktrees.py`, `drover/pane_fault.py`, `drover/placement_proof.py`, `drover/wizard.py`, `drover/worktree.py`, `tests/test_seams.py`, `tests/seam_exceptions.json`, `tests/__init__.py`, `tests/test_guards.py`, disk test modules being converted, `docs/superpowers/reviews/2026-11-02-rearchitecture-slice-6c.md`
 
 **Interfaces:**
-- Produces: R4 complete, R6 at 3, R7 live, R1 at 8.
+- Produces: R4 complete, R6 at 3, R7 live, R1 at 9.
 
 - [ ] **Step 1: Red.** Add to `tests/test_seams.py`:
   ```python
   def test_r7_no_first_pass_call_in_disk_removal(self): ...         # planted source and the real tree
   def test_r7_fresh_constructors_appear_only_in_disk_evidence(self): ...
   def test_r6_count_is_exactly_the_three_stated_rows(self): ...     # check_cache_folders, run_detached, cleanup_runtime
-  def test_r1_is_exactly_the_eight_stated_modules(self): ...
+  def test_r1_is_exactly_the_nine_stated_modules(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams`. Must print each stale row or count.
-- [ ] **Step 3: Remove** the last tuple-only `subprocess` imports and stale deferred imports. Check section 7.4's line budgets, and record actuals in the slice report. Public names in the cluster: count against "about 15".
+- [ ] **Step 3: Remove** the last tuple-only `subprocess` imports, with their R1 rows, in the production files above, `disk_cleanup`'s module-level one included: its `locked_command` import stays. Remove stale deferred imports. Check section 7.4's line budgets, and record actuals in the slice report. Public names in the cluster: count against "about 15".
 - [ ] **Step 4: Convert.** For `test_disk_fix7`, `test_disk_fix8`, `test_disk_fixes`, `test_disk_report`, `test_disk_boundaries`, `test_disk_worktrees`, and any test in Task 1's candidates still spawning for setup: use `StageEvidence` fakes or `MemoryCleanupEvidence`, in place, one commit per module, lowering the constant. A real-git contract stays, and is named.
 - [ ] **Step 5: Green.**
   ```bash
   M="tests.test_disk_decision_trace tests.test_disk_fresh_proof tests.test_disk_authority tests.test_disk_evidence tests.test_disk_stage tests.test_disk_fix7 tests.test_disk_fix8 tests.test_disk_fixes tests.test_disk_report tests.test_disk_boundaries tests.test_disk_worktrees"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_seams tests.test_disk_decision_trace tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers tests.test_seams $M tests.test_guards
   ```
 - [ ] **Step 6: Slice exit.** Every deletion in `disk_removal`; each git step under `mutation_cap()`; R4, R6, R7, R1 at their end states; row 6c's symbols removed; trace check prints nothing. Commit: "The seam guards reach their end state, so a first-pass value can no longer authorise a deletion."
 
 ### Task 46: Checkpoint after slice 6c
 
-Runs the Checkpoint protocol with `LAST_CP` as Task 29's commit, covering slices 5, 6a, 6b, 6c.
+**Files:**
+- Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-checkpoint-6c.md`
+- Modify: `docs/superpowers/reviews/2026-11-02-rearchitecture-test-times.md`
+
+Runs the Checkpoint protocol with `LAST_CP` as Task 29's report commit, covering slices 5, 6a, 6b, 6c.
 
 - [ ] **Step 1: Run the protocol.** Targets: the row after slice 6c.
 - [ ] **Step 2: Reviewer focus.**
   - Completeness: sections 6, 7, 9 row by row; every invariant bullet of section 6.1 with its test; ruling 4's restore path; ruling 7's pins; Review Focus 4; every row of section 7.2's rule map; both orderings of section 7.3.
-  - Scope: section 10 rows 5 to 6c; `git log -p` on `tests/disk_decision_trace.json` shows re-records only in Tasks 33 to 36 of slice 5 and none in 6; `_bridge` is gone; `decide` is byte-identical to 92ce946, by `git show` and diff; no rule changed meaning; `disk_side` is still the only `LEAF_ALLOWED` name `placement_worker` imports.
+  - Scope: section 10 rows 5 to 6c; `git log -p` on `tests/disk_decision_trace.json` shows re-records only in Tasks 34 to 36 of slice 5 and none in 6; `_bridge` is gone; `decide` is byte-identical to 92ce946, by `git show` and diff; no rule changed meaning; `disk_side` is still the only `LEAF_ALLOWED` name `placement_worker` imports.
   - Efficiency hot paths: `add` and its cap; `checkpoint`'s flush per removal unit; `prove` per removal against section 2.5; `patience`; no stage holding more rows than `compact` keeps; a stage's listing count. Also duplicates between `test_disk_authority`, `test_disk_fix*` and the trace.
 - [ ] **Step 3: Fix findings**, by the protocol, then record `Task 46: complete`.
+- [ ] **Step 4: Commit** both reports: "The slice 6c checkpoint records its test times and its three reviews."
 
 ## Slice 7: `run_output`
 
@@ -1533,13 +1563,17 @@ Runs the Checkpoint protocol with `LAST_CP` as Task 29's commit, covering slices
   ```bash
   M="tests.test_run_output tests.test_scope_base tests.test_dispatcher_launch tests.test_dispatcher_recovery tests.test_outside_land tests.test_lifecycle_characterization"
   DROVER_TESTS=integration $PY -m unittest $M $GUARDS
-  env -u DROVER_TESTS $PY -m tests.tiers tests.test_run_output tests.test_guards
+  env -u DROVER_TESTS $PY -m tests.tiers $(changed) tests.test_guards
   ```
 - [ ] **Step 6: Slice exit.** Trace check prints nothing. Commit, with the slice report: "A run's output is now a record with a codec that reads every stored shape, and the glossary names the new concepts."
 
 ## End
 
 ### Task 48: Final checkpoint
+
+**Files:**
+- Create: `docs/superpowers/reviews/2026-11-02-rearchitecture-checkpoint-final.md`
+- Modify: `docs/superpowers/reviews/2026-11-02-rearchitecture-test-times.md`
 
 Runs the Checkpoint protocol over the whole branch: `LAST_CP` is 92ce946 for all three reviewers. This is also the whole-branch final review `subagent-driven-development` asks for.
 
@@ -1548,7 +1582,8 @@ Runs the Checkpoint protocol over the whole branch: `LAST_CP` is 92ce946 for all
   - Completeness: section 17's table: for each defect family, the test that fails if it returns. Every Review Focus line. Section 8.
   - Scope: section 1's scope; every section 10 landing row; `tests/architecture_removed_symbols.json` holds every listed name; `git diff --stat 92ce946 -- tests/architecture_import_allowlist.json` shows no added row; no slice 8 code; `tests/seam_exceptions.json` is exactly section 13's end column; `git log` shows no merge, and no push happened.
   - Efficiency: the checkpoint targets end to end; section 2.5's cost against the slice 1 timing; the remaining real-process tests, each with a reason.
-- [ ] **Step 3: Fix findings**, by the protocol, then record `Task 48: complete`. The branch stops here: nothing is merged, pushed or deployed by a subagent.
+- [ ] **Step 3: Fix findings**, by the protocol, then record `Task 48: complete`.
+- [ ] **Step 4: Commit** both reports: "The final checkpoint records the branch's test times and its three reviews." The branch stops here: nothing is merged, pushed or deployed by a subagent.
 
 ### Task 49: Owner checks
 
