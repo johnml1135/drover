@@ -9,7 +9,7 @@ from .landing_batch import (
     RETRY, KEEP_HOLDING, PRIORITY_ORDER, FETCH_TIMEOUT_S, git, policy_batch_size, velocity,
     effective_batch_size, branch_head, review_landed, task_files, reviewed_tasks, candidates,
     form_batch, build_tip, _recorder, _path_matches, owners_of, attribute, bisect, requeue,
-    _failure_detail, _gate,
+    _failure_detail, _gate, explain,
 )
 from .landing_control import (
     _control_guard, _controlled_git, local_fast_forward, fast_forward, _epic, _failure_signature,
@@ -86,6 +86,7 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
         interrupted = isinstance(e, ci.CIInterrupted)
         result['outcome'], result['error'] = ('infra-uncertain' if interrupted else 'error'), repr(e)
         result.setdefault('detail', _failure_detail({'reason': str(e)}))
+        explain(result)
         storage.record_batch(conn, result)
         raise
     finally:
@@ -100,6 +101,7 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
     if repair and result['outcome'] in ('base-red', 'red', 'refused', 'conflict'):
         _block_repair(conn, name, repair, result, 'Designated repair did not pass fresh full CI: ' + result['outcome'])
     _clear_recovery(conn, recovery_keys if result['outcome'] == 'landed' else (), [*result['landed'], *result['dropped']])
+    explain(result)
     storage.record_batch(conn, result)
     return result
 def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, decider, push=False, repo_name=None, observe=None, *, land_stage):

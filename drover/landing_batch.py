@@ -266,6 +266,24 @@ def _failure_detail(receipt):
             'kind': receipt.get('kind'), 'nonce': receipt.get('nonce'), 'log_excerpt': excerpt[-4096:]}
 
 
+def explain(result):
+    """Make sure a non-landed batch row says why, from what the failure already carries."""
+    if result['outcome'] in ('landed', 'empty'):
+        return
+    detail = dict(result.get('detail') or {})
+    if result.get('error'):
+        detail['error'] = str(result['error'])[-4096:]
+    if result['outcome'] == 'base-red' and result.get('base_sha'):
+        detail.setdefault('sha', result['base_sha'])
+    if not detail.get('reason') or (detail['reason'] == 'CI gate failed' and result['outcome'] != 'red'):
+        dropped = ', '.join(f'{t}: {r}' for t, r in result['dropped'].items())
+        parts = {'base-red': f"base {result.get('base_sha')} is red" + (f" (run {detail['run_id']})" if detail.get('run_id') else ''),
+                 'conflict': dropped and 'dropped ' + dropped}
+        detail['reason'] = (parts.get(result['outcome']) or detail.get('error') or result.get('reason')
+                            or dropped or result['outcome'])[:4096]
+    result['detail'] = detail
+
+
 def _gate(gate_fn, work, tip, tasks, result, bisecting=False):
     t0 = time.monotonic()
     red, attempted = True, True

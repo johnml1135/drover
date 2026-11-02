@@ -146,6 +146,25 @@ class RecoveryTests(unittest.TestCase):
                 storage.record_batch(self.conn, result)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM landing_batches').fetchone()[0], 1)
 
+    def test_non_landed_rows_record_cause(self):
+        tid = self.task['id']
+        def drive(outcome, **extra):
+            return lambda *a, **k: a[5].update(outcome=outcome, **extra)
+        def detail():
+            return json.loads(self.conn.execute('SELECT detail FROM landing_batches ORDER BY id DESC').fetchone()['detail'])
+        with patch.object(landing, '_drive', side_effect=drive('conflict', dropped={tid: 'rebase conflict'})):
+            self.run_batch(Mock())
+        self.assertIn(tid, detail()['reason'])
+        self.assertIn('rebase conflict', detail()['reason'])
+        with patch.object(landing, '_drive', side_effect=drive('base-red', base_sha=SHA, detail={'run_id': 'r1'})):
+            self.run_batch(Mock())
+        self.assertIn(SHA, detail()['reason'])
+        self.assertEqual((detail()['sha'], detail()['run_id']), (SHA, 'r1'))
+        with patch.object(landing, '_drive', side_effect=ValueError('bad thing')), self.assertRaises(ValueError):
+            self.run_batch(Mock())
+        self.assertIn('bad thing', detail()['error'])
+        self.assertIn('bad thing', detail()['reason'])
+
     def test_gate_exception_records_timing_and_reason(self):
         gate = Mock(side_effect=RuntimeError('broken adapter'))
         with self.assertRaisesRegex(RuntimeError, 'broken adapter'):
