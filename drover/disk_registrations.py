@@ -8,6 +8,7 @@ Nothing here removes or rewrites a working file."""
 import os
 import posixpath
 import re
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -225,7 +226,7 @@ def report(request, machine, listed, found, store):
                 verdict, branch, why, maybe = 'repair', None, 'interrupted registration; pointers are rewritten', None
             else:
                 verdict, branch, why, maybe = judge(machine, path, listed, rel)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             verdict, branch, why, maybe = 'unproven', None, f'could not be matched: {error}', None
         row.update(branch=branch, detail=why, suggestion=maybe)
         if verdict != 'repair':
@@ -236,7 +237,7 @@ def report(request, machine, listed, found, store):
             try:
                 reregister(request, machine, path, target, branch, store)
                 row.update(action='reregistered')
-            except (OSError, ValueError, RuntimeError) as error:
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 row.update(action='keep', reason_code='lost_registration_failed', error=str(error))
         rows.append(row)
     return rows
@@ -271,7 +272,7 @@ def reregister(request, machine, path, target, branch, store):
         if not any(placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(path) for e in _entries(repo)):
             raise ValueError('registration did not take')
         store.append(dict(record, phase='completed'))
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         if not moved and place.exists():
             placement.git(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout=60)
         store.append(dict(record, phase='failed'))

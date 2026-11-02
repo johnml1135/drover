@@ -263,7 +263,7 @@ def settled(request: dict, *, runtime=None) -> dict:
                     out['items'].append(row)
 
         if not request.get('approved_path'):
-            loose = unlisted(request, machine, listed, skip=found)
+            loose = unlisted(request, machine, listed, skip=found) if found is not None else []
             out['items'].extend(loose)
             out['reclaimed_bytes'] += sum(r['bytes'] for r in loose if r['action'] == 'removed')
             out['errors'].extend(r for r in loose if r.get('error') and r.get('unlisted'))
@@ -282,7 +282,7 @@ def registrations(request, machine, listed, runtime, out):
         return found
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         out['errors'].append(dict(repo=machine['repo'], error=str(error)))
-        return {}
+        return None     # lost folders unknown: the caller must not judge this repo's orphans
 
 
 def ignored_outside(path, ignored, declarations):
