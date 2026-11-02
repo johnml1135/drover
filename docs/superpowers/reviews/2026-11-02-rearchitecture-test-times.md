@@ -72,7 +72,7 @@ These 15 modules make 2752 of the 3832 spawns (72%). Test-side spawns come from 
 
 Note on ranks 1, 4 and 7: together they are 936 spawns, 24% of B, and sit behind `hub/runtime`'s local `git`. The plan's Test Time table lists `test_hub_runtime_paths` as a slice 4 candidate for process-level fakes of `git_client`, but ruling 15 keeps that module off `git_client`. It can convert only by faking `hub/runtime`'s own call, or it stays, with its reason in the slice report.
 
-Four other modules the plan's table names have no default-tier spawns to remove: `test_landing_repository` has no default-tier tests, and `test_disk_worktrees`, `test_disk_registration_timeouts` and `test_disk_settled_deadline` show 0 spawns. Converting them cannot lower B's spawn count.
+Four other modules the plan's table names have no default-tier spawns to remove: `test_landing_repository` has no default-tier tests, and `test_disk_worktrees`, `test_disk_registration_timeouts` and `test_disk_settled_deadline` show 0 spawns. Their own tests cannot lower B, though `test_disk_worktrees` hosts `WorktreeCase`, whose spawns count under its importers.
 
 ### Per module
 
