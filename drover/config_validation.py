@@ -164,7 +164,8 @@ def _seats(raw_seats):
 
 TRACKER_FIELDS = {
     "load": {"queue_per_core": 2.5, "hold_per_core": 3.5},
-    "ram": {"queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0},
+    "ram": {"queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0,
+            "wsl_cache_reclaim": True, "wsl_cache_min_gb": 8.0, "wsl_cache_interval_s": 600.0},
     "disk": {"path": "", "warn_gb": 150.0, "queue_gb": 100.0, "hold_gb": 50.0, "critical_gb": 25.0,
              "wsl_combined": False, "host_floor_gb": 10.0},
     "vram": {"fallback_pct": 80.0, "queue_pct": 0.0, "hold_pct": 0.0},

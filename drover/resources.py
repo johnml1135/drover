@@ -14,6 +14,7 @@ CLI exit codes: 0 go, 4 queue, 5 hold.
 from drover import placement
 import argparse
 import json
+import logging
 import math
 import os
 import re
@@ -25,6 +26,7 @@ from . import config as config_mod
 from .placement_host import wsl_running
 from . import disk
 
+log = logging.getLogger(__name__)
 GB = 1024 ** 3
 WSL_READ_TIMEOUT_S = 8
 EXIT = {'go': 0, 'queue': 4, 'hold': 5}
@@ -449,7 +451,19 @@ def tick(new_workers=1, fake=None, config=None, with_wsl_memory=False):
     facts['disk_free_gb'] = {row['name']: row['free_gb'] for row in tracked['drives']}
     result = check(new_workers, facts, cfg, with_wsl_memory)
     result.update(pause=tracked['pause'], critical_tokens=tracked['critical_tokens'])
+    if fake is None and not os.environ.get('DROVER_RESOURCES_FAKE'):
+        reclaim_wsl_cache(cfg, result['facts'])   # after the verdict: freed memory shows up on later ticks
     return result
+
+
+def reclaim_wsl_cache(config, facts):
+    """Drop WSL's page cache when Windows RAM is short. Never raises into the tick."""
+    try:
+        from . import wsl_cache_reclaim
+        return wsl_cache_reclaim.reclaim(config, facts)
+    except Exception as e:
+        log.warning('WSL cache reclaim skipped: %s', e)
+        return None
 
 
 def render(result):

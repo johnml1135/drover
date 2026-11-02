@@ -198,6 +198,10 @@ name = "ram"
 queue_base_gb = 6.0         # queue below this, plus resident Ollama RAM (Windows)...
 queue_per_worker_gb = 0.5   # ...plus this per new worker
 hold_gb = 4.0
+wsl_cache_reclaim = true    # Windows hub: when RAM is at or below the queue level and WSL is already running, drop
+                            # WSL's page cache (echo 1 only) if it holds at least wsl_cache_min_gb; never starts WSL
+wsl_cache_min_gb = 8.0
+wsl_cache_interval_s = 600.0   # at most one drop per interval, kept even when a drop fails
 
 # Linux-only defaults to one physical / tracker instead of H and C.
 [[trackers]]

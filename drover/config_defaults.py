@@ -62,7 +62,8 @@ def host_disk_trackers(windows_or_wsl):
 
 DEFAULT_TRACKERS = [
     {"kind": "load", "name": "load", "enabled": True, "queue_per_core": 2.5, "hold_per_core": 3.5},
-    {"kind": "ram", "name": "ram", "enabled": True, "queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0},
+    {"kind": "ram", "name": "ram", "enabled": True, "queue_base_gb": 6.0, "queue_per_worker_gb": 0.5, "hold_gb": 4.0,
+     "wsl_cache_reclaim": True, "wsl_cache_min_gb": 8.0, "wsl_cache_interval_s": 600.0},
     *host_disk_trackers(WINDOWS_OR_WSL),
     {"kind": "vram", "name": "vram", "enabled": True, "fallback_pct": 80.0, "queue_pct": 0.0, "hold_pct": 0.0},
     {"kind": "wsl", "name": "wsl-up", "enabled": True, "distro": "", "queue_mem_pct": 0.0, "hold_mem_pct": 0.0},

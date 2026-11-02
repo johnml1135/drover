@@ -216,7 +216,10 @@
     "kind": "ram",
     "name": "ram",
     "queue_base_gb": 6.0,
-    "queue_per_worker_gb": 0.5
+    "queue_per_worker_gb": 0.5,
+    "wsl_cache_interval_s": 600.0,
+    "wsl_cache_min_gb": 8.0,
+    "wsl_cache_reclaim": true
    },
    {
     "enabled": true,
@@ -413,6 +416,9 @@
   "trackers.ram.name": "default",
   "trackers.ram.queue_base_gb": "default",
   "trackers.ram.queue_per_worker_gb": "default",
+  "trackers.ram.wsl_cache_interval_s": "default",
+  "trackers.ram.wsl_cache_min_gb": "default",
+  "trackers.ram.wsl_cache_reclaim": "default",
   "trackers.scratch.critical_gb": "default",
   "trackers.scratch.enabled": "default",
   "trackers.scratch.hold_gb": "default",
