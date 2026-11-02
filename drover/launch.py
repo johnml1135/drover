@@ -29,7 +29,7 @@ from .placement import NO_WINDOW
 from .launch_usage import (HANDOFF_MAX, PROVIDER_ERROR, PROVIDER_STATUS, PROGRESS_EVENTS,
                            provider_error_of, Usage, _one_line, summarise, rotation_handoff)
 from .launch_handle import (TAIL_LINES, TAIL_FLUSH_EVERY, POLL_S, MAX_LINE, START_TIMEOUT_S,
-                            TERMINAL, IN_FILE, TAIL_FILE, Tail, RunnerHandle, normalize_run_ids)
+                            TERMINAL, IN_FILE, TAIL_FILE, ARGV_FILE, Tail, RunnerHandle, normalize_run_ids)
 
 HAIKU_CEILING = 80_000        # the pricing line is 100K; rotate before it
 NOTE_MAX = 300
@@ -345,13 +345,14 @@ class RunnerLauncher(Launcher):
         path = str((bins or {}).get(argv[0]) or "")
         return [path, *argv[1:]] if path.startswith("/") and "\n" not in path else argv
 
-    def runner_args(self, spec, d, argv, cwd):
+    def runner_args(self, spec, d, argv, cwd, argv_file=None):
         scratch = ["--scratch-dir", spec["scratch_dir"]] if (
             spec.get("placement") == "wsl" and spec.get("scratch_dir")) else []
         return ["--detach", "--run-id", str(spec["run_id"]), "--nonce", spec["nonce"], "--runs-dir", self.runs_dir,
                 "--wall-s", f"{spec.get('wall_s') or 0:g}", "--idle-s", f"{spec.get('idle_s') or 0:g}",
                 "--stdin-file", str(d / IN_FILE), "--cwd", str(cwd), *scratch,
-                "--run-config", json.dumps(spec.get("run_config", {})), "--", *argv]
+                "--run-config", json.dumps(spec.get("run_config", {})),
+                *(["--argv-file", str(argv_file)] if argv_file else ["--", *argv])]
 
     def runner_argv(self, runner_args, cd=None, env=None):
         """Invoke the runner on the selected WSL distribution; worker argv stays verbatim."""
@@ -361,8 +362,10 @@ class RunnerLauncher(Launcher):
         """(command, env) that starts the detached runner for this spec's placement_mod."""
         cwd = os.path.expanduser(str(spec["cwd"]))
         if spec.get("placement") == "wsl":
-            argv = self.wsl_exe(argv)
-            return placement_mod.ci_runner_command(self.runner_args(spec, d, argv, cwd),
+            # Windows caps wsl.exe's command line, and a system prompt alone can pass it; Linux has room once inside.
+            argv_file = d / ARGV_FILE
+            argv_file.write_text(json.dumps(self.wsl_exe(argv)), encoding="utf-8")
+            return placement_mod.ci_runner_command(self.runner_args(spec, d, argv, cwd, argv_file),
                                                     self.drover_dir, self.distro, seat_env(spec), self.windows)
         try:
             cwd = placement_mod.native_runner_cwd(cwd, self.windows)

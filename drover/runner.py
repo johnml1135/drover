@@ -227,7 +227,10 @@ def main(argv=None):
     p.add_argument("--kill-after", type=_num, default=KILL_AFTER_S)
     p.add_argument("--detach", action="store_true")
     p.add_argument("--nonce", type=_nonce, help="the launch nonce (default: generated); stop-requests must carry it")
+    p.add_argument("--argv-file", help="JSON worker command, for a caller whose command line is capped")
     a = p.parse_args(head)
+    if a.argv_file and not worker:
+        worker = json.loads(Path(a.argv_file).read_text(encoding="utf-8"))
     if not worker:
         p.error("no worker command after --")
     if a.detach:

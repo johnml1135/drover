@@ -95,13 +95,21 @@ class Base(unittest.TestCase):
         runner.write_json_atomic(self.dir(rid) / runner.RECORD_FILE, runner.parse_action_record(text))
 
 
+def split_worker(cmd):
+    """(runner head, worker argv), wherever the launch put the worker."""
+    if '--' in cmd:
+        return cmd[:cmd.index('--')], cmd[cmd.index('--') + 1:]
+    path = placement_mod.to_windows_path(cmd[cmd.index('--argv-file') + 1])
+    return cmd, json.loads(Path(path).read_text(encoding='utf-8'))
+
+
 class Commands(Base):
     def test_codex_scratch_is_private_and_supplies_the_temp_environment(self):
         for rid, placement in ((7, 'wsl'), (8, 'windows')):
             with self.subTest(placement=placement):
                 self.start(run_id=rid, backend='codex', model='gpt-6.1-sol', placement=placement)
                 cmd, _ = self.fake.calls[-1]
-                head, worker = cmd[:cmd.index('--')], cmd[cmd.index('--') + 1:]
+                head, worker = split_worker(cmd)
                 settings = tomllib.loads('\n'.join(worker[i + 1] for i, arg in enumerate(worker[:-1])
                     if arg == '-c' and worker[i + 1].startswith(
                         ('sandbox_workspace_write.', 'shell_environment_policy.'))))
@@ -154,8 +162,8 @@ class Commands(Base):
         self.assertEqual(cmd[:7], ["wsl.exe", "-d", "Dist", "--cd", "/mnt/r/repos/drover", "--exec", "/usr/bin/env"])
         self.assertEqual(cmd[cmd.index("python3"):][:3], ["python3", "-m", "drover.runner"])
 
-        i = cmd.index("--")
-        head, worker = cmd[cmd.index("drover.runner") + 1:i], cmd[i + 1:]
+        head, worker = split_worker(cmd)
+        head = head[head.index("drover.runner") + 1:]
         self.assertEqual(head[head.index("--cwd") + 1], "/mnt/r/repos/wt")
         self.assertEqual(head[head.index("--runs-dir") + 1], placement_mod.to_wsl_path(str(self.runs)))
         self.assertEqual(worker[0], "claude")
@@ -165,8 +173,8 @@ class Commands(Base):
         self.start(backend="codex", model="gpt-6-luna", effort="xhigh", placement="wsl", cwd="/home/u/wt")
         cmd, _ = self.fake.calls[0]
         self.assertEqual(cmd[cmd.index("--cwd") + 1], "/home/u/wt")
-        self.assertEqual(cmd[cmd.index("--") + 1:cmd.index("--") + 4], ["codex", "exec", "--json"])
-        worker = cmd[cmd.index("--") + 1:]
+        worker = split_worker(cmd)[1]
+        self.assertEqual(worker[:3], ["codex", "exec", "--json"])
         self.assertEqual(worker[worker.index("-s") + 1], "workspace-write")
         self.assertEqual(worker[worker.index("-C") + 1], "/home/u/wt")
         self.assertEqual(self.fake.calls[0][1]["stdin"], subprocess.DEVNULL)
@@ -174,7 +182,7 @@ class Commands(Base):
     def test_codex_review_uses_read_only_even_on_a_workspace_write_seat(self):
         self.start(backend="codex", model="gpt-6.1-sol", placement="wsl", role="review", sandbox="workspace-write")
         cmd, _ = self.fake.calls[0]
-        worker = cmd[cmd.index("--") + 1:]
+        worker = split_worker(cmd)[1]
         self.assertEqual(worker[worker.index("-s") + 1], "read-only")
         self.assertEqual(worker[worker.index("-C") + 1], "/mnt/r/repos/wt")
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", worker)

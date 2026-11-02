@@ -276,7 +276,8 @@ class ClaudeWorkerAccessTests(unittest.TestCase):
                     runs_dir="/runs", distro="Ubuntu", drover_dir="/repo", python=r"R:\python.exe",
                     windows=placement == "windows", which=lambda name: r"R:\bin\claude.exe",
                 )
-                command, env = launcher.command(spec, Path("/runs/7"), argv)
+                with tempfile.TemporaryDirectory() as run_dir:
+                    command, env = launcher.command(spec, Path(run_dir), argv)
 
                 if placement == "wsl":
                     self.assertEqual(command[command.index("--scratch-dir") + 1], scratch)
@@ -333,8 +334,9 @@ class CodexWorkerEnvironmentTests(unittest.TestCase):
                     "system_append": "worker instructions", "user_prompt": "brief", "scratch_dir": scratch,
                 }
                 worker_argv, _ = launch.build_argv(spec)
-                command, _ = launcher.command(spec, Path("/runs/7"), worker_argv)
-                runner_args = command[:command.index("--")]
+                with tempfile.TemporaryDirectory() as run_dir:
+                    command, _ = launcher.command(spec, Path(run_dir), worker_argv)
+                runner_args = command[:command.index("--")] if "--" in command else command
 
                 self.assertEqual("--scratch-dir" in runner_args, expected)
                 if expected:

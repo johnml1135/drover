@@ -15,7 +15,7 @@ POLL_S = 0.5
 MAX_LINE = 1 << 18           # a longer line is cut (and the rest of it skipped) so a newline-less flood stays bounded
 START_TIMEOUT_S = 90         # a run still `starting` after this is stopped and reported as an error
 TERMINAL = ("exited", "killed", "timeout")
-IN_FILE, TAIL_FILE = "in.txt", "tail.log"
+IN_FILE, TAIL_FILE, ARGV_FILE = "in.txt", "tail.log", "argv.json"
 
 
 class Tail:
