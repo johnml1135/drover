@@ -16,7 +16,7 @@ _clock = time.monotonic
 
 def deadline(request: dict) -> float:
     """The `_clock` time by which a stage ends itself, DEADLINE_SHARE of the worker's time limit from now."""
-    return _clock() + request['paths'].get('worker_timeout_s', 1800) * DEADLINE_SHARE
+    return _clock() + request.get('paths', {}).get('worker_timeout_s', 1800) * DEADLINE_SHARE
 
 
 def need_bytes(used_gb, target_gb) -> int:

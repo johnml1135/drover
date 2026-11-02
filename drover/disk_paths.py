@@ -336,10 +336,10 @@ def output_units(names, path, tracked, declarations, whole):
     return units
 
 
-def deadline_row(request, machine, left, later):
+def deadline_row(request, machine, left, later, reason='output_deadline'):
     """The one item a stage that ran out of time ends with: the worktrees it did not reach, and the repos after them.
     An item, not an error: the unreached worktrees are left alone, and every removal is re-proven."""
-    return dict(item(machine['repo'], request, 'output_deadline', count=len(left) + len(later),
+    return dict(item(machine['repo'], request, reason, count=len(left) + len(later),
                      worktrees=[e['worktree'] for e in left], repos=[m['repo'] for m in later]), action='report')
 
 

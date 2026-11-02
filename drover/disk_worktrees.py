@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 from . import ownership, placement, repos
-from .disk_paths import worktree_roots, facts, item, result, safe_path, within, disposable_match, repository_tree
+from .disk_paths import deadline_row, worktree_roots, facts, item, result, safe_path, within, disposable_match, repository_tree
 
 
 def git(repo, *args, env=None):
@@ -234,9 +234,15 @@ class WorktreeEvidence:
 
 
 def settled(request: dict, *, runtime=None) -> dict:
+    from . import disk_budget
     from .disk_cleanup import CleanupRuntime, CleanupState, evaluate
     out = result()
-    for machine in request['repos']:
+    until = disk_budget.deadline(request)
+    late = lambda: not request.get('approved_path') and disk_budget._clock() >= until     # an approved removal is never cut off
+    for number, machine in enumerate(request['repos']):
+        if late():      # item, not error: unreached worktrees stay, and every removal is re-proven
+            out['items'].append(deadline_row(request, machine, [], request['repos'][number:], 'settled_deadline'))
+            break
         try:
             listed = entries(machine['repo'])
         except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -245,7 +251,10 @@ def settled(request: dict, *, runtime=None) -> dict:
         found = {}
         if not request.get('approved_path'):
             found = registrations(request, machine, listed, runtime, out)
-        for entry in listed:
+        for position, entry in enumerate(listed):
+            if late():
+                out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:], 'settled_deadline'))
+                return out
             try:
                 store = runtime.state if runtime and runtime.state is not None else None
                 evidence = runtime.evidence if runtime and runtime.evidence is not None else WorktreeEvidence(machine, entry, store)
