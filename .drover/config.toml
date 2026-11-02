@@ -14,8 +14,9 @@ timeout_s = 1800
 idle_s = 1500
 
 [review]
-backend = "codex"
-model = "gpt-6.1-sol"
+backend = "claude"
+model = "sonnet-5.5"
+seat = "claude-personal"
 effort = "high"
 
 [land]
