@@ -80,6 +80,7 @@ def cleanup_call(side: str, request: dict) -> dict:
     job, done, status, answer, pending = None, None, None, None, None
     evidence = {}
     reason, output, detail = 'worker_failed', '', ''
+    exit_status = None
     confirmed, startup_failure = False, False
     def text(value):
         return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
@@ -91,7 +92,11 @@ def cleanup_call(side: str, request: dict) -> dict:
         done = subprocess.run(command, input=json.dumps(request),
                               capture_output=True, text=True, timeout=request['paths'].get('worker_timeout_s', 1800), shell=False,
                               env={**os.environ, 'DROVER_RUN_ID': token})
-        output, detail = done.stdout, text(done.stderr)
+        output, detail, exit_status = done.stdout, text(done.stderr), done.returncode
+        if done.returncode:
+            # A worker killed by the loader or OS says nothing on stderr; the status is then the only clue.
+            detail = (detail.rstrip() + ' | ' if detail.strip() else '') + \
+                f'worker exited with status {done.returncode} ({done.returncode & 0xFFFFFFFF:#x})'
         if not done.returncode:
             answer = json.loads(done.stdout)
             if not isinstance(answer, dict):
@@ -154,6 +159,8 @@ def cleanup_call(side: str, request: dict) -> dict:
             evidence = dict(reason_code='worker_termination_unconfirmed' if answer is not None else reason,
                             output=text(output)[-4000:], error=text(detail)[-4000:],
                             termination_confirmed=confirmed, work_started=not startup_failure)
+            if exit_status is not None:
+                evidence['exit_status'] = exit_status
             try:
                 disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
             except BaseException as error:
