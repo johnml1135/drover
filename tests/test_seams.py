@@ -1,4 +1,4 @@
-"""Seam guards R1 to R6 and R8: an AST walk of `drover/` and `hub/`, pinned shrink-only by seam_exceptions.json."""
+"""Seam guards R1 to R6, R8 and R9: an AST walk of `drover/` and `hub/`, pinned shrink-only by seam_exceptions.json."""
 import ast
 from collections import Counter
 from functools import lru_cache
@@ -20,6 +20,8 @@ R6_CLUSTER = tuple(f'drover/{name}.py' for name in (
     'disk_authority', 'disk_budget', 'disk_cleanup', 'disk_cleanup_decisions', 'disk_evidence', 'disk_inventory',
     'disk_paths', 'disk_preflight', 'disk_registrations', 'disk_removal', 'disk_runtime', 'disk_side', 'disk_stage',
     'disk_temp', 'disk_worktrees'))
+R9_NAMED = ('drover.git_worktrees.parse', 'drover.git_worktrees.AdminFiles')
+R9_CALLERS = tuple(f'drover/{name}.py' for name in ('disk_worktrees', 'disk_paths'))    # `disk_evidence` alone from 6a
 
 
 def only(*allowed):
@@ -194,7 +196,16 @@ def r8(path, node, aliases, inside):
     return int(('worktree', 'list') in zip(values, values[1:]))
 
 
-RULES = {'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5, 'R6': r6, 'R8': r8}
+def r9(path, node, aliases, inside):
+    if path == 'drover/git_worktrees.py':
+        return 0
+    named = R9_NAMED if path in R9_CALLERS else (*R9_NAMED, 'drover.git_worktrees.prove')
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return sum(name in named for name in imported(path, node, aliases))
+    return int(is_named(node, named, aliases))
+
+
+RULES = {'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5, 'R6': r6, 'R8': r8, 'R9': r9}
 
 
 def rule_violations(rule, sources):
@@ -300,6 +311,20 @@ class Rules(unittest.TestCase):
         for text in ("git(repo, 'worktree', 'add', 'list')", "git('list', 'worktree')", "git('worktree', name)"):
             self.assertEqual(self.found('R8', 'hub/x.py', text), [], text)
         self.assertEqual(self.found('R8', 'drover/git_worktrees.py', "git(repo, 'worktree', 'list')"), [])
+
+    def test_r9_only_named_callers_reach_prove_and_nothing_names_parse(self):
+        call = 'from . import git_worktrees\ndef f():\n    return git_worktrees.prove(listings, repo, path)\n'
+        self.assertEqual(self.found('R9', 'drover/disk_cleanup.py', call), [('f', 1)])
+        self.assertEqual(self.found('R9', 'hub/x.py', 'from drover.git_worktrees import prove as check'), [('<module>', 1)])
+        for path in R9_CALLERS:
+            self.assertEqual(self.found('R9', path, call), [])
+        for text in ('from .git_worktrees import parse', 'from drover.git_worktrees import AdminFiles',
+                     'from . import git_worktrees\ngit_worktrees.parse(admin, files)'):
+            for path in ('drover/disk_paths.py', 'drover/x.py'):
+                self.assertEqual(self.found('R9', path, text), [('<module>', 1)], text)
+        self.assertEqual(self.found('R9', 'drover/git_worktrees.py', 'from .git_worktrees import parse\nparse(a, b)'), [])
+        self.assertEqual(self.found('R9', 'drover/x.py', 'import json\ndef parse(text):\n    return json.parse(text)\n'), [])
+        self.assertEqual(rule_violations('R9', {**parsed('drover'), **parsed('hub')}), [])
 
 
 class Seams(unittest.TestCase):

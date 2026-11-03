@@ -1,5 +1,6 @@
 """Default-tier replay of the hand-recorded registration trace: nothing real runs here, git is faked at the command."""
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -8,8 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.registration_trace import CASES, materialize, recorded, rows_of
-from drover import placement_git
-from drover.git_worktrees import RegistrationsUnknown, listing
+from drover import git_worktrees, placement_git
+from drover.git_worktrees import Listings, RegistrationsUnknown, listing, prove
 from drover.placement_paths import cleanup_path
 
 RAW = (Path(__file__).parent / 'registration_trace.json').read_text(encoding='utf-8')
@@ -17,6 +18,8 @@ TRACE = json.loads(RAW)
 SIDES = ('windows', 'wsl')
 ROOT = Path(tempfile.gettempdir()) / 'registration-replay-absent'
 ALWAYS_FAIL = {'broken config', 'unknown extension', 'main refs missing'}
+UNSEEN = {'broken config', 'unknown extension', 'main refs missing'}    # no admin file shows them: ruling 14's gap
+NOT_WHOLE = {'commondir missing', 'garbage HEAD', 'empty gitdir', 'only locked'}    # git exits 0, the proof refuses
 
 
 def every(code_zero):
@@ -66,6 +69,56 @@ class Rows(unittest.TestCase):
                          [('<EXT4>/main', False), ('<EXT4>/wt', False), ('<EXT4>/wt', True)])
         with git_answers(dict(code=0, stdout=twins)):
             self.assertEqual(len(listing(ROOT / 'repo', timeout_s=400.0).rows), 3)
+
+
+class Proof(unittest.TestCase):
+    """`prove` over each recorded tree, against a recorded listing: what git said against what the reader reads."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def proved(self, case, side, part, label):
+        root = self.root / label
+        repo = materialize(case, side, root)
+        answer = recorded(case, side, root)
+        said = answer['before'] if part == 'before' else answer
+        common = repo if case == 'bare repos' else repo / '.git'
+        tip = next(row['HEAD'] for row in answer['before']['rows'] if 'HEAD' in row)
+
+        def run(argv, **_):
+            output = said['stdout'] if 'list' in argv else f'{common}\n' if '--git-common-dir' in argv else f'{tip}\n'
+            return subprocess.CompletedProcess(argv, 0, output, '')
+        target = said['rows'][-1]['worktree']
+        # On Windows a row spelled under the admin directory has a colon in its path, and `lstat` refuses the name.
+        with patch.object(placement_git, 'subprocess', SimpleNamespace(run=run)),                 patch.object(git_worktrees, '_dot_git', lambda path: os.path.lexists(os.path.join(path, '.git'))):
+            # Expanded on a drive, a WSL recording's own trees read as drive letters too, so only this case is told.
+            told = side if case == 'drive-letter' else None
+            return prove(Listings([str(repo)]), str(repo), target, side=told, timeout_s=30.0,
+                         pointer=os.path.lexists(os.path.join(target, '.git')))
+
+    def test_prove_refuses_wherever_recorded_git_exited_non_zero(self):
+        for number, (case, side) in enumerate(every(False)):
+            with self.subTest(case=case, side=side):
+                refused = self.proved(case, side, 'before', str(number)).refused
+                self.assertEqual(bool(refused), case not in UNSEEN, refused)
+
+    def test_prove_agrees_wherever_the_recorded_row_is_whole(self):
+        agreed = set()
+        for number, (case, side) in enumerate(every(True)):
+            if case not in NOT_WHOLE:
+                with self.subTest(case=case, side=side):
+                    self.assertEqual(self.proved(case, side, 'after', str(number)).refused, ())
+                    agreed.add((case, side))
+        # `prunable` is not compared. These rows are prunable only as recorded, where the pointer's tree was absent.
+        self.assertLessEqual({('/mnt', 'wsl'), ('/mnt', 'windows'), ('drive-letter', 'wsl'), ('ext4', 'windows')}, agreed)
+
+    def test_prove_refuses_what_git_lists_without_complaint_yet_is_not_whole(self):
+        for number, (case, side) in enumerate((c, s) for c in sorted(NOT_WHOLE) for s in SIDES):
+            with self.subTest(case=case, side=side):
+                self.assertNotEqual(TRACE[case][side]['code'], 128)
+                self.assertTrue(self.proved(case, side, 'after', str(number)).refused)
 
 
 class Placeholders(unittest.TestCase):

@@ -1,7 +1,4 @@
-"""Hermetic public-interface fixtures for the disk contract.
-
-No new product module is imported until a test actually exercises its interface.
-"""
+"""Hermetic public-interface fixtures for the disk contract."""
 import copy
 import os
 import tempfile
