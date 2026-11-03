@@ -635,7 +635,7 @@ Runs the Checkpoint protocol with `LAST_CP` as 92ce946.
   ```
   In `tests/test_seams.py`: the live R5 rule for `process`, imports only `placement_paths` and `compaction_hold`. `compaction_hold` is reached from Task 20.
 - [ ] **Step 3: Red.** `DROVER_TESTS=integration $PY -m unittest tests.test_process` fails with `ModuleNotFoundError` for `drover.process`.
-- [ ] **Step 4: Implement.** Ordering: spawn, wait, elapsed check. `run` calls `subprocess.run` once, with one fixed option set. A required timeout with no default on `Command`. `list2cmdline` is bound at import, `from subprocess import list2cmdline`, because `FakeCommands` refuses any unscripted call through `process.subprocess`.
+- [ ] **Step 4: Implement.** Ordering: spawn, wait, elapsed check. `run` calls `process.subprocess.run` once, with one fixed option set; its real adapter `_run_tree` spawns with `Popen` so a timeout ends the whole tree (spec Appendix C, tree kill), and tests replace that one reference. A required timeout with no default on `Command`. `list2cmdline` is bound at import, `from subprocess import list2cmdline`, because `FakeCommands` refuses any unscripted call through `process.subprocess`.
 - [ ] **Step 5: Green.**
   ```bash
   DROVER_TESTS=integration $PY -m unittest tests.test_process $GUARDS
@@ -808,7 +808,7 @@ Runs the Checkpoint protocol with `LAST_CP` as Task 7's report commit, covering 
 - [ ] **Step 2: Reviewer focus.**
   - Completeness: sections 5.1, 5.3, 5.4, every row of the proof table, ruling 1's compare list in section 7.3, Review Focus 1, 2, 3, 5.
   - Scope: section 10 rows 1 to 3b; `tests/placement_trace.json` changed only in `kwargs`; `tests/disk_decision_trace.json` changed only in slice 1, and each row is in that report; `entries`, `registered=`, `write_json_atomic`, `wsl_control` and 12 sites' missing console flags are gone.
-  - Efficiency hot paths: one listing per repo per stage; one `prove` per removal; `durable` reading no clock on a landing write; `Status.routine`'s fsync-free path; `process.run`'s overhead over `subprocess.run`, one dataclass and one clock read.
+  - Efficiency hot paths: one listing per repo per stage; one `prove` per removal; `durable` reading no clock on a landing write; `Status.routine`'s fsync-free path; `process.run`'s overhead over `subprocess.run`, as spec section 5.1's cost line states it since the tree kill.
 - [ ] **Step 3: Fix findings**, by the protocol, then record `Task 21: complete`.
 - [ ] **Step 4: Commit** both reports: "The slice 3b checkpoint records its test times and its three reviews."
 
