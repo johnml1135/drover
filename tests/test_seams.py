@@ -350,6 +350,14 @@ class Seams(unittest.TestCase):
         self.assertLessEqual({project_module(name) for name in names} - {None},
                              {'process', 'placement_git', 'placement_paths'})
 
+    def test_disk_stage_imports_only_placement_paths(self):
+        path, tree = 'drover/disk_stage.py', parsed('drover')['drover/disk_stage.py']
+        self.assertEqual(rule_violations('R5', {path: tree}), [])
+        names = [name for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))]
+        self.assertLessEqual({project_module(name) for name in names} - {None}, {'placement_paths'})
+        self.assertLessEqual({name.split('.')[0] for name in names if project_module(name) is None},
+                             set(sys.stdlib_module_names))
+
     def test_r5_placement_git_imports_no_git_client_but_its_stated_rows(self):
         """`git_client` imports `placement_git` at load, so `placement_git` may reach it only inside a function, by a
         stated manifest row (section 13, R5; Task 27 adds them). A load-time import is never allowed to stand."""
