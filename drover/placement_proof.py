@@ -151,7 +151,10 @@ class _CleanupProcesses:
                 for row in rows:
                     # Refresh readable cwd evidence even when reusing the run's CIM snapshot.
                     self._record(**dict(row, cwd=row.get('cwd') if 'cwd' in row else _windows_cwd(row['pid'])))
-                if self.clear_ignored and self.unreadable and self.rows and not self.query_failure:
+                if (current is not None or self.clear_ignored) and self.unreadable and self.rows \
+                        and not self.query_failure:
+                    # A busy host lists short-lived processes that exit before they are read: re-check them. An
+                    # injected CIM answer (tests) has no native list, and only pane close re-checks it.
                     try:
                         after = _windows_processes()
                     except (OSError, ValueError):
@@ -202,9 +205,9 @@ class _CleanupProcesses:
                          exe=exe, command_unreadable=command_unreadable, ppid=_parent(entry))
 
     def _drop_exited(self, after):
-        """Under clear_ignored only: a process that has exited, or whose pid now has another creation time, cannot be
-        using anything, so its unreadable row goes. A row that still exists, or whose identity cannot be compared,
-        stays and keeps the snapshot unknown."""
+        """A process that has exited, or whose pid now has another creation time, cannot be using anything, so its
+        unreadable row goes. A row that still exists, or whose identity cannot be compared, stays and keeps the
+        snapshot unknown."""
         current = self.current or {}
 
         def exited(pid):

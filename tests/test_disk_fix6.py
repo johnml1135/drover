@@ -195,11 +195,11 @@ class ReviewRegressions(DiskCase):
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
             ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1,
             ExecutablePath=r'C:\tools\old.exe', CommandLine='old.exe')])).encode(), b'')
+        live = {'101': ['old.exe', 1], '202': ['build.exe', 2]}     # build.exe is still running at the re-check
         with patch.object(process.subprocess, 'run', return_value=done) as query, \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_7, patch('drover.placement_proof._windows_cwd', _placement_patch_7), \
                 patch.object(placement, '_windows_processes', create=True,
-                             side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
-                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]}]) as _placement_patch_8, patch('drover.placement_proof._windows_processes', _placement_patch_8):
+                             side_effect=[{'101': ['old.exe', 1]}, dict(live), dict(live), dict(live)]) as _placement_patch_8, patch('drover.placement_proof._windows_processes', _placement_patch_8):
             first = placement.cleanup_processes(windows=True, **settings)
             second = placement.cleanup_processes(windows=True, **settings)
         self.assertFalse(first.busy(r'C:\candidate'))
@@ -248,6 +248,7 @@ class ReviewRegressions(DiskCase):
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_10, patch('drover.placement_proof._windows_cwd', _placement_patch_10), \
                 patch.object(placement, '_windows_processes',
                              side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
+                                          {'101': ['old.exe', 1], '202': ['build.exe', 2]},
                                           {'101': ['old.exe', 1], '202': ['build.exe', 2]}]) as _placement_patch_11, patch('drover.placement_proof._windows_processes', _placement_patch_11):
             answer = served(request)
         self.assertTrue(old.exists())
