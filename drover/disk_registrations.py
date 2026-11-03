@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from . import durable, git_worktrees, placement
+from . import durable, git_client, git_worktrees, placement
 from .disk_paths import item, safe_path, worktree_roots
 from .disk_worktrees import git, gitdir_at
 
@@ -262,7 +262,8 @@ def reregister(request, machine, path, target, branch, store):
             stream.write((path / '.git').read_text(encoding='utf-8'))
         if branch is not None:
             holder.mkdir()
-            placement.add_worktree(repo, str(place), '--no-checkout', '--', str(place), branch, error=ValueError)
+            placement.add_worktree(repo, str(place), '--no-checkout', '--', str(place), branch, error=ValueError,
+                                   timeout_s=git_client.NORMAL)     # a stage change: section 6.1's 60 s
             durable.move(place / '.git', path / '.git', wait=durable.NO_WAIT)
             moved = True
         git(repo, 'worktree', 'repair', str(path))

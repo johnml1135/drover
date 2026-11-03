@@ -246,6 +246,28 @@ class Isolation(PaneCloseBase):
             self.assertIsNone(pane_close.worktree_facts(REPO, ask), why)
             self.assertEqual(calls, ['rev-parse', 'status'])     # a stuck checkout costs one limit, not seven
 
+    def test_a_repo_with_no_main_is_not_merged_and_not_unknown(self):
+        calls = []
+
+        def ask(cwd, *args, timeout_s, no):
+            calls.append(args)
+            if args[:2] == ('rev-parse', '--verify'):
+                return GitReply(Answer.NO, '', '', 1, None)        # neither origin/main nor main exists
+            if args[0] == 'merge-base':
+                return GitReply(Answer.UNKNOWN, '', 'fatal: Not a valid object name main', 128, 'exit')
+            return self.git(cwd, *args, timeout_s=timeout_s, no=no)
+        facts = pane_close.worktree_facts(REPO, ask)
+        self.assertIsNotNone(facts)
+        self.assertFalse(facts['merged'])                        # as at db08f36: rc 128 there read as not merged
+        self.assertEqual([a[-1] for a in calls if a[:2] == ('rev-parse', '--verify')], ['origin/main', 'main'])
+        self.assertNotIn('merge-base', [a[0] for a in calls])
+
+        def stuck(cwd, *args, timeout_s, no):              # main exists, but merge-base does not answer: unknown
+            if args[0] == 'merge-base':
+                return GitReply(Answer.UNKNOWN, '', '', 128, 'exit')
+            return self.git(cwd, *args, timeout_s=timeout_s, no=no)
+        self.assertIsNone(pane_close.worktree_facts(REPO, stuck))
+
     def test_an_unexpected_error_in_one_pane_is_kept_and_logged(self):
         herdr = self.two()
         calls = []

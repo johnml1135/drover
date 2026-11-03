@@ -56,7 +56,10 @@ class ReregisterFailure(unittest.TestCase):
         records = []
         store = type('Store', (), dict(append=lambda self, r: records.append(r)))()
 
+        self.added = []
+
         def add(repo, place, *args, **kwargs):
+            self.added.append(kwargs)
             Path(place).mkdir(parents=True)
             raise TIMEOUT
         with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(placement, 'git', side_effect=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
@@ -68,6 +71,11 @@ class ReregisterFailure(unittest.TestCase):
         records, git = self.run_reregister(lambda *a, **k: None)
         self.assertEqual(git.call_count, 1)
         self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
+
+    def test_the_repair_adds_its_worktree_within_a_stage_change_limit(self):
+        from drover import git_client
+        self.run_reregister(lambda *a, **k: None)
+        self.assertEqual([kw.get('timeout_s') for kw in self.added], [git_client.NORMAL])     # section 6.1: 60 s
 
     def test_second_timeout_in_the_removal_still_journals_failed(self):
         records, git = self.run_reregister(TIMEOUT)

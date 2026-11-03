@@ -71,6 +71,19 @@ class AddOnExt4(unittest.TestCase):
                                 "timed out after 600s" if why == "timeout" else "fatal: no")):
                             add()
                     self.assertEqual([(c[1][2:4], c[3]) for c in calls], [(("worktree", "add"), git_client.LONG)])
+        from drover import ownership, worktree
+        calls = []
+        with mutations(calls), patch.object(ownership, "tag"):
+            worktree.add("H:\\repos\\acme", "H:\\w\\T2", "main", owner="lane:a", lease_until=1.0)
+        self.assertEqual({c[3] for c in calls}, {git_client.LONG})          # the CLI's add keeps 600 s
+
+    def test_a_named_limit_bounds_every_call_and_names_itself(self):
+        calls = []
+        timed_out = lambda args: git_client.GitDone(False, "", "", None, "timeout")
+        with mutations(calls, timed_out), self.assertRaisesRegex(ValueError, "git worktree add failed: timed out after 60s"):
+            placement.add_worktree("H:\\repos\\acme", "H:\\w\\T3", "--", "H:\\w\\T3", "b", error=ValueError,
+                                   timeout_s=git_client.NORMAL)
+        self.assertEqual({c[3] for c in calls}, {git_client.NORMAL})
 
     def test_wsl_side_argv_reaches_the_repository_through_mnt(self):
         argv = placement.git_argv("H:\\repos\\acme", ["worktree", "add", "-b", "b", EXT4, "main"], nt=True, side="wsl")

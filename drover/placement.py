@@ -122,9 +122,9 @@ def cleanup_free(path):
         return None
 
 
-def add_worktree(repo, dest, *tail, error=RuntimeError):
-    """Create a worktree; old git may use absolute pointers only on a native filesystem. `LONG`: its callers named no
-    limit before, and a slow `worktree add` that succeeds must not fail at 60 s."""
+def add_worktree(repo, dest, *tail, error=RuntimeError, timeout_s=git_client.LONG):
+    """Create a worktree; old git may use absolute pointers only on a native filesystem. `LONG` by default: callers
+    outside a stage named no limit before, and a slow `worktree add` that succeeds must not fail at 60 s."""
     # An ext4 destination is written by the WSL git so its `.git` file and the repository's `gitdir` record are
     # paths WSL can resolve; Windows git would turn the Linux path into a Windows one.
     side = 'wsl' if routes_through_wsl(dest) else None
@@ -132,7 +132,7 @@ def add_worktree(repo, dest, *tail, error=RuntimeError):
     lock = ('--lock', '--reason', 'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows')
 
     def mutate(*args):
-        return git_client.mutate(repo, *args, timeout_s=git_client.LONG, side=side)
+        return git_client.mutate(repo, *args, timeout_s=timeout_s, side=side)
     r = mutate('-c', 'core.autocrlf=false', 'worktree', 'add', *lock, '--relative-paths', *tail)
     rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
                          r.err, re.IGNORECASE)
@@ -142,7 +142,7 @@ def add_worktree(repo, dest, *tail, error=RuntimeError):
                         f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
         r = mutate('-c', 'core.autocrlf=false', 'worktree', 'add', *lock, *tail)
     if not r.ok:
-        said = f'timed out after {git_client.LONG:g}s' if r.why == 'timeout' else r.err.strip()[-300:]
+        said = f'timed out after {timeout_s:g}s' if r.why == 'timeout' else r.err.strip()[-300:]
         raise error(f'git worktree add failed: {said}')
     # The repository is shared by both OSes: neither side's gc may expire an entry the other cannot see. Best effort.
     mutate('config', 'gc.worktreePruneExpire', 'never')

@@ -55,11 +55,12 @@ def _facts(cwd, ask):
     if not found or not top:
         return None
     clean, status = read(top, 'status', '--porcelain', '--untracked-files=all', no=())
-    on_origin = read(top, 'rev-parse', '--verify', '-q', 'origin/main', no=(1,))[0]
+    # A base that does not exist (verify -q exits 1) is a no: nothing to be merged into, as rc 128 read before.
+    base = next((ref for ref in ('origin/main', 'main') if read(top, 'rev-parse', '--verify', '-q', ref, no=(1,))[0]), None)
     tracked, upstream = read(top, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}', no=(128,))
     return dict(path=top, branch=read(top, 'rev-parse', '--abbrev-ref', 'HEAD', no=(128,))[1] or None,
                 clean=clean and status == '',
-                merged=read(top, 'merge-base', '--is-ancestor', 'HEAD', 'origin/main' if on_origin else 'main', no=(1,))[0],
+                merged=base is not None and read(top, 'merge-base', '--is-ancestor', 'HEAD', base, no=(1,))[0],
                 pushed=tracked and read(top, 'rev-list', '--count', upstream + '..HEAD', no=())[1] == '0')
 
 
