@@ -919,7 +919,7 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
 - Modify: `drover/origin.py`, `drover/landing_control.py`, `drover/landing_batch.py`, `drover/landing.py`, `drover/placement.py` (`add_worktree`), `drover/pane_close.py`, `tests/test_origin_sync.py`, `tests/test_landing_recovery.py`, `tests/__init__.py`, `tests/test_guards.py`, `tests/architecture_removed_symbols.json`, `tests/seam_exceptions.json`, tests naming `landing_batch.git`
 
 **Interfaces:**
-- Produces: `origin` functions take `git=git_client`, an object with `ask`, `out`, `mutate`; `landing_control.ControlledGit(conn, epoch)` with those three, guarding `merge`, `update-ref` and `push` by `args[0]`; `pane_close:234` takes a function shaped like `ask`; `placement.add_worktree(..., error=)` with `LONG` inside.
+- Produces: `origin` functions take `git=git_client`, an object with `ask`, `out`, `mutate`; `landing_control.ControlledGit(conn, epoch)` with those three, guarding `merge`, `update-ref` and `push` by `args[0]`; `pane_close:234` takes a function shaped like `ask`; `placement.add_worktree(..., error=, timeout_s=LONG)`, and the registration repair passes `NORMAL` (spec Appendix C, slice 4).
 
 - [ ] **Step 1: Red.** Add `drover.origin.git`, `drover.landing_batch.git` and `drover.landing_control._controlled_git` to `qualified_names`. Delete R1 rows for `origin` and `landing_batch`. Restate `tests/test_origin_sync.py` around a `FakeGit` object with the three methods, replacing real repos where git is only setup. Add:
   ```python
@@ -963,7 +963,7 @@ Tasks 24 to 27 share one rule, from ruling 12, widened by 2M2: every handler aro
   def test_unknown_is_not_read_as_no(self): ...
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_architecture tests.test_seams tests.test_disk_fresh_proof tests.test_ci_policy tests.test_decisions tests.test_task_access tests.test_dispatch_hold`. Must name the six symbols and both rows' modules.
-- [ ] **Step 3: Migrate** by the section 5.2 table. `cleanup.git` and `_git_ok` take `LONG`, as read-only scans with `GIT_OPTIONAL_LOCKS=0`. `ci.py:119` stays an R3 row. `ci`, `disk_worktrees` and `disk_paths` must shrink.
+- [ ] **Step 3: Migrate** by the section 5.2 table. `cleanup.git` and `_git_ok` take `LONG`; cleanup's own reads and ref changes run with `GIT_OPTIONAL_LOCKS=0`, and its worktree listing goes through `git_worktrees.listing` without it (spec Appendix C, slice 4). `ci.py:119` stays an R3 row. `ci`, `disk_worktrees` and `disk_paths` must shrink.
 - [ ] **Step 4: Green.**
   ```bash
   M="$(mods 'ci\.git|cleanup\.git|_git_ok|disk_worktrees\.git|dispatch_hold|task_access|decisions\._git|context_files|ci_fixture') tests.test_ci_policy tests.test_disk_decision_trace tests.test_disk_fresh_proof tests.test_disk_removal tests.test_disk_registrations"
@@ -1509,6 +1509,7 @@ Slices 6a, 6b and 6c move code. Each commit leaves `tests/disk_decision_trace.js
   ```
 - [ ] **Step 2: Run red.** `DROVER_TESTS=integration $PY -m unittest tests.test_seams`. Must print each stale row or count.
 - [ ] **Step 3: Remove** the last tuple-only `subprocess` imports, with their R1 rows, in the production files above, `disk_cleanup`'s module-level one included: its `locked_command` import stays. Remove stale deferred imports. Check section 7.4's line budgets, and record actuals in the slice report. Public names in the cluster: count against "about 15".
+- [ ] **Step 3a: Git fake shapes** (spec Appendix C, slice 4). Inherited from Task 28: process-level git fakes are `FakeCommands.patch(process)` and `tests.fakeci.git_answers`, with `git_spy` on the same parser. Convert or rule `fakeci.answer_spawns`/`fakeci.answering` and the direct `process.subprocess.run` fakes; add no new shape.
 - [ ] **Step 4: Convert.** For `test_disk_fix7`, `test_disk_fix8`, `test_disk_fixes`, `test_disk_report`, `test_disk_boundaries`, `test_disk_worktrees`, and any test in Task 1's candidates still spawning for setup: use `StageEvidence` fakes or `MemoryCleanupEvidence`, in place, one commit per module, lowering the constant. A real-git contract stays, and is named.
 - [ ] **Step 5: Green.**
   ```bash

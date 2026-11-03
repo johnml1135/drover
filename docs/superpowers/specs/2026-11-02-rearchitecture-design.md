@@ -267,7 +267,7 @@ NO_WINDOW: Mapping[str, int]                          # for spawn_worker and det
 **Adapter.** One: the module's own `subprocess` reference.
 - Tests use `FakeCommands.patch(process)`, the existing fake.
 - `process.run` passes one fixed option set, so every expectation states the same options once, through a helper in `tests/fakeci.py`.
-- The `run=` parameters that exist only for tests go, and one fake covers every spawn. Those that are production seams stay in a new shape. `origin` (lines 24, 50) takes `git=`, an object with `ask`, `out` and `mutate`: one function cannot be both, and the compare-and-swap on main must stay a `mutate`. The plain `git_client` module is the default, and `landing_control` passes `ControlledGit`. `pane_close:234` takes a function shaped like `ask`. `placement.add_worktree` takes `error=` only, with `LONG` inside, because its two callers run with no timeout today and its 60 s default would fail a slow `worktree add` that succeeds now.
+- The `run=` parameters that exist only for tests go, and one fake covers every spawn. Those that are production seams stay in a new shape. `origin` (lines 24, 50) takes `git=`, an object with `ask`, `out` and `mutate`: one function cannot be both, and the compare-and-swap on main must stay a `mutate`. The plain `git_client` module is the default, and `landing_control` passes `ControlledGit`. `pane_close:234` takes a function shaped like `ask`. `placement.add_worktree` takes `error=` and `timeout_s=LONG`, because its untimed callers run with no timeout today and its 60 s default would fail a slow `worktree add` that succeeds now; the registration repair, a stage change, passes `NORMAL` (Appendix C, slice 4). The git fake shapes are as Appendix C's slice 4 group says.
 
 **Called by.** All callers below. **May call.** `subprocess`, `placement_paths`, `compaction_hold`.
 
@@ -293,14 +293,14 @@ Also `runner or subprocess.run` at placement_git:119, and the injected `run=subp
 
 | Where | Calls | Timeout | A timeout leaves |
 |---|---|---|---|
-| `cleanup.git`, `_git_ok` | Scans, read only | `LONG` | Nothing; `GIT_OPTIONAL_LOCKS=0` |
+| `cleanup.git`, `_git_ok` | Scans, read only, and ref changes | `LONG` | Nothing; `GIT_OPTIONAL_LOCKS=0` on cleanup's own commands, not on its worktree listing, which goes through `git_worktrees.listing` (Appendix C, slice 4) |
 | `hub/runtime._git` (:90) | Reads, and the bounded archive | `LONG`, a guess | Nothing |
 | `pipeline.git` callers without `timeout`, including `inventory` | Reads and mutations | `LONG` | As for a merge, where it mutates |
 | `landing_batch.git` and `landing_control` callers without `timeout` | Reads, and rebuild steps | `LONG` | As for a merge, where it mutates |
 | `landing.contained` | Reads | `LONG` at landing.py:256 | Nothing; `UNKNOWN` refuses |
 | `origin.git` status, `update-ref`, `rev-parse` | Reads and a ref CAS | `LONG` | Nothing: `update-ref` is atomic |
 | `origin.py:46` `merge --ff-only` | Mutates the main checkout | `LONG` | Possibly `.git/index.lock` and a part-updated checkout |
-| `landing_batch.py:174` `cherry-pick` | Mutates the batch worktree | `LONG` | Possibly a leftover lock. `GitDone.why` tells a timeout from a conflict: a timeout raises `CIError`, and neither drops the task as conflicted nor resets over the lock |
+| `landing_batch.py:174` `cherry-pick` | Mutates the batch worktree | `LONG` | Possibly a leftover lock. `GitDone.why` tells a timeout from a conflict: a timeout, or a pick that cannot start, raises `CIError`, and neither drops the task as conflicted nor resets over the lock; `run_batch`'s `finally` still force-removes the batch worktree (Appendix C, slice 4) |
 | `placement_git.git` direct callers without `timeout` | Mixed | `LONG` | As above |
 | `disk_schedule:49` | Task installation, not git | 600 s | A partly installed schedule, reported as failed |
 
@@ -398,7 +398,7 @@ request_git: ContextVar                                    # moved; hub/app.py r
 | `dispatch_hold._git` | `None` | Deleted; `ask` |
 | `pane_close._git` | (rc, stripped stdout) | Deleted; `ask` |
 | `task_access._git` | `ValueError` | Deleted; `out` with `error=`, so lines 58-63 still fall through to the remote ref |
-| `outside_land._out`, `GitUnknown` | `None` for no, raise for unknown | `_out` stays three lines over `ask`; `GitUnknown` is deleted and callers catch `GitFailed`. outside_land.py:459 becomes `except GitFailed as e`: `e.why == 'timeout'` takes the `stuck` and `resume` branch, and anything else logs as :464 does |
+| `outside_land._out`, `GitUnknown` | `None` for no, raise for unknown | `_out` stays three lines over `ask`; `GitUnknown` is deleted and callers catch `GitFailed`. outside_land.py:459 becomes `except GitFailed as e`: `e.why == 'timeout'` takes the `stuck` and `resume` branch, and anything else logs as :464 does, followed by a bounded, credential-stripped stderr tail (Appendix C, slice 4) |
 | `landing_control._controlled_git` | Control-epoch guard | Becomes `ControlledGit(conn, epoch)`: its job is the guard, not translation. It has `ask`, `out` and `mutate`, guards `merge`, `update-ref` and `push` by `args[0]` as today, and goes on being passed into `origin` |
 | `decisions._git` | `DecisionError` | Deleted; `error=` gives `DecisionError`, so config.py:475 and decisions.py:88 still catch it |
 | `hub/runtime._git` | Raw bypass | Stays as a wrapper over `ask`, taking `LONG`: it scrubs `GIT_*`, bounds the archive through `sink`, and maps failure to `_refuse` |
@@ -1346,3 +1346,14 @@ Recorded here because the build ledger is not committed. Each overrides earlier 
 - **`durable.publish` and `sync_dir` removed** (slice 2). Publishing is folded into the writes. Reason: `sync_dir` lost its one planned caller to ruling 15, as `Command.sink` did under N10.
 - **`MISSING`** (slice 3b). A missing executable is `unavailable` with the fixed detail `<argv0>: No such file or directory`, and launch and `seat_paths` share one check for it. Reason: Windows gives `strerror` in the user's language, so a check on that text would miss on a localised system (a review finding, pinned by a test with a German strerror); section 5.1 leaves `detail`'s wording to `process`.
 - **One decision trace row reworded** (slice 3a, 7f07166). `cache_command_times_out.applied`'s error text became `Result.detail`'s `timed out after 120 s`; action, path and reason are unchanged and nothing more is deleted. Reason: no command through `process` can give the old exception text, and the change is wording, not a decision, so ruling 3 is kept.
+
+Slice 4 (`git_client`):
+
+- **`placement.add_worktree(..., error=, timeout_s=LONG)`.** The untimed callers (`worktree.py`, `pipeline`, `landing_batch`) keep `LONG`; the registration repair in `disk_registrations` passes `NORMAL`. Reason: section 5.2 justified `LONG` only for callers that ran with no timeout, and the repair is a stage change, which section 6.1 holds to 60 s. An add that times out there is unknown and keeps the holder, and the next pass retries.
+- **outside_land's scan log keeps a stderr tail.** A scan failure that is not a timeout logs on the hub log the last 200 characters of `GitFailed.err`, with any `scheme://user:pass@` stripped; `str(GitFailed)` still holds no stderr. Reason: the old `GitUnknown` log line carried git's words, this is a hub log line and not an owner notice, and section 5.2 keeps stderr out of `str()` only.
+- **Git fake shapes.** Process-level git fakes are `FakeCommands.patch(process)` and `tests.fakeci.git_answers`; `git_spy` shares `git_answers`' one argv parser. No new shape is added. `answer_spawns`/`fakeci.answering` and the direct `process.subprocess.run` fakes are converted or ruled in Task 45. Reason: Task 28 was already 53 files and six conversions, and deciding the rest later keeps each change reviewable. Until then "one fake covers every spawn" holds as these shapes.
+- **No `GIT_OPTIONAL_LOCKS=0` on cleanup's worktree listing.** `cleanup.checked_out_anywhere` lists through `git_worktrees.listing`, which sets no such variable; cleanup's own reads and ref changes keep it. Reason: `git worktree list` takes no optional lock, so the variable changed nothing there.
+- **`run_batch`'s `finally` still force-removes the batch worktree after a cherry-pick timeout.** Reason: the batch worktree is disposable, and the main checkout is neither aborted nor reset, so nothing there needs keeping; the force removal also clears a stale lock in the batch's admin directory.
+- **A cherry-pick that cannot start (`unavailable`) raises `CIError`, as a timeout does.** Reason: neither is a conflict, so neither may drop the task as conflicted or abort and reset; git that could not run says nothing about the batch.
+- **`origin.fast_forward`'s listing and status fail closed.** A worktree listing or checkout status that fails, times out or cannot start raises `SyncError`. Reason: these reads were unchecked when `Repository.sync` passed `run=pipeline.git`, so a failed listing read as "no checkout" and sent main to the compare-and-swap under a live checkout, and a failed status read as clean; moving to `git.out(error=sync_error)` closed both. Pinned in `test_origin_sync`.
+- **`disk_registrations.suggest` gives up on any git exit.** Its three report-only reads go through `_out`, so an exit from `hash-object`, `log` or `branch --contains` raises ValueError, and the folder's row reads `could not be matched: ...` in place of a "no branch named like" detail with a possible suggestion. The row stays `keep`/`lost_registration_unproven`, so no decision changes. Reason: the read is report-only, and an unknown is reported as unknown rather than as "no suggestion".
