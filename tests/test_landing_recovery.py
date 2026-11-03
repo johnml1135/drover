@@ -417,7 +417,7 @@ class LocalFastForwardTests(unittest.TestCase):
         self.stack = self.enterContext(ExitStack())
         for obj, name, value in ((ci, 'problems', []), (ci, 'validate_receipt', []), (ci, 'head', NEW)):
             self.stack.enter_context(patch.object(obj, name, return_value=value))
-        self.stack.enter_context(patch.object(landing_control, '_control_guard', side_effect=self.guard))
+        self.stack.enter_context(patch.object(landing_control, '_control_guard', lambda *a, **kw: self.guard(*a, **kw)))
         self.git = None
         for verb in ('ask', 'out', 'mutate'):
             self.stack.enter_context(patch.object(git_client, verb, lambda *a, _verb=verb, **kw: getattr(self.git, _verb)(*a, **kw)))
@@ -456,3 +456,37 @@ class LocalFastForwardTests(unittest.TestCase):
         self.assertEqual(self.git.mutations(), [(REPO, ('update-ref', 'refs/heads/main', NEW, OLD))])
         self.assertFalse([args for _, _, args, _ in self.git.calls if args[0] in ('status', 'merge', 'symbolic-ref')])
         self.assert_unlocked()
+
+    def test_a_held_epoch_stops_the_merge_and_the_compare_and_swap(self):
+        from drover.launch import AdmissionHeld
+        for name, changes in (('checkout', {}), ('no checkout', {('worktree', 'list'): (0, listing((REPO, OLD, None)))})):
+            with self.subTest(name):
+                self.guarded.clear()
+                held = iter([7])                     # admitted on entry; held by the time main would move
+                self.guard = lambda conn, epoch=None: self.guarded.append(epoch) or next(held, None) or _held()
+                def _held():
+                    raise AdmissionHeld('control stopped')
+                with self.assertRaisesRegex(AdmissionHeld, 'control stopped'):
+                    self.land(changes)
+                self.assertEqual(self.git.mutations(), [])
+                self.assertEqual(self.guarded, [None, 7])     # the second check carries the epoch admitted on entry
+                self.assert_unlocked()
+
+    def test_every_origin_call_from_landing_control_gets_a_controlled_git(self):
+        handed = []
+
+        def record(name, value):
+            return lambda *args, git, **kw: handed.append((name, git)) or value
+        dirty = '["dirty","p"]'      # the waiting cause of repo p's dirty-checkout hold
+        self.git = FakeGit(world({('rev-parse', 'main'): (0, OLD + '\n')}))
+        with patch.object(origin, 'sync', record('sync', NEW)), patch.object(origin, 'fast_forward', record('fast_forward', None)), \
+                patch('drover.ledger.waiting.Waiting.state', lambda self, cause: 'authorized' if cause == dirty else None),                 patch('drover.ledger.waiting.Waiting.consume_retry', return_value=True):     # the owner authorised a retry
+            self.assertIsNone(landing_control.sync_main(self.conn, REPO, 'origin', 'main', repo_name='p'))
+        with patch.object(origin, 'sync', record('sync', NEW)), patch.object(origin, 'push_main'), \
+                patch.object(landing_control, 'local_fast_forward'):
+            landing_control.fast_forward(self.conn, REPO, 'origin', 'main', NEW, dict(sha=NEW))
+        self.assertEqual([name for name, _ in handed], ['sync', 'fast_forward', 'sync'])
+        for name, git in handed:
+            with self.subTest(name):
+                self.assertIsInstance(git, landing_control.ControlledGit)
+                self.assertEqual((git.conn, git.epoch), (self.conn, 7))
