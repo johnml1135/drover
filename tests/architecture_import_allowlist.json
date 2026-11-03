@@ -1844,7 +1844,7 @@
     {"importer": "drover/disk_state.py", "operation": "getattr", "arguments": "exc[1], 'termination_confirmed'", "count": 1},
     {"importer": "drover/disk_temp.py", "operation": "getattr", "arguments": "current, 'reason'", "count": 1},
     {"importer": "drover/disk_temp.py", "operation": "getattr", "arguments": "proof, 'reason'", "count": 1},
-    {"importer": "drover/disk_worktrees.py", "operation": "getattr", "arguments": "proof, 'reason'", "count": 1},
+    {"importer": "drover/disk_authority.py", "operation": "getattr", "arguments": "processes, 'reason'", "count": 1},
     {"importer": "drover/dispatcher_admission.py", "operation": "getattr", "arguments": "self.launcher, 'runs_dir'", "count": 1},
     {"importer": "drover/dispatcher_finish.py", "operation": "getattr", "arguments": "e, 'paths'", "count": 1},
     {"importer": "drover/dispatcher_finish.py", "operation": "getattr", "arguments": "self.launcher, 'runs_dir'", "count": 2},

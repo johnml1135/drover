@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import disk_state, placement
-from drover.disk_stage import StageClock
 from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
 
 
@@ -246,9 +245,8 @@ class RunnerPids(DiskCase):
 
 class SafetyDecisions(DiskCase):
     def test_main_checkout_protection_uses_canonical_identity_in_both_stages(self):
-        from drover.disk_worktrees import inspect
         from types import SimpleNamespace
-        from drover.disk_authority import rule_disposable
+        from drover.disk_authority import inspect, rule_disposable
         from drover.disk_stage import StageRequest
         request = dict(now=self.now, repos=[], paths={}, drive=dict(path='H:/'))
         machine = dict(repo=r'\\?\H:\Repo', name='alpha')
@@ -256,8 +254,8 @@ class SafetyDecisions(DiskCase):
         with patch.object(placement, 'cleanup_side', return_value='windows') as _placement_patch_10, patch('drover.placement_process.cleanup_side', _placement_patch_10), \
                 patch.object(placement, 'worktree_side', return_value='windows') as _placement_patch_11, patch('drover.placement_paths.worktree_side', _placement_patch_11), \
                 patch.object(placement, 'cleanup_contains', return_value=True):
-            self.assertEqual(inspect(request, machine, entry, evidence=None)['reason_code'], 'main_checkout')
             run = SimpleNamespace(request=StageRequest.from_wire(dict(request, paths={})), evidence=None)
+            self.assertEqual(inspect(run, machine, entry, processes=None)['reason_code'], 'main_checkout')
             ruling = rule_disposable(run, machine, entry)
             self.assertEqual((ruling.action, ruling.reason_code), ('keep', 'output_evidence_unavailable'))
             self.assertRegex(ruling.detail, '^not an eligible owning-side worktree: main_checkout ')
@@ -280,11 +278,11 @@ class SafetyDecisions(DiskCase):
         # Reach the inspect seam, then deliberately refuse removal. This proves
         # canonical selection without touching any filesystem or Git metadata.
         machine = dict(repo=r'H:\REPO')
-        request, evidence = stage_request(dict(repos=[machine], now=self.now))
+        request, run = stage_request(dict(repos=[machine], now=self.now))
         selected = dict(path=r'H:\tree', repo='/mnt/h/repo', reason_code='unsettled')
         with listing_answers([dict(worktree=r'\\?\H:\TREE')]), agreeing_proof(), \
                 patch.object(disk_worktrees, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
-            result = disk_worktrees.remove(request, selected, clock=StageClock(1800), evidence=evidence)
+            result = disk_worktrees.remove(request, selected, run=run)
         self.assertTrue(check.called)
         self.assertEqual(result['reason_code'], 'revalidation_changed')
 

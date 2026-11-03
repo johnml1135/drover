@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from drover.disk_stage import StageRequest
 
-from drover import config, config_defaults, disk_authority, disk_worktrees, placement, placement_process, placement_proof, process
+from drover import config, config_defaults, disk_authority, placement, placement_process, placement_proof, process
 
 
 class ElevatedProcesses(unittest.TestCase):
@@ -88,8 +88,10 @@ class ElevatedProcesses(unittest.TestCase):
             entry = dict(worktree=str(path), locked='windows')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
                     patch.object(placement, 'cleanup_contains', return_value=True), \
-                    patch.object(disk_worktrees, 'safe_path', return_value=False):
-                row = disk_worktrees.inspect(request, machine, entry, evidence=evidence)
+                    patch.object(disk_authority, 'safe_path', return_value=False):
+                run = SimpleNamespace(request=StageRequest.from_wire(dict(request, stage=4, repos=[], paths={})),
+                                      evidence=evidence)
+                row = disk_authority.inspect(run, machine, entry, processes=evidence.processes())
             self.assertEqual(row['reason_code'], 'protected')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
                     patch.object(placement, 'cleanup_contains', return_value=True), \

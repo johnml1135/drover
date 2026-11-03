@@ -1,18 +1,20 @@
 """Every rule that says whether a path may go, with no mutation: pure selection and grace transitions, the one place
-quarantine state is stored, and the disposable-path rules. A rule answers with a Ruling and never raises to mean
-"no"; a read that fails still raises, and the stage keeps the row."""
+quarantine state is stored, the worktree check order, and the disposable, temp and cache rules. A rule answers with a
+Ruling and never raises to mean "no"; a read that fails still raises, and the stage keeps the row."""
 import copy
 import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping
 
-from . import placement
+from . import disk_evidence, placement
 from .disk_evidence import FreshProcesses, FreshRegistrations, overlaps
 from .disk_inventory import repository_root, safe_path, worktree_roots
-from .disk_stage import within
+from .disk_stage import item, within
+from .disk_state import CleanupState
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
+CLOSED_IDLE_S = 3 * 86400
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,117 @@ def decide_and_store(request, observations, store):
         return answer
     # Reports must not even write an unchanged state file.
     return store.update(update) if request['apply'] else decide(request, observations, {}, request['now'])
+
+
+def _view(run):
+    """What `decide` and `decide_and_store` read of the stage's request. An approval is the caller's, never theirs."""
+    return dict(apply=run.request.apply, now=run.request.now, approved_path=None)
+
+
+class LazyProof:
+    """A process proof taken when `inspect` first reads it, past the path checks, so a row those checks keep takes
+    none, as before the move. `take` gives the proof: the stage's first-pass one, or a removal's fresh one."""
+    def __init__(self, take):
+        self._take, self._proof = take, None
+
+    def _taken(self):
+        if self._proof is None:
+            self._proof = self._take()
+        return self._proof
+
+    @property
+    def busy(self):
+        return self._taken().busy
+
+    @property
+    def reason(self):       # a proof without one raises AttributeError, so `getattr`'s default reads it as before
+        return self._taken().reason
+
+
+def needs_idle_gate(run, tag):
+    """True when the tag's task is closed without landing (yanked, abandoned, handed back): its tree may hold
+    undecided work, so it goes only once quiet for three days. Anything unclear is not a reason to hurry."""
+    snapshot = run.evidence.fresh_snapshot()
+    if snapshot is None or not tag:
+        return False
+    return any(tag['owner'] == 'drover:' + str(t.get('id')) and t.get('state') != 'landed'
+               for t in snapshot.get('tasks', []))
+
+
+def inspect(run, machine, registration, *, processes) -> dict:
+    """One listed worktree judged on the stage's evidence. `processes` is the first pass's process proof, or the fresh
+    one a removal's last look takes; a LazyProof is taken only once the path checks pass."""
+    request, evidence = run.request, run.evidence
+    path = Path(placement.native(registration['worktree']))
+    row = item(path, 'unsettled', repo=machine['repo'], name=machine['name'],
+               head=registration.get('HEAD'), branch=registration.get('branch'), side_lock=registration.get('locked'))
+    checks = {}
+    observed = dict(row=row, checks=checks)
+    def decision():
+        return decide(_view(run), [observed], {}, request.now)['decisions'][0]
+    checks['other_side'] = placement.worktree_side(registration['worktree'], registration.get('locked')) != placement.cleanup_side()
+    if checks['other_side']:
+        return decision()
+    checks['other_drive'] = not placement.cleanup_contains(request.drive['path'], registration['worktree'])
+    if checks['other_drive']:
+        return decision()
+    checks['main'] = placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo'])
+    if checks['main']:
+        return decision()
+    busy = processes.busy       # a LazyProof is taken here, before the task facts, where the proof always was
+    checks.update(busy=evidence.task_facts(path, None)[0] or busy(str(path)),
+                  process_reason=getattr(processes, 'reason', None))
+    if checks['busy']:
+        return decision()
+    checks['protected'] = not safe_path(path)
+    if checks['protected']:
+        return decision()
+    checks['missing'] = not path.exists()
+    if checks['missing']:
+        return decision()
+    tag = evidence.tag(path)
+    row.update(tag=tag, owner=tag['owner'] if tag else None)
+    live, terminal = evidence.task_facts(path, tag)
+    checks['live'] = live
+    if live:
+        return decision()
+    dirty, ignored = evidence.status(path, expand=request.apply)
+    row.update(dirty=dirty, ignored=ignored)
+    if dirty:
+        return decision()
+    head = evidence.head(path)
+    row.update(head=head, gitdir=evidence.gitdir(path))
+    row.update(evidence.measure(path))
+    lease = bool(tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request.now)
+    # A task closed without landing may still hold undecided work: three quiet days first; the branch always stays.
+    if terminal and needs_idle_gate(run, tag) and row['age_s'] < CLOSED_IDLE_S:
+        terminal = False
+    observed['settlement'] = dict(live=live, terminal=terminal,
+                                 merged=evidence.merged(machine, head) if lease and not terminal else False)
+    return decision()
+
+
+def unlisted_live(run, path):
+    tag = run.evidence.tag(path)
+    return run.evidence.task_facts(path, tag)[0] or bool(tag and tag['v'] == 2 and tag['lease_until'] > run.request.now)
+
+
+def quarantine_observation(run, machine, row):
+    key = repr((placement.cleanup_parts(machine['repo']), placement.cleanup_parts(row['path'])))
+    live = bool(row.get('unlisted') and unlisted_live(run, Path(row['path'])))
+    eligible = row['reason_code'] == 'orphan' and not live
+    excluded = ignored_outside(Path(row['path']), row['ignored'],
+                              run.evidence.declarations(machine, machine['repo'] if row.get('unlisted') else row['path'])) if eligible else []
+    fingerprint = (disk_evidence.identity(Path(row['path'])) + repr((row.get('head'), row.get('tag'),
+                    row.get('branch'), placement.cleanup_parts(row['gitdir']) if row.get('gitdir') else None, row.get('side_lock')))) if eligible and not excluded else None
+    return dict(row=row, quarantine=dict(key=key, identity=fingerprint, excluded=excluded, live=live))
+
+
+def quarantine(run, machine, row, *, store=None):
+    observation = quarantine_observation(run, machine, row)
+    answer = decide_and_store(_view(run), [observation],
+                              store if store is not None else CleanupState(run.request.state_dir))
+    return answer['decisions'][0]
 
 
 @dataclass(frozen=True)
@@ -288,4 +401,31 @@ def rule_unit_fresh(run, unit: DisposableUnit, proof: FreshRegistrations) -> Rul
             not placement.cleanup_contains(run.request.drive['path'], str(unit.target)) or live_tree(unit.target, run):
         return _unavailable('disposable side marker changed')
     return Ruling('candidate', 'declared_disposable')
+
+
+def rule_temp_entry(run, path) -> Ruling:
+    """Stage 2's static checks on one temp entry: a protected root, a live owner, or a repository above it keeps it.
+    The scan below it, the scan's cache and its root's budget stay in disk_temp, as does the age."""
+    request = run.request
+    roots = [Path(request.state_dir).absolute()]
+    roots += [Path(placement.native(repo['repo'])).absolute() for repo in request.repos if repo.get('repo')]
+    roots += [root.absolute() for repo in request.repos for root in worktree_roots(repo)]
+    if not safe_path(path) or live_tree(path, run) or \
+            any(within(path, root) or within(root, path) for root in roots) or \
+            any(repository_root(parent) for parent in path.parents):
+        return Ruling('keep', 'protected', 'protected subtree')
+    return Ruling('candidate', 'temp_retained')      # the row's code until its scan, age and process proof are read
+
+
+def rule_cache_file(run, path, info, *, entry) -> Ruling:
+    """One file under the declared cache folder `entry`, its stat `info`: older than the entry's `max_age_days`, or of
+    any age when a run that is not daily meets a drive at warn or worse. `facts` hold `activity`, the later of atime and
+    mtime, which orders the candidates, and `aggressive`, that level reading."""
+    request = run.request
+    aggressive = request.mode != 'daily' and request.drive.get('level') in ('warn', 'queue', 'hold', 'critical')
+    activity = info.st_atime if info.st_atime > info.st_mtime else info.st_mtime
+    facts = dict(activity=activity, aggressive=aggressive)
+    if aggressive or request.now - activity > entry.get('max_age_days', 30) * 86400:
+        return Ruling('candidate', 'folder_cache', facts=facts)
+    return Ruling('keep', 'cache_recent', facts=facts)
 

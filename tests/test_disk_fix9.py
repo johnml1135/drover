@@ -7,8 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_inventory, disk_paths, disk_state, disk_worktrees, placement
-from drover.disk_stage import StageClock
+from drover import disk_authority, disk_inventory, disk_paths, disk_state, disk_worktrees, placement
 from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
 from tests.fakeci import git_answers
 
@@ -162,8 +161,8 @@ class DefaultBranchPolicy(DiskCase):
     def test_quarantine_uses_default_policy_even_when_feature_has_no_declaration(self):
         row = dict(path=str(self.wt), repo=str(self.repo), ignored=[str(self.bin)],
                    head='old-head', reason_code='orphan', action='keep')
-        request, evidence = stage_request({**self.request, 'apply': False})
-        answer = disk_worktrees.quarantine(request, self.machine, row, evidence=evidence)
+        _, run = stage_request({**self.request, 'apply': False})
+        answer = disk_authority.quarantine(run, self.machine, row)
         self.assertEqual(answer['reason_code'], 'orphan')
 
     def test_remove_cannot_use_feature_declarations_to_discard_source(self):
@@ -171,8 +170,8 @@ class DefaultBranchPolicy(DiskCase):
         selected = dict(path=str(self.wt), repo=str(self.repo), head='old-head',
                         reason_code='settled', action='candidate', ignored=[str(self.src)])
         with patch.object(disk_worktrees, 'inspect', return_value=selected.copy()):
-            request, evidence = stage_request(self.request)
-            answer = disk_worktrees.remove(request, selected, clock=StageClock(1800), evidence=evidence)
+            request, run = stage_request(self.request)
+            answer = disk_worktrees.remove(request, selected, run=run)
         self.assertEqual(answer['reason_code'], 'ignored_content')
         self.assertTrue(self.src.exists())
 

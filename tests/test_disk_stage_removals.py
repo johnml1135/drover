@@ -57,13 +57,14 @@ class Removals(unittest.TestCase):
 
     def remove(self, clock, **changes):
         store, events, self.discarded = MemoryCleanupState(), [], []
-        request, evidence = stage_request(dict(repos=[MACHINE], apply=True, now=1.0, drive=dict(path='/'), state_dir=None))
+        request, run = stage_request(dict(repos=[MACHINE], apply=True, now=1.0, drive=dict(path='/'), state_dir=None))
+        run.clock = clock
         with listing_answers([dict(worktree=GONE)]), agreeing_proof(), \
                 patch.object(disk_worktrees, 'inspect', return_value=gone_row(**changes)), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
                 patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a, **k: (events.append('discard'),
                                                                                          self.discarded.append(k))):
-            row = disk_worktrees.remove(request, gone_row(**changes), store=store, clock=clock, evidence=evidence)
+            row = disk_worktrees.remove(request, gone_row(**changes), store=store, run=run)
         return row, [r['phase'] for r in store.journal], events
 
     def test_past_the_line_before_planned_keeps_removal_deadline(self):

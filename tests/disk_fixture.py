@@ -32,10 +32,10 @@ def agreeing_proof():
 
 
 def stage_request(request):
-    """(the dict a stage's helpers read, the stage's evidence), as `stage_run(request)` makes them, for a test that
-    calls a removal itself: `remove(view, selected, clock=..., evidence=evidence)`."""
+    """(the dict a stage's helpers read, the stage's run), as `stage_run(request)` makes them, for a test that calls a
+    removal itself: `remove(view, selected, run=run)`."""
     run = stage_run(request)
-    return run.request.decide_view(), run.evidence
+    return run.request.decide_view(), run
 
 
 def stage_run(request, *, clock=time.monotonic, listings=None):

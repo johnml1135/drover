@@ -4,9 +4,9 @@ import time
 from pathlib import Path
 
 from . import placement
-from .disk_authority import live_tree
-from .disk_inventory import repository_root, safe_path, worktree_roots
-from .disk_stage import item, within
+from .disk_authority import rule_temp_entry
+from .disk_inventory import repository_root, safe_path
+from .disk_stage import item
 
 
 class TempBudgetExceeded(ValueError):
@@ -14,16 +14,12 @@ class TempBudgetExceeded(ValueError):
 
 
 def temp_facts(path, request, *, budget, cached, children, run):
-    """Prove safety and measure in one pass; stop at the first protected descendant. `budget` is the root's clock;
-    `cached` holds each path's facts and `children` each declared root's listing, both read once per stage.
-    `run` is the stage's, whose evidence's task snapshot says what is live."""
-    roots = [Path(request['state_dir']).absolute()]
-    roots += [Path(placement.native(repo['repo'])).absolute() for repo in request['repos'] if repo.get('repo')]
-    roots += [root.absolute() for repo in request['repos'] for root in worktree_roots(repo)]
-    if not safe_path(path) or live_tree(path, run) or \
-            any(within(path, root) or within(root, path) for root in roots) or \
-            any(repository_root(parent) for parent in path.parents):
-        raise ValueError('protected subtree')
+    """Ask `rule_temp_entry`, then prove the subtree safe and measure it in one pass; stop at the first protected
+    descendant. `budget` is the root's clock; `cached` holds each path's facts and `children` each declared root's
+    listing, both read once per stage. `run` is the stage's, whose request and evidence the rule reads."""
+    ruling = rule_temp_entry(run, path)
+    if ruling.action != 'candidate':
+        raise ValueError(ruling.detail)     # kept as `protected`, the rule's words its error
     declared = {Path(p).absolute() for p in request['paths'].get('temp_roots', [])}
     def visit(current):
         if current in cached:

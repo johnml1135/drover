@@ -64,7 +64,7 @@ class Scene(SceneTree):
         def remove(request, *selected, **options):
             change, self.midstage = self.midstage, None
             if change:      # the removal reads `tasks` from the stage's evidence, so a change to it lands there too
-                change(dict(request, tasks=(options.get('evidence') or selected[0].evidence)._request.tasks))
+                change(dict(request, tasks=(options.get('run') or selected[0]).evidence._request.tasks))
             return real(request, *selected, **options)
         return remove
 

@@ -27,7 +27,7 @@ class SettledDeadline(unittest.TestCase):
                 patch.object(disk_worktrees, 'registrations', return_value={}), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)), \
-                patch('drover.disk_cleanup.evaluate', side_effect=evaluate):
+                patch.object(disk_worktrees, 'evaluate', side_effect=evaluate):
             return staged(disk_worktrees.settled, request, clock=lambda: now[0]), seen
 
     def test_late_run_reports_what_it_did_not_reach_as_an_item(self):

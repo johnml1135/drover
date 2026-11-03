@@ -193,7 +193,7 @@ class UnknownLostFolders(unittest.TestCase):
                 patch.object(disk_registrations, 'lost', side_effect=TIMEOUT), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]) as unlisted, \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)), \
-                patch('drover.disk_cleanup.evaluate', return_value=dict(items=[], errors=[], reclaimed_bytes=0)):
+                patch.object(disk_worktrees, 'evaluate', return_value=dict(items=[], errors=[], reclaimed_bytes=0)):
             out = staged(disk_worktrees.settled, dict(request(), repos=[MACHINE]), runtime=None)
         self.assertEqual([e['repo'] for e in out['errors']], ['/repo'])
         unlisted.assert_not_called()

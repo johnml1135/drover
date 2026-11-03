@@ -4,6 +4,7 @@ import copy
 import tempfile
 import unittest
 from contextlib import ExitStack
+from inspect import signature as inspect_signature
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -160,6 +161,147 @@ class DisposableRules(unittest.TestCase):
                 self.assertEqual((ruling.action, ruling.reason_code, ruling.detail), expected)
         with self.assertRaises(TypeError):
             disk_authority.rule_unit_fresh(run, unit, SimpleNamespace(refused=(), overlaps=False))
+
+
+class Worktree:
+    """A StageEvidence fake for the reads `inspect` asks of one listed worktree; `head` is never read on a missing row."""
+    def __init__(self, *, age_s=10, snapshot=None, terminal=True):
+        self.age_s, self.terminal, self.heads = age_s, terminal, []
+        self.snapshot = snapshot if snapshot is not None else dict(tasks=[dict(id=7, state='yanked')])
+
+    def task_facts(self, path, tag):
+        return (False, self.terminal if tag else False)
+
+    def tag(self, path):
+        return dict(v=2, repo='alpha', owner='drover:7', lease_until=NOW + 100)
+
+    def status(self, path, *, expand=True):
+        return [], []
+
+    def head(self, path):
+        self.heads.append(path)
+        return 'head'
+
+    def gitdir(self, path):
+        return str(path) + '/.git'
+
+    def measure(self, path, **_):
+        return dict(files=1, bytes=1, age_s=self.age_s)
+
+    def merged(self, machine, head):
+        return False
+
+    def fresh_snapshot(self):
+        return self.snapshot
+
+
+IDLE = SimpleNamespace(busy=lambda path: False)
+
+
+class WorktreeRules(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.tree = Path(folder.name).absolute()
+        self.machine = dict(name='alpha', repo=str(self.tree.parent / 'repo'))
+        self.entry = dict(worktree=str(self.tree), HEAD='listed', branch='refs/heads/b', locked='windows')
+
+    def inspected(self, evidence, entry=None, **options):
+        run = SimpleNamespace(request=stage(), evidence=evidence)
+        with patch.object(placement, 'cleanup_side', return_value='windows'), \
+                patch.object(placement, 'worktree_side', return_value='windows'), \
+                patch.object(placement, 'cleanup_contains', return_value=True), \
+                patch.object(disk_authority, 'safe_path', return_value=True):
+            return disk_authority.inspect(run, self.machine, entry or self.entry, **options)
+
+    def test_inspect_requires_processes(self):
+        with self.assertRaises(TypeError):
+            self.inspected(Worktree())
+        self.assertEqual(self.inspected(Worktree(), processes=SimpleNamespace(busy=lambda path: True))['reason_code'],
+                         'busy')
+
+    def test_a_lazy_proof_is_taken_only_past_the_path_checks(self):
+        taken = []
+        def take():
+            taken.append('proof')
+            return IDLE
+        run = SimpleNamespace(request=stage(), evidence=Worktree())
+        with patch.object(placement, 'cleanup_side', return_value='windows'), \
+                patch.object(placement, 'worktree_side', return_value='wsl'):
+            row = disk_authority.inspect(run, self.machine, self.entry, processes=disk_authority.LazyProof(take))
+        self.assertEqual((row['reason_code'], taken), ('other_side_or_lock_note', []))
+        self.inspected(Worktree(), processes=disk_authority.LazyProof(take))
+        self.assertEqual(taken, ['proof'])
+
+    def test_stage_4_takes_no_process_proof_for_rows_its_path_checks_keep(self):
+        """No first-pass proof means no process scan and no process report rows, as before the move."""
+        from drover import disk_worktrees
+        from tests.disk_fixture import listing_answers, staged
+        with tempfile.TemporaryDirectory() as state, listing_answers([dict(worktree=str(self.tree))]), \
+                patch.object(disk_worktrees, 'registrations', return_value={}), \
+                patch.object(disk_worktrees, 'unlisted', return_value=[]), \
+                patch.object(placement, 'worktree_side', return_value='elsewhere'), \
+                patch.object(placement, 'cleanup_processes', side_effect=AssertionError('process proof taken')):
+            out = staged(disk_worktrees.settled, dict(apply=False, now=NOW, repos=[self.machine], state_dir=state))
+        self.assertEqual([row['reason_code'] for row in out['items']], ['other_side_or_lock_note'])
+
+    def test_missing_row_keeps_head_from_the_listing_and_needs_no_tip(self):
+        evidence = Worktree()
+        row = self.inspected(evidence, dict(self.entry, worktree=str(self.tree / 'gone')), processes=IDLE)
+        self.assertEqual((row['action'], row['reason_code'], row['head']), ('candidate', 'missing', 'listed'))
+        self.assertEqual(evidence.heads, [])
+
+    def test_needs_idle_gate_goes_only_after_three_days_quiet(self):
+        self.assertEqual(disk_authority.CLOSED_IDLE_S, 3 * 86400)
+        tag = Worktree().tag(None)
+        for snapshot, gated in ((dict(tasks=[dict(id=7, state='yanked')]), True),
+                                (dict(tasks=[dict(id=7, state='landed')]), False),
+                                (dict(tasks=[dict(id=8, state='yanked')]), False)):
+            with self.subTest(snapshot=snapshot):
+                run = SimpleNamespace(evidence=Worktree(snapshot=snapshot))
+                self.assertIs(disk_authority.needs_idle_gate(run, tag), gated)
+        self.assertIs(disk_authority.needs_idle_gate(SimpleNamespace(evidence=Worktree(snapshot={})), None), False)
+        for age_s, reason in ((disk_authority.CLOSED_IDLE_S - 1, 'unsettled'), (disk_authority.CLOSED_IDLE_S, 'settled')):
+            with self.subTest(age_s=age_s):
+                self.assertEqual(self.inspected(Worktree(age_s=age_s), processes=IDLE)['reason_code'], reason)
+
+    def test_rule_temp_entry_holds_only_the_static_checks(self):
+        """Protected roots, a live owner and a repository above are the rule's; the scan below is disk_temp's."""
+        state, temp = self.tree / 'state', self.tree / 'temp'
+        (temp / 'entry' / '.git').mkdir(parents=True)        # the scan refuses this descendant, not the rule
+        run = SimpleNamespace(request=stage(state_dir=str(state), repos=()),
+                              evidence=SimpleNamespace(fresh_snapshot=lambda: None))
+        with patch.object(disk_authority, 'repository_root', side_effect=lambda path: path == self.tree):
+            self.assertEqual(disk_authority.rule_temp_entry(run, temp / 'entry'), disk_authority.Ruling(
+                'keep', 'protected', 'protected subtree'))
+        for path, action in ((temp / 'entry', 'candidate'), (state / 'x', 'keep'), (state.parent, 'keep')):
+            with self.subTest(path=path), patch.object(disk_authority, 'repository_root', return_value=False):
+                self.assertEqual(disk_authority.rule_temp_entry(run, path).action, action)
+        with patch.object(disk_authority, 'safe_path', return_value=False):
+            self.assertEqual(disk_authority.rule_temp_entry(run, temp / 'entry').action, 'keep')
+        live = SimpleNamespace(request=run.request, evidence=SimpleNamespace(
+            fresh_snapshot=lambda: dict(active_worktrees=[str(temp)]), task_facts=lambda path, tag: (True, False)))
+        self.assertEqual(disk_authority.rule_temp_entry(live, temp / 'entry').action, 'keep')     # a live owner above
+        self.assertEqual(list(inspect_signature(disk_authority.rule_temp_entry).parameters), ['run', 'path'])
+
+    def test_rule_cache_file_age_and_level(self):
+        day = 86400
+        def ruled(age_days, *, mode='daily', level=None, max_age_days=None):
+            drive = dict(path='/drive', **(dict(level=level) if level else {}))
+            run = SimpleNamespace(request=stage(mode=mode, drive=drive))
+            info = SimpleNamespace(st_atime=NOW - age_days * day, st_mtime=NOW - age_days * day - 5)
+            entry = dict(path='/cache', **(dict(max_age_days=max_age_days) if max_age_days else {}))
+            return disk_authority.rule_cache_file(run, Path('/cache/f'), info, entry=entry)
+        for options, action in ((dict(age_days=31), 'candidate'), (dict(age_days=29), 'keep'),
+                                (dict(age_days=3, max_age_days=2), 'candidate'), (dict(age_days=1, max_age_days=2), 'keep'),
+                                (dict(age_days=1, mode='on-demand', level='warn'), 'candidate'),
+                                (dict(age_days=1, mode='on-demand', level='critical'), 'candidate'),
+                                (dict(age_days=1, mode='daily', level='critical'), 'keep'),
+                                (dict(age_days=1, mode='on-demand'), 'keep')):
+            with self.subTest(**options):
+                ruling = ruled(**options)
+                self.assertEqual(ruling.action, action)
+                self.assertEqual(ruling.facts['activity'], NOW - options['age_days'] * day)     # the later of atime, mtime
 
 
 class Authority(unittest.TestCase):

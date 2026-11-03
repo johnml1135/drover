@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_evidence, disk_inventory, disk_worktrees, git_client, git_worktrees, ownership, placement, \
+from drover import disk_authority, disk_evidence, disk_inventory, disk_worktrees, git_client, git_worktrees, ownership, placement, \
     placement_paths
 from drover.disk_evidence import FreshProcesses, FreshRegistrations, StageEvidence
 from drover.disk_inventory import Inventory
@@ -300,8 +300,8 @@ class Reads(unittest.TestCase):
         times.append(1440.0)
         answers = {('rev-parse', '--verify', 'HEAD'): 'abc\n', ('rev-parse', '--absolute-git-dir'): '/admin/w\n'}
         with git_reply(seen, answers):
-            disk_worktrees.inspect(StageRequest.from_wire(self.wire).decide_view(), self.machine,
-                                   dict(worktree=str(self.worktree)), evidence=evidence)
+            disk_authority.inspect(SimpleNamespace(request=StageRequest.from_wire(self.wire), evidence=evidence),
+                                   self.machine, dict(worktree=str(self.worktree)), processes=evidence.processes())
         self.assertEqual(seen, [('status', 10.0), ('rev-parse', 10.0), ('rev-parse', 10.0)])
         seen.clear()
         with git_reply(seen, answers):
@@ -357,15 +357,16 @@ class Reads(unittest.TestCase):
     def test_needs_idle_gate_route_reads_fresh_snapshot(self):
         """The closed-task gate asks the evidence for its snapshot: a closed, unlanded task gates, a stale one never."""
         evidence, tag = self.evidence([0.0]), dict(owner='drover:7')
+        run = SimpleNamespace(evidence=evidence)
         closed = dict(at=100.0, tasks=[dict(id=7, state='yanked', terminal=True, live=False)])
         with patch.object(evidence, 'fresh_snapshot', return_value=closed) as fresh:
-            self.assertIs(disk_worktrees.needs_idle_gate(evidence, tag), True)
+            self.assertIs(disk_authority.needs_idle_gate(run, tag), True)
         fresh.assert_called_once_with()
         with patch.object(evidence, 'fresh_snapshot', return_value=None):
-            self.assertIs(disk_worktrees.needs_idle_gate(evidence, tag), False)
+            self.assertIs(disk_authority.needs_idle_gate(run, tag), False)
         landed = dict(closed, tasks=[dict(id=7, state='landed')])
         with patch.object(evidence, 'fresh_snapshot', return_value=landed):
-            self.assertIs(disk_worktrees.needs_idle_gate(evidence, tag), False)
+            self.assertIs(disk_authority.needs_idle_gate(run, tag), False)
 
     def test_moved_functions_live_in_disk_evidence(self):
         for name in ('identity', 'registration_identity', 'outputs_at', 'snapshot'):

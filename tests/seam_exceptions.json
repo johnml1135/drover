@@ -40,7 +40,5 @@
 {"rule": "R6", "module": "drover/disk_preflight.py", "where": "check_cache_folders", "count": 1, "reason": "Load cycle: `config` imports disk_preflight at load, and disk_authority reaches config through disk_evidence and repos. Section 13 end row at count 1: `config`, `disk_authority` and `repos` share this one statement."},
 {"rule": "R6", "module": "drover/disk_runtime.py", "where": "cleanup_runtime", "count": 2, "reason": "Load cycle: `disk` imports disk_runtime at load, and `resources` imports `disk` at load, so both stay deferred. Section 13 end row at count 1: Task 45 joins the two statements into `from . import disk, resources`."},
 {"rule": "R6", "module": "drover/disk_runtime.py", "where": "run_detached", "count": 1, "reason": "Load cycle: disk_cleanup imports disk_runtime at load, and tests/placement_trace.json pins the enqueue string. Section 13 end row."},
-{"rule": "R6", "module": "drover/disk_worktrees.py", "where": "registrations", "count": 1, "reason": "Deferred import of disk_cleanup, disk_registrations; the layering needs none of it, so it goes in slice 6, by Task 45 at the latest."},
-{"rule": "R6", "module": "drover/disk_worktrees.py", "where": "settled", "count": 1, "reason": "Deferred import of disk_cleanup; the layering needs none of it, so it goes in slice 6, by Task 45 at the latest."},
 {"rule": "R8", "module": "drover/origin.py", "where": "fast_forward", "count": 1, "reason": "A landing read through the injected git object. Section 13 end row."}
 ]

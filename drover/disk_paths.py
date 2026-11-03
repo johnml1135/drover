@@ -4,8 +4,8 @@ from functools import partial
 from pathlib import Path
 
 from . import placement, process
-from .disk_authority import DisposableUnit, disposable_match, protected_path, rule_disposable, rule_disposable_fresh, \
-    rule_unit, rule_unit_fresh
+from .disk_authority import DisposableUnit, disposable_match, protected_path, rule_cache_file, rule_disposable, \
+    rule_disposable_fresh, rule_unit, rule_unit_fresh
 from .disk_evidence import registration_identity
 from .disk_inventory import safe_path, worktree_roots
 from .disk_stage import item
@@ -47,7 +47,6 @@ def folder_cache(run, request, entry):
         return False
     if not root.is_dir() or not safe_path(root):
         return False
-    aggressive = request.get('mode') != 'daily' and request['drive'].get('level') in ('warn', 'queue', 'hold', 'critical')
     try:
         candidates = []
         def leaves(parent):
@@ -60,10 +59,10 @@ def folder_cache(run, request, entry):
                     yield path
         for path in leaves(root):
             info = path.stat()
-            activity = info.st_atime if info.st_atime > info.st_mtime else info.st_mtime
-            if aggressive or request['now'] - activity > entry.get('max_age_days', 30) * 86400:
-                candidates.append((activity, str(path), path, info))
-        for activity, _, path, info in sorted(candidates):
+            ruling = rule_cache_file(run, path, info, entry=entry)
+            if ruling.action == 'candidate':
+                candidates.append((ruling.facts['activity'], str(path), path, info, ruling.facts['aggressive']))
+        for activity, _, path, info, aggressive in sorted(candidates):
             if run.clock.late():
                 run.stop('cache_deadline', None, [], [])
                 return True
