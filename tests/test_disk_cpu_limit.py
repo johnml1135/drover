@@ -157,8 +157,14 @@ class LimitCpus(unittest.TestCase):
 
     def test_the_worker_applies_the_configured_cap_beside_the_priority(self):
         calls = []
-        with tempfile.TemporaryDirectory() as state,                 patch.object(placement_worker, 'IS_WINDOWS', False),                 patch.object(placement_worker, 'lower_priority'),                 patch.object(placement_worker, 'limit_cpus', side_effect=calls.append),                 patch.object(os, 'setsid', create=True), patch('sys.stdout'):
-            with self.assertRaises(KeyError):   # the stage itself is not under test
+        from drover import disk_side
+        with tempfile.TemporaryDirectory() as state, \
+                patch.object(placement_worker, 'IS_WINDOWS', False), \
+                patch.object(placement_worker, 'lower_priority'), \
+                patch.object(placement_worker, 'limit_cpus', side_effect=calls.append), \
+                patch.object(disk_side, 'serve', side_effect=KeyError('stage')), \
+                patch.object(os, 'setsid', create=True), patch('sys.stdout'):
+            with self.assertRaises(KeyError):   # the stage itself is not under test: serve is stubbed
                 placement_worker.cleanup_worker(dict(_worker_id='cap', state_dir=state, paths=dict(cpu_limit=3)))
         self.assertEqual(calls, [3])
 
