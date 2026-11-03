@@ -108,3 +108,68 @@ class ProcessTree(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MarkerSweep(unittest.TestCase):
+    """On POSIX the worker's proof also ends every live process of this user carrying the run's exact marker: a
+    `process` child leads its own session, so the group sweep alone misses what it leaves behind."""
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from drover import placement_process
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.proc, self.pp = Path(temp.name), placement_process
+        for item in (patch.object(placement_process, '_PROC', self.proc),
+                     patch.object(os, 'getuid', return_value=os.stat(temp.name).st_uid, create=True)):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def task(self, pid, environ, parent=1, group=None, state='S'):
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        (entry / 'stat').write_text(f'{pid} (fake tool) {state} {parent} {group or pid} 0 0\n')
+        if isinstance(environ, bytes):
+            (entry / 'environ').write_bytes(environ)
+        elif environ == 'unreadable':
+            (entry / 'environ').mkdir()     # reading it raises, as EACCES does
+        return entry
+
+    def test_only_this_users_live_processes_with_the_exact_marker_match(self):
+        me = os.getpid()
+        self.task(me, b'DROVER_RUN_ID=tok\0', parent=999_999)       # the sweeper itself
+        self.task(999_999, b'DROVER_RUN_ID=tok\0')                    # and its parent
+        self.task(101, b'HOME=/h\0DROVER_RUN_ID=tok\0PATH=/bin\0')    # the only match
+        self.task(102, b'DROVER_RUN_ID=tok2\0')
+        self.task(103, b'XDROVER_RUN_ID=tok\0')
+        self.task(104, b'DROVER_RUN_ID=to\0')
+        self.task(105, b'DROVER_RUN_ID=tok\0', state='Z')
+        self.task(106, 'unreadable')
+        self.task(107, None)                                           # gone between listing and reading
+        (self.proc / 'self').mkdir()
+        self.assertEqual(self.pp._marked('tok'), [101])
+        with patch.object(os, 'getuid', return_value=os.stat(self.proc).st_uid + 1, create=True):
+            self.assertEqual(self.pp._marked('tok'), [])                # another user's processes are never read
+
+    def test_a_surviving_match_leaves_the_proof_unconfirmed_and_a_killed_one_confirms(self):
+        killed = []
+        clock = iter(range(0, 1000))
+        def kill(pid, sig, gone=True):
+            killed.append((pid, sig))
+            if gone:
+                import shutil
+                shutil.rmtree(self.proc / str(pid))
+        for gone, confirmed in ((False, False), (True, True)):
+            with self.subTest(gone=gone):
+                killed.clear()
+                self.task(101, b'DROVER_RUN_ID=tok\0')
+                with patch.object(self.pp, 'IS_WINDOWS', False), \
+                        patch.object(self.pp.signal, 'SIGKILL', 9, create=True), \
+                        patch.object(self.pp.os, 'kill', side_effect=lambda pid, sig: kill(pid, sig, gone)), \
+                        patch.object(self.pp.time, 'monotonic', side_effect=lambda: next(clock)), \
+                        patch.object(self.pp.time, 'sleep'):
+                    self.assertIs(self.pp.stop_ci_children(dict(pid=500, run_id='tok')), confirmed)
+                self.assertEqual(killed[0], (101, 9))
+                if not gone:
+                    import shutil
+                    shutil.rmtree(self.proc / '101')

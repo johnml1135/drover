@@ -117,8 +117,41 @@ def process_cmdlines():
     return _proc_cmdlines_windows() if IS_WINDOWS else _proc_cmdlines_linux()
 
 
+_PROC = Path('/proc')      # the POSIX process table
+
+
+def _ancestors():
+    """This process and its ancestors, which the marker sweep never touches."""
+    seen, pid = set(), os.getpid()
+    while pid > 0 and pid not in seen:
+        seen.add(pid)
+        try:
+            pid = int((_PROC / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return seen
+
+
+def _marked(run_id):
+    """Live processes of this user whose environment holds the exact entry `DROVER_RUN_ID=<run_id>`. One that cannot
+    be read (gone, EACCES) is skipped and never fails the sweep."""
+    marker, mine, skip, found = ('DROVER_RUN_ID=' + str(run_id)).encode(), os.getuid(), _ancestors(), []
+    for entry in _PROC.iterdir():
+        if not entry.name.isdigit() or int(entry.name) in skip:
+            continue
+        try:
+            if entry.stat().st_uid != mine or (entry / 'stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z':
+                continue
+            if marker in (entry / 'environ').read_bytes().split(b'\0'):
+                found.append(int(entry.name))
+        except (OSError, ValueError, IndexError):
+            continue
+    return found
+
+
 def stop_ci_children(status):
-    """After confirmed runner loss, stop its POSIX group or await Windows job closure.
+    """After confirmed runner loss, stop its POSIX group and this user's processes carrying its marker, or await
+    Windows job closure.
 
     Return False when process ownership or termination cannot be confirmed. Zombies
     cannot execute or touch the checkout and need no further signalling.
@@ -145,8 +178,15 @@ def stop_ci_children(status):
                         or row.get('ParentProcessId') in (status.get('pid'), status.get('runner_pid'))
                         for row in rows)
         else:
+            # A `process` child leads its own session, so what it leaves behind is outside the group: end it by marker.
+            marked = _marked(status['run_id'])
+            for pid in marked:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
             members = []
-            for entry in Path('/proc').iterdir():
+            for entry in _PROC.iterdir():
                 if not entry.name.isdigit():
                     continue
                 try:
@@ -155,8 +195,8 @@ def stop_ci_children(status):
                         members.append(entry)
                 except FileNotFoundError:
                     continue
-            alive = bool(members)
-            if alive and not signalled:
+            alive = bool(members) or bool(marked)
+            if members and not signalled:
                 marker = ('DROVER_RUN_ID=' + str(status['run_id'])).encode()
                 # Never signal a reused group id lacking this execution's marker.
                 if not any(marker in (entry / 'environ').read_bytes().split(b'\0') for entry in members):
@@ -172,8 +212,6 @@ def stop_ci_children(status):
             return False
         # Resolver: the kernel finishes terminating the recorded process tree.
         time.sleep(.05)
-
-
 
 
 @contextmanager
