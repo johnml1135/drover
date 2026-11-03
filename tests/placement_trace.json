@@ -124,8 +124,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 11
@@ -181,8 +181,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 11
@@ -236,8 +236,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 11
@@ -285,8 +285,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 11
@@ -513,8 +513,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 9
@@ -607,8 +607,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 9
@@ -626,7 +626,10 @@
     ],
     "input": null,
     "kwargs": [
-     "capture_output"
+     "capture_output",
+     "cwd",
+     "shell",
+     "stdin"
     ],
     "run_id": null,
     "timeout": 30
@@ -714,8 +717,8 @@
     },
     "kwargs": [
      "capture_output",
-     "shell",
-     "text"
+     "cwd",
+     "shell"
     ],
     "run_id": "t0k3n",
     "timeout": 9
@@ -733,7 +736,10 @@
     ],
     "input": null,
     "kwargs": [
-     "capture_output"
+     "capture_output",
+     "cwd",
+     "shell",
+     "stdin"
     ],
     "run_id": null,
     "timeout": 30

@@ -13,7 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk, disk_preflight, disk_runtime, disk_schedule_steps, placement, placement_exec, resources
+from drover import (config, disk, disk_preflight, disk_runtime, disk_schedule_steps, placement, placement_exec, process,
+                    resources)
 
 RUNTIME = disk_runtime     # cleanup_runtime, cleanup_call, cleanup_enqueue
 SCHEDULE = disk_schedule_steps
@@ -35,7 +36,8 @@ def normalize(value, subs):
 
 
 class Recorder:
-    """Stands in for subprocess.run: records each command and writes the worker's identity claim."""
+    """Stands in for `process.subprocess.run`: records each command, answers bytes as `process` reads them, and writes
+    the worker's identity claim."""
 
     def __init__(self, state, answers):
         self.state, self.answers, self.calls = state, list(answers), []
@@ -52,7 +54,8 @@ class Recorder:
             target = self.state / 'disk'
             target.mkdir(parents=True, exist_ok=True)
             (target / f'worker-{TOKEN}.json').write_text(json.dumps(dict(pid=4242, run_id=TOKEN)), encoding='utf-8')
-        return subprocess.CompletedProcess(command, answer.get('rc', 0), answer.get('out', ''), answer.get('err', ''))
+        return subprocess.CompletedProcess(command, answer.get('rc', 0), answer.get('out', '').encode('utf-8'),
+                                           answer.get('err', '').encode('utf-8'))
 
 
 def collect():
@@ -76,7 +79,7 @@ def collect():
             run = Recorder(state, answers)
             recovered.clear()
             patches = [patch.object(placement, 'IS_WINDOWS', windows), patch.object(placement, 'recover_ci_children', recover),
-                       patch('subprocess.run', run), patch('uuid.uuid4', return_value=SimpleNamespace(hex=TOKEN))]
+                       patch.object(process.subprocess, 'run', run), patch('uuid.uuid4', return_value=SimpleNamespace(hex=TOKEN))]
             if windows:
                 patches += [patch.object(placement, 'to_wsl_path', lambda p: '/w/' + str(p)),
                             patch.object(placement, 'cleanup_path_side', lambda p: 'wsl' if str(p).startswith('/') else 'windows'),

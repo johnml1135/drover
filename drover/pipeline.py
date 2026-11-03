@@ -37,8 +37,8 @@ def git(repo, *args, check=False, timeout=None, **kw):
     """git with an argv list. A timeout is a failed command (rc 124), never a hang."""
     try:
         r = placement.git(repo, *args, timeout=timeout, **kw)
-    except subprocess.TimeoutExpired:
-        r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {timeout}s")
+    except subprocess.TimeoutExpired as error:     # error.timeout: the limit it ran under, LONG when none was named
+        r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {error.timeout:g}s")
     if check and r.returncode:
         raise WorktreeRefused(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[-300:]}")
     return r

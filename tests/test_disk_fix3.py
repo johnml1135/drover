@@ -5,7 +5,7 @@ from pathlib import Path
 
 from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState, agreeing_proof, listing_answers
 from tests import test_disk_fix2 as fix2
-from drover import disk_runtime
+from drover import disk_runtime, process
 
 
 @contextmanager
@@ -58,7 +58,7 @@ class CancellationSafety(ProcessFreeDiskCase):
                         checks.append(True)
                         return confirmed
                     rt = self.runtime()
-                    with patch.object(subprocess, 'run', side_effect=execute), \
+                    with patch.object(process.subprocess, 'run', side_effect=execute), \
                             patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                             patch.object(placement, 'recover_ci_children', side_effect=confirm), \
                             patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
@@ -92,7 +92,7 @@ class CancellationSafety(ProcessFreeDiskCase):
             return True
         request = fix2.PathSafety.request(self, 2)
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
-                patch.object(subprocess, 'run', side_effect=KeyboardInterrupt), \
+                patch.object(process.subprocess, 'run', side_effect=KeyboardInterrupt), \
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
                     terminate=terminate, close=lambda: None)):
             try:

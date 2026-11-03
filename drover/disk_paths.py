@@ -3,7 +3,7 @@ import subprocess
 from functools import partial
 from pathlib import Path
 
-from . import git_worktrees, placement
+from . import git_worktrees, placement, process
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
 
@@ -157,15 +157,13 @@ def caches(request):
         row = item(entry['cwd'], request, 'declared_cache')
         row.update(argv=entry['argv'], action='candidate')
         if request['apply']:
-            try:
-                done = subprocess.run(entry['argv'], cwd=entry['cwd'], shell=False,
-                                      timeout=120, capture_output=True, text=True)
-                row.update(action='executed', returncode=done.returncode,
-                           output=(done.stdout + done.stderr)[-4000:])
-                if done.returncode:
+            done = process.run(process.Command(entry['argv'], 120, cwd=entry['cwd']))
+            if done.kind != 'exited':
+                out['errors'].append(dict(row, error=done.detail))
+            else:
+                row.update(action='executed', returncode=done.code, output=(done.stdout + done.stderr)[-4000:])
+                if done.code:
                     out['errors'].append(dict(row))
-            except (OSError, subprocess.TimeoutExpired) as error:
-                out['errors'].append(dict(row, error=str(error)))
         out['items'].append(row)
     return out
 

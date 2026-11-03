@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import config, disk_paths, disk_runtime, disk_side, git_worktrees, placement
-from drover import placement_host, placement_paths, placement_worker
+from drover import placement_host, placement_paths, placement_worker, process
 from tests.disk_budget_fixture import BudgetCase
 from tests.disk_fixture import DiskCase
 from tests.disk_memory import MemoryWorktreeCase
@@ -65,7 +65,7 @@ class WindowsHubOutputs(MemoryWorktreeCase):
         request = dict(stage=5, mode='on-demand', apply=False, now=self.now, repos=[machine],
                        drive=dict(path='H:/', level='warn'), paths={}, state_dir=str(self.state))
         captured, receipts = [], []
-        real_run = subprocess.run
+        real_run = process.subprocess.run
 
         def launch(argv, **kwargs):
             payload = json.loads(kwargs['input'])
@@ -84,14 +84,14 @@ class WindowsHubOutputs(MemoryWorktreeCase):
                     stack.enter_context(patch.object(module, 'IS_WINDOWS', False))
                 stack.enter_context(patch.dict(os.environ, child_env, clear=True))
                 stack.enter_context(patch.object(placement_host, 'REG', str(self.root / 'no-reg.exe')))
-                stack.enter_context(patch.object(subprocess, 'run', real_run))
+                stack.enter_context(patch.object(process.subprocess, 'run', real_run))
                 stack.enter_context(patch.object(placement_worker, 'lower_priority'))
                 stack.enter_context(patch.object(os, 'setsid'))
                 stream = stack.enter_context(patch('sys.stdout', new_callable=io.StringIO))
                 placement_worker.cleanup_worker(payload)
                 receipt = self.state / 'disk' / ('worker-' + payload['_worker_id'] + '.json')
                 receipts.append(json.loads(receipt.read_text()))
-            return SimpleNamespace(returncode=0, stdout=stream.getvalue(), stderr='')
+            return SimpleNamespace(returncode=0, stdout=stream.getvalue().encode(), stderr=b'')
 
         with ExitStack() as stack:
             for module in (placement, placement_paths, placement_host):
@@ -101,7 +101,7 @@ class WindowsHubOutputs(MemoryWorktreeCase):
                                                          return_value={'Ubuntu': 'H:', 'Other': 'C:'}))
             stack.enter_context(patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)))
             stack.enter_context(patch.object(placement, 'recover_ci_children', return_value=True))
-            stack.enter_context(patch.object(subprocess, 'run', side_effect=launch))
+            stack.enter_context(patch.object(process.subprocess, 'run', side_effect=launch))
             answer = disk_runtime.cleanup_call('wsl', request)
             # A different physical drive must still retain the output.
             other = disk_runtime.cleanup_call('wsl', dict(request, drive=dict(path='C:/', level='warn')))

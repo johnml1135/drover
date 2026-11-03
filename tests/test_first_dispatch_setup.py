@@ -62,6 +62,17 @@ class GitTimeouts(unittest.TestCase):
             result = placement.git('repo', 'status')
         self.assertEqual((result.returncode, result.stdout), (0, 'clean\n'))     # text mode's newlines, as before
 
+    def test_untimed_wrapper_timeout_names_the_long_limit(self):
+        """An untimed call through pipeline.git or landing_batch.git that times out names the limit it ran under."""
+        from drover import landing_batch, pipeline
+        for wrapper in (pipeline.git, landing_batch.git):
+            with self.subTest(wrapper=wrapper.__module__):
+                _, (located, faked, clocked) = self.git(['status'], 600.0, 600.0)
+                with located, faked, clocked:
+                    result = wrapper('repo', 'status', check=False)
+                self.assertEqual(result.returncode, 124)
+                self.assertEqual(result.stderr, 'git status timed out after 600s')
+
 
 class AllowancePaths(unittest.TestCase):
     def test_config_state_and_one_time_legacy_migration(self):

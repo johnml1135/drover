@@ -1,9 +1,8 @@
 """One parent-authorized stage request. No ledger or coordinator lock here."""
 import json
-import subprocess
 import sys
 
-from . import placement
+from . import placement, process
 from .git_worktrees import Listings
 
 
@@ -42,12 +41,11 @@ def _serve(request):
         argv = placement.trim_argv()
         result = dict(items=placement.cleanup_vhdx_report(), errors=[], reclaimed_bytes=0)
         if request['apply'] and argv:
-            try:
-                done = subprocess.run(argv, capture_output=True, text=True, timeout=120, shell=False)
-                if done.returncode:
-                    result['errors'].append(dict(reason_code='trim_unavailable', output=done.stderr[-2000:]))
-            except (OSError, subprocess.TimeoutExpired) as error:
-                result['errors'].append(dict(reason_code='trim_unavailable', error=str(error)))
+            done = process.run(process.Command(argv, 120))
+            if done.kind != 'exited':
+                result['errors'].append(dict(reason_code='trim_unavailable', error=done.detail))
+            elif done.code:
+                result['errors'].append(dict(reason_code='trim_unavailable', output=done.stderr[-2000:]))
         return result
     if stage == 2:
         from .disk_temp import temporary

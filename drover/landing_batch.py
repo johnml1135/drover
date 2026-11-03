@@ -27,8 +27,8 @@ FETCH_TIMEOUT_S = 120
 def git(repo, *args, check=True, timeout=None, **kw):
     try:
         r = placement.git(repo, *args, timeout=timeout, **kw)
-    except subprocess.TimeoutExpired:
-        r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {timeout}s')
+    except subprocess.TimeoutExpired as error:     # error.timeout: the limit it ran under, LONG when none was named
+        r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {error.timeout:g}s')
     if check and r.returncode:
         raise ci.CIError(f'git {" ".join(args)}: {r.stderr.strip()}')
     return r

@@ -5,13 +5,12 @@ Platform facts and process primitives come from placement; nothing in placement 
 import copy
 import json
 import os
-import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
-from . import compaction_hold, config, disk_state, placement
+from . import compaction_hold, config, disk_state, placement, process
 from .disk_cleanup_decisions import CleanupRuntime
 
 
@@ -89,22 +88,25 @@ def cleanup_call(side: str, request: dict) -> dict:
         command = [*argv, '-c', code, root, token]
         if placement.IS_WINDOWS and side == 'wsl':
             command = placement.wsl_control(command[1:])
-        done = subprocess.run(command, input=json.dumps(request),
-                              capture_output=True, text=True, timeout=request['paths'].get('worker_timeout_s', 1800), shell=False,
-                              env={**os.environ, 'DROVER_RUN_ID': token}, **placement.NO_WINDOW)
-        output, detail, exit_status = done.stdout, text(done.stderr), done.returncode
-        if done.returncode:
-            # A worker killed by the loader or OS says nothing on stderr; the status is then the only clue.
-            detail = (detail.rstrip() + ' | ' if detail.strip() else '') + \
-                f'worker exited with status {done.returncode} ({done.returncode & 0xFFFFFFFF:#x})'
-        if not done.returncode:
-            answer = json.loads(done.stdout)
-            if not isinstance(answer, dict):
-                answer = None
-                raise ValueError('invalid cleanup worker result')
-    except subprocess.TimeoutExpired as error:
-        reason, output, detail = 'worker_timeout', error.stdout, text(error.stderr)
-    except OSError as error:
+        ran = process.run(process.Command(command, request['paths'].get('worker_timeout_s', 1800),
+                                          env={**os.environ, 'DROVER_RUN_ID': token}, stdin=json.dumps(request)))
+        if ran.kind == 'timed_out':
+            reason, output, detail = 'worker_timeout', ran.out, text(ran.err)
+        elif ran.kind == 'unavailable':
+            reason, detail = 'worker_unavailable', ran.detail
+        else:
+            done = ran
+            output, detail, exit_status = done.stdout, done.stderr, done.code
+            if done.code:
+                # A worker killed by the loader or OS says nothing on stderr; the status is then the only clue.
+                detail = (detail.rstrip() + ' | ' if detail.strip() else '') + \
+                    f'worker exited with status {done.code} ({done.code & 0xFFFFFFFF:#x})'
+            else:
+                answer = json.loads(done.stdout)
+                if not isinstance(answer, dict):
+                    answer = None
+                    raise ValueError('invalid cleanup worker result')
+    except OSError as error:        # the Windows job, or wsl_control refusing while WSL is offline
         reason, detail = 'worker_unavailable', str(error)
     except BaseException as error:
         detail = str(error) or type(error).__name__
@@ -122,7 +124,7 @@ def cleanup_call(side: str, request: dict) -> dict:
                     # must persist it before entering serve(). A completed, failed
                     # subprocess with no claim never entered any stage. run() reaped
                     # it; unlike timeout/cancellation this proves startup termination.
-                    if done is None or not done.returncode:
+                    if done is None or not done.code:
                         raise
                     startup_failure = True
                     reason = 'worker_error'
@@ -138,9 +140,11 @@ def cleanup_call(side: str, request: dict) -> dict:
                 if placement.IS_WINDOWS and side == 'wsl':
                     # Reaping wsl.exe alone does not prove the Linux worker exited.
                     # Verify absence of this execution's marker on the owning side.
-                    proof = subprocess.run(placement.WSL().command(['python3', '-c', placement._CLEANUP_STARTUP_PROOF, token]),
-                                           capture_output=True, timeout=30, **placement.NO_WINDOW)
-                    confirmed = proof.returncode == 0
+                    proof = process.run(process.Command(
+                        placement.WSL().command(['python3', '-c', placement._CLEANUP_STARTUP_PROOF, token]), 30))
+                    if proof.kind != 'exited':      # unconfirmed, with the reason in the row, as the raise was
+                        raise OSError(proof.detail)
+                    confirmed = proof.code == 0
                 else:
                     confirmed = True
             elif not job:
@@ -198,7 +202,7 @@ def cleanup_enqueue(cfg, claim):
         proc, _ = placement.detach(argv, os.environ.copy(), stream)
     try:
         identity = placement.cleanup_identity(proc.pid)
-    except (subprocess.SubprocessError, OSError):
+    except OSError:     # cleanup_identity reads kernel facts and spawns nothing
         identity = None   # the process is running: a slow query must not release its claim and start a second one
     if not identity or identity.get('birth') in (None, 'absent'):
         identity = dict(pid=proc.pid, birth=None, side=placement.cleanup_side())   # resolved later by the hub tick

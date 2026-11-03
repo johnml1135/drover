@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_preflight, disk_runtime, placement
+from drover import config, disk_preflight, disk_runtime, placement, process
 from drover.disk_side import serve
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase, ProcessFreeDiskCase
+
+START = 'sys.path.insert(0,sys.argv[1]);'    # the worker's code imports drover only after this
 
 
 class PathSafety(ProcessFreeDiskCase):
@@ -185,9 +187,9 @@ class WorkerSafety(ProcessFreeDiskCase):
             request = json.loads(kwargs['input'])
             disk_state.save_file(self.state, 'worker-' + request['_worker_id'] + '.json', dict(
                 pid=123456789, runner_pid=123456789, run_id=request['_worker_id']))
-            return subprocess.CompletedProcess(argv, 0, json.dumps(dict(items=[], errors=[], reclaimed_bytes=0)), '')
+            return subprocess.CompletedProcess(argv, 0, json.dumps(dict(items=[], errors=[], reclaimed_bytes=0)).encode(), b'')
         runtime = self.runtime()
-        with patch.object(subprocess, 'run', side_effect=execute), \
+        with patch.object(process.subprocess, 'run', side_effect=execute), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch.object(placement, 'recover_ci_children', return_value=False), \
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(terminate=lambda: False, close=lambda: None)):
@@ -200,7 +202,7 @@ class WorkerSafety(ProcessFreeDiskCase):
     def test_composed_worker_reaps_descendants_after_success_failure_and_inner_timeout(self):
         # Child inherits the worker's group/job; its stdio does not delay parent exit.
         # The finalizer is only a hermetic test safety net, never the asserted cleanup.
-        execute = subprocess.run
+        execute, spawn = subprocess.run, process.subprocess.run     # spawn: what `process` starts the worker with
         for mode in ('success', 'failure', 'worker-failure', 'timeout'):
             observations = ('without-readiness', 'after-readiness') if mode == 'timeout' else ('default',)
             for observation in observations:
@@ -235,12 +237,13 @@ class WorkerSafety(ProcessFreeDiskCase):
                             i = argv.index('-c') + 1
                             if observation == 'without-readiness':
                                 # The controlled 0.8s startup delay exceeds the old 0.4s window.
-                                argv[i] = ('import subprocess; _run=subprocess.run; '
-                                    'subprocess.run=lambda *a,**k: _run(*a,**{**k,"timeout":.4 if k.get("timeout")==120 else k.get("timeout")}); ' + argv[i])
+                                argv[i] = argv[i].replace(START, START + 'from drover import process as _p; _run=_p.subprocess.run; '
+                                    '_p.subprocess.run=lambda *a,**k: _run(*a,**{**k,"timeout":.4 if k.get("timeout")==120 else k.get("timeout")}); ')
                             else:
                                 ready_code = f'''import subprocess,time
 from pathlib import Path
-_run = subprocess.run
+from drover import process as _p
+_run = _p.subprocess.run
 _ready = Path({str(readyfile)!r})
 def _bounded_cache_run(*args, **kwargs):
     if kwargs.get("timeout") != 120:
@@ -263,14 +266,14 @@ def _bounded_cache_run(*args, **kwargs):
         if child.poll() is None:
             child.kill()
             child.wait()
-subprocess.run = _bounded_cache_run
+_p.subprocess.run = _bounded_cache_run
 '''
-                                argv[i] = 'exec(' + repr(ready_code) + ');' + argv[i]
-                        return execute(argv, **kwargs)
+                                argv[i] = argv[i].replace(START, START + 'exec(' + repr(ready_code) + ');')
+                        return spawn(argv, **kwargs)
 
                     pid = None
                     try:
-                        with patch.object(subprocess, 'run', side_effect=bounded), \
+                        with patch.object(process.subprocess, 'run', side_effect=bounded), \
                                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
                             result = disk_runtime.cleanup_call(self.side, request)
                         if observation == 'without-readiness':

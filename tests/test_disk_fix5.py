@@ -23,10 +23,10 @@ class Startup(ProcessFreeDiskCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX session semantics')
     @integration
     def test_composed_worker_already_session_leader(self):
-        execute = subprocess.run
+        execute = process.subprocess.run     # what `process` spawns with
         def session(argv, **kw):
             if 'cleanup_worker' in ' '.join(map(str, argv)):
-                kw['start_new_session'] = True  # wsl.exe already does this
+                # `process` already starts it as a session leader, as wsl.exe does
                 kw['env'] = dict(kw['env'], WSL_DISTRO_NAME='')
             return execute(argv, **kw)
         pidfile = self.root / 'descendant.pid'
@@ -38,7 +38,7 @@ class Startup(ProcessFreeDiskCase):
                        repos=[], tasks={}, drive=dict(path=str(self.root)), paths=dict(caches=[dict(
                            argv=[sys.executable, '-c', command, str(pidfile)],
                            cwd=str(self.temp_root), placement='wsl')]))
-        with patch.object(subprocess, 'run', side_effect=session):
+        with patch.object(process.subprocess, 'run', side_effect=session):
             result = disk_runtime.cleanup_call('wsl', request)
         self.assertFalse(result['errors'], result)
         self.assertTrue(pidfile.exists(), 'the configured command really executed')
@@ -49,7 +49,7 @@ class Startup(ProcessFreeDiskCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX session semantics')
     @integration
     def test_startup_failures_are_reaped_and_release_lock_with_report(self):
-        execute = subprocess.run
+        execute = process.subprocess.run     # what `process` spawns with
         rt = self.runtime()
         for mode in ('import', 'setsid'):
             with self.subTest(mode=mode):
@@ -57,11 +57,13 @@ class Startup(ProcessFreeDiskCase):
                     if 'cleanup_worker' in ' '.join(map(str, argv)):
                         argv = list(argv)
                         i = argv.index('-c') + 1
+                        # `process` starts the worker as a session leader, so EPERM there is the accepted case;
+                        # a setsid that fails otherwise is still a startup failure.
                         prefix = ('raise ImportError("startup fixture")\n' if mode == 'import' else
-                                  'import os,errno\nos.setsid=lambda: (_ for _ in ()).throw(PermissionError(errno.EPERM,"fixture"))\n')
+                                  'import os,errno\nos.setsid=lambda: (_ for _ in ()).throw(OSError(errno.EINVAL,"fixture"))\n')
                         argv[i] = prefix + argv[i]
                     return execute(argv, **kw)
-                with patch.object(subprocess, 'run', side_effect=fail), \
+                with patch.object(process.subprocess, 'run', side_effect=fail), \
                         patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
                     result = disk_cleanup.run(self.cfg, runtime=disk_cleanup.CleanupRuntime(
                         rt.now, rt.read, disk_runtime.cleanup_call, rt.toast))
@@ -76,7 +78,7 @@ class Startup(ProcessFreeDiskCase):
     @integration
     def test_remote_startup_executes_its_composed_absence_proof(self):
         self.cfg['paths']['wsl_distro'] = 'Fixture'
-        execute = subprocess.run
+        execute = process.subprocess.run     # what `process` spawns with
         observed = []
         def locally(argv, **kw):
             observed.append(argv)
@@ -92,7 +94,7 @@ class Startup(ProcessFreeDiskCase):
         # Acquire the native lock before simulating the remote transport.
         with disk_state.CleanupLock(self.state), \
                 patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
-                patch.object(subprocess, 'run', side_effect=locally):
+                patch.object(process.subprocess, 'run', side_effect=locally):
             result = disk_runtime.cleanup_call('wsl', request)
         self.assertEqual(len(observed), 2)
         self.assertTrue(result['errors'][0]['termination_confirmed'])
@@ -209,13 +211,13 @@ class Startup(ProcessFreeDiskCase):
                 scans = []
                 def execute(argv, **kw):
                     if 'cleanup_worker' in ' '.join(argv):
-                        return subprocess.CompletedProcess(argv, 1, '', 'startup fixture')
+                        return subprocess.CompletedProcess(argv, 1, b'', b'startup fixture')
                     scans.append(argv)
-                    return subprocess.CompletedProcess(argv, 0 if absent else 1, '', '')
+                    return subprocess.CompletedProcess(argv, 0 if absent else 1, b'', b'')
                 request = dict(stage=1, apply=False, now=self.now, state_dir=str(self.state),
                                repos=[], tasks={}, drive=dict(path=str(self.root)), paths={})
                 with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
-                        patch.object(subprocess, 'run', side_effect=execute):
+                        patch.object(process.subprocess, 'run', side_effect=execute):
                     if absent:
                         with disk_state.CleanupLock(self.state):
                             result = disk_runtime.cleanup_call('wsl', request)
@@ -370,9 +372,9 @@ class Timeout(ProcessFreeDiskCase):
             disk_state.save_file(self.state, 'worker-' + request['_worker_id'] + '.json',
                                  dict(pid=123456789, run_id=request['_worker_id']))
             calls.append(kw['timeout'])
-            return subprocess.CompletedProcess(argv, 0, '{"items":[],"errors":[],"reclaimed_bytes":0}', '')
+            return subprocess.CompletedProcess(argv, 0, b'{"items":[],"errors":[],"reclaimed_bytes":0}', b'')
         request = dict(stage=1, apply=False, state_dir=str(self.state), repos=[], paths=dict(worker_timeout_s=2345))
-        with patch.object(subprocess, 'run', side_effect=execute), \
+        with patch.object(process.subprocess, 'run', side_effect=execute), \
                 patch.object(placement, 'recover_ci_children', return_value=True):
             disk_runtime.cleanup_call('wsl', request)
             disk_runtime.cleanup_call('wsl', request)

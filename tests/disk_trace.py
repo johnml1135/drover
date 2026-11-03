@@ -22,7 +22,7 @@ from tests.disk_trace_stages import STAGE_SCENES
 from tests.placement_trace import normalize
 
 TRACE = Path(__file__).with_name('disk_decision_trace.json')
-PATCH_TARGETS = (process, disk_paths)           # each module whose `subprocess` TraceGit replaces; Task 16 repoints it
+PATCH_TARGETS = (process,)                      # each module whose `subprocess` TraceGit replaces: every command reaches it
 REMOVAL = (disk_worktrees, 'remove')            # where a mid-stage change lands: after selection, before revalidation
 OUTPUT_REMOVAL = (disk_paths, 'remove_output')  # the same for a disposable path
 WORKTREE_SIDE, CLEANUP_LINK = placement.worktree_side, placement.cleanup_link

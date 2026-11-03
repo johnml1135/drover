@@ -136,7 +136,7 @@ class Hub(DiskCase):
 
     def test_snapshot_worktree_paths_are_translated_for_side_worker(self):
         import subprocess
-        from drover import placement
+        from drover import placement, process
         request = dict(stage=4, apply=False, state_dir=str(self.state), repos=[], paths={},
                        tasks=dict(at=self.now, active_worktrees=[r'H:\trees\active'],
                                   tasks=[dict(id='T-1', state='irrelevant', terminal=False, live=True,
@@ -147,8 +147,8 @@ class Hub(DiskCase):
             from drover.disk_state import save_file
             save_file(self.state, 'worker-' + captured[-1]['_worker_id'] + '.json', dict(
                 pid=123456789, run_id=captured[-1]['_worker_id']))
-            return subprocess.CompletedProcess(argv, 0, '{"items":[],"errors":[],"reclaimed_bytes":0}', '')
-        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(subprocess, 'run', side_effect=execute):
+            return subprocess.CompletedProcess(argv, 0, b'{"items":[],"errors":[],"reclaimed_bytes":0}', b'')
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(process.subprocess, 'run', side_effect=execute):
             with patch.object(placement, 'recover_ci_children', return_value=True):
                 disk_runtime.cleanup_call('wsl', request)
         snapshot = captured[0]['tasks']

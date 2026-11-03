@@ -160,7 +160,7 @@ class Hold(DiskCase):
 
     def test_the_wsl_stage_of_cleanup_does_not_call_wsl(self):
         self.live()
-        with mock.patch.object(disk_runtime.subprocess, 'run') as run, mock.patch.object(disk_runtime.placement, 'IS_WINDOWS', True):
+        with mock.patch.object(process.subprocess, 'run') as run, mock.patch.object(disk_runtime.placement, 'IS_WINDOWS', True):
             answer = disk_runtime.cleanup_call('wsl', dict(state_dir=str(self.state), repos=[], paths={}))
         run.assert_not_called()
         self.assertEqual(answer, dict(items=[], errors=[dict(reason_code='compaction_window')], reclaimed_bytes=0))

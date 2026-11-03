@@ -1,10 +1,8 @@
-import json
-import os
 import subprocess
 import sys
 from unittest.mock import patch
 from tests.disk_fixture import DiskCase, GIB, empty_result
-from drover import disk_runtime
+from tests.fakeci import FakeCommands, process_options
 
 
 class Trim(DiskCase):
@@ -30,34 +28,39 @@ class Trim(DiskCase):
                 self.assertEqual(sum(side == 'windows' and request['stage'] == 1
                                      for side, request in self.calls), retrims)
 
-    def test_composed_side_command_runs(self):
-        from drover import placement
-        marker = self.root / "record ' side.json"
-        script = self.root / 'side cache.py'
-        script.write_text('import json,os,sys\nfrom pathlib import Path\n'
-                          'Path(sys.argv[1]).write_text(json.dumps([sys.argv[2:],os.getcwd()]))\n')
+    def test_cache_command_runs_with_its_literal_argv_and_cwd(self):
+        """A declared cache command reaches `process` word for word, in its cwd, with no shell."""
+        from drover import disk_side, process
         literal = ['space value', 'line\nbreak', 'a;$(literal)']
+        argv = [sys.executable, str(self.root / 'side cache.py'), *literal]
         request = dict(stage=3, apply=True, now=self.now,
                        drive=dict(name='test-drive', path=str(self.root), free_gb=80., level='queue'),
                        repos=[], state_dir=str(self.state), tasks={},
                        paths=dict(temp_roots=[], report_roots=[], caches=[dict(
-                           argv=[sys.executable, str(script), str(marker), *literal],
-                           cwd=str(self.temp_root), placement=self.side)]))
-        # This public native-side call must run its composed worker and command.
-        # Block a cross-platform escape; no WSL or root process may run in tests.
-        original = subprocess.run
-        seen = []
-        def execute(argv, *args, **kwargs):
-            self.assertNotIn('wsl.exe', [str(a).lower() for a in argv])
-            self.assertNotIn('fstrim', [str(a).lower() for a in argv])
-            seen.append(list(argv))
-            return original(argv, *args, **kwargs)
-        with patch.object(subprocess, 'run', side_effect=execute), \
-                patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-            result = disk_runtime.cleanup_call(self.side, request)
-        self.assertTrue(seen)
-        self.assertEqual(json.loads(marker.read_text()), [literal, str(self.temp_root)])
+                           argv=argv, cwd=str(self.temp_root), placement=self.side)]))
+        fake = FakeCommands(self.root / 'fake')
+        fake.expect(argv, output='cleaned', **process_options(120, cwd=str(self.temp_root)))
+        with fake.patch(process):
+            result = disk_side._serve(request)
         self.assertEqual(result['errors'], [])
+        self.assertEqual([(row['action'], row['returncode'], row['output']) for row in result['items']],
+                         [('executed', 0, 'cleaned')])
+
+    def test_trim_failure_and_timeout_keep_trim_unavailable(self):
+        from drover import disk_side, placement, process
+        argv = ['fstrim', '-v', '/']
+        fake = FakeCommands(self.root / 'fake')
+        fake.expect(argv, returncode=1, stderr_output='fstrim: not permitted', **process_options(120))
+        fake.expect(argv, error=subprocess.TimeoutExpired(argv, 120), **process_options(120))
+        fake.expect(argv, error=FileNotFoundError(2, 'No such file or directory'), **process_options(120))
+        request = dict(stage=1, apply=True)
+        with fake.patch(process), patch.object(placement, 'trim_argv', return_value=argv), \
+                patch.object(placement, 'cleanup_vhdx_report', return_value=[]):
+            failed, timed_out, missing = (disk_side._serve(request)['errors'] for _ in range(3))
+        self.assertEqual(failed, [dict(reason_code='trim_unavailable', output='fstrim: not permitted')])
+        for errors in (timed_out, missing):
+            self.assertEqual([error['reason_code'] for error in errors], ['trim_unavailable'])
+            self.assertTrue(errors[0]['error'])
 
     def test_retrim_returns_to_windows_before_next_destructive_stage(self):
         def stage(side, request):
