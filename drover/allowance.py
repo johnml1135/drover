@@ -6,6 +6,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from . import durable
+
 STALE_S = 1800
 TAIL_BYTES = 262144
 CODEX_FILES_TRIED = 5
@@ -204,9 +206,7 @@ def set_manual(plan, remaining_pct, state=None, now=None):
     if plan not in PLANS or rem is None: raise ValueError('plan claude|codex and remaining_pct 0..100 required')
     path = _allowance_dir(state) / f'manual-{plan}.json'
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(dict(plan=plan, remaining_pct=rem, set_at=time.time() if now is None else now)), encoding='utf-8')
-    os.replace(tmp, path)
+    durable.write_json(path, dict(plan=plan, remaining_pct=rem, set_at=time.time() if now is None else now), sync=False, indent=None)
     return path
 
 

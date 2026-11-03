@@ -1,12 +1,11 @@
 """Repository answers and configuration file writing for the setup wizard."""
-import os
 import re
 import shutil
 import time
 import tomllib
 from pathlib import Path
 
-from . import config, disk_preflight, repos
+from . import config, disk_preflight, durable, repos
 from .wizard_asking import WizardError, to_bool
 
 
@@ -180,7 +179,5 @@ def write_file(state, path, text, now):
             backup = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now()))}-{n}")
             n += 1
         shutil.copy2(path, backup)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    durable.write_text(path, text, sync=False, newline="\n")
     return backup

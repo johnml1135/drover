@@ -1,12 +1,11 @@
 """Follow runner output and status files."""
 import json
-import os
 import threading
 import time
 from collections import deque
 from pathlib import Path
 
-from . import runner
+from . import durable, runner
 from .launch_usage import Usage, infrastructure_error_of, summarise, rotation_handoff
 
 TAIL_LINES = 200
@@ -33,9 +32,7 @@ class Tail:
         self.pending = 0
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text("\n".join(self.lines) + "\n", encoding="utf-8")
-            os.replace(tmp, self.path)
+            durable.write_text(self.path, "\n".join(self.lines) + "\n", sync=False, wait=durable.ROUTINE)
         except OSError as e:
             self.error = self.error or repr(e)
 

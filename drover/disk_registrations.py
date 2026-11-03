@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from . import git_worktrees, placement
+from . import durable, git_worktrees, placement
 from .disk_paths import item, safe_path, worktree_roots
 from .disk_worktrees import git, gitdir_at
 
@@ -263,7 +263,7 @@ def reregister(request, machine, path, target, branch, store):
         if branch is not None:
             holder.mkdir()
             placement.add_worktree(repo, str(place), '--no-checkout', '--', str(place), branch, error=ValueError)
-            os.replace(place / '.git', path / '.git')
+            durable.move(place / '.git', path / '.git', wait=durable.NO_WAIT)
             moved = True
         git(repo, 'worktree', 'repair', str(path))
         admin = Path(placement.native(gitdir_at(path)))

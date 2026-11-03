@@ -15,14 +15,13 @@ import copy
 import json
 import logging
 import math
-import tempfile
 import os
 import re
 import sys
 import tomllib
 from pathlib import Path
 
-from . import disk_preflight
+from . import disk_preflight, durable
 from .config_defaults import (BACKENDS, PLACEMENTS, TRACKER_KINDS, DEVICES, AUTH_MODES, SIZES,
                               NAME_RE, ENV_ALIASES, DEFAULT_SEATS, SEAT_DEFAULTS, DEFAULT_TRACKERS,
                               DEFAULTS, RESERVED, ConfigError)
@@ -319,17 +318,7 @@ def _migrate_disks(apply):
             stream.write(original)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
-                temporary = Path(stream.name)
-                stream.write(dumps(proposed))
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        durable.write_text(path, dumps(proposed), sync=True, private=True)
         load(path.parent)
         print(f"Backup: {backup}\nApplied machine migration.")
     else:

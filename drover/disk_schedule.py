@@ -1,10 +1,9 @@
 """Install independent user schedules, with report receipts gating applied mode."""
 import copy
-import os
 from pathlib import Path
 import subprocess
 
-from . import config, disk_preflight, disk_schedule_steps, disk_state, placement
+from . import config, disk_preflight, disk_schedule_steps, disk_state, durable, placement
 
 
 def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None) -> dict:
@@ -35,12 +34,7 @@ def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None)
             raise ValueError('complete a dry report for the same cleanup scope before installing apply')
         if seeded:
             path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_suffix('.toml.tmp')
-            with temporary.open('w', encoding='utf-8') as stream:
-                stream.write(config.dumps(raw))
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
+            durable.write_text(path, config.dumps(raw), sync=True)
         for filename, body in plan['files'].items():
             target = Path(filename)
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from drover.durable import (NO_WAIT, ORDINARY, RELEASE, ROUTINE, TERMINAL, Wait, move, publish, remove, rmdir, write_bytes,
                             write_json, write_text)
-from drover import durable, runner_supervise
+from drover import disk_registrations, durable, launch_handle, placement, runner_supervise
 from tests.disk_trace_scene import quick_state
 
 REAL_REPLACE, REAL_UNLINK, REAL_RMDIR, REAL_FDOPEN = os.replace, os.unlink, os.rmdir, os.fdopen
@@ -48,6 +48,28 @@ class Flaky:
 
 def on_clock(clock):
     return patch.object(durable, "time", SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep))
+
+
+def refused_site(write, name):
+    """`write`, against a reader that never lets `name` go: its steps before the first replace, the bytes it offered, its wait."""
+    clock, events, offered = Clock(), [], []
+
+    def replace(source, target):
+        if Path(target).name != name:
+            return REAL_REPLACE(source, target)
+        events.append('replace')
+        offered.append(Path(source).read_bytes())
+        raise PermissionError(13, 'refused', str(target))
+
+    def chmod(path, mode):
+        if Path(path).name.startswith(name + '.'):
+            events.append('chmod')
+
+    with on_clock(clock), patch.object(durable, 'POSIX', True), patch.object(durable.os, 'chmod', chmod), \
+            patch.object(durable.os, 'fsync', lambda fd: events.append('fsync')), \
+            patch.object(durable.os, 'replace', replace), contextlib.suppress(PermissionError):
+        write()
+    return events[:events.index('replace')], offered[0], clock.now - 1000.0
 
 
 class FullDisk:
@@ -380,6 +402,40 @@ class Publish(Base):
         with patch.object(durable.os, "replace", Flaky(fails=2)):
             move(source, self.target, wait=ORDINARY)
         self.assertEqual((source.exists(), self.target.read_text()), (False, "new"))
+
+
+class Sites(Base):
+    def test_launch_handle_tail_swallows_oserror_and_waits_routine(self):
+        tail = launch_handle.Tail(self.dir / 'tail.log')
+        tail.add('one\n')
+        done, offered, elapsed = refused_site(tail.flush, 'tail.log')
+        self.assertEqual((done, offered), (['chmod'], f'one{os.linesep}'.encode()))
+        self.assertAlmostEqual(elapsed, ROUTINE.seconds, delta=ROUTINE.step_s * 1.5)
+        self.assertIn('refused', tail.error)
+        self.assertEqual(self.temps(), [])
+        with patch.object(durable.os, 'replace', side_effect=OSError('gone')):
+            tail.flush()
+        self.assertEqual(self.temps(), [])
+
+    def test_registration_move_is_one_attempt(self):
+        orphan = self.dir / 'orphan'
+        orphan.mkdir()
+        (orphan / '.git').write_text('gitdir: old', encoding='utf-8')
+        records, refused = [], Flaky(blocked=lambda: True)
+
+        def add(repo, place, *args, **kwargs):
+            Path(place).mkdir(parents=True)
+            (Path(place) / '.git').write_text('gitdir: new', encoding='utf-8')
+
+        with patch.object(placement, 'add_worktree', side_effect=add), patch.object(placement, 'git'), \
+                patch.object(placement, 'cleanup_side', return_value='wsl'), patch.object(durable.os, 'replace', refused), \
+                patch.object(durable, 'move', wraps=durable.move) as moved, self.assertRaises(PermissionError):
+            disk_registrations.reregister(dict(now=0, state_dir=str(self.dir / 'state')), dict(name='a', repo='/repo'), orphan,
+                                          None, 'b', SimpleNamespace(append=records.append))
+        moved.assert_called_once()
+        self.assertEqual((refused.calls, self.clock.slept), (1, []))
+        self.assertEqual([record['phase'] for record in records], ['planned', 'failed'])
+        self.assertEqual((orphan / '.git').read_text(encoding='utf-8'), 'gitdir: old')
 
 
 class Remove(Base):

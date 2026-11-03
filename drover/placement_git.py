@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import compaction_hold
+from . import compaction_hold, durable
 from .placement_paths import (
     IS_WINDOWS,
     MNT_RE,
@@ -181,27 +181,15 @@ else:
         if name is not None:
             os.unlink(name)
 '''
+"""Runs inside WSL as text, so it cannot import `durable`: its one replace stays, and the seam guard cannot see it."""
 
 def _native_metadata_io(directory, filename, content):
     """Avoid a Python startup per native ownership check; match the WSL worker's atomic IO."""
-    import tempfile
     path = Path(directory) / filename
     if content is None:
         return path.read_text(encoding='utf-8') or None
-    name = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
-                                         prefix=path.name + '.', delete=False) as stream:
-            name = stream.name
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-        name = None
-        return content or None
-    finally:
-        if name is not None:
-            os.unlink(name)
+    durable.write_text(path, content, sync=True, private=True)
+    return content or None
 
 
 def worktree_metadata(worktree: str, filename: str, content: str | None = None) -> str | None:

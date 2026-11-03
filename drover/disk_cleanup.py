@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import config, disk, disk_budget, disk_runtime, disk_state, placement, repos
+from . import config, disk, disk_budget, disk_runtime, disk_state, durable, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, CleanupState, decide, decide_and_store, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
 
@@ -78,7 +78,7 @@ class _Progress:
             path = self.state_dir / 'disk' / 'progress.log'
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists() and path.stat().st_size > self.LIMIT:
-                path.replace(path.with_name('progress.log.1'))
+                durable.move(path, path.with_name('progress.log.1'))
             with path.open('a', encoding='utf-8') as stream:
                 stream.write(json.dumps(dict(at=time.time(), pid=os.getpid(), **line)) + '\n')
         except OSError:

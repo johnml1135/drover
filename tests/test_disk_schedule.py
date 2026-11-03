@@ -2,11 +2,13 @@
 import copy
 from drover import disk_runtime, disk_schedule, disk_schedule_steps
 import json
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
+from tests.test_durable import refused_site
 
 
 class Windows(DiskCase):
@@ -117,6 +119,21 @@ class Windows(DiskCase):
             disk_schedule.install(self.cfg, runner=runner)
         self.assertEqual(config._read(target)['disk_cleanup'], seeded)
         self.assertEqual(disk_state.read(self.state)['automation']['apply'], False)
+
+    def test_install_seeds_through_a_synced_ordinary_write(self):
+        from drover import config, durable, placement
+        raw = {'paths': self.cfg['paths'], 'trackers': self.cfg['trackers']}
+        target = self.state / 'config.toml'
+        target.write_text(config.dumps(raw))
+        before = target.read_bytes()
+        seeded = dict(temp_roots=[str(self.temp_root)], report_roots=[], caches=[])
+        with patch.object(placement, 'detected_cleanup_policy', return_value=seeded):
+            steps, offered, elapsed = refused_site(lambda: disk_schedule.install(self.cfg, runner=None), 'config.toml')
+        self.assertEqual(steps[-2:], ['fsync', 'chmod'])
+        self.assertEqual(offered, config.dumps(dict(raw, disk_cleanup=seeded)).replace('\n', os.linesep).encode())
+        self.assertAlmostEqual(elapsed, durable.ORDINARY.seconds, delta=durable.ORDINARY.step_s * 1.5)
+        self.assertEqual(target.read_bytes(), before)
+        self.assertEqual([path.name for path in self.state.glob('*.tmp')], [])
 
     def test_applied_scheduled_tick_is_cheap_when_healthy(self):
         from drover import disk, disk_cleanup, placement

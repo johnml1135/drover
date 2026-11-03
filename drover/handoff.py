@@ -4,13 +4,12 @@ The folder is the hub's, under the state folder, and named so any role id stays 
 `:` would open a stream. `launch_usage.rotation_handoff` is another thing: that one is for headless workers.
 """
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from . import config, placement
+from . import config, durable, placement
 
 SECTIONS = ('Goal', 'Done', 'Decisions and rejected options', 'Standing rules', 'Files touched', 'Unverified work',
             'Next step', 'What not to redo')
@@ -107,7 +106,7 @@ def follow(cfg, role_id, was, now) -> bool:
     try:
         if not valid(old):
             return False
-        os.replace(old, path_for(cfg, role_id, now))
+        durable.move(old, path_for(cfg, role_id, now))
     except OSError:
         return False
     return True
@@ -136,6 +135,4 @@ def write(path, text) -> None:
     """Whole or not at all, so nothing ever reads half a file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + '.tmp')
-    partial.write_text(text, encoding='utf-8', newline='\n')
-    os.replace(partial, path)
+    durable.write_text(path, text, sync=False, newline='\n')
