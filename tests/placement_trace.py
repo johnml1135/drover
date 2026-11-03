@@ -13,8 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import (config, disk, disk_preflight, disk_runtime, disk_schedule_steps, placement, placement_exec,
-                    placement_paths, process, resources)
+from drover import (config, disk, disk_authority, disk_preflight, disk_runtime, disk_schedule_steps, placement,
+                    placement_exec, placement_paths, process, resources)
 from drover.disk_stage import StageRequest
 
 RUNTIME = disk_runtime     # cleanup_runtime, cleanup_call, cleanup_enqueue
@@ -199,14 +199,14 @@ def collect():
         folders = {'state': state / 'inner', 'fine': tmp / 'fine'}
         for label, folder in folders.items():
             policy = dict(cfg['disk_cleanup'], caches=[dict(path=str(folder), placement='wsl')])
-            with patch.object(disk_preflight, 'repository_tree', return_value=False):
+            with patch.object(disk_authority, 'repository_tree', return_value=False):
                 try:
                     disk_preflight.check_cache_folders(dict(cfg, disk_cleanup=policy))
                     refusals[label] = 'accepted'
                 except config.ConfigError as error:
                     refusals[label] = str(error)
         policy = dict(cfg['disk_cleanup'], caches=[dict(path=str(tmp / 'fine'), placement='wsl')])
-        with patch.object(disk_preflight, 'repository_tree', return_value=True):
+        with patch.object(disk_authority, 'repository_tree', return_value=True):
             try:
                 disk_preflight.check_cache_folders(dict(cfg, disk_cleanup=policy))
             except config.ConfigError as error:

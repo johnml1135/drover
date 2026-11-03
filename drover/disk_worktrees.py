@@ -4,10 +4,9 @@ from pathlib import Path
 import subprocess
 
 from . import disk_evidence, git_client, ownership, placement
-from .disk_authority import decide, decide_and_store
+from .disk_authority import decide, decide_and_store, ignored_outside
 from .disk_evidence import _out
 from .disk_inventory import safe_path, worktree_roots
-from .disk_paths import disposable_match, repository_tree
 from .disk_state import CleanupState
 from .disk_stage import item, within
 
@@ -178,11 +177,6 @@ def registrations(request, machine, listed, runtime, run):
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         run.error(dict(repo=machine['repo'], error=str(error)))
         return None     # lost folders unknown: the caller must not judge this repo's orphans
-
-
-def ignored_outside(path, ignored, declarations):
-    return [name for name in ignored if repository_tree(Path(name), boundary=path) or
-            not disposable_match(Path(name).relative_to(path), declarations)]
 
 
 def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dict:

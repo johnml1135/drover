@@ -1,7 +1,8 @@
 """Budget purge: disposable paths go, least recently used first, until WSL used space reaches the target.
 
 This module only orders the candidates and decides when to stop. What is disposable, what is idle and what may be
-removed stay with disk_paths, whose revalidated removal is the only one. Used space inside WSL is the WSL side's own."""
+removed are disk_authority's rules, and disk_paths' revalidated removal is the only one. Used space inside WSL is the
+WSL side's own."""
 import math
 import os
 

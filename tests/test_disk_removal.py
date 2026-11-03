@@ -34,7 +34,7 @@ class Removal(MemoryCleanupCase):
                 observation = self.evidence.add(name)
                 path = Path(name).absolute()
                 observation['row']['ignored'] = [str(path / p) for p in files]
-                from drover.disk_worktrees import ignored_outside
+                from drover.disk_authority import ignored_outside
                 observation['excluded'] = ignored_outside(
                     path, observation['row']['ignored'], ['generated'])
                 result = self.cleanup(apply=True)

@@ -3,7 +3,6 @@ from pathlib import Path
 
 from . import placement
 from .config_defaults import ConfigError
-from .disk_paths import repository_tree
 
 
 def check_cache_folders(cfg):
@@ -11,7 +10,7 @@ def check_cache_folders(cfg):
     folders = [c['path'] for c in cfg['disk_cleanup']['caches'] if 'path' in c]
     if not folders:
         return
-    from . import config, repos
+    from . import config, disk_authority, repos     # disk_authority reaches config through repos
     protected = [str(config.state_dir(cfg)), cfg['paths']['repos_root'], cfg['paths']['worktrees']]
     try:
         for machine_file in config.repos_dir(cfg).glob('*.toml'):
@@ -21,7 +20,7 @@ def check_cache_folders(cfg):
                 protected.append(machine['repo'].rstrip('\\/') + '.worktrees')
         for folder in folders:
             concrete = Path(placement.native(folder))
-            if repository_tree(concrete):
+            if disk_authority.repository_tree(concrete):
                 raise ConfigError('folder cache overlaps protected repository')
             parts = placement.cleanup_parts(folder)
             if any(part in ('.git', '.venv') for part in parts):

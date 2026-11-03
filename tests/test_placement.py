@@ -235,7 +235,7 @@ class ProtectedPathParts(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'known defect, not fixed in a MOVE: cleanup_parts upper-cases on Windows, '
                      'so the lowercase .git/.venv part check never fires there; only repository_tree protects')
     def test_cache_folder_inside_dot_git_or_dot_venv_is_refused(self):
-        from drover import config, disk_preflight
+        from drover import config, disk_authority, disk_preflight
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp).resolve() / 'state'
             state.mkdir()
@@ -243,6 +243,6 @@ class ProtectedPathParts(unittest.TestCase):
                 folder = Path(tmp).resolve() / 'cache' / part / 'x'
                 cfg = config.validate({'paths': {'state_dir': str(state)}})
                 policy = dict(cfg['disk_cleanup'], caches=[dict(path=str(folder), placement='wsl')])
-                with self.subTest(part=part), patch.object(disk_preflight, 'repository_tree', return_value=False):
+                with self.subTest(part=part), patch.object(disk_authority, 'repository_tree', return_value=False):
                     with self.assertRaisesRegex(config.ConfigError, 'folder cache overlaps protected path'):
                         disk_preflight.check_cache_folders(dict(cfg, disk_cleanup=policy))

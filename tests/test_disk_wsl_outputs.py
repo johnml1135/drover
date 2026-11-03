@@ -10,10 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover.disk_stage import StageRequest
-from drover import config, disk_paths, disk_runtime, disk_side, git_worktrees, placement
+from drover import config, disk_authority, disk_paths, disk_runtime, disk_side, git_worktrees, placement
 from drover import placement_host, placement_paths, placement_worker, process
 from tests.disk_budget_fixture import BudgetCase
-from tests.disk_fixture import DiskCase, placement_processes
+from tests.disk_fixture import DiskCase, placement_processes, stage_run
 from tests.disk_memory import MemoryWorktreeCase
 
 
@@ -23,7 +23,7 @@ class OutputEligibility(DiskCase):
         tree.mkdir()
         machine = dict(repo=str(self.root / 'repo'))
         entry = dict(worktree=str(tree), locked=self.side)
-        request = dict(drive=dict(path='H:/'), now=self.now, apply=False)
+        run = stage_run(dict(drive=dict(path='H:/'), now=self.now, apply=False))
         cases = [('main_checkout', dict(repo=str(tree)), {}, {}),
                  ('not_directory', {}, dict(worktree=str(tree / 'missing')), {}),
                  ('unsafe_path', {}, {}, dict(safe=False)),
@@ -31,11 +31,12 @@ class OutputEligibility(DiskCase):
                  ('physical_drive', {}, {}, dict(contains=False))]
         for condition, repo_change, entry_change, flags in cases:
             with self.subTest(condition=condition), \
-                    patch.object(disk_paths, 'safe_path', return_value=flags.get('safe', True)), \
+                    patch.object(disk_authority, 'safe_path', return_value=flags.get('safe', True)), \
                     patch.object(placement, 'cleanup_contains', return_value=flags.get('contains', True)), \
                     patch.object(placement, 'physical_disk_path', return_value=None):
-                with self.assertRaisesRegex(ValueError, condition):
-                    disk_paths.output_evidence(request, {**machine, **repo_change}, {**entry, **entry_change}, evidence=None)
+                ruling = disk_authority.rule_disposable(run, {**machine, **repo_change}, {**entry, **entry_change})
+                self.assertEqual((ruling.action, ruling.reason_code), ('keep', 'output_evidence_unavailable'))
+                self.assertRegex(ruling.detail, f'^not an eligible owning-side worktree: {condition} ')
 
     def test_worker_receipt_records_request_and_execution_context(self):
         request = dict(_worker_id='trace', state_dir=str(self.state), stage=5, side='wsl',
@@ -165,7 +166,7 @@ class OutputStageCost(BudgetCase):
 
     def test_outputs_deadline_returns_partial_report_instead_of_worker_timeout(self):
         self.trees_with(4, 1)
-        with self.costing('output_evidence', 30.):      # the 80 s line: the repo, then each worktree, takes 30 s to judge
+        with self.costing('rule_disposable', 30.):      # the 80 s line: the repo, then each worktree, takes 30 s to judge
             answer = self.stage5(worker_timeout_s=100)
         late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
         self.assertEqual(len(late), 1)

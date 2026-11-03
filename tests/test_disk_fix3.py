@@ -14,17 +14,21 @@ from drover import disk_runtime, process
 def output_facts(path, side, registrations=None):
     """A source-free checkout: fake Git observations, real path protection probes."""
     from drover import disk_paths
+    from drover.disk_authority import Ruling
     from drover.disk_evidence import StageEvidence
     entries = [dict(worktree=str(p), HEAD='head', branch='refs/heads/test', locked=side)
                for p in (registrations if registrations is not None else [path])]
+    def judged(run, machine, entry, *fresh, **kw):
+        return Ruling('candidate', 'declared_disposable', facts=dict(
+            path=Path(entry['worktree']), head='head', tag=None, declarations=['generated']))
     def status(root, **kwargs):
         generated = Path(root) / 'generated'
         return [], [str(p) for p in generated.rglob('*') if p.is_file() or p.is_symlink()]
     with listing_answers(entries), agreeing_proof(), \
          patch.object(StageEvidence, 'status', side_effect=status) as observed_status, \
          patch.object(StageEvidence, 'tracked', return_value=[]), \
-         patch.object(disk_paths, 'output_evidence', side_effect=lambda request, machine, entry, **kw:
-                      (Path(entry['worktree']), 'head', None, ['generated'])):
+         patch.object(disk_paths, 'rule_disposable', side_effect=judged), \
+         patch.object(disk_paths, 'rule_disposable_fresh', side_effect=judged):
         yield observed_status
 
 
@@ -257,7 +261,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
         import subprocess
         from pathlib import Path
         from types import SimpleNamespace
-        from drover import placement, disk_paths
+        from drover import placement, disk_authority
         from tests.disk_fixture import served
         from drover.disk_cleanup import CleanupRuntime, evaluate
         kinds = ('repo', 'bare', 'incomplete', 'venv', 'link', 'mount', 'live')
@@ -319,7 +323,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                             # Unknown config parsing fails closed in-process; native grammar
                             # is checked by the real deletion contract.
                             with unavailable_git():
-                                excluded = disk_paths.repository_tree(candidate / 'generated', boundary=candidate)
+                                excluded = disk_authority.repository_tree(candidate / 'generated', boundary=candidate)
                             observation['excluded'] = [str(folder)] if excluded else []
                             observation['checks'].update(other_drive=kind == 'mount', busy=kind == 'live')
                             evidence.add(str(control))

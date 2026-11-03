@@ -9,7 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from drover import config, config_defaults, disk_paths, disk_worktrees, placement, placement_process, placement_proof, process
+from drover.disk_stage import StageRequest
+
+from drover import config, config_defaults, disk_authority, disk_worktrees, placement, placement_process, placement_proof, process
 
 
 class ElevatedProcesses(unittest.TestCase):
@@ -91,9 +93,11 @@ class ElevatedProcesses(unittest.TestCase):
             self.assertEqual(row['reason_code'], 'protected')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
                     patch.object(placement, 'cleanup_contains', return_value=True), \
-                    patch.object(disk_paths, 'safe_path', return_value=True):
-                found = disk_paths.output_evidence(request, machine, entry, evidence=evidence)
-            self.assertEqual(found, (path, 'head', None, ['bin']))
+                    patch.object(disk_authority, 'safe_path', return_value=True):
+                run = SimpleNamespace(request=StageRequest.from_wire(dict(request, stage=5, repos=[], paths={})),
+                                      evidence=evidence)
+                found = disk_authority.rule_disposable(run, machine, entry)
+            self.assertEqual((found.action, found.facts), ('candidate', dict(path=path, head='head', tag=None, declarations=['bin'])))
 
     def test_prior_factory_lists_migrate_but_owner_edits_survive(self):
         current = list(config_defaults.PROCESS_IGNORE)

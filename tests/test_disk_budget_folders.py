@@ -177,13 +177,13 @@ class Folders(LocalSide):
     def test_deadline_with_a_candidate_in_hand_still_names_the_unreached_worktrees(self):
         paths = [self.output(name, (9 - i) * DAY) for i, name in enumerate('abcd')]
         self.cfg['disk_cleanup']['worker_timeout_s'] = 100
-        real = disk_paths.output_evidence
+        real = disk_paths.rule_disposable
 
         def judged(*args, **options):       # each worktree judged takes 45 s of the stage's clock
             self.clock += 45.
             return real(*args, **options)
         # The 80 s line passes once the main checkout and `a` are judged, `a`'s candidate in hand.
-        with patch.object(disk_paths, 'output_evidence', judged):
+        with patch.object(disk_paths, 'rule_disposable', judged):
             result = self.purge()
         late = [i for i in result['items'] if i['reason_code'] == 'output_deadline']
         self.assertEqual(len(late), 1)

@@ -85,7 +85,8 @@ class Processes(DiskCase):
 
 class SafetyPaths(DiskCase):
     def test_containment_and_live_task_paths_accept_drive_and_extended_spellings(self):
-        from drover.disk_paths import live_tree
+        from types import SimpleNamespace
+        from drover.disk_authority import live_tree
         from drover.disk_stage import within
         from tests.disk_fixture import bare_evidence
         for root in (r'H:\Repo', '/mnt/h/repo', r'\\?\H:\repo'):
@@ -95,7 +96,7 @@ class SafetyPaths(DiskCase):
                 request = dict(now=self.now, tasks=dict(at=self.now, active_worktrees=[root], tasks=[]))
                 evidence = bare_evidence(request)
                 self.assertTrue(evidence.task_facts('/mnt/h/repo', None)[0])
-                self.assertTrue(live_tree('/mnt/h/repo/child', evidence))
+                self.assertTrue(live_tree('/mnt/h/repo/child', SimpleNamespace(evidence=evidence)))
         self.assertTrue(within(r'\\?\UNC\server\share\repo\child', '//server/share/repo'))
 
     @unittest.skipIf(os.name == 'nt', 'Linux realpath semantics')
@@ -246,7 +247,9 @@ class RunnerPids(DiskCase):
 class SafetyDecisions(DiskCase):
     def test_main_checkout_protection_uses_canonical_identity_in_both_stages(self):
         from drover.disk_worktrees import inspect
-        from drover.disk_paths import output_evidence
+        from types import SimpleNamespace
+        from drover.disk_authority import rule_disposable
+        from drover.disk_stage import StageRequest
         request = dict(now=self.now, repos=[], paths={}, drive=dict(path='H:/'))
         machine = dict(repo=r'\\?\H:\Repo', name='alpha')
         entry = dict(worktree='/mnt/h/repo', HEAD='unused')
@@ -254,8 +257,10 @@ class SafetyDecisions(DiskCase):
                 patch.object(placement, 'worktree_side', return_value='windows') as _placement_patch_11, patch('drover.placement_paths.worktree_side', _placement_patch_11), \
                 patch.object(placement, 'cleanup_contains', return_value=True):
             self.assertEqual(inspect(request, machine, entry, evidence=None)['reason_code'], 'main_checkout')
-            with self.assertRaisesRegex(ValueError, 'not an eligible'):
-                output_evidence(request, machine, entry, evidence=None)
+            run = SimpleNamespace(request=StageRequest.from_wire(dict(request, paths={})), evidence=None)
+            ruling = rule_disposable(run, machine, entry)
+            self.assertEqual((ruling.action, ruling.reason_code), ('keep', 'output_evidence_unavailable'))
+            self.assertRegex(ruling.detail, '^not an eligible owning-side worktree: main_checkout ')
 
     def test_nested_registrations_and_approved_selection_normalize_spelling(self):
         from drover import disk_evidence, disk_worktrees
@@ -296,7 +301,7 @@ class SafetyDecisions(DiskCase):
 
     def test_repository_boundary_accepts_symlink_alias_but_raw_link_is_still_unsafe(self):
         from drover.disk_inventory import safe_path
-        from drover.disk_paths import repository_tree
+        from drover.disk_authority import repository_tree
         real = self.root / 'real'
         real.mkdir()
         alias = self.root / 'alias'

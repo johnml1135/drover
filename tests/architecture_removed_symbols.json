@@ -84,7 +84,8 @@
     "drover.disk_worktrees.identity",
     "drover.disk_worktrees.snapshot",
     "drover.disk_worktrees.registration_identity",
-    "drover.disk_worktrees.overlaps_worktrees"
+    "drover.disk_worktrees.overlaps_worktrees",
+    "drover.disk_paths.output_evidence"
   ],
   "removed_receipt_fields": [
     "infra"
