@@ -143,6 +143,14 @@ class PathFacts(unittest.TestCase):
                 self.assertIs(disk_inventory.repository_config(Path('/admin')), True)
         self.assertEqual(set(asked), {git_client.NORMAL})
 
+    def test_repository_config_lets_a_programming_error_through(self):
+        """Only a failed question is evidence: a bug in the caller or a fake raises, as before the move."""
+        from pathlib import Path
+        def ask(repo, *args, timeout_s, **_):
+            raise TypeError('a bug, not an answer')
+        with patch.object(git_client, 'ask', ask), self.assertRaises(TypeError):
+            disk_inventory.repository_config(Path('/admin'))
+
 
 if __name__ == '__main__':
     unittest.main()

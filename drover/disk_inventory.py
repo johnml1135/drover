@@ -223,7 +223,7 @@ def repository_config(candidate):
             return True
         keys = [line.partition('=')[0].casefold() for line in parsed.out.splitlines()]
         return any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys)
-    except Exception:   # 3M1: any failure, unavailable Git included, is no certain parse: retain
+    except (OSError, ValueError):   # 3M1: any failed question is no certain parse: retain (git_client raises no SubprocessError)
         return True
 
 
