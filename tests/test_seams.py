@@ -343,6 +343,24 @@ class Seams(unittest.TestCase):
         self.assertLessEqual({name.split('.')[0] for name in names if project_module(name) is None},
                              set(sys.stdlib_module_names))
 
+    def test_git_client_imports_only_process_placement_git_and_placement_paths(self):
+        path, tree = 'drover/git_client.py', parsed('drover')['drover/git_client.py']
+        self.assertEqual(rule_violations('R5', {path: tree}), [])
+        names = [name for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))]
+        self.assertLessEqual({project_module(name) for name in names} - {None},
+                             {'process', 'placement_git', 'placement_paths'})
+
+    def test_r5_placement_git_imports_no_git_client_but_its_stated_rows(self):
+        """`git_client` imports `placement_git` at load, so `placement_git` may reach it only inside a function, by a
+        stated manifest row (section 13, R5; Task 27 adds them). A load-time import is never allowed to stand."""
+        found = {where: count for (rule, path, where), count in found_rows().items()
+                 if rule == 'R5' and path == 'drover/placement_git.py'}
+        stated = {row['where']: row['count'] for row in manifest(EXCEPTIONS)
+                  if row['rule'] == 'R5' and row['module'] == 'drover/placement_git.py'}
+        self.assertNotIn('<module>', found)
+        self.assertNotIn('<module>', stated)
+        self.assertEqual(found, stated)
+
     def test_the_console_flag_is_defined_only_in_its_three_homes(self):
         """Section 5.1: `process` holds the flag; frozen hub/runtime (ruling 15) and the standalone hook keep a copy."""
         def defines(node):
