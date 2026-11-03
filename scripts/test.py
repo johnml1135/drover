@@ -24,7 +24,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TIMINGS = Path(tempfile.gettempdir()) / 'drover-test-timings.json'
 MODULE_TIMEOUT_S = 900
 MAX_JOBS = 16
 SLOW_MODULE_S = 60
@@ -58,9 +57,13 @@ def default_jobs():
 def modules():
     return sorted(f'tests.{p.stem}' for p in (ROOT / 'tests').glob('test_*.py'))
 
-def load_timings():
+def timings_file(tier):
+    """Each tier keeps its own seconds per module, so an integration run does not overwrite a default run's."""
+    return Path(tempfile.gettempdir()) / f'drover-test-timings-{tier}.json'
+
+def load_timings(tier):
     try:
-        return json.loads(TIMINGS.read_text())
+        return json.loads(timings_file(tier).read_text())
     except (OSError, ValueError):
         return {}
 
@@ -134,7 +137,7 @@ def main(argv=None):
         Path(env['DROVER_TEST_TMPDIR']).mkdir(parents=True, exist_ok=True)
     env['GIT_CEILING_DIRECTORIES'] = os.pathsep.join(
         x for x in (env.get('GIT_CEILING_DIRECTORIES'), str(Path(env['DROVER_TEST_TMPDIR']).absolute().parent)) if x)
-    timings = load_timings()
+    timings = load_timings(args.tier)
     chosen.sort(key=lambda m: -timings.get(m, (ROOT / 'tests' / (m.split('.')[-1] + '.py')).stat().st_size / 1000
                                            if (ROOT / 'tests' / (m.split('.')[-1] + '.py')).exists() else 0))
     jobs = []
@@ -174,7 +177,7 @@ def main(argv=None):
         totals = {}
         for r in results:
             totals[r['module']] = totals.get(r['module'], 0) + r['seconds']
-        TIMINGS.write_text(json.dumps({**timings, **totals}))
+        timings_file(args.tier).write_text(json.dumps({**timings, **totals}))
     except OSError:
         pass
 

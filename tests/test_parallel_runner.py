@@ -41,5 +41,13 @@ class ModuleOutcome(unittest.TestCase):
         self.assertEqual(r['ran'], 1)
 
 
+class Timings(unittest.TestCase):
+    def test_each_tier_keeps_its_own_timings_file(self):
+        default, integration_tier = runner.timings_file('default'), runner.timings_file('integration')
+        self.assertNotEqual(default, integration_tier)
+        self.assertEqual((default.parent, default.name), (Path(tempfile.gettempdir()), 'drover-test-timings-default.json'))
+        self.assertEqual(integration_tier.name, 'drover-test-timings-integration.json')
+
+
 if __name__ == '__main__':
     unittest.main()
