@@ -144,6 +144,15 @@ class CherryPick(unittest.TestCase):
         self.assertEqual(self.after_pick(), [])     # no abort, and no reset over a lock the timed-out pick may hold
         self.assertEqual(self.timeouts, {600.0})    # section 5.1: the replay's reads and the pick had no timeout: LONG
 
+    def test_a_cherry_pick_that_cannot_start_raises_ci_error_and_aborts_nothing(self):
+        from drover import ci
+
+        def missing():
+            raise FileNotFoundError(2, 'No such file or directory')
+        with self.assertRaisesRegex(ci.CIError, r'cherry-pick .*: unavailable, not a conflict'):
+            self.replay(missing)
+        self.assertEqual(self.after_pick(), [])
+
     def test_formation_reads_run_at_long(self):
         from drover import landing_batch
         from tests.fakeci import git_spawns
