@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +7,59 @@ from unittest.mock import patch
 
 from drover import brief, launch
 from drover import task_access
+from tests.fakeci import git_answers
 from tests.gitfix import Repo
+
+MAIN, TOPIC = 'a' * 40, 'b' * 40
+STATUS = ('status', '--porcelain=v2', '--branch', '--untracked-files=all', '--ignored=matching')
+
+
+class Clones:
+    """An owner's checkout with `main` and, if given, `topic`, answering the git `task_access` runs to clone a read
+    checkout and to verify it. Each clone's HEAD lives in its own `.git/HEAD`, so it moves with the rename. Git is setup
+    here, not the point: the history tests below clone through real git."""
+    def __init__(self, source, topic=None):
+        self.source = source
+        source.mkdir(parents=True)
+        self.refs = {'refs/heads/main': MAIN, **({'refs/heads/topic': TOPIC} if topic else {})}
+        self.trees = {MAIN: {'base.txt': 'base'}, TOPIC: {'base.txt': 'base', **(topic or {})}}
+        self.asked = []
+
+    def __call__(self, repo, *args, timeout):
+        if args[0] != '--no-optional-locks':
+            raise AssertionError(f'git without --no-optional-locks: {args!r}')
+        args = args[1:]
+        self.asked.append((repo, args))
+        here = Path(repo)
+
+        def done(code=0, out='', err=''):
+            return subprocess.CompletedProcess(args, code, out, err)
+        if args[:2] == ('rev-parse', '--verify'):
+            sha = self.refs.get(args[2].removesuffix('^{commit}'))
+            return done(0, sha + '\n') if sha else done(128, err='fatal: Needed a single revision\n')
+        if args[:3] == ('clone', '--no-checkout', '--'):
+            (Path(args[4]) / '.git').mkdir(parents=True)
+            return done()
+        if args[:3] == ('fetch', '--no-tags', '--') or args[:2] == ('config', 'core.filemode'):
+            return done()
+        if args[:4] == ('-c', 'core.autocrlf=false', 'checkout', '--detach'):
+            for name, text in self.trees[args[4]].items():
+                (here / name).write_text(text)
+            (here / '.git' / 'HEAD').write_text(args[4])
+            return done()
+        if args == STATUS:
+            head = (here / '.git' / 'HEAD').read_text()
+            tree = self.trees.get(head, {})
+            lines = [f'# branch.oid {head}', '# branch.head (detached)']
+            exclude = here / '.git' / 'info' / 'exclude'
+            ignored = exclude.read_text().split() if exclude.exists() else []
+            for path in sorted(p for p in here.iterdir() if p.name != '.git'):
+                if path.name not in tree:
+                    lines.append(f"{'!' if path.name in ignored else '?'} {path.name}")
+                elif path.read_text() != tree[path.name]:
+                    lines.append(f'1 .M N... 100644 100644 100644 {head} {head} {path.name}')
+            return done(0, '\n'.join(lines) + '\n')
+        raise AssertionError(f'unexpected git {args!r}')
 
 
 class AccessTests(unittest.TestCase):
@@ -72,42 +125,40 @@ class AccessTests(unittest.TestCase):
 
     def test_isolated_branch_read_and_change_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Repo()
-            self.addCleanup(repo.cleanup)
-            repo.branch('topic', {'topic.txt': 'topic'})
-            cfg = {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}
-            reads = task_access.prepare(['p@topic'], cfg, Path(tmp) / 'reads')
-            dest = Path(reads[0]['path'])
-            self.assertNotEqual(dest, repo.repo)
-            self.assertEqual((dest / 'topic.txt').read_text(), 'topic')
-            self.assertEqual(repo.git('branch', '--show-current'), 'main')
-            task_access.verify(reads)
-            (dest / 'extra').write_text('bad')
-            with self.assertRaises(ValueError):
+            fake = Clones(Path(tmp) / 'source', topic={'topic.txt': 'topic'})
+            cfg = {'p': {'repo': str(fake.source), 'default_branch': 'main'}}
+            with git_answers(fake):
+                reads = task_access.prepare(['p@topic'], cfg, Path(tmp) / 'reads')
+                dest = Path(reads[0]['path'])
+                self.assertNotEqual(dest, fake.source)
+                self.assertEqual((dest / 'topic.txt').read_text(), 'topic')
+                self.assertEqual({args[0] for repo, args in fake.asked if Path(repo) == fake.source},
+                                 {'rev-parse', 'clone'}, "the owner's checkout is only read and cloned, never switched")
                 task_access.verify(reads)
+                (dest / 'extra').write_text('bad')
+                with self.assertRaises(ValueError):
+                    task_access.verify(reads)
 
     def test_verify_detects_moved_head_and_ignored_files_in_one_git_call(self):
-        repo = Repo()
-        self.addCleanup(repo.cleanup)
         with tempfile.TemporaryDirectory() as tmp:
-            reads = task_access.prepare(['p'], {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}, tmp)
-            dest = Path(reads[0]['path'])
-            real, calls = task_access.git_client.out, []
-            def counting(path, *args, **kw):
-                calls.append(args)
-                return real(path, *args, **kw)
-            with patch.object(task_access.git_client, 'out', counting):
+            fake = Clones(Path(tmp) / 'source')
+            with git_answers(fake):
+                reads = task_access.prepare(['p'], {'p': {'repo': str(fake.source), 'default_branch': 'main'}},
+                                            Path(tmp) / 'reads')
+                dest = Path(reads[0]['path'])
+                fake.asked.clear()
                 task_access.verify(reads)
-            self.assertEqual(len(calls), 1, calls)
-            (dest / '.git' / 'info' / 'exclude').write_text('hidden\n')
-            (dest / 'hidden').write_text('ignored but present')
-            with self.assertRaisesRegex(ValueError, 'changed'):
+                self.assertEqual(len(fake.asked), 1, fake.asked)
+                (dest / '.git' / 'info').mkdir()
+                (dest / '.git' / 'info' / 'exclude').write_text('hidden\n')
+                (dest / 'hidden').write_text('ignored but present')
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    task_access.verify(reads)
+                (dest / 'hidden').unlink()
                 task_access.verify(reads)
-            (dest / 'hidden').unlink()
-            task_access.verify(reads)
-            repo.git('commit', '--allow-empty', '-m', 'later', cwd=dest)
-            with self.assertRaisesRegex(ValueError, 'changed'):
-                task_access.verify(reads)
+                (dest / '.git' / 'HEAD').write_text('c' * 40)     # a commit made in the read checkout
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    task_access.verify(reads)
 
     def test_remote_tracking_only_read_keeps_history(self):
         repo = Repo()
