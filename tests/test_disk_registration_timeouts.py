@@ -185,6 +185,161 @@ class ReregisterClock(unittest.TestCase):
         self.assertEqual(asked, [('add', 4), ('repair', 4), ('reset', 4)])     # section 6.1:643: each mutating step's cap
 
 
+C1, C2, C3, C4 = ('1' * 40, '2' * 40, '3' * 40, '4' * 40)
+ZERO = '0' * 40
+BLOBS = {'only-one\n': 'a' * 40, 'everywhere\n': 'b' * 40, 'only-two\n': 'c' * 40, 'uncommitted\n': 'd' * 40}
+A, B, C, D = BLOBS.values()
+LOG = [(C3, [(ZERO, A)]), (C4, [(ZERO, C)]), (C2, []), (C1, [(ZERO, B)])]       # newest first; C2 shows no diff
+PARENTS = {C3: [C2], C4: [C1], C2: [C1], C1: []}
+TIPS = {'main': C2, 'work/one': C3, 'work/two': C4}
+C5 = '5' * 40
+HEAD_ONLY = {C5: [C4]}      # a detached HEAD's own commit, on no branch
+
+
+class Suggestions(unittest.TestCase):
+    """A report-only suggestion costs one history read per repo, not one `git log` and one `git branch --contains` per
+    file: those were the live run's 25 s and 5 s per file, five files per lost folder, every run."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, self.tmp, True)
+        self.spawns, self.detached, self.history_fails, self.head = [], False, False, C3
+
+    def folder(self, name, *files):
+        path = self.tmp / name
+        path.mkdir()
+        for age, (file, text) in enumerate(files):        # the first file is the newest
+            (path / file).write_text(text, encoding='utf-8')
+            __import__('os').utime(path / file, (1000 - age, 1000 - age))
+        return path
+
+    def reaches(self, tip, commit):
+        return tip == commit or any(self.reaches(p, commit) for p in dict(PARENTS, **HEAD_ONLY)[tip])
+
+    def contains(self, commit):
+        return sorted(name for name, tip in TIPS.items() if self.reaches(tip, commit))
+
+    def git(self, repo, *args, timeout):
+        self.spawns.append((args, timeout))
+        done = lambda out, code=0: subprocess.CompletedProcess(args, code, out, '')
+        if args == ('rev-parse', '--verify', 'HEAD'):
+            return done(self.head + '\n')
+        if args[:2] == ('rev-parse', '--verify'):
+            return done('', 1)
+        if args[0] == 'hash-object':
+            return done(BLOBS[Path(args[-1]).read_text(encoding='utf-8')] + '\n')
+        if args[0] == 'log' and any(a.startswith('--find-object=') for a in args):
+            blob = next(a for a in args if a.startswith('--find-object='))[len('--find-object='):]
+            hit = next((c for c, pairs in LOG if any(blob in pair for pair in pairs)), None)
+            return done(f'{hit}\n\n:100644 100644 {ZERO} {blob} M\tf\n' if hit else '')
+        if args[0] == 'log':
+            if self.history_fails:
+                raise SPAWN_TIMEOUT
+            return done(''.join(f'{c}\n' + ''.join(f'\n:000000 100644 {old} {new} A\tf{n}\n' for n, (old, new) in enumerate(pairs))
+                                for c, pairs in LOG))
+        if args[:2] == ('branch', '--contains'):     # what git prints, its detached HEAD first
+            on_head = self.detached and self.reaches(self.head, args[2])
+            held = (['(HEAD detached at %s)' % self.head[:9]] if on_head else []) + self.contains(args[2])
+            return done(''.join(h + '\n' for h in held))
+        if args[:2] == ('rev-list', '--branches'):
+            graph = dict(PARENTS, **(HEAD_ONLY if 'HEAD' in args else {}))
+            return done(''.join(' '.join([c, *ps]) + '\n' for c, ps in graph.items()))
+        if args[0] == 'for-each-ref':
+            return done(''.join(f'{tip} {name}\n' for name, tip in TIPS.items()))
+        if args[:3] == ('symbolic-ref', '-q', 'HEAD'):
+            return done('', 1) if self.detached else done('refs/heads/main\n')
+        raise AssertionError(f'unexpected git {args!r}')
+
+    def report(self, clock=CLOCK):
+        from tests.fakeci import git_answers
+        folders = [self.folder('f1', ('a.txt', 'only-one\n')),
+                   self.folder('f2', ('b.txt', 'everywhere\n'), ('c.txt', 'only-two\n')),
+                   self.folder('f3', ('z.txt', 'uncommitted\n'))]
+        lost = {str(p): (self.tmp / 'gone' / p.name, p.name) for p in folders}
+        with git_answers(self.git):
+            rows = disk_registrations.report(request(), MACHINE, [], lost, None, evidence=None, clock=clock)
+        return {Path(r['path']).name: r for r in rows}
+
+    def verbs(self, *verb):
+        return [args for args, _ in self.spawns if args[:len(verb)] == verb]
+
+    def test_three_folders_read_the_history_once_and_get_the_same_suggestions(self):
+        rows = self.report()
+        self.assertEqual({k: r.get('suggestion') for k, r in rows.items()}, dict(f1='work/one', f2='work/two', f3=None))
+        self.assertEqual({r['reason_code'] for r in rows.values()}, {'lost_registration_unproven'})
+        self.assertEqual(len(self.verbs('log')), 1)
+        self.assertEqual([a for a in self.verbs('log') if any(x.startswith('--find-object') for x in a)], [])
+        self.assertEqual(self.verbs('branch', '--contains'), [])
+
+    def test_the_one_history_read_takes_the_long_patience_not_one_reads_sixty_seconds(self):
+        self.report()
+        [timeout] = [t for args, t in self.spawns if args[0] == 'log']
+        self.assertGreater(timeout, git_client.NORMAL)
+
+    def test_a_detached_head_counts_as_git_branch_lists_it(self):
+        self.detached = True        # `git branch --contains` lists the detached HEAD too, so work/one is not alone
+        rows = self.report()
+        self.assertEqual({k: r.get('suggestion') for k, r in rows.items()}, dict(f1=None, f2='work/two', f3=None))
+        self.assertEqual((len(self.verbs('log')), self.verbs('branch', '--contains')), (1, []))
+
+    def test_a_detached_head_on_no_branch_still_holds_its_ancestors(self):
+        self.detached, self.head = True, C5     # past work/two's tip: work/two is no longer alone in holding C4
+        rows = self.report()
+        self.assertEqual({k: r.get('suggestion') for k, r in rows.items()}, dict(f1='work/one', f2=None, f3=None))
+        self.assertEqual(self.verbs('branch', '--contains'), [])
+
+    def test_a_failed_history_read_leaves_every_folder_unproven_and_is_not_repeated(self):
+        self.history_fails = True
+        rows = self.report()
+        self.assertEqual({(r['action'], r['reason_code']) for r in rows.values()}, {('keep', 'lost_registration_unproven')})
+        self.assertTrue(all(r['detail'].startswith('could not be matched: ') for r in rows.values()))
+        self.assertEqual(len(self.verbs('log')), 1)
+
+    def test_past_the_line_no_suggestion_is_looked_for_and_the_folder_stays_unproven(self):
+        rows = self.report(clock=StageClock(100, clock=at(85)))
+        self.assertEqual({(r['action'], r['reason_code'], r.get('suggestion')) for r in rows.values()},
+                         {('keep', 'lost_registration_unproven', None)})
+        self.assertTrue(all('past the stage line' in r['detail'] for r in rows.values()))
+        self.assertEqual(self.verbs('log') + self.verbs('hash-object'), [])
+
+
+class NewestFiles(unittest.TestCase):
+    """The suggestion's walk asks the file system once per file: on 9p each ask cost about 4 ms, and the old walk's
+    three per file took 115 s on one motif folder of 4,184 files."""
+    def test_one_stat_per_file_and_the_same_newest_files(self):
+        import os
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, tmp, True)
+        for age, name in enumerate(['src/new.txt', 'a.txt', 'src/deep/b.txt', 'node_modules/x.js', 'obj/y.dll', 'c.txt',
+                                    'd.txt', 'e.txt']):
+            (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / name).write_text(name, encoding='utf-8')
+            os.utime(tmp / name, (1000 - age, 1000 - age))
+        asked = []
+        real_stat, real_islink = os.stat, os.path.islink
+        with patch.object(os, 'stat', side_effect=lambda p, *a, **k: asked.append('stat') or real_stat(p, *a, **k)), \
+                patch.object(os.path, 'islink', side_effect=lambda p: asked.append('islink') or real_islink(p)):
+            got = disk_registrations.newest_files(tmp)
+        self.assertEqual(got, ['src/new.txt', 'a.txt', 'src/deep/b.txt', 'c.txt', 'd.txt'])
+        self.assertLessEqual(len(asked), 6)        # six files outside build output; the old walk asked 15 times
+
+    def test_links_are_neither_followed_nor_listed(self):
+        import os
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, tmp, True)
+        (tmp / 'real').mkdir()
+        (tmp / 'real' / 'f.txt').write_text('f', encoding='utf-8')
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, outside, True)
+        (outside / 'secret.txt').write_text('s', encoding='utf-8')
+        try:
+            os.symlink(outside, tmp / 'dirlink', target_is_directory=True)
+            os.symlink(tmp / 'real' / 'f.txt', tmp / 'filelink')
+            os.symlink(tmp / 'gone', tmp / 'broken')
+        except (OSError, NotImplementedError):
+            self.skipTest('no symlinks here')
+        self.assertEqual(disk_registrations.newest_files(tmp), ['real/f.txt'])
+
+
 class UnknownLostFolders(unittest.TestCase):
     def test_lost_timeout_records_the_error_and_judges_no_orphans(self):
         listed = [dict(worktree='/repo')]

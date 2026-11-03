@@ -119,38 +119,117 @@ SKIP = {'.git', 'node_modules', 'obj', 'bin', 'target', '.venv', '__pycache__'}
 
 
 def newest_files(path, count=5):
-    """The most recently written files of a directory, build output and `.git` pruned, links not followed."""
-    found = []
-    for folder, names, files in os.walk(path):
-        names[:] = [n for n in names if n not in SKIP and not os.path.islink(os.path.join(folder, n))]
-        for name in files:
-            full = os.path.join(folder, name)
-            if not os.path.islink(full):
-                found.append((os.stat(full).st_mtime, full))
+    """The most recently written files of a directory, build output and `.git` pruned, links not followed. A link is
+    known from the directory listing, so each file costs one stat: on 9p every extra ask is about 4 ms."""
+    found, folders = [], [os.fspath(path)]
+    while folders:
+        try:
+            entries = list(os.scandir(folders.pop()))
+        except OSError:
+            continue        # as os.walk did: an unreadable directory is passed over
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                if entry.name not in SKIP:
+                    folders.append(entry.path)
+            else:
+                found.append((os.stat(entry.path).st_mtime, entry.path))
     return [os.path.relpath(full, path).replace(os.sep, '/') for _, full in sorted(found, reverse=True)[:count]]
 
 
-def suggest(repo, path):
+class History:
+    """One repo's branch history, read once per report and only when a suggestion needs it: what
+    `git log --branches -1 --find-object=<blob>` answers (the newest commit whose diff holds the blob on either side)
+    and what `git branch --contains <commit>` lists, from one raw pass and one ancestry read in place of one of each
+    per file (25 s and 5 s each in the live run). A failed read is kept and raised again: a slow repo costs one
+    timeout, not one per file. `timeout_s()` is read when a read starts; `late()` is the stage clock's, past whose line
+    no suggestion is looked for."""
+    def __init__(self, repo, *, timeout_s, late=lambda: False):
+        self._repo, self._timeout_s, self._reads, self.late = repo, timeout_s, {}, late
+
+    def _once(self, key, read):
+        if key not in self._reads:
+            try:
+                self._reads[key] = (read(), None)
+            except (OSError, ValueError) as error:
+                self._reads[key] = (None, error)
+        value, error = self._reads[key]
+        if error is not None:
+            raise error
+        return value
+
+    def _git(self, *args):
+        return _out(self._repo, *args, timeout_s=self._timeout_s())
+
+    def introduced(self, blob) -> str:
+        """The commit `git log --branches -1 --find-object=<blob>` names, or ''."""
+        return self._once('log', self._log).get(blob, '')
+
+    def _log(self):
+        first, commit = {}, ''
+        for line in self._git('log', '--branches', '--format=%H', '--raw', '--no-abbrev').splitlines():
+            if line.startswith(':'):        # `:old-mode new-mode old new status\tpath`: either side holds the blob
+                for oid in line.split('\t', 1)[0].split()[2:4]:
+                    first.setdefault(oid, commit)
+            elif line.strip():
+                commit = line.strip()
+        return first
+
+    def holders(self, commit) -> list[str]:
+        """The words `git branch --contains <commit> --format=%(refname:short)` prints, split as `suggest` splits
+        them: each branch name, and for a detached HEAD holding the commit at least two words, as git's
+        `(HEAD detached at <short>)` or `(no branch, ...)` gives, so a name is then never alone."""
+        children, tips = self._once('graph', self._graph)
+        seen, stack = {commit}, [commit]
+        while stack:
+            for child in children.get(stack.pop(), ()):
+                if child not in seen:
+                    seen.add(child)
+                    stack.append(child)
+        return [word for oid, words in tips if oid in seen for word in words]
+
+    def _graph(self):
+        head = git_client.ask(self._repo, 'symbolic-ref', '-q', 'HEAD', timeout_s=self._timeout_s(), no=(1,))
+        if head.answer is git_client.Answer.UNKNOWN:
+            raise ValueError(f'git symbolic-ref failed: {head.why}')
+        detached = head.answer is git_client.Answer.NO       # `git branch` lists a detached HEAD as well
+        tips = [(self._git('rev-parse', '--verify', 'HEAD').strip(), ('(HEAD', 'detached)'))] if detached else []
+        children = {}
+        for line in self._git('rev-list', '--branches', *(['HEAD'] if detached else []), '--parents').splitlines():
+            commit, *parents = line.split()
+            for parent in parents:
+                children.setdefault(parent, []).append(commit)
+        for line in self._git('for-each-ref', 'refs/heads', '--format=%(objectname) %(refname:short)').splitlines():
+            oid, _, name = line.partition(' ')
+            if name:
+                tips.append((oid, (name,)))
+        return children, tips
+
+
+def suggest(repo, path, *, history=None):
     """Report-only: the one local branch alone holding a newest file of the directory exactly as committed (the skill's
-    SUGGEST ranked trees; this reads one blob per file and costs one `git log` each, at most five). Never applied."""
+    SUGGEST ranked trees; this reads one blob per file, at most five, against the repo's `History`). Never applied."""
+    history = history or History(repo, timeout_s=lambda: git_client.LONG)
     for name in newest_files(path):
         blob = _out(repo, 'hash-object', '--path=' + name, '--', str(path / name)).strip()
-        commit = _out(repo, 'log', '--branches', '--format=%H', '-1', '--raw', '--find-object=' + blob).split()[:1]
-        commit = commit[0] if commit else ''
+        commit = history.introduced(blob)
         if not commit:
             continue
-        held = _out(repo, 'branch', '--contains', commit, '--format=%(refname:short)').split()
+        held = history.holders(commit)
         if len(held) == 1:
             return held[0]
     return None
 
 
-def judge(machine, path, listed, rel=None):
+def judge(machine, path, listed, rel=None, *, history=None):
     """('repair', branch, why) for a proven match, ('unproven', branch, why) otherwise; a suggestion rides in why."""
     repo = machine['repo']
     branch = candidate(repo, path.name, rel)
     if branch is None:
-        maybe = suggest(repo, path)
+        if history is not None and history.late():     # report-only, so past the line it is left out, not waited for
+            return 'unproven', None, f'no branch named like {rel or path.name}; no suggestion looked for past the stage line', None
+        maybe = suggest(repo, path, history=history)
         note = f'; suggestion: {maybe} holds its newest file (not applied)' if maybe else ''
         return 'unproven', None, f'no branch named like {rel or path.name}{note}', maybe
     for entry in listed:
@@ -223,8 +302,11 @@ def lost(machine, listed):
 
 def report(request, machine, listed, found, store, *, evidence, clock):
     """Decide each lost directory; on apply, register the proven ones. Dry runs only describe. `evidence` and `clock`
-    are the stage's, which a repair tells and keeps to."""
+    are the stage's, which a repair tells and keeps to. The repo's history is read once, for every folder's suggestion,
+    with the clock's long patience: it stands in for up to ten reads per folder."""
     rows = []
+    history = History(machine['repo'], timeout_s=lambda: clock.patience(git_client.LONG) if clock else git_client.LONG,
+                      late=lambda: bool(clock and clock.late()))
     for text, (target, rel) in found.items():
         path = Path(text)
         row = item(path, 'lost_registration', repo=machine['repo'], name=machine['name'])
@@ -232,7 +314,7 @@ def report(request, machine, listed, found, store, *, evidence, clock):
             if target.exists():
                 verdict, branch, why, maybe = 'repair', None, 'interrupted registration; pointers are rewritten', None
             else:
-                verdict, branch, why, maybe = judge(machine, path, listed, rel)
+                verdict, branch, why, maybe = judge(machine, path, listed, rel, history=history)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             verdict, branch, why, maybe = 'unproven', None, f'could not be matched: {error}', None
         row.update(branch=branch, detail=why, suggestion=maybe)
