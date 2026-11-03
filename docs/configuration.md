@@ -222,13 +222,35 @@ and maps it onto the per-core scale: 100% busy counts as about 3.68 per core. Wi
 `queue_per_core = 3.0` queues at about 82% busy.
 
 Machine `[disk_cleanup]` accepts only `temp_roots = []`, `report_roots = []`
-(absolute paths) and `caches = []`. A cache entry has either literal `argv`
+(absolute paths), `caches = []` and `build_roots = []`. A cache entry has either literal `argv`
 and absolute `cwd`, or an absolute folder `path`; both require
 `placement = "windows"` or `"wsl"`. Folder entries accept `max_age_days`
 (default 30). Daily cleanup removes older files using owning-side access time,
 falling back to modification time when access time is not later. Below warn,
 folder cleanup removes least recently used files first and stops at warn. Repository machine files may declare a finite positive
 `budget_gb` for an advisory budget.
+
+`[[disk_cleanup.build_roots]]` declares a folder that builds outside any repository write into, such as the
+`CARGO_TARGET_DIR` folders under `C:\cargo-targets`. Each entry needs an absolute `path` and the `placement` its path is
+on (`"windows"` or `"wsl"`), and accepts `max_idle_hours` (default 2). Each immediate subfolder is one unit; files
+directly in the root are left alone. Stage 2 removes a unit once its newest file or folder is older than
+`max_idle_hours`, no process uses it, and, just before removal, a fresh process check and a second walk find it
+unchanged. A unit can be rebuilt, so the process check for these units, unlike the temp roots', does not count a
+process whose executable cannot be read when its name is in `process_ignore`. A unit holding a link, a junction, `.git`,
+`.venv`, repository evidence or another mounted device is kept, and links are never followed. Rows say
+`build_root_idle` (candidate or removed), `build_root_recent`, or a shared reason such as `protected` or
+`revalidation_changed`. A root may not be relative, nest with another build root, lie inside a git tree, or be, hold
+or lie inside a repository, a worktree root or the state directory; it may not be the home folder or hold it. A
+folder listed in both `temp_roots` and `build_roots` is handled once, as a build root: a temp root equal to or inside
+a build root is not scanned as temp, a temp entry that is a build root gets no temp row, and a temp entry holding one
+deeper is kept whole.
+
+```toml
+[[disk_cleanup.build_roots]]
+path = 'C:\cargo-targets'
+placement = "windows"
+max_idle_hours = 2
+```
 
 Committed `.drover/config.toml` may declare `[cleanup] disposable = []`:
 relative literal paths or globs such as `*.log` and `**/obj`, without dot

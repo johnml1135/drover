@@ -25,7 +25,7 @@ HOLDING = frozenset((
 # Kept today, yet time, an approval, or a later reading turns them into an act; `budget_usage` is the figure a budget notice is
 # judged on, and `merged_live_task` tells the owner work is merged. A reason may enter this set from HOLDING, never leave it for there.
 ON_THE_CLOCK = frozenset(('orphan', 'unsettled', 'settled', 'missing', 'quarantine_elapsed', 'lost_registration', 'temp_retained',
-                          'budget_usage', 'merged_live_task'))
+                          'budget_usage', 'merged_live_task', 'build_root_recent'))
 
 
 @dataclass(frozen=True)

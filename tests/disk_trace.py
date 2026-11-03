@@ -19,7 +19,7 @@ from tests.disk_fixture import DAY, DiskCase, served
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
 from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree, TraceGit,
                                     active, deleting_behind, quick_state, task_at, terminal)  # noqa: F401  TraceGit: this interface
-from tests.disk_trace_stages import STAGE_SCENES
+from tests.disk_trace_build import STAGE_SCENES
 from tests.placement_trace import normalize
 
 TRACE = Path(__file__).with_name('disk_decision_trace.json')

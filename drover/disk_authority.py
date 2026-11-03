@@ -1,5 +1,5 @@
 """Every rule that says whether a path may go, with no mutation: pure selection and grace transitions, the one place
-quarantine state is stored, the worktree check order, and the disposable, temp and cache rules. A rule answers with a
+quarantine state is stored, the worktree check order, and the disposable, temp, build-root and cache rules. A rule answers with a
 Ruling and never raises to mean "no"; a read that fails still raises, and the stage keeps the row."""
 import copy
 import fnmatch
@@ -140,6 +140,11 @@ class LazyProof:
         return self._taken().reason
 
 
+def process_reason(processes):
+    """Why a proof finds everything busy, or None: a proof without a `reason`, as a test's may be, gives none."""
+    return getattr(processes, 'reason', None)
+
+
 def needs_idle_gate(run, tag):
     """True when the tag's task is closed without landing (yanked, abandoned, handed back): its tree may hold
     undecided work, so it goes only once quiet for three days. Anything unclear is not a reason to hurry."""
@@ -172,7 +177,7 @@ def inspect(run, machine, registration, *, processes) -> dict:
         return decision()
     busy = processes.busy       # a LazyProof is taken here, before the task facts, where the proof always was
     checks.update(busy=evidence.task_facts(path, None)[0] or busy(str(path)),
-                  process_reason=getattr(processes, 'reason', None))
+                  process_reason=process_reason(processes))
     if checks['busy']:
         return decision()
     checks['protected'] = not safe_path(path)
@@ -415,6 +420,36 @@ def rule_temp_entry(run, path) -> Ruling:
             any(repository_root(parent) for parent in path.parents):
         return Ruling('keep', 'protected', 'protected subtree')
     return Ruling('candidate', 'temp_retained')      # the row's code until its scan, age and process proof are read
+
+
+def rule_build_unit(run, path, measured, *, entry, processes) -> Ruling:
+    """One immediate subfolder of the declared build root `entry`, as its walk `measured` it (files, bytes, age_s, the
+    age of its newest path): a link, another drive, or what `rule_temp_entry` protects keeps it, as does activity within
+    the entry's `max_idle_hours` or a process `processes` finds using it. `processes` is a proof with the budget
+    treatment: a build unit is regenerable output (ledger ruling, external build roots)."""
+    request = run.request
+    if placement.cleanup_link(path) or not path.is_dir():
+        return Ruling('keep', 'protected', 'build unit is a link or not a folder')
+    if not placement.cleanup_contains(request.drive['path'], str(path)):
+        return Ruling('keep', 'drive_unproven')
+    static = rule_temp_entry(run, path)
+    if static.action != 'candidate':
+        return static
+    if measured['age_s'] < entry.get('max_idle_hours', 2) * 3600:
+        return Ruling('keep', 'build_root_recent')
+    if processes.busy(str(path)):
+        return Ruling('keep', process_reason(processes) or 'process_busy')
+    return Ruling('candidate', 'build_root_idle')
+
+
+def rule_build_unit_fresh(run, path, measured, again, *, entry, processes: FreshProcesses) -> Ruling:
+    """A build unit's last look before it goes: walked `again` after a process proof taken now, it must be as the first
+    pass `measured` it, and pass `rule_build_unit` on that proof."""
+    if not isinstance(processes, FreshProcesses):
+        raise TypeError('rule_build_unit_fresh takes a FreshProcesses, taken now')
+    if again != measured:
+        return Ruling('keep', 'revalidation_changed', 'build unit changed since it was measured')
+    return rule_build_unit(run, path, again, entry=entry, processes=processes.proof)
 
 
 def rule_cache_file(run, path, info, *, entry) -> Ruling:

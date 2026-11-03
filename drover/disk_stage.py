@@ -52,7 +52,7 @@ class StageRequest:
 
     def for_side(self, side: str, convert: Callable[[str], str]) -> 'StageRequest':
         """The request a worker on `side` reads when it runs across sides: its paths converted by `convert`, and only
-        that side's temp roots, report roots and caches kept (disk_runtime.py:39-59)."""
+        that side's temp roots, report roots, caches and build roots kept (disk_runtime.py:39-59)."""
         value = self.to_wire()
         value['side'] = side
         value['state_dir'] = convert(value['state_dir'])
@@ -75,6 +75,9 @@ class StageRequest:
         for cache in policy['caches']:
             key = 'path' if 'path' in cache else 'cwd'
             cache[key] = convert(cache[key])
+        if 'build_roots' in policy:
+            policy['build_roots'] = [dict(entry, path=convert(entry['path'])) for entry in policy['build_roots']
+                                     if placement_paths.cleanup_path_side(entry['path']) == side]
         return StageRequest.from_wire(value)
 
     def decide_view(self) -> dict:

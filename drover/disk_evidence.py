@@ -91,7 +91,7 @@ class StageEvidence:
                                   timeout_s=lambda: clock.patience(git_worktrees.LISTING_TIMEOUT_S))
         self._prove = prove
         self._query = processes
-        self._proof = None
+        self._proof = self._regenerable = None
         # Every proof's diagnostics, the first pass's and each fresh one's, by (pid, name), and its query failures.
         self._diagnostics, self._failures = {}, []
 
@@ -119,15 +119,22 @@ class StageEvidence:
         """This stage's own `reregister` added this pointer."""
         self._listings.repaired(repo, path)
 
-    def processes(self):
-        """The first pass's process proof: one snapshot per stage run."""
+    def processes(self, *, regenerable=False):
+        """The first pass's process proof: one snapshot per stage run. `regenerable` asks for the one proof for
+        regenerable output, an external build root's, which takes the budget treatment: the owner's process_ignore
+        names clear a process whose executable cannot be read (placement_proof `_cleared`)."""
+        if regenerable:
+            if self._regenerable is None:
+                self._regenerable = self._snapshot(budget=True)
+            return self._regenerable
         if self._proof is None:
             self._proof = self._snapshot()
         return self._proof
 
-    def fresh_processes(self) -> FreshProcesses:
-        """A process proof taken now, always a new snapshot, its diagnostics joining `process_rows`."""
-        return FreshProcesses(self._snapshot(), _TOKEN)
+    def fresh_processes(self, *, regenerable=False) -> FreshProcesses:
+        """A process proof taken now, always a new snapshot, its diagnostics joining `process_rows`; `regenerable` as
+        for `processes`."""
+        return FreshProcesses(self._snapshot(budget=regenerable), _TOKEN)
 
     def fresh_registrations(self, repo: str, target, own, *, pointer: bool) -> FreshRegistrations:
         """The fresh proof of ruling 13, read now: `own`, the worktree, proven against this stage's listing in every
@@ -136,11 +143,11 @@ class StageEvidence:
                                                      timeout_s=self._clock.patience(git_worktrees.PROOF_TIMEOUT_S))
         return FreshRegistrations(proof.refused, overlaps(target, own, proof.reach), _TOKEN)
 
-    def _snapshot(self):
+    def _snapshot(self, *, budget=False):
         request = self._request
         return self._noted(self._query(
             paths=request.policy, state_dir=request.state_dir, inventory_id=request.inventory_id,
-            stage=request.stage, drive=request.drive, budget=bool(request.budget)))
+            stage=request.stage, drive=request.drive, budget=bool(request.budget) or budget))
 
     def _noted(self, proof):
         _, unreadable, failure = placement.proof_diagnostics(proof)

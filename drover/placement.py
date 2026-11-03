@@ -81,6 +81,9 @@ def cleanup_scope(drive_path, paths):
         scoped[name] = list(dict.fromkeys(native(p) for p in roots if belongs(p)))
     scoped['caches'] = [entry for entry in scoped.get('caches', [])
                         if entry['placement'] == cleanup_side() and belongs(entry.get('path', entry.get('cwd')))]
+    if 'build_roots' in scoped:
+        scoped['build_roots'] = [dict(entry, path=native(entry['path'])) for entry in scoped['build_roots']
+                                 if entry['placement'] == cleanup_side() and belongs(entry['path'])]
     for entry in scoped['caches']:
         key = 'path' if 'path' in entry else 'cwd'
         entry[key] = native(entry[key])
