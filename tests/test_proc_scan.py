@@ -1,6 +1,7 @@
 """The Windows process scan resolves every owner in one batched query, not one CIM call per process."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -49,6 +50,11 @@ TREE = ('import subprocess, sys, time\n'
         "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(6)'])\n"
         'print(grandchild.pid, flush=True)\n'
         'time.sleep(6)\n')
+# The child leaves a descendant that holds no pipe and exits at once, as a daemon started by a tool would.
+LINGER = ('import subprocess, sys\n'
+          "descendant = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'],\n"
+          '                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+          'print(descendant.pid, flush=True)\n')
 
 
 def gone(pid, within):
@@ -87,6 +93,16 @@ class ProcessTree(unittest.TestCase):
         self.assertLess(result.elapsed_s, 3.5)
         self.assertTrue(result.out.strip(), 'the child printed no grandchild pid before the timeout')
         self.assertTrue(gone(int(result.out.split()[0]), within=2), 'the grandchild outlived the timeout')
+
+    def test_a_descendant_survives_a_run_that_ends_in_time(self):
+        result = process.run(process.Command((sys.executable, '-c', LINGER), 10))
+        self.assertEqual((result.kind, result.code), ('exited', 0))
+        pid = int(result.out)
+        try:
+            self.assertFalse(gone(pid, within=0.5), 'closing the job ended a descendant of a run that finished')
+        finally:
+            if not gone(pid, within=0):
+                os.kill(pid, signal.SIGTERM)
 
 
 if __name__ == '__main__':

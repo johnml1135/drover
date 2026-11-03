@@ -6,7 +6,8 @@ failed raises nothing: it is a `Result`. Only a bad command raises, as a caller'
 
 A timeout ends the whole tree, not only the direct child, and the run returns within a bounded time even when a
 grandchild holds the output pipes (Git\\cmd\\git.exe starts mingw64's git.exe so). On Windows the child starts
-suspended inside a job object that is killed if this process dies; on POSIX it leads a session of its own.
+suspended inside a job object that is killed if this process dies; on POSIX it runs in a new session, which it
+leads, with no controlling terminal.
 """
 import logging
 import math
@@ -166,11 +167,12 @@ def _run_tree(argv, *, timeout, capture_output, shell, cwd=None, env=None, stdin
                 pipe.close()
         raise
     out, err = bytearray(), bytearray()
-    threads = [_pump(child.stdout, out), _pump(child.stderr, err)]
-    if input is not None:
-        threads.append(_feed(child.stdin, input))
-    ended = False
+    threads, ended = [], False
     try:
+        threads.append(_pump(child.stdout, out))
+        threads.append(_pump(child.stderr, err))
+        if input is not None:
+            threads.append(_feed(child.stdin, input))
         if not _join(child, threads, started + timeout):
             ended = True
             _end(child, job)
@@ -178,9 +180,12 @@ def _run_tree(argv, *, timeout, capture_output, shell, cwd=None, env=None, stdin
             raise _subprocess.TimeoutExpired(argv, timeout, output=bytes(out), stderr=bytes(err))
     except _subprocess.TimeoutExpired:
         raise
-    except BaseException:       # cancelled: the tree goes too
+    except BaseException:       # cancelled, or a thread would not start: the tree goes too
         ended = True
         _end(child, job)
+        for pipe in (child.stdout, child.stderr, child.stdin)[len(threads):]:
+            if pipe:            # a pipe no thread took; a started thread closes its own
+                pipe.close()
         raise
     finally:
         _release(job, ended)
