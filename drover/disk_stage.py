@@ -250,12 +250,14 @@ class StageRun:
                       repos=[m['repo'] for m in later]))
         self.checkpoint()
 
-    def finish(self, **extra) -> None:
-        """The scope errors, after the stage's own as today, then the `end` line, carrying `extra`."""
+    def finish(self, *, partial: bool = False, **extra) -> None:
+        """The scope errors, after the stage's own as today, then the `end` line, carrying `extra`. The end is partial
+        when `stop` ran, or when the stage says so: the budget purge stops between folders with a row of its own."""
         for row in self.scope_errors:
             self.error(row)
         self.checkpoint()
-        self._pending.append(_line(end=dict(reclaimed_bytes=self._reclaimed, partial=self._stopped, **extra)))
+        end = dict(reclaimed_bytes=self._reclaimed, partial=self._stopped or partial, **extra)
+        self._pending.append(_line(end=end))
         self.checkpoint()
 
 

@@ -94,3 +94,38 @@ Mutants a pre-merge gate should run (none run here, by the memory rule): `>=` to
   - `cache_deadline_at_the_start` now declares a command before its folder, so the per-entry check is the only gate in front of the command.
   - `approved_past_the_deadline` now jumps the clock past the line, and past the worker timeout, as its removal starts. It used to run with a worker timeout of 0, which gives a mutation cap of 0, and `process` refuses a timeout of 0. That would have moved the scene towards keeping with the error "a command needs a positive, finite timeout, not 0.0". A worker timeout of 0 is not valid config (`config_validation`: finite and positive), and the scene exists to show that an approved removal past the line still removes, so I restated it rather than record the move.
 - **`disk_stage.result()` is deleted.** It is listed in `qualified_names`, and spec 7.4's row and section 4's `disk_stage` sentence are amended.
+
+## Task 36: a cut-off stage is partial
+
+- **`stage_partial`.** `disk_cleanup._cut_off(result, stage, side, answer)` runs on every answer at both stage-6 call sites, `_serve_stage` and the direct report-only call at disk_cleanup.py:278-284. When the answer is partial, the stage is 2, 3 or 6, the answer is complete and the run is not applied, it adds the error row `dict(stage, side, reason_code='stage_partial')`. The check before the stamp (now disk_cleanup.py:336, `all(e.get('reason_code') == 'excluded_repo' ...)`) is unchanged and refuses it. So a partial stage 6 authorises neither apply nor `remove_approved`, and the gates at disk.py:481 and disk_schedule.py:34 read the same missing stamp. An incomplete answer (`complete` False) gets no `stage_partial`: it already carries `cleanup_call`'s `worker_timeout`, `worker_failed` or `compaction_window` row, and every incomplete answer `cleanup_call` returns has one. An applied run adds none: it never stamps. An earlier complete report's stamp stands, because nothing clears `report_scope`.
+- **Stages 4 and 5 (ruling 7).** `_cut_off` leaves them alone, so a stage 4 or 5 that stopped at its line gives an item, no error, and the stamp. `test_disk_stage.CutOff.test_a_stage_4_or_5_stopped_at_its_line_stamps_as_today` pins it at `run` itself, with answers built by a real `StageRun.stop` and `finish`.
+- **Budget usage mark.** Any partial stage 6 answer sets `result['budget_usage_partial'] = True`, at both call sites. A direct stage 6 call that raises sets it too, because that side sent no rows, so the repo's usage is unknown, not zero (O7). `disk_cleanup_notices._notices` then judges no budget for that run: no episode opens and none closes. The mark lives in `result`, which `pending-notices-*.json` saves, so `retry_notices` reads it as well. When the key is absent, as in results saved before this task, the budget is judged as today.
+- **Readers of `budget_usage`** at this commit, by `grep -rn budget_usage drover hub scripts`:
+  - `drover/disk_cleanup_notices.py:70`: the judgement. It is the only reader that decides anything, and it now skips a marked run.
+  - `drover/disk_inventory.py:110`: `WHOLE`. These rows cross whole and are never grouped, so it doesn't read usage.
+  - `drover/disk_paths.py:458`: the producer, in stage 6's `report`.
+  - Nothing in `hub/` or `drover/ledger` reads the rows. `ledger/disk_notices` only replays the report's items whole.
+- **Carry (a), the purge cut off between folders.** It is now partial. `purge` returns `partial=late` beside `budget`, and `StageRun.finish(*, partial=False, **extra)` writes `end.partial = stopped or partial`. Before this task, an applied purge stopped by `clock.late()` between folders sent `end.partial` False, because it adds its own `budget_deadline` report row rather than calling `stop`. No outcome moves:
+  - Stage 5 is not in `stage_partial`'s set.
+  - The receipt's `partial` is still `status == 'deadline' and reclaimed > 0`, the value `tick` retries on.
+  - The decision trace doesn't record `end`.
+  
+  `test_disk_budget_folders.Folders.test_deadline_stops_between_folders_and_reports_true_bytes` now asserts that the stage 5 answer is complete and partial.
+- **Not changed, though the brief lists them:**
+  - `drover/disk_runtime.py`: `cleanup_call` already returns `complete` and `partial`, and the run-level rule needs the run's `apply`, which the coordinator holds.
+  - `tests/seam_exceptions.json`: no import moved.
+  - `tests/architecture_removed_symbols.json`: no symbol went.
+  - `tests/disk_decision_trace.json`: the trace is worker-level, through `disk_side.serve`, and `stage_partial` and the mark are added by the coordinator.
+- **Test files.** The frozen oracles `todays_translation`, `ROOTS`, `WHOLE`, `root_of` and `todays_compact` moved verbatim from `tests/test_disk_stage.py` to the new `tests/disk_stage_oracles.py`. That made room under `MAX_LINES` for `CutOff`.
+
+### Trace rows changed by Task 36
+
+None. `git diff --exit-code 98fa8ab -- tests/disk_decision_trace.json` prints nothing after `--write`, and `--compare` against 98fa8ab prints nothing. The slice's cumulative list is the table at the top of this report: 12 rows over 7 new scenes, all `report_added` and none `towards_deletion`. `--compare` against 16a3623 at this commit prints exactly those 12 and exits 0.
+
+### Slice exit
+
+- **One clock.** The only `StageClock` built in `drover/` is `disk_side.py:22`'s `clock_factory(...)`, and every stage reads `run.clock`. The only other time read in a stage module is `disk_temp.py:76`/`:120`'s `time.monotonic()`, which measures `temp_root_elapsed` for its report row and decides nothing. The stages keep their rows, and the trace check is clean.
+- **`disk_evidence`.** `StageEvidence` holds the `Inventory` (`inventory`), the `Listings` (`listings`, `listed`, `row`, `took`, `repaired`), the process proof (`processes`, `fresh_processes`) and its diagnostics (`process_rows`).
+- **`can_mutate()` guards `planned`.** At disk_worktrees.py:354 it comes before `phase='planned'` at :361, and at disk_registrations.py:259 before :262. Stage 3's removals are gated at disk_paths.py:149 and :199. These are the only two `planned` journal writers.
+- **Row 5's symbols.** `drover.disk_budget.deadline`, `drover.disk_budget._clock`, `drover.disk_paths.deadline_row`, `drover.disk_paths.item`, `drover.disk_paths.result` and `drover.disk_paths.within` are all in `qualified_names`, and none is defined in `drover/`.
+- **R6 fell.** It went from 24 rows holding 36 imports at 16a3623 to 20 rows holding 23 at this commit.

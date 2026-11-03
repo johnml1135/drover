@@ -1,13 +1,19 @@
-"""`StageRequest` and `StageClock`: what a stage is asked and how long it has. The clock is faked through `clock=`."""
+"""`StageRequest` and `StageClock`: what a stage is asked and how long it has. The clock is faked through `clock=`.
+`CutOff` reads a stage cut off at its deadline through `disk_cleanup.run`."""
 import copy
-import heapq
 import io
 import json
 import unittest
+from contextlib import redirect_stderr
+from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import patch
 
-from drover import disk_inventory, placement_paths
+from drover import disk, disk_cleanup, disk_inventory, disk_runtime, disk_schedule, disk_schedule_steps, disk_state
+from drover import placement_paths
 from drover.disk_stage import StageAbandoned, StageClock, StageRequest, StageRun, read_rows
+from tests.disk_fixture import DiskCase, empty_result
+from tests.disk_stage_oracles import ROOTS, root_of, todays_compact, todays_translation
 
 
 def at(*times):
@@ -20,35 +26,6 @@ def at(*times):
 
 def clock_at(elapsed, timeout_s=1800, **options):
     return StageClock(timeout_s, clock=at(elapsed), **options)
-
-
-def todays_translation(request, side, convert):
-    """disk_runtime.py:32, :36 and :39-58 at 16a3623, verbatim but for `convert` passed in and `placement` read as
-    `placement_paths`: the oracle `for_side` must match. Frozen here, because Task 33 replaces that code with
-    `for_side` itself."""
-    placement = placement_paths
-    request = copy.deepcopy(request)
-    request['side'] = side
-    request['state_dir'] = convert(request['state_dir'])
-    snapshot = request.get('tasks') or {}
-    if snapshot:
-        snapshot['active_worktrees'] = [convert(p) for p in snapshot.get('active_worktrees', [])]
-        for task in snapshot.get('tasks', []):
-            if task.get('worktree'):
-                task['worktree'] = convert(task['worktree'])
-    for repo in request['repos']:
-        for key in ('repo', 'worktrees'):
-            if repo.get(key):
-                repo[key] = convert(repo[key])
-    for key in ('temp_roots', 'report_roots'):
-        request['paths'][key] = [convert(p) for p in request['paths'].get(key, [])
-                                 if placement.cleanup_path_side(p) == side]
-    request['paths']['caches'] = [c for c in request['paths'].get('caches', [])
-                                  if placement.cleanup_path_side(c.get('path', c.get('cwd'))) == side]
-    for cache in request['paths'].get('caches', []):
-        key = 'path' if 'path' in cache else 'cwd'
-        cache[key] = convert(cache[key])
-    return request
 
 
 def wire(**changes):
@@ -193,50 +170,6 @@ class Request(unittest.TestCase):
         self.assertEqual(approved['approved_path'], 'H:\\t 1')
         view['repos'][0]['repo'] = 'changed'
         self.assertEqual(request.repos[0]['repo'], 'H:\\repos\\Pan Glöss')
-
-
-ROOTS = ('/var/reports', '/var/reports/deep')
-WHOLE = ('worktree_inventory', 'untracked_or_ignored', 'budget_usage', 'merged_live_task', 'process_out_of_scope',
-         'process_visibility_unavailable', 'temp_root_elapsed', 'wsl_vhdx', 'wsl_vhdx_unavailable')
-
-
-def root_of(row):
-    """compact's root step at 16a3623 (disk_inventory.py:118-128) over ROOTS, as disk_side will pass it in."""
-    if row.get('reason_code') in WHOLE:
-        return None
-    path = Path(row['path'])
-    return row.get('root') or str(max((Path(r) for r in ROOTS if Path(r) in (path, *path.parents)),
-                                      key=lambda r: len(r.parts), default=path.parent))
-
-
-def todays_compact(items, roots):
-    """`disk_inventory.compact` at e09ef3e over temp roots `roots`, kept as the oracle `StageRun` and `read_rows` match:
-    serve grouped a stage's whole answer with it, before rows crossed as lines."""
-    roots = [Path(placement_paths.native(p)) for p in roots]
-    groups, answer = {}, []
-    for original in items:
-        row = dict(original)
-        for key in ('dirty', 'ignored', 'excluded'):
-            if key in row:
-                row[key + '_count'] = len(row[key])
-                row[key] = row[key][:disk_inventory.LIMIT]
-        if row.get('reason_code') in WHOLE:
-            answer.append(row)
-            continue
-        path = Path(row['path'])
-        root = row.get('root') or str(max((r for r in roots if r == path or r in path.parents),
-                                         key=lambda r: len(r.parts), default=path.parent))
-        groups.setdefault((row['reason_code'], root, row['action']), []).append(row)
-    for (reason, root, action), rows in groups.items():
-        if len(rows) <= disk_inventory.LIMIT:
-            answer.extend(rows)
-        else:
-            answer.append(dict(path=root, root=root, action=action, reason_code=reason, count=len(rows),
-                               files=sum(r.get('files', 0) for r in rows), bytes=sum(r.get('bytes', 0) for r in rows),
-                               age_s=min(r.get('age_s', 0) for r in rows), owner=None,
-                               sample=heapq.nlargest(disk_inventory.LIMIT, rows,
-                                                     key=lambda r: (r.get('bytes', 0), r['path']))))
-    return answer
 
 
 def row(path, reason='declared_disposable', action='keep', **extra):
@@ -436,6 +369,71 @@ class Run(unittest.TestCase):
         self.assertEqual(lines(run)[-1], {'v': 1, 'end': dict(reclaimed_bytes=7, partial=False,
                                                               peak_intermediate_bytes=4096,
                                                               budget=dict(status='met', used_gb=1))})
+
+
+def stopped(stage, reason):
+    """A stage that stopped at its line, as its worker sends it: its one deadline row, no error, and `end` partial."""
+    out = io.BytesIO()
+    run = StageRun(StageRequest.from_wire(wire(stage=stage)), clock_at(0), out=out, root_of=lambda row: None, limit=5)
+    run.stop(reason, None, [], [])
+    run.finish()
+    return asdict(read_rows(out.getvalue()))
+
+
+class CutOff(DiskCase):
+    """What `run` makes of a stage cut off at its deadline. disk_cleanup.py:318 is unchanged: an error row refuses the
+    stamp, so a partial stage 2, 3 or 6 in a dry run stamps nothing, and a stage 4 or 5 stamps as today (ruling 7)."""
+    REFUSED = 'complete a dry report for the same cleanup scope before'
+
+    def run_with(self, answers, apply=False):
+        return self.run_cleanup(apply=apply, handler=lambda side, request: copy.deepcopy(
+            answers.get(request['stage'], empty_result())))
+
+    def stamped(self):
+        return disk_state.read(self.state).get('report_scope') == disk_cleanup.scope_key(self.cfg)
+
+    def codes(self, result):
+        return [(e.get('stage'), e.get('side'), e.get('reason_code')) for e in result['errors']]
+
+    def test_partial_stage_2_3_and_6_add_stage_partial_and_stamp_nothing(self):
+        for stage, reason in ((2, 'temp_deadline'), (3, 'cache_deadline'), (6, 'report_deadline')):
+            result = self.run_with({stage: stopped(stage, reason)})
+            self.assertEqual(self.codes(result), [(stage, side, 'stage_partial') for side in ('windows', 'wsl')])
+            self.assertFalse(self.stamped(), stage)
+
+    def test_a_stage_4_or_5_stopped_at_its_line_stamps_as_today(self):         # ruling 7, at line 318 itself
+        result = self.run_with({4: stopped(4, 'settled_deadline'), 5: stopped(5, 'output_deadline')})
+        self.assertEqual(result['errors'], [])
+        self.assertEqual({i['reason_code'] for i in result['items']}, {'settled_deadline', 'output_deadline'})
+        self.assertTrue(self.stamped())
+
+    def test_applied_partial_stage_adds_no_stage_partial(self):
+        self.approve_report()
+        answers = {2: stopped(2, 'temp_deadline'), 3: stopped(3, 'cache_deadline'), 6: stopped(6, 'report_deadline')}
+        self.assertEqual(self.run_with(answers, apply=True)['errors'], [])
+
+    def test_incomplete_stage_gets_todays_worker_error_row(self):
+        # cleanup_call's answer for a worker cut off by its timeout: the rows that arrived, and its own error row.
+        timeout = dict(empty_result(), errors=[dict(reason_code='worker_timeout')], complete=False, partial=True)
+        result = self.run_with({2: timeout})
+        self.assertEqual(self.codes(result), [(2, side, 'worker_timeout') for side in ('windows', 'wsl')])
+        self.assertFalse(self.stamped())
+
+    def test_an_earlier_complete_reports_stamp_stands(self):
+        self.approve_report()
+        self.assertTrue(self.stamped())
+        self.run_with({6: stopped(6, 'report_deadline')})
+        self.assertTrue(self.stamped())
+
+    def test_partial_stage_6_blocks_remove_approved_and_the_gates(self):
+        self.run_with({6: stopped(6, 'report_deadline')})
+        out = disk_cleanup.remove_approved(self.cfg, str(self.root / 'r'), str(self.root / 't'), runtime=self.runtime())
+        self.assertIn(self.REFUSED, json.dumps(out['errors']))
+        with patch.object(disk, 'tick', lambda cfg, enqueue: enqueue()), redirect_stderr(io.StringIO()) as said,                 patch.object(disk_runtime, 'cleanup_enqueue', return_value={}):
+            self.assertEqual(disk.main(['tick', '--apply']), 1)                    # disk.py:481
+        self.assertIn(self.REFUSED, said.getvalue())
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=dict(files={}, argv=[])),                 self.assertRaisesRegex(ValueError, self.REFUSED):
+            disk_schedule.install(self.cfg, apply=True)                            # disk_schedule.py:34
 
 
 if __name__ == '__main__':

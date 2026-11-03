@@ -139,8 +139,12 @@ class Folders(LocalSide):
         a, b, c = self.output('a', 9 * DAY), self.output('b', 8 * DAY), self.output('c', 7 * DAY)
         self.cfg['disk_cleanup']['worker_timeout_s'] = 100
         self.read_cost = 50.      # the deadline, 80 s, passes on the reading after the first folder
-        result = self.purge()
+        answers, valid = [], disk_cleanup._valid_result
+        with patch.object(disk_cleanup, '_valid_result', lambda answer: answers.append(answer) or valid(answer)):
+            result = self.purge()
         self.assertEqual([p.exists() for p in (a, b, c)], [False, True, True])
+        purge = next(answer for answer in answers if answer.get('budget'))
+        self.assertEqual((purge['complete'], purge['partial']), (True, True), 'cut off between folders: partial')
         receipt = self.receipt()
         self.assertEqual((receipt['budget'], receipt['reclaimed_bytes'], receipt['partial']), ('deadline', SIZE, True))
         self.assertIsNone(self.episode()['claim'])

@@ -60,7 +60,9 @@ def _notices(cfg, result, runtime, machines):
                 if drive['level'] == 'critical':
                     notice['body'] += '\n' + '\n'.join(actions)
         budgets = state.setdefault('budget_episodes', {})
-        for machine in machines:
+        # A cut-off or failed stage 6 lists only part of the usage: its short rows would clear a real overrun or fail
+        # to open one, so the run judges no budget (missing usage is unknown, not zero).
+        for machine in ([] if result.get('budget_usage_partial') else machines):
             if not machine.get('budget_gb'):
                 continue
             # Stage workers return distinct owning-side directories, never symlink targets.

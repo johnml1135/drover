@@ -123,6 +123,19 @@ def _windows_paths(cfg, base):
         return None, []
 
 
+def _cut_off(result, stage, side, answer):
+    """What a partial answer means for the run. A stage 2, 3 or 6 cut off in a dry run adds `stage_partial`, so the
+    check before the stamp refuses it unchanged; an incomplete answer already carries its worker error row. Stages 4
+    and 5 stop with an item and no error, so they stamp as today (ruling 7). Any partial stage 6 marks the run's
+    budget usage partial, so the notices judge no budget on short rows; the mark stays in `result` for replay."""
+    if not answer.get('partial'):
+        return
+    if stage in (2, 3, 6) and answer.get('complete') and not result['applied']:
+        result['errors'].append(dict(stage=stage, side=side, reason_code='stage_partial'))
+    if stage == 6:
+        result['budget_usage_partial'] = True
+
+
 def _serve_stage(runtime, progress, result, state_dir, side, request, *, trim=None):
     """Call one destructive stage and merge what it says into `result`. A failure is recorded, unless its termination
     is unconfirmed, which saves the report and raises. `trim` is the stage-1 request to send after a large reclaim.
@@ -134,6 +147,7 @@ def _serve_stage(runtime, progress, result, state_dir, side, request, *, trim=No
         result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
         result['items'].extend(dict(item, stage=stage, side=side) for item in answer['items'])
         result['errors'].extend(dict(item, stage=stage, side=side) for item in answer['errors'])
+        _cut_off(result, stage, side, answer)
         if trim is not None and answer['reclaimed_bytes'] >= 1024 ** 3:
             result['errors'].extend(_valid_result(runtime.call('windows', trim))['errors'])
     except (OSError, ValueError, RuntimeError) as error:
@@ -284,7 +298,9 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                             result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
                             result['items'].extend(dict(i, stage=6, side=side) for i in answer['items'])
                             result['errors'].extend(dict(i, stage=6, side=side) for i in answer['errors'])
+                            _cut_off(result, 6, side, answer)
                         except (OSError, ValueError, RuntimeError) as error:
+                            result['budget_usage_partial'] = True       # no rows from this side: unknown, not zero (O7)
                             result['errors'].append(dict(reason_code='budget_unavailable', side=side, error=str(error)))
                             if getattr(error, 'termination_confirmed', True) is False:
                                 try:

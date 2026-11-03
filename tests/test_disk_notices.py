@@ -253,3 +253,74 @@ class Notices(MemoryWorktreeCase):
         snapshot = json.loads((self.state / 'disk' / 'tasks.json').read_text())
         self.assertEqual({t['id']: t['live'] for t in snapshot['tasks']}, expected)
         self.assertIn(str(self.root / 'wt'), snapshot['active_worktrees'])
+
+
+def usage(*, partial, bytes_used=1):
+    """A stage 6 answer holding one `budget_usage` row of `bytes_used`, far under a 1 GiB budget."""
+    row = dict(path='/r/budget', action='report', reason_code='budget_usage', repo='budget', identity='i', bytes=bytes_used,
+               owner=None, files=1, age_s=0)
+    return dict(items=[row], errors=[], reclaimed_bytes=0, peak_intermediate_bytes=0, budget=None, complete=True,
+                partial=partial)
+
+
+class PartialUsage(MemoryWorktreeCase):
+    """A cut-off stage 6 lists only part of a repo's usage, so its short rows must neither close nor open a budget
+    episode. The mark is in `result`, set at both call sites, and read again by `retry_notices`."""
+    def setUp(self):
+        super().setUp()
+        from drover import config, disk_state
+        repo = self.new_repo('notice-budget')
+        repo.commit('.drover/config.toml', config.dumps({'schema_version': 1}))
+        (self.repos_dir / 'budget.toml').write_text(config.dumps(dict(
+            name='budget', repo=str(repo.repo), worktrees=str(repo.root / 'trees'), budget_gb=1)))
+        self.approve_report()
+        disk_state.update(self.state, lambda state: state.setdefault('budget_episodes', {}).update(budget='budget:open'))
+
+    def episode(self):
+        from drover import disk_state
+        return disk_state.read(self.state).get('budget_episodes', {}).get('budget')
+
+    def applied(self, answer, free):
+        """An applied run whose stage 6 answers `answer`, or `answer(side)`; every other stage says nothing."""
+        def handler(side, request):
+            if request['stage'] != 6:
+                return dict(items=[], errors=[], reclaimed_bytes=0)
+            return json.loads(json.dumps(answer(side) if callable(answer) else answer))
+        self.free = free
+        return self.run_cleanup(apply=True, handler=handler)
+
+    def test_partial_stage_6_leaves_a_budget_episode_alone_at_both_call_sites(self):
+        # free 80 runs stage 6 through _serve_stage; free 180 skips the stages, so stage 6 is the direct call only.
+        for free in (80., 180.):
+            result = self.applied(usage(partial=True), free)
+            self.assertTrue(result['budget_usage_partial'], free)
+            self.assertEqual(self.episode(), 'budget:open', free)
+        self.applied(usage(partial=False), 180.)
+        self.assertIsNone(self.episode(), 'the same rows, whole, close the episode')
+
+    def test_a_partial_stage_6_opens_no_episode_either(self):
+        from drover import disk_state
+        disk_state.update(self.state, lambda state: state['budget_episodes'].clear())
+        self.applied(usage(partial=True, bytes_used=2 * 1024 ** 3), 180.)
+        self.assertIsNone(self.episode())
+
+    def test_the_mark_survives_retry_notices(self):
+        from drover import disk_cleanup, disk_cleanup_notices
+        with patch.object(disk_cleanup, '_notices', side_effect=BlockingIOError('state busy')):
+            self.applied(usage(partial=True), 180.)
+        pending = list((self.state / 'disk').glob('pending-notices-*.json'))
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(json.loads(pending[0].read_text())['result']['budget_usage_partial'])
+        disk_cleanup_notices.retry_notices(self.cfg)
+        self.assertEqual(list((self.state / 'disk').glob('pending-notices-*.json')), [])
+        self.assertEqual(self.episode(), 'budget:open')
+
+    def test_missing_usage_is_unknown_not_zero(self):                       # O7
+        # One side's direct stage 6 fails: the other side's rows are not the repo's whole usage.
+        def one_side(side):
+            if side == 'wsl':
+                raise OSError('worker unavailable')
+            return usage(partial=False)
+        result = self.applied(one_side, 180.)
+        self.assertIn('budget_unavailable', [e.get('reason_code') for e in result['errors']])
+        self.assertEqual(self.episode(), 'budget:open')

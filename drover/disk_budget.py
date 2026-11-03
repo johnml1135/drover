@@ -48,7 +48,8 @@ def purge(run) -> dict:
     candidate, so this ends; short of the target it reports the shortfall. Unreadable used space stops it, because
     nothing then proves a removal is needed. Past the clock's line it stops between folders and reports what it did,
     so a worker timeout cannot lose the outcome. A report-only request removes nothing and projects the plan from
-    sizes. Each candidate's row is added once decided. Returns the `end` line's `budget`."""
+    sizes. Each candidate's row is added once decided. Returns the `end` line's `budget`, and `partial` when the line
+    stopped it, between folders or while gathering."""
     request = run.request
     if placement.cleanup_side() != SIDE:
         return {}
@@ -98,4 +99,4 @@ def purge(run) -> dict:
                      reason_code=reason, shortfall_bytes=short, reclaimed_bytes=run.reclaimed_bytes,
                      deadline_s=request.policy.get('worker_timeout_s', 1800) * run.clock.SHARE,
                      candidates_left=len(pending)))
-    return dict(budget=dict(status=status, used_gb=used, target_gb=target, shortfall_bytes=short))
+    return dict(budget=dict(status=status, used_gb=used, target_gb=target, shortfall_bytes=short), partial=late)
