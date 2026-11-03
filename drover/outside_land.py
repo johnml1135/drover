@@ -31,6 +31,7 @@ SUBJECT_CHARS = 72
 DECIDER_FLOOR_S = 5      # less time than this, or than the configured timeout if lower, is not worth a call
 KIND, EPIC, ACTOR = 'landing.notice', 'Outside landings', 'detector'
 LANDED_AT = re.compile(r'landed at\s+(\S+)', re.IGNORECASE)
+CREDENTIALS = re.compile(r'([a-z][a-z0-9+.-]*://)[^/\s@]+@', re.IGNORECASE)     # scheme://user:pass@ keeps scheme://
 log = logging.getLogger(__name__)
 
 
@@ -457,8 +458,9 @@ def tick(conn, cfg, *, decide=None, now=time.monotonic):
                 log.warning('outside landing scan skips %s: git timed out', key)
                 later = next((t['id'] for t in tasks[position + 1:] if t['repo'].lower() == key), '')
                 resume = resume or later    # or the task that timed out stands in front of its repo every interval
-            else:
-                log.warning('landing of %s not detected: %s', task['id'], error)
+            else:       # git's own words, for the hub log only: a URL's credentials go, and str(error) stays clean
+                said = CREDENTIALS.sub(r'\1', error.err).strip()[-200:]
+                log.warning('landing of %s not detected: %s%s', task['id'], error, f': {said}' if said else '')
         except (OSError, LookupError, ValueError, PermissionError, ci.CIError) as error:
             log.warning('landing of %s not detected: %s', task['id'], error)     # IllegalTransition is a ValueError
     if ops.get_setting(conn, RESUME_KEY, '') != resume:

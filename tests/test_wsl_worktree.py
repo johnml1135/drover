@@ -155,6 +155,37 @@ class ListingSide(unittest.TestCase):
         self.assertEqual(seen, ['wsl', 'wsl'])     # the listing, then the unlock
 
 
+class UnknownIsNotMissing(unittest.TestCase):
+    """A git that times out on an ext4 path raises: read as missing, pipeline.py:441 would move a worktree over it."""
+    @staticmethod
+    def answers(unlock=None, rev_parse=None):
+        import subprocess
+        from types import SimpleNamespace
+        from tests.fakeci import git_answers
+        def reply(repo, *args, timeout):
+            answer = rev_parse if args[0] == 'rev-parse' else unlock
+            if answer == 'timeout':
+                raise subprocess.TimeoutExpired(['git', *args], timeout)
+            return SimpleNamespace(returncode=answer, stdout='.git\n' if answer == 0 else '')
+        return git_answers(reply)
+
+    def test_reachable_is_yes_no_or_raises_on_a_timeout(self):
+        for answer, expected in ((0, True), (128, False)):
+            with self.subTest(answer=answer), self.answers(rev_parse=answer):
+                self.assertIs(placement.reachable(EXT4), expected)
+        with self.answers(rev_parse='timeout'), self.assertRaises(git_client.GitFailed) as caught:
+            placement.reachable(EXT4)
+        self.assertEqual(caught.exception.why, 'timeout')
+
+    def test_unlock_that_times_out_raises_and_one_refused_does_not(self):
+        rows = lambda side: f'worktree {EXT4}\0locked wsl\0\0'
+        with listed(rows, []), self.answers(unlock=1):
+            placement.unlock_worktree('H:\\repos\\a', EXT4)
+        with listed(rows, []), self.answers(unlock='timeout'), self.assertRaises(git_client.GitFailed) as caught:
+            placement.unlock_worktree('H:\\repos\\a', EXT4)
+        self.assertEqual(caught.exception.why, 'timeout')
+
+
 class CleanupCoversBothRoots(unittest.TestCase):
     def test_both_roots_are_listed_and_protected_and_only_this_sides_are_scanned(self):
         from pathlib import Path

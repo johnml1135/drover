@@ -91,6 +91,8 @@ class ScanLimitTests(LedgerCase):
         self.assertEqual(calls.count(self.acme), 1)
         self.assertIn(self.beta, calls)
 
+    STDERR = "fatal: unable to access 'https://owner:s3cret@example.test/r.git/': no route\n"
+
     def failing(self, why, code):
         """`_out` raises GitFailed with this `why` and no stderr in its text; then a scan in which one task fails so.
         tick's one handler for it (section 5.2, outside_land.py:459): a timeout stops the repo, anything else logs."""
@@ -104,7 +106,7 @@ class ScanLimitTests(LedgerCase):
         def detect(conn, task, prog):
             seen.append(task['id'])
             if task['id'] == slow:
-                raise git_client.GitFailed(('rev-parse',), why, code, 'fatal', '')
+                raise git_client.GitFailed(('fetch',), why, code, self.STDERR, '')
             return False
         with patch.object(outside_land, '_detect', side_effect=detect), \
                 patch.object(outside_land, '_unproved', return_value=False), \
@@ -124,7 +126,10 @@ class ScanLimitTests(LedgerCase):
             with self.subTest(why=why):
                 (slow, next_in_repo, other), seen, logs = self.failing(why, code)
                 self.assertEqual(seen[-3:], [slow, next_in_repo, other])     # the repo is not stuck, nothing resumes
-                self.assertTrue(any(f'landing of {slow} not detected' in line for line in logs), logs)
+                line, = [line for line in logs if f'landing of {slow} not detected' in line]
+                self.assertIn("unable to access 'https://example.test/r.git/': no route", line)    # git's words
+                self.assertNotIn('s3cret', line)
+                self.assertNotIn('owner', line)
 
     def test_budget_stops_the_scan_and_the_next_one_resumes(self):
         first, second, third = self.repo_task(), self.repo_task(), self.repo_task()
