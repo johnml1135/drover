@@ -71,10 +71,14 @@ class TraceGit:
     def __init__(self, scene):
         self.scene = scene
         self.after, self.after_listing = {}, None      # after: git's subcommand, to the one change that follows its next answer
-        self.read = {}
+        self.read, self.asked = {}, []
 
     def __getattr__(self, name):
         return getattr(subprocess, name)
+
+    def count(self, *words):
+        """How many commands so far began with `words`."""
+        return sum(tuple(args[:len(words)]) == words for args in self.asked)
 
     def text(self, path):
         """A file's text without opening what the scene wrote: on Windows the first open of a new file is the costly step, by
@@ -104,6 +108,7 @@ class TraceGit:
         answer = getattr(self, 'do_' + args[0].replace('-', '_'), None)
         if answer is None:
             raise AssertionError(f'TraceGit cannot answer {argv}')
+        self.asked.append(args)
         try:
             self.scene.check_refused(where, ' '.join(args))
             output = answer(where, args[1:], work, env or {})

@@ -25,7 +25,9 @@
     "drover.placement.cleanup_enqueue",
     "drover.placement.disk_schedule_plan",
     "drover.placement.wsl_worktrees_root",
-    "drover.placement_paths.wsl_worktrees_root"
+    "drover.placement_paths.wsl_worktrees_root",
+    "drover.disk_worktrees.entries",
+    "drover.disk_registrations._entries"
   ],
   "removed_receipt_fields": [
     "infra"

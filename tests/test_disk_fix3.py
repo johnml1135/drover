@@ -3,7 +3,7 @@ from unittest.mock import patch
 from contextlib import contextmanager
 from pathlib import Path
 
-from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState, listing_answers
+from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState, agreeing_proof, listing_answers
 from tests import test_disk_fix2 as fix2
 from drover import disk_runtime
 
@@ -17,7 +17,7 @@ def output_facts(path, side, registrations=None):
     def status(root, **kwargs):
         generated = Path(root) / 'generated'
         return [], [str(p) for p in generated.rglob('*') if p.is_file() or p.is_symlink()]
-    with listing_answers(entries), \
+    with listing_answers(entries), agreeing_proof(), \
          patch.object(disk_worktrees, 'status', side_effect=status) as observed_status, \
          patch.object(disk_worktrees, 'git', return_value=''), \
          patch.object(disk_paths, 'output_evidence', side_effect=lambda request, machine, entry, **kw:

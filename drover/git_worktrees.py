@@ -20,6 +20,7 @@ from . import placement, placement_paths
 
 LISTING_TIMEOUT_S = 400.0       # 1.5 times the worst measured listing, motif's 265.9 s
 EVIDENCE_TIMEOUT_S = 60         # every other evidence command keeps today's fixed timeout until slice 6a
+PROOF_TIMEOUT_S = 2 * EVIDENCE_TIMEOUT_S    # admin reads took 1.2 s on /mnt/h; a stage's first proof also spawns each common directory
 READERS = 8
 OBJECT_ID = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?')
 GARBAGE = ''                    # a `HEAD` that is neither a ref nor an object id: equal to no row's field
@@ -105,6 +106,10 @@ class Listings:
         if failures:
             raise failures[0]
         return tuple(found)
+
+    def reach(self) -> tuple[tuple[str, ...], ...]:
+        """cleanup_parts of every listed row, the first pass's nesting; a failed repo raises."""
+        return tuple(placement_paths.cleanup_parts(row['worktree']) for found in self.every() for row in found.rows)
 
     def common_dir(self, repo: str) -> str:
         return self._once(self._common, repo, lambda spelled: placement_paths.native(_git(

@@ -274,8 +274,8 @@ class OutputsContracts(GitWorktreeCase):
 
 class Revalidation(WorktreeCase):
     def test_apply_still_revalidates_registrations_fresh(self):
-        """A registration made after the first pass protects the unit: removal never reads the run's cached list."""
-        from drover import disk_paths, git_worktrees
+        """A registration made after the first pass protects the unit: removal measures the proof, not the listing."""
+        from drover import disk_paths, git_worktrees, placement
         tree = self.worktree('late registration')
         output = tree / 'generated' / 'result'
         output.parent.mkdir()
@@ -283,13 +283,8 @@ class Revalidation(WorktreeCase):
         self.age(tree, 4 * 86400)
         request, proof = self.stage5_request(apply=True)
         request['_processes'] = proof
-        real, extra = git_worktrees.listing, []
-
-        def listing(repo, **options):
-            return git_worktrees.Listing(repo, real(repo, **options).rows + tuple(extra))
         request = stage_request(request)
-        with mock.patch.object(git_worktrees, 'listing', side_effect=listing), \
-                mock.patch.object(disk_paths.placement, 'cleanup_processes', return_value=proof), \
+        with mock.patch.object(disk_paths.placement, 'cleanup_processes', return_value=proof), \
                 mock.patch.object(disk_paths.placement, 'physical_disk_path', return_value=str(self.root)):
             from drover.disk_inventory import Inventory
             request['_inventory'] = Inventory(request['now'], request)
@@ -297,7 +292,8 @@ class Revalidation(WorktreeCase):
             rows = disk_paths.disposable_rows(request, out)
             row, remove = next(rows)
             self.assertEqual(row['action'], 'candidate')
-            extra.append(dict(worktree=str(output / 'nested'), HEAD='x'))
-            remove()
+            reach = (placement.cleanup_parts(output / 'nested'),)
+            with mock.patch.object(git_worktrees, 'prove', return_value=git_worktrees.Proof((), reach)):
+                remove()
         self.assertEqual(output.read_text(), 'rebuildable')
         self.assertEqual((row['action'], row['reason_code']), ('keep', 'output_evidence_unavailable'))

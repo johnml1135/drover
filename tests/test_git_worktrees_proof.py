@@ -1,4 +1,5 @@
 """`git_worktrees.prove` and `parse`: real admin files in a temp tree, and git faked at the command and counted."""
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,16 @@ SHA, OTHER = 'a' * 40, 'b' * 40
 
 def files(**read):
     return dict(dict(gitdir=None, HEAD=None, locked=None, commondir=None, unreadable=()), **read)
+
+
+def lstat_refused(name):
+    real = os.lstat
+
+    def lstat(path, *args, **options):
+        if os.path.basename(str(path)) == name:
+            raise PermissionError(name)
+        return real(path, *args, **options)
+    return patch.object(git_worktrees.os, 'lstat', lstat)
 
 
 def as_directory(path):
@@ -116,6 +127,12 @@ class ProofTable(Trees):
         (Path(self.a) / '.git').unlink()
         self.assertEqual(self.whys(self.a, pointer=False), [])
 
+    def test_a_dot_git_that_cannot_be_looked_at_is_unknown_as_either_answer(self):
+        self.scene()
+        for pointer in (True, False):
+            with self.subTest(pointer=pointer), lstat_refused('.git'):
+                self.assertEqual(self.whys(self.a, pointer=pointer), ['unknown'])
+
     def test_target_file_unreadable_refuses_this_removal_as_unknown(self):
         for name, damage in dict(HEAD_missing=Path.unlink, HEAD_a_directory=as_directory).items():
             with self.subTest(name):
@@ -153,6 +170,11 @@ class ProofTable(Trees):
         self.scene()
         (Path(self.two) / '.git/reftable').mkdir()
         self.assert_every_removal_refused()
+
+    def test_a_reftable_look_that_fails_refuses_every_removal(self):
+        self.scene()
+        with lstat_refused('reftable'):
+            self.assert_every_removal_refused()
 
     def test_read_past_timeout_refuses_every_removal(self):
         self.scene()

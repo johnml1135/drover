@@ -436,7 +436,7 @@ def quarantine_unlisted_goes_busy(s):
 
 
 def quarantine_unlisted_registered(s):
-    """Listed from mid-stage on, with no `.git` yet: only the listing at removal sees it, not a look at the folder."""
+    """Registered from mid-stage on, with no `.git` yet: only the proof at removal sees it, not a look at the folder."""
     path = s.folder('stray')
 
     def wake():

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_paths, disk_state, disk_worktrees, placement
-from tests.disk_fixture import DiskCase, listing_answers, stage_request
+from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request
 
 
 class Processes(DiskCase):
@@ -99,7 +99,7 @@ class DefaultBranchPolicy(DiskCase):
                 patch.object(placement, 'cleanup_contains', return_value=True),
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)),
                 patch.object(placement, 'git', side_effect=self.git), patch('drover.placement_git.git', side_effect=self.git),
-                listing_answers([self.entry])):
+                listing_answers([self.entry]), agreeing_proof()):
             context.start()
             self.addCleanup(context.stop)
 
@@ -166,7 +166,7 @@ class DefaultBranchPolicy(DiskCase):
         selected = dict(path=str(self.wt), repo=str(self.repo), head='old-head',
                         reason_code='settled', action='candidate', ignored=[str(self.src)])
         with patch.object(disk_worktrees, 'inspect', return_value=selected.copy()):
-            answer = disk_worktrees.remove(self.request, selected)
+            answer = disk_worktrees.remove(stage_request(self.request), selected)
         self.assertEqual(answer['reason_code'], 'ignored_content')
         self.assertTrue(self.src.exists())
 

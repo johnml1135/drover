@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import disk_state, placement
-from tests.disk_fixture import DiskCase, listing_answers, stage_request
+from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request
 
 
 class Processes(DiskCase):
@@ -270,10 +270,9 @@ class SafetyDecisions(DiskCase):
     def test_nested_registrations_and_approved_selection_normalize_spelling(self):
         from drover import disk_worktrees
         request = dict(repos=[dict(repo=r'H:\repo')], apply=False, approved_path=r'\\?\H:\tree')
-        with listing_answers([dict(worktree='/mnt/h/tree/nested')]):
-            self.assertTrue(disk_worktrees.overlaps_worktrees(request, r'H:\TREE', '/mnt/h/tree'))
-        with listing_answers([dict(worktree='/mnt/h/tree')]):
-            self.assertFalse(disk_worktrees.overlaps_worktrees(request, r'H:\tree/out', r'\\?\H:\TREE'))
+        nested, tree = placement.cleanup_parts('/mnt/h/tree/nested'), placement.cleanup_parts('/mnt/h/tree')
+        self.assertTrue(disk_worktrees.overlaps_worktrees(request, r'H:\TREE', '/mnt/h/tree', reach=[nested]))
+        self.assertFalse(disk_worktrees.overlaps_worktrees(request, r'H:\tree/out', r'\\?\H:\TREE', reach=[tree]))
         row = dict(path='/mnt/h/tree', reason_code='orphan', action='keep')
         with listing_answers([dict(worktree='/mnt/h/tree')]), \
                 patch.object(disk_worktrees, 'inspect', return_value=row), \
@@ -286,11 +285,9 @@ class SafetyDecisions(DiskCase):
         # Reach the inspect seam, then deliberately refuse removal. This proves
         # canonical selection without touching any filesystem or Git metadata.
         machine = dict(repo=r'H:\REPO')
-        request = dict(repos=[machine], now=self.now)
+        request = stage_request(dict(repos=[machine], now=self.now))
         selected = dict(path=r'H:\tree', repo='/mnt/h/repo', reason_code='unsettled')
-        listed = dict(worktree=r'\\?\H:\TREE')
-        answers = iter(([listed], [dict(worktree='/mnt/h/tree')]))
-        with listing_answers(lambda repo: next(answers)), \
+        with listing_answers([dict(worktree=r'\\?\H:\TREE')]), agreeing_proof(), \
                 patch.object(disk_worktrees, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
             result = disk_worktrees.remove(request, selected)
         self.assertTrue(check.called)

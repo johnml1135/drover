@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import config, disk_cleanup, disk_worktrees, git_worktrees, ownership, placement, repos
+from drover.git_worktrees import Proof, Refusal
 from tests.disk_fixture import DiskCase
 
 
@@ -157,11 +158,18 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
             if actual != expected:
                 raise ValueError('not a clean snapshot')
             return repo.head()
+        def prove(listings, repo, worktree, *, pointer, timeout_s, side=None):
+            """The proof over memory: this repo's row as it stands now against the stage's. Nothing here has admin files."""
+            reach = listings.reach()
+            rows = git_worktrees.Listing(str(repo), tuple(repository(repo).entries()))
+            same = rows.row(worktree) == listings.of(repo).row(worktree)
+            return Proof(() if same else (Refusal(str(repo), str(worktree), 'changed', 'row'),), reach)
         def machines(cfg, errors=None):
             return [dict(repos.read_machine(p), remote='origin', default_branch='main')
                     for p in sorted(self.repos_dir.glob('*.toml'))]
         bindings = [(disk_cleanup, '_repos', machines),
                     (git_worktrees, 'listing', lambda p, **_: git_worktrees.Listing(str(p), tuple(repository(p).entries()))),
+                    (git_worktrees, 'prove', prove),
                     (disk_worktrees, 'status', lambda p, **kw: repository(p).status(p, **kw)),
                     (disk_worktrees, 'merged', lambda m, h: h in repository(m['repo']).merged_heads),
                     (disk_worktrees, 'outputs_at', lambda m, p: list(repository(m['repo']).policy)),
@@ -171,7 +179,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
                         if relative is None or n == str(relative).replace('\\', '/') or n.startswith(str(relative).rstrip('/') + '/')]),
                     (disk_worktrees, 'unlock_at', lambda repo, p: repository(repo).lock(p, None)),
                     (disk_worktrees, 'lock_at', lambda repo, p, reason: repository(repo).lock(p, reason)),
-                    (disk_worktrees, 'discard_at', lambda repo, p: repository(repo).discard(p)),
+                    (disk_worktrees, 'discard_at', lambda repo, p, listings: (repository(repo).discard(p), listings.removed(repo, p))),
                     (disk_worktrees, 'rescue_at', lambda repo, ref, head: None),
                     (disk_worktrees, 'registrations', lambda *args: {}),    # process-free; real git is tested in test_disk_registrations
                     (disk_worktrees, 'snapshot', snapshot),

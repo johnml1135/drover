@@ -36,18 +36,15 @@ def lock_at(repo, path, reason):
     placement.git(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout=60)
 
 
-def discard_at(repo, path):
+def discard_at(repo, path, listings):
     git(repo, 'worktree', 'remove', '--force', '--', path)
+    listings.removed(repo, path)
 
 
 def rescue_at(repo, ref, head):
     git(repo, 'update-ref', ref, head, '')
     if git(repo, 'rev-parse', ref).strip() != head:
         raise ValueError('rescue ref verification failed')
-
-
-def entries(repo):
-    return list(git_worktrees.listing(repo, timeout_s=git_worktrees.LISTING_TIMEOUT_S).rows)
 
 
 def registration_identity(entry):
@@ -299,8 +296,7 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
     path = Path(row['path'])
     record, unlocked = None, False
     try:
-        entry = next((e for e in entries(machine['repo'])
-                      if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(path)), None)
+        entry = request['_listings'].of(machine['repo']).row(path)
         if row.get('unlisted'):
             if entry is not None or snapshot(machine, path, request=request) != row['head']:
                 raise ValueError('snapshot changed')
@@ -320,10 +316,14 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
                     current.update(action='candidate', reason_code='quarantine_elapsed')
         if request.get('approved_path') and placement.cleanup_parts(request['approved_path']) == placement.cleanup_parts(path) and current['reason_code'] in ('unsettled', 'orphan'):
             current['action'] = 'candidate'
-        after = next((e for e in entries(machine['repo'])
-                      if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(path)), None)
-        if registration_identity(after or {}) != registration_identity(entry or {}) or (path.exists() and ownership.read(str(path)) != current.get('tag')):
-            current.update(action='keep', reason_code='identity_changed')
+        proof = git_worktrees.prove(request['_listings'], machine['repo'], str(path), timeout_s=git_worktrees.PROOF_TIMEOUT_S,
+                                    pointer=not row.get('unlisted') and current['reason_code'] != 'missing')
+        refusal = next(iter(proof.refused), None)
+        if refusal and refusal.why == 'changed' and row.get('unlisted'):
+            raise ValueError('snapshot changed')    # registered since the listing, as a row at `entry` would say
+        if refusal or (path.exists() and ownership.read(str(path)) != current.get('tag')):
+            current.update(action='keep', reason_code='registration_unknown' if refusal and refusal.why == 'unknown' else 'identity_changed',
+                           detail=refusal.detail if refusal else 'tag')
             return quarantine(request, machine, current) if row.get('unlisted') else current
         keys = ('head', 'branch', 'side_lock', 'gitdir', 'tag')
         fresh_identity, selected_identity = registration_identity(current), registration_identity(row)
@@ -333,7 +333,7 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
         matches = current['action'] == 'candidate' and all(fresh_identity.get(k) == selected_identity.get(k) for k in keys)
         if not matches:
             return validate(identity_matches=False)
-        if overlaps_worktrees(request, path, path):
+        if overlaps_worktrees(request, path, path, reach=proof.reach):
             return validate(nested=True)
         if current['reason_code'] != 'missing':
             excluded = ignored_outside(path, current['ignored'], outputs_at(machine, machine['repo'] if row.get('unlisted') else path))
@@ -365,7 +365,7 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
             import shutil
             shutil.rmtree(path)
         else:
-            discard_at(machine['repo'], path)
+            discard_at(machine['repo'], path, request['_listings'])
         row.update(action='removed', manifest=record['id'])
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -474,14 +474,10 @@ def unlisted(request, machine, listed, skip=()):
     return out
 
 
-def overlaps_worktrees(request, target, own, *, registered=None):
-    """Registrations protect descendants even when their pointer or folder is broken. `registered`, a list of
-    cleanup_parts tuples listed earlier in the run, spares a first-pass decision the listing; None lists afresh,
-    as every revalidation before a deletion must."""
+def overlaps_worktrees(request, target, own, *, reach):
+    """Registrations protect descendants even when their pointer or folder is broken. `reach` is cleanup_parts tuples:
+    the listing's rows at first pass, and `Proof.reach` before a deletion. This never lists."""
     target_parts = placement.cleanup_parts(str(target))
     own_parts = placement.cleanup_parts(str(own))
-    if registered is None:
-        registered = [placement.cleanup_parts(entry['worktree']) for machine in request['repos']
-                      for entry in entries(machine['repo'])]
     return any(other != own_parts and (other[:len(target_parts)] == target_parts or
-                                       target_parts[:len(other)] == other) for other in registered)
+                                       target_parts[:len(other)] == other) for other in reach)

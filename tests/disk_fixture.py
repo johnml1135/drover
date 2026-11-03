@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import config, git_worktrees, placement
-from drover.git_worktrees import Listing, Listings
+from drover.git_worktrees import Listing, Listings, Proof
 from tests.gitfix import clean_parent
 
 DAY = 86400
@@ -19,6 +19,11 @@ def listing_answers(answer):
     """Patch `git_worktrees.listing`: `answer` is the rows, or a function of the repo that gives them or raises."""
     rows = answer if callable(answer) else lambda repo: answer
     return patch.object(git_worktrees, 'listing', side_effect=lambda repo, **_: Listing(str(repo), tuple(rows(repo))))
+
+
+def agreeing_proof():
+    """Patch `git_worktrees.prove` for a test with no admin files: nothing refuses, and `reach` is the listing's."""
+    return patch.object(git_worktrees, 'prove', side_effect=lambda listings, *_, **__: Proof((), listings.reach()))
 
 
 def stage_request(request):

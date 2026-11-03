@@ -3,7 +3,7 @@ import subprocess
 from functools import partial
 from pathlib import Path
 
-from . import placement
+from . import git_worktrees, placement
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
 
@@ -284,12 +284,12 @@ def prune_emptied(target, removed, touched):
 def remove_output(request, out, machine, entry, evidence, touched, target, measured, row):
     """The one removal of declared outputs: `target` is proven again now, as one unit, immediately before its paths
     (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count as each path actually goes."""
-    from .disk_worktrees import registration_identity, entries, tracked_at, overlaps_worktrees, status
+    from .disk_worktrees import registration_identity, tracked_at, overlaps_worktrees, status
     path = evidence[0]
     try:
-        current = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
+        current = request['_listings'].of(machine['repo']).row(entry['worktree'])
         current_dirty, current_ignored = status(path)
-        if registration_identity(current) != registration_identity(entry):
+        if registration_identity(current or {}) != registration_identity(entry):
             raise ValueError('disposable registration changed')
         fresh_evidence = output_evidence(request, machine, current, touched=touched, fresh=True)
         tracked = {str(path / name) for name in tracked_at(path, target.relative_to(path))}
@@ -299,9 +299,13 @@ def remove_output(request, out, machine, entry, evidence, touched, target, measu
                 tracked & set(measured) or (tracked and str(target) in measured) or \
                 any(facts(Path(name), request['now']) != known for name, known in measured.items()):
             raise ValueError('disposable evidence changed')
-        after = next(e for e in entries(machine['repo']) if placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(entry['worktree']))
+        proof = git_worktrees.prove(request['_listings'], machine['repo'], str(path), pointer=True, timeout_s=git_worktrees.PROOF_TIMEOUT_S)
+        if proof.refused:
+            first = proof.refused[0]
+            return row.update(action='keep', reason_code='registration_unknown' if first.why == 'unknown' else 'output_evidence_unavailable',
+                              error=f'disposable registration changed ({first.detail})')
         proven = set()
-        if registration_identity(after) != registration_identity(entry) or overlaps_worktrees(request, target, path) or \
+        if overlaps_worktrees(request, target, path, reach=proof.reach) or \
                 any(repository_tree(Path(name), boundary=path, proven=proven) for name in measured) or \
                 not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
             raise ValueError('disposable side marker changed')
@@ -351,10 +355,6 @@ def disposable_rows(request, out, *, deadline=None):
     from .disk_worktrees import tracked_at, overlaps_worktrees, status
     budget = bool(request.get('budget'))
     late = lambda: deadline is not None and disk_budget._clock() >= deadline
-    try:
-        registered = [placement.cleanup_parts(e['worktree']) for found in request['_listings'].every() for e in found.rows]
-    except (OSError, ValueError, subprocess.SubprocessError):
-        registered = None       # the failed repo stays unknown; units in the others list afresh for their own rows
     for number, machine in enumerate(request['repos']):
         try:
             listed = request['_listings'].of(machine['repo']).rows
@@ -384,7 +384,7 @@ def disposable_rows(request, out, *, deadline=None):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, request):
                                 row['reason_code'] = 'live_owner'
-                            elif overlaps_worktrees(request, target, path, registered=registered):
+                            elif overlaps_worktrees(request, target, path, reach=request['_listings'].reach()):    # a failed repo raises: each unit stays
                                 row['reason_code'] = 'protected'
                             else:
                                 proven = set()

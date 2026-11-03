@@ -78,8 +78,9 @@ class Trace(unittest.TestCase):
         self.assertLessEqual(reasons_in_decide(), reasons_in(TRACE_DATA))
 
     def test_a_worktree_gone_dirty_and_a_registration_change_both_stay_recorded(self):
-        for name in ('dirty', 'registration', 'unsettled', 'head', 'tag'):
-            self.assertIn('revalidation_changed', reasons_in({name: TRACE_DATA[f'revalidation_{name}.applied']}))
+        for names, reason in ((('dirty', 'tag'), 'revalidation_changed'), (('registration', 'unsettled', 'head'), 'identity_changed')):
+            for name in names:
+                self.assertIn(reason, reasons_in({name: TRACE_DATA[f'revalidation_{name}.applied']}))
 
     def test_a_scene_that_guards_a_removal_deletes_nothing_today(self):
         for name in ('revalidation_registration.applied', 'revalidation_head.applied', 'revalidation_tag.applied',

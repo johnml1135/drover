@@ -88,11 +88,12 @@ class Removal(MemoryCleanupCase):
             return [dict(worktree=o['row']['path'], locked=o['row']['side_lock'])
                     for o in self.evidence.observe(dict(now=self.now, tasks=self.tasks))]
         before = registrations('repo')
+        reach = [placement.cleanup_parts(row['worktree']) for row in before]
         with listing_answers(registrations):
             # The real detector sees the nested registration even without a gitfile.
-            outer['nested'] = disk_worktrees.overlaps_worktrees(request, outer_path, outer_path)
+            outer['nested'] = disk_worktrees.overlaps_worktrees(request, outer_path, outer_path, reach=reach)
             self.assertTrue(outer['nested'])
-            self.assertFalse(disk_worktrees.overlaps_worktrees(request, 'unrelated', 'unrelated'))
+            self.assertFalse(disk_worktrees.overlaps_worktrees(request, 'unrelated', 'unrelated', reach=reach))
             self.cleanup()
             self.cleanup(apply=True)
         self.assertTrue(self.kept(outer_path))
@@ -363,16 +364,15 @@ class RemovalContracts(WorktreeCase):
 
 
 class RegisteredListing(MemoryCleanupCase):
-    def test_overlaps_worktrees_with_registered_matches_fresh_listing(self):
+    def test_overlaps_worktrees_measures_its_reach_and_never_lists(self):
         from drover import disk_worktrees
-        listing = [dict(worktree='/w/outer'), dict(worktree='/w/outer/generated/inner'), dict(worktree='/w/solo')]
+        rows = ('/w/outer', '/w/outer/generated/inner', '/w/solo')
         request = dict(repos=[dict(repo='one'), dict(repo='two')])
-        registered = [placement.cleanup_parts(e['worktree']) for _ in request['repos'] for e in listing]
-        with listing_answers(listing) as fresh:
-            for target, own in (('/w/outer/generated', '/w/outer'), ('/w/outer', '/w/outer'), ('/w/solo/bin', '/w/solo'),
-                                ('/w/free/bin', '/w/free'), ('/w', '/w/solo'), ('/w/outer/generated/inner/x', '/w/outer')):
+        reach = [placement.cleanup_parts(path) for path in rows]
+        with listing_answers([]) as fresh:
+            for target, own, expected in (('/w/outer/generated', '/w/outer', True), ('/w/outer', '/w/outer', True),
+                                          ('/w/solo/bin', '/w/solo', False), ('/w/free/bin', '/w/free', False), ('/w', '/w/solo', True),
+                                          ('/w/outer/generated/inner/x', '/w/outer', True)):
                 with self.subTest(target=target):
-                    expected = disk_worktrees.overlaps_worktrees(request, target, own)
-                    fresh.reset_mock()
-                    self.assertEqual(disk_worktrees.overlaps_worktrees(request, target, own, registered=registered), expected)
-                    fresh.assert_not_called()
+                    self.assertEqual(disk_worktrees.overlaps_worktrees(request, target, own, reach=reach), expected)
+        fresh.assert_not_called()

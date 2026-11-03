@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from . import placement
+from . import git_worktrees, placement
 from .disk_paths import item, safe_path, worktree_roots
 from .disk_worktrees import git, gitdir_at
 
@@ -269,8 +269,9 @@ def reregister(request, machine, path, target, branch, store):
         admin = Path(placement.native(gitdir_at(path)))
         if not (admin / 'index').exists():
             git(path, 'reset', '-q')
-        if not any(placement.cleanup_parts(e['worktree']) == placement.cleanup_parts(path) for e in _entries(repo)):
+        if git_worktrees.listing(repo, timeout_s=git_worktrees.LISTING_TIMEOUT_S).row(path) is None:
             raise ValueError('registration did not take')
+        request['_listings'].repaired(repo, path)
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         try:
@@ -285,8 +286,3 @@ def reregister(request, machine, path, target, branch, store):
                 leftover.rmdir()
             except OSError:
                 pass
-
-
-def _entries(repo):
-    from .disk_worktrees import entries
-    return entries(repo)

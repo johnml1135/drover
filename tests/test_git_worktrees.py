@@ -127,6 +127,14 @@ class OneStage(FakedGit):
         self.expect('/two')
         self.assertEqual([found.repo for found in Listings(['/one', '/two']).every()], ['/one', '/two'])
 
+    def test_reach_is_every_row_of_every_repo_and_a_failed_repo_raises(self):
+        self.expect('/one')
+        self.assertEqual(Listings(['/one']).reach(), (cleanup_parts(MAIN), cleanup_parts(TREE)))
+        self.expect('/two')
+        self.expect('/three', returncode=128, stderr_output='failed')
+        with self.assertRaisesRegex(RegistrationsUnknown, 'failed'):
+            Listings(['/two', '/three']).reach()
+
     def test_timeout_callable_is_called_at_each_listing(self):
         self.expect('/one', timeout=400.0)
         self.expect('/two', timeout=7.0)
