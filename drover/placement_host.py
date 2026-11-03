@@ -17,7 +17,6 @@ from .placement_exec import (
     WSL,
     distro,
     locale_text,
-    wsl_control,
 )
 from . import compaction_hold, process
 from .config_defaults import PROCESS_IGNORE
@@ -127,7 +126,7 @@ def detect_distros():
         name = os.environ.get("WSL_DISTRO_NAME")
         return [{"name": name, "state": "Running", "version": 2, "default": True}] if name else []
     try:
-        r = process.run(process.Command(wsl_control(["-l", "-v"]), 20))
+        r = process.run(process.Command(process.wsl_argv(["-l", "-v"]), 20))
     except OSError:     # WslOffline: the compaction hold
         return []
     return parse_distros(decode_output(r.out)) if r.ok else []
@@ -139,7 +138,7 @@ def wsl_running(default):
     if compaction_hold.active():
         return False
     try:
-        r = process.run(process.Command(wsl_control(["-l", "--running", "-q"]), 20))
+        r = process.run(process.Command(process.wsl_argv(["-l", "--running", "-q"]), 20))
     except OSError:     # WslOffline: the compaction hold
         return False
     names = decode_output(r.out).splitlines()
@@ -330,5 +329,5 @@ def cleanup_vhdx_report(*, paths=None, read=None):
 def trim_argv():
     """No privilege prompts: Windows runs the pinned WSL distro's root trim."""
     if IS_WINDOWS:
-        return wsl_control(['-d', distro(), '-u', 'root', '--', 'fstrim', '-v', '/'])
+        return process.wsl_argv(['-d', distro(), '-u', 'root', '--', 'fstrim', '-v', '/'])
     return ['fstrim', '-v', '/'] if os.geteuid() == 0 else None

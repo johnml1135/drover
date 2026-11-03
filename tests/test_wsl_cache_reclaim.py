@@ -129,7 +129,7 @@ class Reclaim(unittest.TestCase):
     def test_compaction_refusal_is_a_skip(self):
         f = Fakes()
         f.run = mock.Mock(side_effect=AssertionError('must not run'))
-        with mock.patch.object(rc.placement, 'wsl_control', side_effect=OSError('WSL is down for compaction')):
+        with mock.patch.object(process, 'wsl_argv', side_effect=OSError('WSL is down for compaction')):
             with self.assertLogs('drover.wsl_cache_reclaim', 'WARNING'):
                 self.assertFalse(f.go())
 

@@ -182,7 +182,7 @@ class Hold(DiskCase):
     def test_offline_refuses_any_wsl_command_as_an_os_error(self):
         self.live('offline')
         with self.assertRaises(OSError):
-            placement.wsl_control(['-l'])
+            process.wsl_argv(['-l'])
         with self.assertRaises(OSError):
             placement.WSL('U').command(['true'])
 
@@ -194,7 +194,7 @@ class Hold(DiskCase):
 
     def test_draining_still_lets_a_wsl_command_through(self):
         self.live('draining')
-        self.assertEqual(placement.wsl_control(['-l']), ['wsl.exe', '-l'])
+        self.assertEqual(process.wsl_argv(['-l']), ['wsl.exe', '-l'])
 
 
 class Notice(unittest.TestCase):

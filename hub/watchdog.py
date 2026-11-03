@@ -8,13 +8,13 @@ from drover import compaction_hold, placement, process
 import subprocess                   # the keep-alive's Popen only: long-lived, outside process by rule
 import threading
 import time
-from drover.placement import NO_WINDOW, WSL, wsl_control, decode_output
+from drover.placement import WSL, decode_output
 
 
 def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
     """Run wsl.exe; return (returncode, output). Timeout gives (-1, 'timeout')."""
     try:
-        done = process.run(process.Command(wsl_control(args), timeout))
+        done = process.run(process.Command(process.wsl_argv(args), timeout))
     except OSError as e:            # WslOffline, raised at build under the compaction hold
         return -2, str(e)
     if done.kind == "timed_out":
@@ -27,7 +27,7 @@ def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
 def real_keepalive(distro: str, seconds: float):
     """Start `wsl.exe -d <distro> --exec sleep <seconds>`; the returned Popen is the keepalive child."""
     return subprocess.Popen(WSL(distro).command(["sleep", str(int(seconds))]),
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **process.NO_WINDOW)
 
 
 class Watchdog:

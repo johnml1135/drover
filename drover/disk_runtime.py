@@ -69,7 +69,7 @@ def cleanup_call(side: str, request: dict) -> dict:
         worker_env = ['DROVER_RUN_ID=' + token]
         if letter:
             worker_env.append('DROVER_VHDX_DIR=' + placement.to_wsl_path(letter + ':/'))
-        argv = placement.wsl_control(['-d', name, '--', 'env', *worker_env, 'python3'])
+        argv = process.wsl_argv(['-d', name, '--', 'env', *worker_env, 'python3'])
         root = convert(root)
     else:
         argv = [sys.executable]
@@ -87,7 +87,7 @@ def cleanup_call(side: str, request: dict) -> dict:
         job = placement._CleanupJob(token) if placement.IS_WINDOWS and side == 'windows' else None
         command = [*argv, '-c', code, root, token]
         if placement.IS_WINDOWS and side == 'wsl':
-            command = placement.wsl_control(command[1:])
+            command = process.wsl_argv(command[1:])
         ran = process.run(process.Command(command, request['paths'].get('worker_timeout_s', 1800),
                                           env={**os.environ, 'DROVER_RUN_ID': token}, stdin=json.dumps(request)))
         if ran.kind == 'timed_out':
@@ -106,7 +106,7 @@ def cleanup_call(side: str, request: dict) -> dict:
                 if not isinstance(answer, dict):
                     answer = None
                     raise ValueError('invalid cleanup worker result')
-    except OSError as error:        # the Windows job, or wsl_control refusing while WSL is offline
+    except OSError as error:        # the Windows job, or wsl_argv refusing while WSL is offline
         reason, detail = 'worker_unavailable', str(error)
     except BaseException as error:
         detail = str(error) or type(error).__name__

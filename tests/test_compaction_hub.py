@@ -13,7 +13,7 @@ from unittest import mock
 import unittest
 
 from drover import compaction, compaction_hold, config, disk, disk_state, ledger, placement
-from drover import ci, durable, placement_exec, placement_host, process, resources, runner, runner_supervise, usage
+from drover import ci, durable, placement_host, process, resources, runner, runner_supervise, usage
 from drover.launch import RunnerLauncher
 from drover.runner import ScanError
 from tests.test_dispatcher import Base, res
@@ -37,7 +37,7 @@ class Hubbed(Base):
 
 
 class Polling(Hubbed):
-    """Every timer in the hub, with a spy on every binding of wsl_control."""
+    """Every timer in the hub, with a spy on `process.wsl_argv`, the one WSL argv builder."""
 
     def setUp(self):
         super().setUp()
@@ -47,11 +47,9 @@ class Polling(Hubbed):
         def spy(args):
             self.calls.append(args)
             raise AssertionError(f'wsl.exe during the window: {args}')
-        from hub import watchdog
-        for module in (placement_exec, placement_host, placement, watchdog):
-            patcher = mock.patch.object(module, 'wsl_control', spy)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(process, 'wsl_argv', spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         win = mock.patch.object(placement_host, 'IS_WINDOWS', True)
         win.start()
         self.addCleanup(win.stop)

@@ -67,7 +67,7 @@ class WslFile(unittest.TestCase):
         def run(argv, **kw):
             self.calls.append((argv, kw))
             return subprocess.CompletedProcess(argv, code, out, '')
-        with mock.patch.object(pane_files, 'wsl_control', lambda args: ['wsl.exe', *args]), \
+        with mock.patch.object(process, 'wsl_argv', lambda args: ['wsl.exe', *args]), \
                 mock.patch.object(pane_files.placement, 'distro', lambda: 'Ubuntu'),                 mock.patch.object(process, 'subprocess', answering(run)):
             return pane_files.write_private(Path('D:/state') / name, SECRET, placement='wsl')
 
@@ -78,7 +78,7 @@ class WslFile(unittest.TestCase):
             fake = FakeCommands(root)
             fake.expect(argv, output='/home/x/.drover/panes/run-7.credential\n',
                         **process_options(pane_files.WSL_TIMEOUT_S, input=SECRET.encode('utf-8')))
-            with mock.patch.object(pane_files, 'wsl_control', lambda args: ['wsl.exe', *args]), \
+            with mock.patch.object(process, 'wsl_argv', lambda args: ['wsl.exe', *args]), \
                     mock.patch.object(pane_files.placement, 'distro', lambda: 'Ubuntu'), refuse_real_spawns(), \
                     fake.patch(process):
                 self.assertEqual(pane_files.write_private(Path('D:/state') / 'run-7.credential', SECRET, placement='wsl'),
@@ -214,7 +214,7 @@ class Trusted(unittest.TestCase):
             fake.expect(git, error=subprocess.TimeoutExpired(git, 15), **process_options(15))
             fake.expect(git, error=FileNotFoundError(2, 'No such file'), **process_options(15))
             fake.expect(git, output=b'\xff\n', **process_options(15))     # not UTF-8
-            with mock.patch.object(pane_files, 'wsl_control', lambda argv: ['wsl.exe', *argv]), \
+            with mock.patch.object(process, 'wsl_argv', lambda argv: ['wsl.exe', *argv]), \
                     mock.patch.object(pane_files.placement, 'distro', return_value='Ubuntu'), \
                     mock.patch('subprocess.run', side_effect=AssertionError('real process')), fake.patch(process):
                 self.assertIs(pane_launch.repo_trusted(WORKTREE, SEATS['codex']), True)

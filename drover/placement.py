@@ -25,10 +25,10 @@ from .placement_tree import (
     KILL_AFTER_S, PosixTree, WindowsTree,
 )
 from .placement_exec import (
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, NO_WINDOW,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
     TELEMETRY_OPTOUT, WSL, Windows, _name, _value, _wslenv, bind_settings, ci_command,
     ci_invocation, ci_path, ci_runner_command,
-    detach, distro, executable, native_runner_cwd, spawn_worker, wsl_control,
+    detach, distro, executable, native_runner_cwd, spawn_worker,
 )
 from .placement_git import (
     _METADATA_IO, _PATH_OPTS, _WORKTREE_PATH_SUBS, _git_command, _git_location, _map_paths, git,

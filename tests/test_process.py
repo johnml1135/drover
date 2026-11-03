@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from drover.process import Command, run
-from drover import process
-from tests.fakeci import FakeCommands, process_options
+from drover import compaction_hold, process
+from tests.fakeci import FakeCommands, process_options, refuse_real_spawns
 
 ARGV = ('tool', '--flag', 'value')
 
@@ -142,6 +142,48 @@ class Run(unittest.TestCase):
         argv = ['C:\\Program Files\\x.exe', 'a b', 'say "hi"', '']
         with self.fake.patch(process):
             self.assertEqual(process.list2cmdline(argv), subprocess.list2cmdline(argv))
+
+
+def hold(phase):
+    """`compaction_hold.active` answering a live hold in `phase`, so no state directory is read."""
+    return mock.patch.object(compaction_hold, 'active', lambda state_dir=None: {'phase': phase, 'at': 0})
+
+
+class WslArgv(unittest.TestCase):
+    """The 8 KB limit and the compaction hold are checked when a `wsl.exe` argv is built, and only there."""
+
+    def test_wsl_argv_refuses_over_8_kb(self):
+        with hold('draining'):
+            self.assertEqual(process.wsl_argv(('-d', 'U', '--exec', 'true')), ['wsl.exe', '-d', 'U', '--exec', 'true'])
+            with self.assertRaises(process.CommandTooLong):
+                process.wsl_argv(['x' * 8192])
+
+    def test_wsl_argv_raises_wsl_offline_in_the_offline_phase(self):
+        with hold('offline'), self.assertRaises(compaction_hold.WslOffline):
+            process.wsl_argv(['-l'])
+
+    def test_run_makes_no_hold_check(self):
+        """The compaction job's literal argv runs after it sets phase='offline'; only the build refuses."""
+        with tempfile.TemporaryDirectory() as root, hold('offline'):
+            fake = FakeCommands(root)
+            fake.expect(['wsl.exe', '--shutdown'], **process_options(120))
+            with self.assertRaises(compaction_hold.WslOffline):
+                process.wsl_argv(['--shutdown'])
+            with refuse_real_spawns(), fake.patch(process):
+                self.assertTrue(run(Command(['wsl.exe', '--shutdown'], 120)).ok)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_watchdog_keep_alive_is_refused_offline_at_build(self):
+        """hub/watchdog's keep-alive Popen stays outside process, but its argv comes from WSL.command."""
+        from drover import placement_exec
+        from hub import watchdog
+        built = mock.Mock(wraps=process.wsl_argv)
+        with hold('offline'), refuse_real_spawns(), mock.patch.object(process, 'wsl_argv', built), \
+                mock.patch.object(placement_exec, '_settings', lambda: {}), \
+                mock.patch.object(watchdog.subprocess, 'Popen', side_effect=AssertionError('keep-alive started')):
+            with self.assertRaises(compaction_hold.WslOffline):
+                watchdog.real_keepalive('U', 60)
+        built.assert_called_once_with(['-d', 'U', '--exec', 'sleep', '60'])
 
 
 class AnyText(str):

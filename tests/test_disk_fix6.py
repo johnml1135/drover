@@ -30,17 +30,16 @@ class Recovery(unittest.TestCase):
         self.assertEqual(json.loads(captured[0][0][-1]), dict(pid=123456789, runner_pid=123456789, run_id='fixture', nonce=None))
 
     def test_all_wsl_builders_use_bounded_command_boundary(self):
-        tree = ast.parse(Path(placement.__file__).with_name("placement_exec.py").read_text())
-        builders = []
-        for function in tree.body:
-            if isinstance(function, (ast.FunctionDef, ast.ClassDef)):
-                if any(isinstance(n, ast.Constant) and n.value == 'wsl.exe' for n in ast.walk(function)):
-                    builders.append(function.name)
-        self.assertEqual(builders, ['wsl_control'])
-        for build in (lambda tail: placement.wsl_control(tail),
+        def builders(name):
+            tree = ast.parse(Path(placement.__file__).with_name(name).read_text())
+            return [function.name for function in tree.body if isinstance(function, (ast.FunctionDef, ast.ClassDef))
+                    and any(isinstance(n, ast.Constant) and n.value == 'wsl.exe' for n in ast.walk(function))]
+        self.assertEqual(builders('placement_exec.py'), [])
+        self.assertEqual(builders('process.py'), ['wsl_argv'])
+        for build in (lambda tail: process.wsl_argv(tail),
                       lambda tail: placement.WSL('Fixture').command(tail)):
             self.assertLess(len(subprocess.list2cmdline(build(['python3', '-c', 'pass'])).encode('utf-16-le')), 8192)
-            with self.assertRaises(ValueError):
+            with self.assertRaises(process.CommandTooLong):
                 build(['x' * 8192])
 
 

@@ -13,7 +13,6 @@ from pathlib import Path
 
 from . import config, pane_status_hook, placement, process
 from .launch import _reject_permission_bypass
-from .placement_exec import wsl_control
 
 NATIVE_COMPACT = 350_000
 WSL_TIMEOUT_S = 15
@@ -44,7 +43,7 @@ def _write_windows(path, text):
 def _write_wsl(name, text):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
         raise ValueError('bad private file name')
-    argv = wsl_control(['-d', placement.distro(), '--exec', 'bash', '-c', WSL_PRIVATE, 'bash', name])
+    argv = process.wsl_argv(['-d', placement.distro(), '--exec', 'bash', '-c', WSL_PRIVATE, 'bash', name])
     done = process.run(process.Command(argv, WSL_TIMEOUT_S, stdin=text))     # a str goes as UTF-8, as before
     if not done.ok:
         raise OSError(done.detail or 'the private file was not written in WSL')
@@ -60,7 +59,7 @@ def write_private(path, text, *, placement) -> str:
 
 
 def _wsl_read(args):
-    done = process.run(process.Command(wsl_control(['-d', placement.distro(), '--exec', *args]), WSL_TIMEOUT_S))
+    done = process.run(process.Command(process.wsl_argv(['-d', placement.distro(), '--exec', *args]), WSL_TIMEOUT_S))
     if not done.ok:
         raise OSError(done.detail or f'the WSL read failed with exit status {done.code}')
     return done.out.decode('utf-8')     # strict: undecodable output is a ValueError, so untrusted

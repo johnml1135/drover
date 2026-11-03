@@ -84,7 +84,7 @@ class Offline(Job):
         record = compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth='b')
         compaction_hold.save(self.state, {**record, 'phase': 'offline'})
         with self.assertRaises(OSError):
-            placement.wsl_control(['--shutdown'])
+            process.wsl_argv(['--shutdown'])
         fake = FakeCommands(self.root / 'commands')
         fake.expect(['wsl.exe', '--shutdown'], **process_options(120))
         fake.expect(['wsl.exe', '-l', '--running', '-q'], **process_options(20))

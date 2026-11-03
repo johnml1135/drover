@@ -93,3 +93,29 @@ Section 5.1's Hub sites now run through `process`: hub/__main__:26, hub/auth:28,
   - Restated: `test_web_perf.test_repo_state_probe_records_ahead_in_background_snapshot`. It patched `hub.task_views.subprocess.run`; it now uses `FakeCommands.patch(process)`.
   - The ceilings and `tests.IMPURE` are unchanged.
 - **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.
+
+## Task 20: `wsl_control` moves; `NO_WINDOW` has one home
+
+`placement_exec.wsl_control` is now `process.wsl_argv(args) -> list[str]`, with the same checks at build and only there: `WslOffline` in the compaction hold's offline phase, and `CommandTooLong` (a `ValueError`, as before) past 8 KB. `process` imports `compaction_hold`, which imports only `durable`, so no cycle. R5's direction row for `process` already allowed it. `placement_exec`'s `compaction_hold` import is gone.
+
+- **Callers.** Every caller calls `process.wsl_argv` by attribute, so there is one binding to fake: `WSL.command` (placement_exec), compaction `_wsl` (2), disk_runtime (2), pane_files (2, and its `from .placement_exec import wsl_control` is gone), placement_host (3), wsl_cache_reclaim and hub/watchdog `real_wsl`. `placement` no longer re-exports `wsl_control`, `NO_WINDOW` or `CREATE_NO_WINDOW`.
+- **The console flag.** `placement_exec`'s `CREATE_NO_WINDOW` and `NO_WINDOW` are gone. `Windows.spawn` (under `spawn_worker`) and `detach` read `process.CREATE_NO_WINDOW`. hub/watchdog's keep-alive `Popen` reads `process.NO_WINDOW`. The flag is now defined only in `process` and in the frozen `hub/runtime` (ruling 15). `pane_status_hook` keeps its literal, because it is standalone. `placement_exec` keeps `CREATE_SUSPENDED`, `CREATE_NEW_PROCESS_GROUP` and `CREATE_BREAKAWAY_FROM_JOB` for its ADR-0002 `Popen`s.
+- **Removed symbols.** `qualified_names` gains `drover.placement_exec.wsl_control`, as the brief asks, and also `drover.placement.wsl_control` and the `NO_WINDOW` and `CREATE_NO_WINDOW` names on `placement_exec` and `placement`. The extra rows guard the re-exports and the flag copies that went in the same commit.
+- **Tests.**
+  - New: `test_process.WslArgv`, four tests. `test_wsl_argv_refuses_over_8_kb` and `test_wsl_argv_raises_wsl_offline_in_the_offline_phase` pin the build checks. `test_run_makes_no_hold_check` pins two things in the offline phase: the literal `['wsl.exe', '--shutdown']` runs through `process.run`, and the same argv is refused when it is built. `test_watchdog_keep_alive_is_refused_offline_at_build` covers the watchdog's keep-alive: it is refused through `WSL.command` and `process.wsl_argv`, and its `Popen` is never reached.
+  - Restated:
+    - test_compaction and test_compaction_hold call `process.wsl_argv`.
+    - test_compaction_hub's Polling spy patches `process.wsl_argv` once, where it patched four bindings.
+    - test_pane_launch_files and test_wsl_cache_reclaim patch `process.wsl_argv`.
+    - test_disk_fix6's builder census finds no `wsl.exe` builder in `placement_exec` and `wsl_argv` alone in `process`, and expects `CommandTooLong`.
+    - test_runner_detach's two Windows detach tests take the flag from `process.CREATE_NO_WINDOW`. They no longer create `placement_exec.CREATE_NO_WINDOW` under `patch.multiple(create=True)`.
+  - Deleted: `test_runner_detach.DetachTests.test_no_window_helper_is_empty_off_windows`. It pinned `placement.NO_WINDOW`, which is gone, and `test_process.Run.test_every_command_carries_no_shell_and_the_console_flag` already pins `process.NO_WINDOW`'s value on both platforms. That class is in the integration tier, so `INTEGRATION_CEILING` falls from 209 to 208. `IMPURE_CEILING` is unchanged.
+  - test_herdr_client and test_disk_worker_status already read `process.NO_WINDOW`, so they needed no change.
+- **R1.** No row changes. `placement_exec` (ADR-0002) and `hub/watchdog` (keep-alive) still spawn outside `process` by rule. `tests/seam_exceptions.json` is unchanged.
+
+## Slice exit
+
+- Every other short-lived command runs through `process`. The R1 rows that remain are the section 13 end rows: ci, disk_cleanup `locked_command`, pane_status_hook, placement_exec, placement_tree, runner, runner_supervise, hub/runtime and hub/watchdog. The rest are due in slice 4 (Tasks 24 to 28) or in Task 45. Each of them names `subprocess` types only. placement_git's row still says "Spawns directly", but since slice 3a it only builds `CompletedProcess` and `TimeoutExpired` around `process.run`. That stale reason is left for Task 28, which deletes the row.
+- `grep -rn "0x08000000\|NO_WINDOW *=\|CREATE_NO_WINDOW *=" drover hub` finds three: process.py:29, hub/runtime.py:36 and the hook's literal at pane_status_hook.py:66.
+- `placement_exec` and `hub/watchdog` read `process`'s flag.
+- **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.

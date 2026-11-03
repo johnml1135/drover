@@ -122,13 +122,13 @@ class Runtime:
     def kill(self):
         """Kill every agent or runner process left in WSL, including ones Drover does not know about. Returns PIDs."""
         root = ['-d', self.distro, '-u', 'root', '--']
-        done = self._wsl(placement.wsl_control([*root, 'ps', '-eo', 'pid=,args=']), 60)
+        done = self._wsl(process.wsl_argv([*root, 'ps', '-eo', 'pid=,args=']), 60)
         if done.code:
             raise RuntimeError(f'the WSL process list failed (exit {done.code})')
         rows = [line.split(None, 1) for line in done.stdout.splitlines() if line.strip()]
         pids = [int(row[0]) for row in rows if len(row) == 2 and row[0].isdigit() and AGENT_PROCESS.search(row[1])]
         if pids:
-            self._wsl(placement.wsl_control([*root, 'kill', '-9', *map(str, pids)]), 60)
+            self._wsl(process.wsl_argv([*root, 'kill', '-9', *map(str, pids)]), 60)
         return pids
 
     def trim(self):

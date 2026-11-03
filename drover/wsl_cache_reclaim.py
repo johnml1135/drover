@@ -35,7 +35,7 @@ def parse_meminfo_cache_gb(text):
 def _ended(args, timeout):
     """The ended run of a WSL command. One that did not end raises `OSError`, which `reclaim` logs and skips, as it
     did a timeout or a failed spawn."""
-    done = process.run(process.Command(placement.wsl_control(args), timeout))
+    done = process.run(process.Command(process.wsl_argv(args), timeout))
     if done.kind != 'exited':
         raise OSError(done.detail)
     return done

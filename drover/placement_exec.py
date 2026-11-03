@@ -6,7 +6,7 @@ import subprocess
 import sys
 import shutil
 
-from . import compaction_hold, process
+from . import process
 from .placement_paths import (
     IS_WINDOWS,
     is_linux_native,
@@ -27,9 +27,6 @@ _wslenv = [v for v in os.environ.get('WSLENV', '').split(':') if v and v.split('
 os.environ['WSLENV'] = ':'.join([*_wslenv, *TELEMETRY_OPTOUT])
 
 
-CREATE_NO_WINDOW = 0x08000000
-
-
 CREATE_SUSPENDED = 0x4
 
 
@@ -38,8 +35,6 @@ CREATE_NEW_PROCESS_GROUP = 0x200
 
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
-
-NO_WINDOW = {"creationflags": CREATE_NO_WINDOW} if IS_WINDOWS else {}
 
 
 def locale_text(data, errors='strict'):
@@ -88,7 +83,7 @@ class Windows:
     def spawn(self, argv, **kw):
         if WindowsTree is None:
             raise OSError("Windows process ownership requires Windows")
-        proc = subprocess.Popen(argv, creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | CREATE_NO_WINDOW, **kw)
+        proc = subprocess.Popen(argv, creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | process.CREATE_NO_WINDOW, **kw)
         return proc, WindowsTree(proc)
 
 
@@ -109,19 +104,11 @@ class WSL:
             if any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(k)) for k in env):
                 raise ValueError("bad environment variable name")
             argv = ["/usr/bin/env", *[f"{k}={self.path(v)}" for k, v in env.items()], *argv]
-        return wsl_control(prefix + ["--exec", *argv])
+        return process.wsl_argv(prefix + ["--exec", *argv])
 
     def spawn(self, argv, **kw):
         proc = subprocess.Popen(argv, start_new_session=True, **kw)
         return proc, PosixTree(proc)
-
-
-def wsl_control(args):
-    compaction_hold.refuse_when_offline()
-    command = ["wsl.exe", *args]
-    if len(subprocess.list2cmdline(command).encode('utf-16-le')) >= 8192:
-        raise ValueError('WSL command exceeds 8 KB; pass payloads through stdin or files')
-    return command
 
 
 def spawn_worker(argv, out_f, stdin_f, cwd, env):
@@ -136,7 +123,7 @@ def detach(cmd, env, log):
     kw = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True)
     if IS_WINDOWS:
         # Keep the runner hidden and independent of the hub when its parent job allows breakaway.
-        flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        flags = process.CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
         try:
             proc = subprocess.Popen(cmd, env=env, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kw)
         except OSError:         # the parent's job does not allow breakaway: the runner dies with that job

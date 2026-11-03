@@ -19,7 +19,9 @@ import threading
 import time
 from dataclasses import dataclass
 from subprocess import list2cmdline     # bound at import: the fake refuses any unscripted `process.subprocess` call
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Sequence
+
+from . import compaction_hold
 
 Kind = Literal['exited', 'timed_out', 'unavailable']
 
@@ -201,11 +203,21 @@ class _Spawn:
 
 subprocess = _Spawn()
 
-__all__ = ['Kind', 'Command', 'Result', 'CommandTooLong', 'run', 'NO_WINDOW', 'list2cmdline']
+__all__ = ['Kind', 'Command', 'Result', 'CommandTooLong', 'run', 'wsl_argv', 'NO_WINDOW', 'CREATE_NO_WINDOW', 'list2cmdline']
 
 
 class CommandTooLong(ValueError):
     """An argv past the 8 KB command-line limit: a caller's bug, refused before any spawn."""
+
+
+def wsl_argv(args: Sequence[str]) -> list[str]:
+    """`wsl.exe` with `args`, checked at build and only there: `WslOffline` in the compaction hold's offline phase,
+    `CommandTooLong` past 8 KB. `run` checks no hold, so the compaction job's own literal argvs still run."""
+    compaction_hold.refuse_when_offline()
+    command = ['wsl.exe', *args]
+    if len(list2cmdline(command).encode('utf-16-le')) >= 8192:
+        raise CommandTooLong('WSL command exceeds 8 KB; pass payloads through stdin or files')
+    return command
 
 
 @dataclass(frozen=True)

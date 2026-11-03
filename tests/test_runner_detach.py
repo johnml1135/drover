@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from drover import runner
+from drover import process, runner
 from tests.tiers import integration
 
 from tests.test_runner import Base, PKG_ROOT, ENV, PY, alive, wait_for, _cleanup_detached_fixture
@@ -129,9 +129,8 @@ class DetachTests(Base):
             unlink.assert_called_once_with()
 
     def test_windows_detach_reports_breakaway_success_and_refusal(self):
-        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_NEW_PROCESS_GROUP": 0x200,
-                 "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
-        base_flags = flags["CREATE_NO_WINDOW"] | flags["CREATE_NEW_PROCESS_GROUP"]
+        flags = {"CREATE_NEW_PROCESS_GROUP": 0x200, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        base_flags = process.CREATE_NO_WINDOW | flags["CREATE_NEW_PROCESS_GROUP"]     # the console flag's one home
 
         def run_detach(run_id, attempts):
             proc = Mock(pid=123)
@@ -145,7 +144,7 @@ class DetachTests(Base):
                 return observed_status
 
             clock = Mock(return_value=100)
-            with patch.multiple('drover.placement_exec', IS_WINDOWS=True, create=True, **flags), \
+            with patch.multiple('drover.placement_exec', IS_WINDOWS=True, **flags), \
                     patch.dict(os.environ, {}, clear=True), \
                     patch.object(runner.subprocess, "Popen", popen), \
                     patch.object(runner, "read_status", side_effect=read_child_status), \
@@ -180,19 +179,14 @@ class DetachTests(Base):
             self.assertIn("breakaway from the parent job was refused", log)
 
 
-    def test_no_window_helper_is_empty_off_windows(self):
-        from drover import placement
-        self.assertEqual(placement.NO_WINDOW, {"creationflags": 0x08000000} if os.name == "nt" else {})
-
     def test_windows_detach_propagates_failed_fallback_spawn(self):
-        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_NEW_PROCESS_GROUP": 0x200,
-                 "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
-        base_flags = flags["CREATE_NO_WINDOW"] | flags["CREATE_NEW_PROCESS_GROUP"]
+        flags = {"CREATE_NEW_PROCESS_GROUP": 0x200, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        base_flags = process.CREATE_NO_WINDOW | flags["CREATE_NEW_PROCESS_GROUP"]     # the console flag's one home
         first_error = OSError(5, "breakaway refused")
         fallback_error = OSError(87, "fallback spawn failed")
         popen = Mock(side_effect=[first_error, fallback_error])
 
-        with patch.multiple('drover.placement_exec', IS_WINDOWS=True, create=True, **flags), \
+        with patch.multiple('drover.placement_exec', IS_WINDOWS=True, **flags), \
                 patch.dict(os.environ, {}, clear=True), \
                 patch.object(runner.subprocess, "Popen", popen), \
                 patch.object(runner.time, "monotonic", Mock(return_value=100)):
