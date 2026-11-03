@@ -2,21 +2,19 @@
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 from drover import placement
-from . import config
+from . import config, process
 from .tool_discovery import DISCOVERY_SCRIPT, parse_discovery
 
 BENCH_CALLS = 10
 
 
 def _run(cmd, timeout=10):
-    try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout, **placement.NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    """The ended run (`.code`, bytes `.out`), or None when it did not end or could not start."""
+    done = process.run(process.Command(cmd, timeout))
+    return done if done.kind == 'exited' else None
 
 
 def is_windows():
@@ -82,9 +80,9 @@ def detect_nvidia():
     """{'name', 'used_mb', 'total_mb'} from nvidia-smi, or None."""
     for exe in (["nvidia-smi.exe"] if is_windows() else ["nvidia-smi", "nvidia-smi.exe"]):
         r = _run([exe, "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader,nounits"])
-        if r and r.returncode == 0 and r.stdout.strip():
+        if r and r.code == 0 and r.out.strip():
             try:
-                name, used, total = (x.strip() for x in placement.decode_output(r.stdout).splitlines()[0].split(","))
+                name, used, total = (x.strip() for x in placement.decode_output(r.out).splitlines()[0].split(","))
                 return {"name": name, "used_mb": float(used), "total_mb": float(total)}
             except ValueError:
                 continue
@@ -154,8 +152,8 @@ def _windows_exe(tool):
     r = _run([CMD_EXE, "/c", "where", tool + ".exe"], 20)
     if r is None:
         return None, False
-    lines = [x.strip() for x in placement.decode_output(r.stdout).splitlines() if x.strip().lower().endswith((".exe", ".com"))]
-    return (lines[0] if r.returncode == 0 and lines else None), True
+    lines = [x.strip() for x in placement.decode_output(r.out).splitlines() if x.strip().lower().endswith((".exe", ".com"))]
+    return (lines[0] if r.code == 0 and lines else None), True
 
 
 def detect_tools(distro=None):
@@ -170,13 +168,13 @@ def detect_tools(distro=None):
     if not on_windows:
         probed["wsl"] = True
         r = _run(["bash", "-c", DISCOVERY_SCRIPT], 30)
-        found = parse_discovery(placement.decode_output(r.stdout)) if r and r.returncode == 0 else {}
+        found = parse_discovery(placement.decode_output(r.out)) if r and r.code == 0 else {}
         for t in out:
             out[t]["wsl"] = found.get(t)
     elif distro and any(d["name"] == distro and d["state"] == "Running" for d in placement.detect_distros()):
         probed["wsl"] = True
         r = _run(placement.WSL(distro).command(["bash", "-c", DISCOVERY_SCRIPT]), 30)
-        found = parse_discovery(placement.decode_output(r.stdout)) if r and r.returncode == 0 else {}
+        found = parse_discovery(placement.decode_output(r.out)) if r and r.code == 0 else {}
         for t in out:
             out[t]["wsl"] = found.get(t)
     out["_probed"] = probed
@@ -192,7 +190,7 @@ def _host_ram_wsl():
     r = _run([placement.windows_system_path("WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-Command",
               "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"], 30)
     try:
-        return int(placement.decode_output(r.stdout).strip()) / 1024 ** 3 if r and r.returncode == 0 else None
+        return int(placement.decode_output(r.out).strip()) / 1024 ** 3 if r and r.code == 0 else None
     except ValueError:
         return None
 
@@ -235,9 +233,9 @@ def detect_tailscale():
     """{'up': bool, 'login': str|None}."""
     for exe in ("tailscale", r"C:\Program Files\Tailscale\tailscale.exe"):
         r = _run([exe, "status", "--json"], 20)
-        if r and r.returncode == 0:
+        if r and r.code == 0:
             try:
-                d = json.loads(placement.decode_output(r.stdout))
+                d = json.loads(placement.decode_output(r.out))
                 return {"up": d.get("BackendState") == "Running",
                         "login": d["User"][str(d["Self"]["UserID"])]["LoginName"]}
             except (ValueError, KeyError, TypeError):

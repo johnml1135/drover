@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import pane_files, pane_launch
+from drover import pane_files, pane_launch, process
+from tests.fakeci import FakeCommands, process_options
 from tests.pane_launch_support import SECRET, SEATS
 
 CONFIG = '[projects."/mnt/h/repos/drover"]\ntrust_level = "trusted"\n[projects."/mnt/h/repos/other"]\ntrust_level = "untrusted"\n'
@@ -191,3 +192,23 @@ class Trusted(unittest.TestCase):
 
     def test_a_home_on_the_wrong_kind_of_seat_is_untrusted(self):
         self.assertIs(self.check(seat={'name': 'c', 'backend': 'claude'}), False)
+
+    def test_the_wsl_reads_run_through_process_and_any_failure_is_untrusted(self):
+        top = '/mnt/h/repos/drover.worktrees/t9'
+        wsl = lambda *args: ['wsl.exe', '-d', 'Ubuntu', '--exec', *args]
+        git = wsl('git', '-C', top, 'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir')
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeCommands(root)
+            fake.expect(git, output=f'{top}\n/mnt/h/repos/drover/.git\n'.encode(), **process_options(15))
+            fake.expect(wsl('sh', '-c', 'exec cat -- "$HOME/$1"', 'sh', '.codex/config.toml'), output=CONFIG.encode(),
+                        **process_options(15))
+            fake.expect(git, returncode=128, stderr_output=b'fatal: not a git repository\n', **process_options(15))
+            fake.expect(git, error=subprocess.TimeoutExpired(git, 15), **process_options(15))
+            fake.expect(git, error=FileNotFoundError(2, 'No such file'), **process_options(15))
+            fake.expect(git, output=b'\xff\n', **process_options(15))     # not UTF-8
+            with mock.patch.object(pane_files, 'wsl_control', lambda argv: ['wsl.exe', *argv]), \
+                    mock.patch.object(pane_files.placement, 'distro', return_value='Ubuntu'), \
+                    mock.patch('subprocess.run', side_effect=AssertionError('real process')), fake.patch(process):
+                self.assertIs(pane_launch.repo_trusted(WORKTREE, SEATS['codex']), True)
+                for _ in range(4):
+                    self.assertIs(pane_launch.repo_trusted(WORKTREE, SEATS['codex']), False)

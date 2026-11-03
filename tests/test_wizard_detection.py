@@ -1,14 +1,16 @@
 """python -m drover init, with scripted input and injected detections (nothing real is read or written)."""
 import io
 import json
+import subprocess
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, placement, repos, wizard, wizard_detect
+from drover import config, placement, process, repos, wizard, wizard_detect
 from drover.tool_discovery import DISCOVERY_SCRIPT
+from tests.fakeci import FakeCommands, process_options
 
 from tests.test_wizard import Base, DRIVES, REPOS, TOOLS, OLLAMA, fake, Script
 
@@ -110,36 +112,42 @@ class Tools(Base):
         self.assertEqual(seat["placement"], "windows")
         self.assertIn("Windows not checked", self.out.getvalue())
 
+    def commands(self):
+        """One fake at `process` for every probe; a real spawn fails the test."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        refused = mock.patch("subprocess.run", side_effect=AssertionError("real process"))
+        refused.start()
+        self.addCleanup(refused.stop)
+        return FakeCommands(temp.name)
+
     def test_wsl_probes_windows_through_cmd_exe_and_accepts_only_native_executables(self):
-        from unittest import mock
-        done = lambda out, rc=0: mock.Mock(stdout=out, returncode=rc)
+        fake, where = self.commands(), [wizard_detect.CMD_EXE, "/c", "where", "claude.exe"]
+        fake.expect(where, output=b"C:\\Users\\me\\claude.exe\r\nC:\\n\\claude.cmd\r\n", **process_options(20))
+        fake.expect(where, output=b"C:\\n\\claude.cmd\r\n", **process_options(20))
+        fake.expect(where, error=subprocess.TimeoutExpired(where, 20), **process_options(20))
         with mock.patch.object(wizard_detect, "is_windows", return_value=False), \
-                mock.patch("pathlib.Path.exists", return_value=True), \
-                mock.patch.object(wizard_detect, "_run", return_value=done(b"C:\\Users\\me\\claude.exe\r\nC:\\n\\claude.cmd\r\n")):
+                mock.patch("pathlib.Path.exists", return_value=True), fake.patch(process):
             self.assertEqual(wizard._windows_exe("claude"), ("C:\\Users\\me\\claude.exe", True))
-        with mock.patch.object(wizard_detect, "is_windows", return_value=False), \
-                mock.patch("pathlib.Path.exists", return_value=True), \
-                mock.patch.object(wizard_detect, "_run", return_value=done(b"C:\\n\\claude.cmd\r\n")):
             self.assertEqual(wizard._windows_exe("claude"), (None, True))
+            self.assertEqual(wizard._windows_exe("claude"), (None, False))     # a probe that did not end is unprobed
         with mock.patch.object(wizard_detect, "is_windows", return_value=False), mock.patch("pathlib.Path.exists", return_value=False):
             self.assertEqual(wizard._windows_exe("claude"), (None, False))
 
     def test_wizard_reports_wsl_native_paths_from_the_shared_resolver(self):
-        from unittest import mock
         native = "/opt/agents/bin/codex"
         claude = "/opt/agents/bin/claude"
-        done = mock.Mock(stdout=f"DROVER_TOOL|codex|{native}\nDROVER_TOOL|claude|{claude}\n".encode(), returncode=0)
+        fake = self.commands()
+        fake.expect(["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-c", DISCOVERY_SCRIPT],
+                    output=f"DROVER_TOOL|codex|{native}\nDROVER_TOOL|claude|{claude}\n".encode(), **process_options(30))
         with mock.patch.object(wizard_detect, "is_windows", return_value=True), \
                 mock.patch.object(wizard_detect, "_windows_exe", return_value=(None, True)), \
                 mock.patch.object(wizard.placement, "detect_distros", return_value=[
                     {"name": "Ubuntu", "state": "Running", "version": 2, "default": True}
-                ]), \
-                mock.patch.object(wizard_detect, "_run", return_value=done) as run:
+                ]), fake.patch(process):
             found = wizard.detect_tools("Ubuntu")
         self.assertEqual(found["codex"]["wsl"], native)
         self.assertEqual(found["claude"]["wsl"], claude)
-        self.assertEqual(run.call_args.args[0],
-                         ["wsl.exe", "-d", "Ubuntu", "--exec", "bash", "-c", DISCOVERY_SCRIPT])
 
 
 

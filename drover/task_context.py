@@ -1,10 +1,9 @@
 """Task kinds and declarative repository read access, shared by all input paths."""
 import json
 import re
-import subprocess
 from pathlib import Path
 
-from . import repos
+from . import process, repos
 
 KINDS = ('research', 'investigation', 'implementation', 'fix', 'review', 'docs', 'mechanical')
 READ_ONLY_KINDS = ('research', 'investigation', 'review')
@@ -128,11 +127,10 @@ def repository_rules(task, cwd):
             inspect.getsource(_read_repository_rules) +
             '\nprint(json.dumps(_read_repository_rules(sys.argv[1], json.load(sys.stdin))))')
     argv = placement.WSL().command(['python3', '-c', code, str(cwd)])
-    result = subprocess.run(argv, input=json.dumps(scopes), capture_output=True,
-                            text=True, encoding='utf-8', timeout=15, **placement.NO_WINDOW)
-    if result.returncode:
-        raise OSError(result.stderr.strip() or 'cannot read repository rules')
-    return json.loads(result.stdout)
+    result = process.run(process.Command(argv, 15, stdin=json.dumps(scopes)))
+    if not result.ok:       # a run that did not end fails closed too, as an OSError
+        raise OSError(result.detail or result.stderr.strip() or 'cannot read repository rules')
+    return json.loads(result.out.decode('utf-8'))
 
 
 def check_kind(kind):

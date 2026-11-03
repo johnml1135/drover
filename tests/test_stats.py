@@ -11,8 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, decide, stats, usage
+from drover import config, decide, process, stats, usage
 from drover.ledger import connect, ops
+from tests.fakeci import FakeCommands, process_options
 
 NOW = datetime(2026, 10, 17, 16, tzinfo=timezone.utc).timestamp()
 
@@ -27,46 +28,51 @@ class HubClient(unittest.TestCase):
         port = config.get()['hub']['api_port']
         for cli, argv, endpoint in ((stats, ['--json'], '/stats?'),
                                     (usage, ['order', '--json'], '/usage/order')):
+            fake = self.commands()
+            fake.expect(['ip', 'route'], output=f'default via {gateway} dev eth0\n'.encode(), **process_options(2))
             with self.subTest(cli=cli.__name__), patch.dict(os.environ, {'DROVER_HUB_TOKEN': 'test-token'}), \
                     patch.object(stats.os, 'name', 'posix'), \
-                    patch.object(decide, '_is_wsl', return_value=True), \
-                    patch('subprocess.run', return_value=subprocess.CompletedProcess(
-                        [], 0, f'default via {gateway} dev eth0\n')) as run, \
+                    patch.object(decide, '_is_wsl', return_value=True), fake.patch(process), \
                     patch.object(stats, 'urlopen', return_value=io.BytesIO(b'{}')) as fetch, \
                     contextlib.redirect_stdout(io.StringIO()):
                 os.environ.pop('DROVER_HUB_URL', None)
                 os.environ.pop('DROVER_LEDGER', None)
                 self.assertEqual(cli.main(argv), 0)
                 self.assertEqual(fetch.call_args.args[0].full_url, f'http://{gateway}:{port}/api/v1{endpoint}')
-                run.assert_called_once()
-                self.assertEqual(run.call_args.args[0], ['ip', 'route'])
+
+    def commands(self):
+        """A fake at `process` that fails on any command it was not told of; a real spawn fails the test."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        refused = patch('subprocess.run', side_effect=AssertionError('real process'))
+        refused.start()
+        self.addCleanup(refused.stop)
+        return FakeCommands(temp.name)
 
     def test_explicit_hub_url_skips_gateway_discovery(self):
         with patch.dict(os.environ, {'DROVER_HUB_URL': 'http://acme-hub:9100/', 'DROVER_HUB_TOKEN': 'test-token'}), \
-                patch.object(decide, '_is_wsl', return_value=True), \
-                patch('subprocess.run') as run, \
+                patch.object(decide, '_is_wsl', return_value=True), self.commands().patch(process), \
                 patch.object(stats, 'urlopen', return_value=io.BytesIO(b'{}')) as fetch:
             self.assertEqual(stats.hub_request('/stats'), {})
             self.assertEqual(fetch.call_args.args[0].full_url, 'http://acme-hub:9100/api/v1/stats')
-            run.assert_not_called()
 
     def test_localhost_when_not_wsl_or_gateway_is_unavailable(self):
-        for wsl, route in ((False, ''), (True, '192.0.2.0/24 dev eth0\n'), (True, OSError('no route command'))):
+        routes = (b'192.0.2.0/24 dev eth0\n', OSError('no route command'),
+                  subprocess.TimeoutExpired(['ip', 'route'], 2, output=b'default via 192.0.2.1 dev eth0\n'))
+        for wsl, route in ((False, None), *((True, route) for route in routes)):
+            fake = self.commands()
+            if wsl:
+                answer = dict(error=route) if isinstance(route, BaseException) else dict(output=route)
+                fake.expect(['ip', 'route'], **answer, **process_options(2))
             with self.subTest(wsl=wsl, route=route), \
                     patch.dict(os.environ, {'DROVER_HUB_TOKEN': 'test-token'}), \
                     patch.object(stats.os, 'name', 'posix'), \
-                    patch.object(decide, '_is_wsl', return_value=wsl), \
-                    patch('subprocess.run') as run, \
+                    patch.object(decide, '_is_wsl', return_value=wsl), fake.patch(process), \
                     patch.object(stats, 'urlopen', return_value=io.BytesIO(b'{}')) as fetch:
                 os.environ.pop('DROVER_HUB_URL', None)
-                if isinstance(route, OSError):
-                    run.side_effect = route
-                else:
-                    run.return_value = subprocess.CompletedProcess([], 0, route)
                 stats.hub_request('/stats')
                 self.assertEqual(fetch.call_args.args[0].full_url,
                                  f"http://127.0.0.1:{config.get()['hub']['api_port']}/api/v1/stats")
-                self.assertEqual(run.call_count, int(wsl))
 
 
 class Stats(unittest.TestCase):

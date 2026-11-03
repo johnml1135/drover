@@ -3,12 +3,11 @@ import datetime
 import json
 import logging
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 
+from . import process
 from .lock import FileLock
-from .placement import NO_WINDOW
 
 IGNORE = 'ledger.db*\nruns/\nrescue/\nlogs/\nhub-token\n*.log\n*.tmp\n.decisions.lock\n'
 AUTHORS = ('owner', 'tuner', 'wizard', 'dispatcher')
@@ -19,13 +18,11 @@ class DecisionError(RuntimeError):
 
 
 def _git(state, *args):
-    try:
-        result = subprocess.run(['git', '-C', str(state), '-c', 'user.name=Drover',
-                                 '-c', 'user.email=drover@example.invalid', *args],
-                                capture_output=True, text=True, errors='replace', timeout=30, **NO_WINDOW)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DecisionError(f'git: {exc}') from exc
-    if result.returncode:
+    result = process.run(process.Command(['git', '-C', str(state), '-c', 'user.name=Drover',
+                                          '-c', 'user.email=drover@example.invalid', *args], 30))
+    if result.kind != 'exited':
+        raise DecisionError(f'git: {result.detail}')
+    if result.code:
         raise DecisionError(result.stderr.strip() or result.stdout.strip() or 'git failed')
     return result.stdout.strip()
 

@@ -12,7 +12,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from . import config, pane_status_hook, placement
+from . import config, pane_status_hook, placement, process
 from .launch import _reject_permission_bypass
 from .placement_exec import NO_WINDOW, wsl_control
 
@@ -58,8 +58,10 @@ def write_private(path, text, *, placement, run=subprocess.run) -> str:
 
 
 def _wsl_read(args):
-    return subprocess.run(wsl_control(['-d', placement.distro(), '--exec', *args]), capture_output=True, encoding='utf-8',
-                          timeout=WSL_TIMEOUT_S, check=True, **NO_WINDOW).stdout
+    done = process.run(process.Command(wsl_control(['-d', placement.distro(), '--exec', *args]), WSL_TIMEOUT_S))
+    if not done.ok:
+        raise OSError(done.detail or f'the WSL read failed with exit status {done.code}')
+    return done.out.decode('utf-8')     # strict: undecodable output is a ValueError, so untrusted
 
 
 def _read_config(home):
@@ -86,7 +88,7 @@ def repo_trusted(cwd, seat, *, read=None) -> bool:
             return False
         entry = {placement.to_wsl_path(key).rstrip('/'): value for key, value in projects.items()}.get(found[1].removesuffix('/.git'))
         return isinstance(entry, dict) and entry.get('trust_level') == 'trusted'
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError):
         return False
 
 

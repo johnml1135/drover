@@ -23,8 +23,9 @@ import sys
 from pathlib import Path
 
 from . import config as config_mod
+from .placement_exec import locale_text
 from .placement_host import wsl_running
-from . import disk
+from . import disk, process
 
 log = logging.getLogger(__name__)
 GB = 1024 ** 3
@@ -141,11 +142,12 @@ def read_vram():
     """[used_mb, total_mb] or None."""
     cmd = ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
     for exe in (['nvidia-smi.exe'] if is_windows() else ['nvidia-smi', 'nvidia-smi.exe']):
+        done = process.run(process.Command([exe, *cmd], 10))
+        text = locale_text(done.out) if done.kind == 'exited' else ''        # nvidia-smi writes the code page
         try:
-            out = subprocess.run([exe, *cmd], text=True, capture_output=True, timeout=10, **placement.NO_WINDOW)
-            used, total = (float(x) for x in out.stdout.splitlines()[0].split(','))
+            used, total = (float(x) for x in text.splitlines()[0].split(','))
             return [used, total] if total > 0 else None
-        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        except (ValueError, IndexError):
             continue
     return None
 
@@ -236,21 +238,15 @@ def seat_sides(config=None):
 
 def read_wsl(distro, windows, mem_wanted):
     """(wsl_up, {'used_gb','cap_gb'} or None). Memory is read only when a threshold asks for it and WSL is already up."""
-    if windows:
-        up = wsl_running(distro)
-        text = None
-        if up and mem_wanted:
-            try:
-                text = subprocess.run(placement.WSL(distro).command(['cat', '/proc/meminfo']), text=True,
-                                      capture_output=True, timeout=20, **placement.NO_WINDOW).stdout
-            except (OSError, subprocess.SubprocessError):
-                text = None
-    else:
-        up = True
-        try:
-            text = Path('/proc/meminfo').read_text() if mem_wanted else None
-        except OSError:
-            text = None
+    up, text = (wsl_running(distro) if windows else True), None
+    try:        # on Windows, WslOffline (an OSError) is raised at build under the compaction hold
+        if windows and up and mem_wanted:
+            done = process.run(process.Command(placement.WSL(distro).command(['cat', '/proc/meminfo']), 20))
+            text = done.stdout if done.kind == 'exited' else None
+        elif not windows and mem_wanted:
+            text = Path('/proc/meminfo').read_text()
+    except OSError:
+        pass
     mem = None
     if text:
         info = {}

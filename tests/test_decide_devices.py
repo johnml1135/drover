@@ -1,13 +1,15 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import time
 import unittest
 from unittest import mock
 from pathlib import Path
 
-from drover import decide
+from drover import decide, process
+from tests.fakeci import FakeCommands, process_options
 from tests.test_decide import Base, Fake, answer_for, CHOICES
 
 
@@ -239,6 +241,17 @@ class TestRecorderAndBase(Base):
         if platform.system() != "Windows":
             self.assertEqual(decide.base_url({}, is_wsl=True, route=route), "http://172.22.208.1:11434")
             self.assertEqual(decide.base_url({}, is_wsl=False), "http://127.0.0.1:11434")
+
+    def test_the_wsl_gateway_is_read_through_process(self):
+        with tempfile.TemporaryDirectory() as root:
+            fake, route = FakeCommands(root), ["ip", "route"]
+            fake.expect(route, output=b"default via 172.22.208.1 dev eth0\n", **process_options(2))
+            fake.expect(route, error=subprocess.TimeoutExpired(route, 2, output=b"default via 192.0.2.1 dev eth0\n"),
+                        **process_options(2))
+            with mock.patch.object(decide.platform, "system", return_value="Linux"), fake.patch(process), \
+                    mock.patch("subprocess.run", side_effect=AssertionError("real process")):
+                self.assertEqual(decide.base_url({}, is_wsl=True), "http://172.22.208.1:11434")
+                self.assertEqual(decide.base_url({}, is_wsl=True), "http://127.0.0.1:11434")    # not ended: unknown
 
     @unittest.skipIf(os.name == "nt", "gateway lookup is WSL-only")
     def test_wsl_candidates_gateway_then_localhost(self):

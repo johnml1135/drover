@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -262,13 +261,9 @@ def hub_base_url():
         return override.rstrip('/')
     host = '127.0.0.1'
     if os.name != 'nt':
-        from .decide import _gateway_from_route, _is_wsl
+        from .decide import _is_wsl, _wsl_gateway
         if _is_wsl():
-            try:
-                proc = subprocess.run(['ip', 'route'], capture_output=True, text=True, timeout=2)
-                host = _gateway_from_route(proc.stdout) or host
-            except (OSError, subprocess.SubprocessError):
-                pass
+            host = _wsl_gateway() or host
     return f"http://{host}:{config.get()['hub']['api_port']}"
 
 

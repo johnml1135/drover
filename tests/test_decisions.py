@@ -12,7 +12,24 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import config
-from drover import decisions
+from drover import decisions, process
+from tests.fakeci import FakeCommands, process_options
+
+
+class Git(unittest.TestCase):
+    def test_git_runs_through_process_and_any_failure_is_a_decision_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            fake, state = FakeCommands(root), Path(root, 'state')
+            argv = ['git', '-C', str(state), '-c', 'user.name=Drover', '-c', 'user.email=drover@example.invalid', 'log']
+            fake.expect(argv, output=b'caf\xe9 \xc3\xa9\r\n', **process_options(30))
+            fake.expect(argv, returncode=128, stderr_output=b'fatal: bad\n', **process_options(30))
+            fake.expect(argv, error=subprocess.TimeoutExpired(argv, 30), **process_options(30))
+            fake.expect(argv, error=FileNotFoundError(2, 'No such file'), **process_options(30))
+            with fake.patch(process), patch('subprocess.run', side_effect=AssertionError('real process')):
+                self.assertEqual(decisions._git(state, 'log'), 'caf� \xe9')      # UTF-8, errors replaced
+                for message in ('^fatal: bad$', '^git: timed out after 30 s$', '^git: git: No such file$'):
+                    with self.subTest(message), self.assertRaisesRegex(decisions.DecisionError, message):
+                        decisions._git(state, 'log')
 
 
 class Records(unittest.TestCase):

@@ -10,13 +10,12 @@ import threading
 import json
 import os
 import platform
-import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-from . import config
+from . import config, process
 
 TIMEOUT = 5.0   # the built-in default of decider.timeout_s
 LONG_STATE_TOKENS = 32_000
@@ -156,6 +155,14 @@ def _gateway_from_route(text: str):
     return None
 
 
+def _wsl_gateway(route=None):
+    """The default gateway `ip route` names, or None; a run that did not end is no answer. `route()` is the test seam."""
+    if route:
+        return _gateway_from_route(route())
+    done = process.run(process.Command(["ip", "route"], 2))
+    return _gateway_from_route(done.stdout) if done.kind == "exited" else None
+
+
 def _is_wsl() -> bool:
     try:
         return "microsoft" in Path("/proc/version").read_text().lower()
@@ -172,12 +179,7 @@ def base_url(env=None, is_wsl=None, route=None) -> str:
     if platform.system() == "Windows":
         return f"http://127.0.0.1:{PORT}"
     if (_is_wsl() if is_wsl is None else is_wsl):
-        try:
-            out = route() if route else subprocess.run(
-                ["ip", "route"], capture_output=True, text=True, timeout=2).stdout
-            gw = _gateway_from_route(out)
-        except (OSError, subprocess.SubprocessError):
-            gw = None
+        gw = _wsl_gateway(route)
         if gw:
             return f"http://{gw}:{PORT}"
     return f"http://127.0.0.1:{PORT}"

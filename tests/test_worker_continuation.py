@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.test_dispatcher import Base, DONE, res
-from drover import brief, decide, placement, runner, task_context
+from drover import brief, decide, placement, process, runner, task_context
+from tests.fakeci import FakeCommands, process_options
 from drover.ledger import ops
 
 
@@ -220,12 +221,18 @@ class WorkerContinuationTests(Base):
         task = {'scope_files': ['src/file.py:1-20', '../outside/file']}
         self.assertEqual(task_context.repository_rules(task, root),
                          {'AGENTS.md': 'Root rules', 'src/CLAUDE.md': 'Scoped rules'})
+        fake = FakeCommands(self.tmp.name)
+        scopes = process_options(15, input=json.dumps(task['scope_files']).encode('utf-8'))
+        fake.expect(['owning-wsl-reader'], output='{"AGENTS.md": "WSL rules é"}'.encode('utf-8'), **scopes)
+        fake.expect(['owning-wsl-reader'], returncode=1, stderr_output=b'no python3\n', **scopes)
+        fake.expect(['owning-wsl-reader'], error=subprocess.TimeoutExpired(['owning-wsl-reader'], 15), **scopes)
         with patch.object(placement, 'routes_through_wsl', return_value=True), \
                 patch.object(placement.WSL, 'command', return_value=['owning-wsl-reader']) as command, \
-                patch.object(task_context.subprocess, 'run', return_value=subprocess.CompletedProcess(
-                    [], 0, '{"AGENTS.md": "WSL rules"}', '')) as execute:
+                patch('subprocess.run', side_effect=AssertionError('real process')), fake.patch(process):
             self.assertEqual(task_context.repository_rules(task, '/home/worker/repo'),
-                             {'AGENTS.md': 'WSL rules'})
+                             {'AGENTS.md': 'WSL rules é'})
             self.assertEqual(command.call_args.args[0][-1], '/home/worker/repo')
-            self.assertEqual(execute.call_args.args[0], ['owning-wsl-reader'])
-            self.assertEqual(json.loads(execute.call_args.kwargs['input']), task['scope_files'])
+            with self.assertRaisesRegex(OSError, '^no python3$'):
+                task_context.repository_rules(task, '/home/worker/repo')
+            with self.assertRaisesRegex(OSError, 'timed out after 15 s'):     # fails closed, as any IO error
+                task_context.repository_rules(task, '/home/worker/repo')

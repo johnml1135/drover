@@ -1,13 +1,18 @@
 from drover import placement
 import io
 import json
+import locale
 import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from unittest import mock
 
 from drover import resources, disk, config, process
+from tests.fakeci import FakeCommands, process_options
 
 
 def wsl(**over):
@@ -194,6 +199,43 @@ class Trackers(unittest.TestCase):
             up, mem = resources.read_wsl('Ubuntu', False, True)
         self.assertTrue(up)
         self.assertEqual((mem['used_gb'], mem['cap_gb']), (14.0, 16.0))
+
+
+class Commands(unittest.TestCase):
+    """resources:145 and :244 reach the one fake at `process`; nothing spawns for real."""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.fake = FakeCommands(temp.name)
+        refused = mock.patch('subprocess.run', side_effect=AssertionError('real process'))
+        refused.start()
+        self.addCleanup(refused.stop)
+
+    def test_resources_145_keeps_locale_decoding(self):
+        encoding = 'utf-8' if sys.flags.utf8_mode else locale.getencoding()
+        argv = ['nvidia-smi.exe', '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
+        # A strict UTF-8 read of a code page's 'ö' fails, and the reading is lost; by locale it is kept.
+        self.fake.expect(argv, output='8192, 24576\r\nGeräte: Jösé\r\n'.encode(encoding), **process_options(10))
+        self.fake.expect(argv, error=subprocess.TimeoutExpired(argv, 10), **process_options(10))
+        self.fake.expect(argv, error=FileNotFoundError(2, 'not found'), **process_options(10))
+        with mock.patch.object(resources, 'is_windows', return_value=True), self.fake.patch(process):
+            self.assertEqual(resources.read_vram(), [8192.0, 24576.0])
+            self.assertIsNone(resources.read_vram())
+            self.assertIsNone(resources.read_vram())
+
+    def test_resources_244_reads_wsl_memory_through_process(self):
+        argv = ['wsl.exe', '-d', 'Ubuntu', '--exec', 'cat', '/proc/meminfo']
+        info = b'MemTotal:       16777216 kB\nMemAvailable:    2097152 kB\n'
+        self.fake.expect(argv, output=info, **process_options(20))
+        self.fake.expect(argv, error=subprocess.TimeoutExpired(argv, 20, output=info), **process_options(20))
+        build = mock.Mock(side_effect=[argv, argv, OSError('compaction hold')])     # WslOffline is an OSError
+        with mock.patch.object(resources, 'wsl_running', return_value=True), \
+                mock.patch.object(resources.placement, 'WSL', lambda distro: SimpleNamespace(command=build)), \
+                mock.patch.object(resources, 'wslconfig_path', return_value=None), self.fake.patch(process):
+            self.assertEqual(resources.read_wsl('Ubuntu', True, True), (True, {'used_gb': 14.0, 'cap_gb': 16.0}))
+            self.assertEqual(resources.read_wsl('Ubuntu', True, True), (True, None))     # did not end: unknown
+            self.assertEqual(resources.read_wsl('Ubuntu', True, True), (True, None))
+        build.assert_called_with(['cat', '/proc/meminfo'])
 
 
 
