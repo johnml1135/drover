@@ -12,14 +12,14 @@ from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_
 
 class Processes(DiskCase):
     def cached(self, rows, identities):
-        request = dict(paths={}, state_dir=str(self.state), _inventory_id='probe')
+        settings = dict(paths={}, state_dir=str(self.state), inventory_id='probe')
         disk_state.save_file(self.state, 'processes-probe.json', dict(rows=rows, identities=identities))
-        return request
+        return settings
 
     def test_own_record_supplies_only_cwd_and_preserves_new_exe_and_argv(self):
         for field in ('exe', 'cmd'):
             with self.subTest(field=field):
-                request = self.cached([], {})
+                settings = self.cached([], {})
                 disk_state.save_file(self.state, 'process-windows-77.json', dict(
                     identity=dict(pid=77, side='windows', birth='20'), cwd=r'C:\known'))
                 row = dict(pid=77, name='python.exe', same_user=True, cmd='', exe=None)
@@ -27,29 +27,29 @@ class Processes(DiskCase):
                 with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}) as _placement_patch_25, patch('drover.placement_proof._windows_processes', _placement_patch_25), \
                         patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_26, patch('drover.placement_proof._windows_cwd', _placement_patch_26), \
                         patch.object(placement, '_cim_rows', return_value=[row]) as _placement_patch_27, patch('drover.placement_process._cim_rows', _placement_patch_27), patch('drover.placement_proof._cim_rows', _placement_patch_27):
-                    proof = placement.cleanup_processes(windows=True, request=request)
+                    proof = placement.cleanup_processes(windows=True, **settings)
                 self.assertTrue(proof.busy('/mnt/h/candidate'))
                 self.assertTrue(proof.busy(r'C:\known'))
                 self.assertFalse(proof.busy(r'H:\unrelated'))
 
     def test_new_pid_gets_targeted_read_instead_of_retaining_everything(self):
-        request = self.cached([dict(pid=1, name='service.exe', same_user=False, cwd=None, cmd='')],
+        settings = self.cached([dict(pid=1, name='service.exe', same_user=False, cwd=None, cmd='')],
                               {'1': ['service.exe', 10]})
         row = dict(pid=77, name='git.exe', same_user=True, cmd=r'H:\candidate\input', exe=r'C:\tools\git.exe')
         with patch.object(placement, '_windows_processes', return_value={
                 '1': ['service.exe', 10], '77': ['git.exe', 20]}) as _placement_patch_1, patch('drover.placement_proof._windows_processes', _placement_patch_1), \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2), \
                 patch.object(placement, '_cim_rows', return_value=[row]) as query, patch('drover.placement_process._cim_rows', query), patch('drover.placement_proof._cim_rows', query):
-            proof = placement.cleanup_processes(windows=True, request=request)
+            proof = placement.cleanup_processes(windows=True, **settings)
         self.assertEqual(query.call_args.args[1], ['77'])
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertFalse(proof.busy(r'H:\unrelated'))
 
     def test_failed_transient_read_does_not_tell_owner_to_close_it(self):
-        request = self.cached([], {})
+        settings = self.cached([], {})
         with patch.object(placement, '_windows_processes', return_value={'77': ['git.exe', 20]}) as _placement_patch_4, patch('drover.placement_proof._windows_processes', _placement_patch_4), \
                 patch.object(placement, '_cim_rows', side_effect=OSError('gone')) as _placement_patch_5, patch('drover.placement_process._cim_rows', _placement_patch_5), patch('drover.placement_proof._cim_rows', _placement_patch_5):
-            proof = placement.cleanup_processes(windows=True, request=request)
+            proof = placement.cleanup_processes(windows=True, **settings)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([p['pid'] for p in proof.unreadable], [77])
         self.assertNotIn('close ', proof.unreadable[0].get('owner_action', ''))
@@ -84,7 +84,8 @@ class Processes(DiskCase):
 
 class SafetyPaths(DiskCase):
     def test_containment_and_live_task_paths_accept_drive_and_extended_spellings(self):
-        from drover.disk_paths import within, live_tree
+        from drover.disk_paths import live_tree
+        from drover.disk_stage import within
         from drover.disk_worktrees import task_facts
         for root in (r'H:\Repo', '/mnt/h/repo', r'\\?\H:\repo'):
             with self.subTest(root=root):
@@ -97,7 +98,7 @@ class SafetyPaths(DiskCase):
 
     @unittest.skipIf(os.name == 'nt', 'Linux realpath semantics')
     def test_linux_realpath_alias_is_same_but_case_is_distinct(self):
-        from drover.disk_paths import within
+        from drover.disk_stage import within
         real = self.root / 'real'
         real.mkdir()
         alias = self.root / 'alias'
@@ -113,8 +114,8 @@ class SafetyPaths(DiskCase):
 class InventoryBounds(DiskCase):
     def test_inventory_intermediate_is_bounded_and_peak_is_reported(self):
         from drover.disk_inventory import Inventory
-        request = dict(_inventory_id='bounded', state_dir=str(self.state), drive=dict(path='H:/'))
-        inv = Inventory(self.now, request)
+        cached = (placement.cleanup_side(), 'H:/', str(self.state), 'bounded')
+        inv = Inventory(self.now, *cached)
         # A broad directory tree repeats its largest-file lists in ancestor summaries.
         largest = [dict(path='x' * 200, bytes=1024) for _ in range(20)]
         inv.directories = {f'/tree/{n}': dict(files=20, bytes=20480, newest=0, largest=largest,
@@ -125,7 +126,7 @@ class InventoryBounds(DiskCase):
         self.assertEqual(inv.peak_intermediate_bytes, actual)
         # A dropped cache entry must be measured afresh, never treated as empty.
         fresh = self.file(self.root / 'fresh', 'facts')
-        restored = Inventory(self.now, request)
+        restored = Inventory(self.now, *cached)
         self.assertEqual(restored.measure(fresh)['bytes'], 5)
 
 
@@ -187,20 +188,7 @@ class OwnerActions(DiskCase):
 
 
 class FreshDecisions(DiskCase):
-    def test_cim_snapshot_is_per_stage_and_drive_but_rechecks_reuse_it(self):
-        request = dict(paths={}, state_dir=str(self.state), _inventory_id='decisions',
-                       stage=2, drive=dict(path='H:/'))
-        row = dict(pid=77, name='python.exe', same_user=True, cmd='', cwd=r'C:\elsewhere')
-        with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', 20]}) as _placement_patch_6, patch('drover.placement_proof._windows_processes', _placement_patch_6), \
-                patch.object(placement, '_cim_rows', return_value=[row]) as query, patch('drover.placement_process._cim_rows', query), patch('drover.placement_proof._cim_rows', query):
-            placement.cleanup_processes(windows=True, request=request)
-            placement.cleanup_processes(windows=True, request=request)
-            self.assertEqual(query.call_count, 1)
-            placement.cleanup_processes(windows=True, request=dict(request, stage=4))
-            self.assertEqual(query.call_count, 2)
-            placement.cleanup_processes(windows=True, request=dict(request, drive=dict(path='C:/')))
-            self.assertEqual(query.call_count, 3)
-
+    # The per-stage-and-drive CIM snapshot test is test_disk_scope.PlainArguments' cache key test.
     def test_r12_default_list_upgrades_to_include_remote_desktop_without_overwriting_edits(self):
         from drover import config, config_defaults
         old = [name for name in config_defaults.PROCESS_IGNORE
@@ -257,7 +245,7 @@ class SafetyDecisions(DiskCase):
     def test_main_checkout_protection_uses_canonical_identity_in_both_stages(self):
         from drover.disk_worktrees import inspect
         from drover.disk_paths import output_evidence
-        request = dict(now=self.now, repos=[], paths={})
+        request = dict(now=self.now, repos=[], paths={}, drive=dict(path='H:/'))
         machine = dict(repo=r'\\?\H:\Repo', name='alpha')
         entry = dict(worktree='/mnt/h/repo', HEAD='unused')
         with patch.object(placement, 'cleanup_side', return_value='windows') as _placement_patch_10, patch('drover.placement_process.cleanup_side', _placement_patch_10), \
@@ -318,11 +306,10 @@ class SafetyDecisions(DiskCase):
         self.assertFalse(repository_tree(child.parent, boundary=alias))
 
     def test_physical_scope_uses_canonical_mount_identity(self):
-        request = dict(drive=dict(path='/physical/disk'))
         with patch.object(placement, 'cleanup_path_side', return_value='wsl'), \
                 patch.object(placement, 'cleanup_side', return_value='wsl') as _placement_patch_12, patch('drover.placement_process.cleanup_side', _placement_patch_12), \
                 patch.object(placement, 'physical_disk_path', side_effect=['/physical/disk/.', '/physical/disk']):
-            self.assertTrue(placement.cleanup_contains(request, '/candidate'))
+            self.assertTrue(placement.cleanup_contains('/physical/disk', '/candidate'))
 
 
 class RemainingSafety(DiskCase):
@@ -353,7 +340,7 @@ class RemainingSafety(DiskCase):
         exe = self.file(tree / 'csrss.exe')
         self.assertIn(str(tree).replace('\\', '/'), repo.git('worktree', 'list', '--porcelain').replace('\\', '/'))
         proof = placement.cleanup_processes(windows=True,
-            request=dict(repos=[dict(repo=str(repo.repo), worktrees=str(repo.root / 'configured'))], paths={}),
+            paths={},
             cim=lambda: [dict(pid=77, name='csrss.exe', same_user=True, cwd=None, cmd='', exe=str(exe))])
         self.assertTrue(proof.busy(r'H:\unrelated'))
 
@@ -365,7 +352,7 @@ class ReportingIntegration(DiskCase):
                      sparse=False, allocated_bytes=590, apparent_bytes=1024, owner_action='owner action')]
         request = dict(stage=1, apply=False, now=self.now, repos=[], paths={}, state_dir=str(self.state),
                        drive=dict(path=str(self.root)))
-        with patch.object(placement, 'cleanup_scope', side_effect=lambda value: dict(value, scope_errors=[])), \
+        with patch.object(placement, 'cleanup_scope', side_effect=lambda drive_path, paths: (paths, [])), \
                 patch.object(placement, 'trim_argv', return_value=['never-execute']), \
                 patch.object(placement, 'cleanup_vhdx_report', return_value=rows), \
                 patch.object(subprocess, 'run', side_effect=AssertionError('report must not run a command')):
@@ -405,21 +392,21 @@ class ReportingIntegration(DiskCase):
 
 class ProcessReadFailures(DiskCase):
     def test_failed_post_query_identity_enumeration_still_names_conservative_pid(self):
-        request = dict(state_dir=str(self.state), paths={}, _inventory_id='post-query')
+        settings = dict(state_dir=str(self.state), paths={}, inventory_id='post-query')
         disk_state.save_file(self.state, 'processes-post-query.json', dict(rows=[], identities={}))
         with patch.object(placement, '_windows_processes', side_effect=[{'77': ['git.exe', 20]}, OSError('denied')]) as _placement_patch_15, patch('drover.placement_proof._windows_processes', _placement_patch_15), \
                 patch.object(placement, '_cim_rows', return_value=[dict(pid=77, name='git.exe', same_user=False, cmd='', cwd=None)]) as _placement_patch_16, patch('drover.placement_process._cim_rows', _placement_patch_16), patch('drover.placement_proof._cim_rows', _placement_patch_16):
-            proof = placement.cleanup_processes(windows=True, request=request)
+            proof = placement.cleanup_processes(windows=True, **settings)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([row['pid'] for row in proof.unreadable], [77])
         self.assertNotIn('owner_action', proof.unreadable[0])
 
     def test_changed_birth_during_targeted_read_discards_new_evidence(self):
-        request = dict(state_dir=str(self.state), paths={}, _inventory_id='race')
+        settings = dict(state_dir=str(self.state), paths={}, inventory_id='race')
         disk_state.save_file(self.state, 'processes-race.json', dict(rows=[], identities={}))
         with patch.object(placement, '_windows_processes', side_effect=[{'77': ['git.exe', 20]}, {'77': ['git.exe', 21]}]) as _placement_patch_17, patch('drover.placement_proof._windows_processes', _placement_patch_17), \
                 patch.object(placement, '_cim_rows', return_value=[dict(pid=77, name='git.exe', same_user=False, cmd='', cwd=None)]) as _placement_patch_18, patch('drover.placement_process._cim_rows', _placement_patch_18), patch('drover.placement_proof._cim_rows', _placement_patch_18):
-            proof = placement.cleanup_processes(windows=True, request=request)
+            proof = placement.cleanup_processes(windows=True, **settings)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([row['pid'] for row in proof.unreadable], [77])
 
@@ -427,7 +414,7 @@ class ProcessReadFailures(DiskCase):
         disk_state.save_file(self.state, 'process-windows-77.json', dict(
             identity=dict(pid=77, side='windows', birth='20'), cwd=r'C:\known'))
         with patch.object(placement, 'cleanup_identity', return_value=dict(pid=77, side='windows', birth='20')) as _placement_patch_19, patch('drover.placement_process.cleanup_identity', _placement_patch_19), patch('drover.placement_proof.cleanup_identity', _placement_patch_19):
-            proof = placement.cleanup_processes(windows=True, request=dict(state_dir=str(self.state)), cim=lambda: [dict(
+            proof = placement.cleanup_processes(windows=True, state_dir=str(self.state), cim=lambda: [dict(
                 pid=77, name='python.exe', same_user=True, cwd=None, cmd=None, exe=r'C:\Python\python.exe')])
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertNotIn('owner_action', proof.unreadable[0])

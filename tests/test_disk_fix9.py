@@ -14,7 +14,7 @@ from tests.fakeci import git_answers
 
 class Processes(DiskCase):
     def test_new_pid_without_confirmed_creation_time_cannot_supply_foreign_evidence(self):
-        request = dict(paths={}, state_dir=str(self.state), _inventory_id='round9')
+        settings = dict(paths={}, state_dir=str(self.state), inventory_id='round9')
         disk_state.save_file(self.state, 'processes-round9.json', dict(rows=[], identities={}))
         row = dict(pid=77, name='foreign.exe', same_user=False, cwd=None, cmd='')
         for before, after in ((20, None),):
@@ -22,7 +22,7 @@ class Processes(DiskCase):
                     patch.object(placement, '_windows_processes', side_effect=[
                         {'77': ['foreign.exe', before]}, {'77': ['foreign.exe', after]}]) as _placement_patch_1, patch('drover.placement_proof._windows_processes', _placement_patch_1), \
                     patch.object(placement, '_cim_rows', return_value=[row]) as _placement_patch_2, patch('drover.placement_process._cim_rows', _placement_patch_2), patch('drover.placement_proof._cim_rows', _placement_patch_2):
-                proof = placement.cleanup_processes(windows=True, request=request)
+                proof = placement.cleanup_processes(windows=True, **settings)
             self.assertTrue(proof.busy(r'H:\unrelated'))
             self.assertEqual(proof.reason, 'process visibility unavailable')
             self.assertEqual(proof.unreadable[0]['evidence'], 'process_identity_unavailable')
@@ -92,7 +92,7 @@ class DefaultBranchPolicy(DiskCase):
         self.feature = 'schema_version=1\n'  # Worktree predates the declaration.
         self.machine = dict(name='alpha', repo=str(self.repo), default_branch='main')
         self.request = dict(repos=[self.machine], apply=True, now=self.now, paths={},
-                            state_dir=str(self.state), drive=dict(level='critical'),
+                            state_dir=str(self.state), drive=dict(level='critical', path=str(self.root)),
                             tasks=dict(at=self.now, active_worktrees=[], tasks=[]))
         self.entry = dict(worktree=str(self.wt), HEAD='old-head', locked=self.side)
         self.reads = []

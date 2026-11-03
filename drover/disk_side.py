@@ -1,36 +1,37 @@
 """One parent-authorized stage request. No ledger or coordinator lock here."""
+import copy
 import json
 import sys
 
 from . import placement, process
+from .disk_paths import processes
 from .git_worktrees import Listings
 
 
 def serve(request: dict) -> dict:
-    request = placement.cleanup_scope(request)
+    request = copy.deepcopy(request)
+    request['paths'], request['scope_errors'] = placement.cleanup_scope(request['drive']['path'], request['paths'])
     from .disk_inventory import Inventory, compact
-    request['_inventory'] = Inventory(request['now'], request)
+    request['_inventory'] = Inventory(request['now'], request.get('side', placement.cleanup_side()),
+                                      request['drive']['path'], request['state_dir'], request.get('_inventory_id'))
     request['_listings'] = Listings([m['repo'] for m in request['repos']])
     proof = None
     if request['stage'] in (2, 3, 4, 5):
-        proof = request['_processes'] = placement.cleanup_processes(request=request)
+        proof = request['_processes'] = processes(request)     # its diagnostics gathered in the request
     answer = _serve(request)
     if not request['apply'] and request['stage'] < 6:
         request['_inventory'].save()
     answer['peak_intermediate_bytes'] = request['_inventory'].peak_intermediate_bytes
-    answer['items'] = compact(answer['items'], request)
+    answer['items'] = compact(answer['items'], request['paths'], request['repos'])
     if proof:
         foreign = getattr(proof, 'out_of_scope', 0)
         if foreign:
             answer['items'].append(dict(action='report', reason_code='process_out_of_scope', count=foreign))
-        processes = list(request['_process_diagnostics'].values()) if '_process_diagnostics' in request else getattr(proof, 'unreadable', [])
-        if processes:
+        unreadable = list(request['_process_diagnostics'].values())
+        if unreadable:
             answer['items'].append(dict(action='report', reason_code='process_visibility_unavailable',
-                                        count=len(processes), processes=processes))
-        failures = request.get('_process_query_failures', [])
-        if not failures and getattr(proof, 'query_failure', None):
-            failures = [proof.query_failure]
-        answer['items'].extend(dict(action='report', **failure) for failure in failures)
+                                        count=len(unreadable), processes=unreadable))
+        answer['items'].extend(dict(action='report', **failure) for failure in request.get('_process_query_failures', []))
     answer['errors'].extend(request['scope_errors'])
     return answer
 

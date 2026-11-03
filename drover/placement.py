@@ -62,36 +62,36 @@ if IS_WINDOWS:
     from .placement_tree import _k32, _BASIC, _IOC, _EXT, _resume, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_BASIC_AND_IO_ACCOUNTING_CLASS, JOB_EXTENDED_LIMIT_CLASS
 
 
-def cleanup_scope(request):
-    """Keep only this physical drive; path spelling/translation lives here."""
+def cleanup_scope(drive_path, paths):
+    """Keep only this physical drive; path spelling/translation lives here. (scoped_paths, scope_errors): `paths`, the
+    disk_cleanup policy, is left as it was, and the scoped copy keeps only the roots and caches on `drive_path`."""
     import copy
-    scoped = copy.deepcopy(request)
-    scoped['scope_errors'] = []
-    if physical_disk_path(request['drive']['path']) is None:
-        scoped['scope_errors'].append(dict(path=request['drive']['path'], reason_code='physical_disk_unknown'))
+    scoped, errors = copy.deepcopy(paths), []
+    if physical_disk_path(drive_path) is None:
+        errors.append(dict(path=drive_path, reason_code='physical_disk_unknown'))
     def belongs(path):
-        if physical_disk_path(path) is None or physical_disk_path(request['drive']['path']) is None:
-            scoped['scope_errors'].append(dict(path=str(path), reason_code='physical_disk_unknown'))
+        if physical_disk_path(path) is None or physical_disk_path(drive_path) is None:
+            errors.append(dict(path=str(path), reason_code='physical_disk_unknown'))
             return False
-        return cleanup_contains(request, path)
+        return cleanup_contains(drive_path, path)
     # Repositories may have worktrees on another drive. Stages scope every candidate,
     # rather than dropping the repository that owns that drive's registrations.
     for name in ('temp_roots', 'report_roots'):
-        roots = request['paths'].get(name, [])
-        scoped['paths'][name] = list(dict.fromkeys(native(p) for p in roots if belongs(p)))
-    scoped['paths']['caches'] = [entry for entry in scoped['paths'].get('caches', [])
-                                if entry['placement'] == cleanup_side() and belongs(entry.get('path', entry.get('cwd')))]
-    for entry in scoped['paths']['caches']:
+        roots = paths.get(name, [])
+        scoped[name] = list(dict.fromkeys(native(p) for p in roots if belongs(p)))
+    scoped['caches'] = [entry for entry in scoped.get('caches', [])
+                        if entry['placement'] == cleanup_side() and belongs(entry.get('path', entry.get('cwd')))]
+    for entry in scoped['caches']:
         key = 'path' if 'path' in entry else 'cwd'
         entry[key] = native(entry[key])
-    return scoped
+    return scoped, errors
 
 
-def cleanup_contains(request, path):
-    """Whether this concrete candidate belongs to the requested physical drive."""
+def cleanup_contains(drive_path, path):
+    """Whether this concrete candidate belongs to the physical drive at `drive_path`."""
     if cleanup_path_side(path) != cleanup_side():
         return False
-    declared = request['drive']['path']
+    declared = drive_path
     host = physical_disk_path(path)
     drive_host = physical_disk_path(declared) if declared is not None else None
     if host is not None and drive_host is not None:

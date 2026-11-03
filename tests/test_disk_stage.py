@@ -339,8 +339,7 @@ class Run(unittest.TestCase):
             if number % 9 == 0:
                 run.checkpoint()                     # the `more` tally is a running total, so the last one stands
         run.finish()
-        request = dict(paths=dict(temp_roots=list(ROOTS), report_roots=[]), repos=[])
-        today = disk_inventory.compact(items, request)
+        today = disk_inventory.compact(items, dict(temp_roots=list(ROOTS), report_roots=[]), [])
         self.assertEqual(read_rows(sent(run)).items, today)
         self.assertEqual([r['count'] for r in today if 'count' in r], [30, 22])
 

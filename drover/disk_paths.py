@@ -4,17 +4,20 @@ from functools import partial
 from pathlib import Path
 
 from . import git_client, git_worktrees, placement, process
+from .disk_stage import item, result, within
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
 
 
-def result():
-    return dict(items=[], errors=[], reclaimed_bytes=0)
-
-
-def within(path, root):
-    parts, parent = placement.cleanup_parts(path), placement.cleanup_parts(root)
-    return parts[:len(parent)] == parent
+def processes(request):
+    """A stage's process proof. The request gathers each proof's diagnostics, which `cleanup_processes` returns."""
+    proof = placement.cleanup_processes(
+        paths=request.get('paths'), state_dir=request.get('state_dir'), inventory_id=request.get('_inventory_id'),
+        stage=request.get('stage'), drive=request.get('drive'), budget=bool(request.get('budget')))
+    request.setdefault('_process_diagnostics', {}).update(((r['pid'], r['name']), r) for r in getattr(proof, 'unreadable', []))
+    if getattr(proof, 'query_failure', None):
+        request.setdefault('_process_query_failures', []).append(proof.query_failure)
+    return proof
 
 
 def facts(path, now, *, ignore_activity=(), request=None):
@@ -23,11 +26,6 @@ def facts(path, now, *, ignore_activity=(), request=None):
     inventory = request.get('_inventory') if request and not request['apply'] and not ignore_activity else None
     row = (inventory or Inventory(now, ignore_activity=ignore_activity)).measure(path, strict=True)
     return {key: row[key] for key in ('files', 'bytes', 'age_s')}
-
-
-def item(path, request, reason, **extra):
-    return dict(path=str(path), action='keep', reason_code=reason, owner=None,
-                files=0, age_s=0, bytes=0, **extra)
 
 
 def safe_path(path, proven=None):
@@ -141,7 +139,7 @@ def protected_path(path, request):
     roots = [Path(request['state_dir']).absolute()]
     roots += [Path(placement.native(repo['repo'])).absolute() for repo in request['repos'] if repo.get('repo')]
     roots += [root.absolute() for repo in request['repos'] for root in worktree_roots(repo)]
-    return not placement.cleanup_contains(request, str(path)) or live_tree(path, request) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
+    return not placement.cleanup_contains(request['drive']['path'], str(path)) or live_tree(path, request) or not safe_path(path) or any(within(path, root) or within(root, path) for root in roots) or \
         repository_tree(path)
 
 
@@ -197,12 +195,12 @@ def folder_cache(request, entry, out):
             row = item(path, request, 'folder_cache')
             row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
             if request['apply']:
-                proof = placement.cleanup_processes(request=request)
+                proof = processes(request)
                 if proof.busy(str(path)):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
                 elif protected_path(path, request):
                     row.update(action='keep', reason_code='protected')
-                elif path.stat() == info and placement.cleanup_contains(request, str(path)):
+                elif path.stat() == info and placement.cleanup_contains(request['drive']['path'], str(path)):
                     path.unlink()
                     row['action'] = 'removed'
                     out['reclaimed_bytes'] += info.st_size
@@ -240,12 +238,12 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     side = placement.worktree_side(entry['worktree'], entry.get('locked'))
     if side != placement.cleanup_side():
         reject('owner_side', f'owner={side!r}, worker={placement.cleanup_side()!r}, lock={entry.get("locked")!r}')
-    if not placement.cleanup_contains(request, entry['worktree']):
+    if not placement.cleanup_contains(request['drive']['path'], entry['worktree']):
         reject('physical_drive', f'path_side={placement.cleanup_path_side(entry["worktree"])!r}, '
                f'host={placement.physical_disk_path(entry["worktree"])!r}, '
                f'drive={request["drive"]["path"]!r}, '
                f'drive_host={placement.physical_disk_path(request["drive"]["path"])!r}')
-    if (placement.cleanup_processes(request=request) if fresh else request.get('_processes') or placement.cleanup_processes(request=request)).busy(str(path)):
+    if (processes(request) if fresh else request.get('_processes') or processes(request)).busy(str(path)):
         raise ValueError('process using worktree')
     # This worker cannot see Windows processes; a budget carries what the coordinator found them naming inside WSL.
     if any(within(named, path) for named in (request.get('budget') or {}).get('windows_paths') or ()):
@@ -303,7 +301,7 @@ def remove_output(request, out, machine, entry, evidence, touched, target, measu
         proven = set()
         if overlaps_worktrees(request, target, path, reach=proof.reach) or \
                 any(repository_tree(Path(name), boundary=path, proven=proven) for name in measured) or \
-                not placement.cleanup_contains(request, str(target)) or live_tree(target, request):
+                not placement.cleanup_contains(request['drive']['path'], str(target)) or live_tree(target, request):
             raise ValueError('disposable side marker changed')
         for name, known in measured.items():
             leaf = Path(name)
@@ -376,7 +374,7 @@ def disposable_rows(request, out, *, deadline=None):
                             return item(where, request, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
                         row, measured = row_for(target), {}
                         try:
-                            if not placement.cleanup_contains(request, str(target)):
+                            if not placement.cleanup_contains(request['drive']['path'], str(target)):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, request):
                                 row['reason_code'] = 'live_owner'
@@ -441,7 +439,7 @@ def report(request: dict) -> dict:
             listed = request['_listings'].of(machine['repo']).rows
             for entry in listed:
                 path = Path(placement.native(entry['worktree']))
-                if not placement.cleanup_contains(request, entry['worktree']):
+                if not placement.cleanup_contains(request['drive']['path'], entry['worktree']):
                     continue
                 tag = ownership.read(str(path)) if path.exists() else None
                 owner = tag['owner'] if tag else None
@@ -472,7 +470,7 @@ def report(request: dict) -> dict:
             for root in worktree_roots(machine, this_side=True):
                 if root.is_dir() and safe_path(root):
                     for path in root.iterdir():
-                        if str(path) not in registered and placement.cleanup_contains(request, str(path)):
+                        if str(path) not in registered and placement.cleanup_contains(request['drive']['path'], str(path)):
                             record(path, 'unlisted_folder')
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             out['errors'].append(dict(repo=machine['repo'], error=str(error)))

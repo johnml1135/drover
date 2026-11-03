@@ -162,7 +162,7 @@ class LiveSnapshot(LocalSide):
 
     def test_a_cleared_process_still_counts_as_path_evidence(self):
         self.windows_rows[0].update(cmd=r'csrss.exe --root=\\wsl$\Ubuntu\home\me\wt')
-        proof = placement_proof._CleanupProcesses(windows=True, request=dict(budget=True))
+        proof = placement_proof._CleanupProcesses(windows=True, budget=True)
         self.assertEqual(proof.wsl_paths('Ubuntu'), ['/home/me/wt'])
 
     def test_a_failed_refresh_query_clears_nothing(self):
@@ -172,7 +172,7 @@ class LiveSnapshot(LocalSide):
         self.assertEqual(self.receipt()['budget'], 'processes_unknown')
 
     def test_ordinary_stages_keep_their_rule(self):
-        proof = placement_proof._CleanupProcesses(windows=True, request=dict(paths={}))
+        proof = placement_proof._CleanupProcesses(windows=True, paths={})
         self.assertTrue(proof.unknown)
         self.assertEqual(sorted(row['name'] for row in proof.unreadable), sorted(name for name, _ in self.BLOCKERS))
         self.assertTrue(proof.busy('/anywhere'))
@@ -197,7 +197,7 @@ class WslProcesses(unittest.TestCase):
 
     def proof(self, *ignored, budget):
         request = dict(paths=dict(process_ignore=list(ignored)), **(dict(budget=dict(target_gb=225)) if budget else {}))
-        return placement_proof._CleanupProcesses(proc_root=self.proc, windows=False, request=request)
+        return placement_proof._CleanupProcesses(proc_root=self.proc, windows=False, **request)
 
     def test_a_named_process_clears_for_a_purge_as_for_any_stage(self):
         self.process(364, 'systemd')

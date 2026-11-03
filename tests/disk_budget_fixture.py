@@ -32,7 +32,7 @@ class BudgetCase(MemoryWorktreeCase):
         self.windows_rows = [dict(pid=7, name='editor.exe', same_user=True, cwd=r'C:\work', cmd='editor.exe')]
         self.windows_failure = None
 
-        def cim(request, current):
+        def cim(current=None, **_):
             return self.windows_failure or dict(rows=list(self.windows_rows), identities=current)
 
         def clock():

@@ -245,8 +245,8 @@ class LinuxIdentitySafety(ProcessFreeDiskCase):
         with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}), \
                 patch.object(placement, 'Path', side_effect=windows_path) as _placement_patch_3, patch('drover.placement_git.Path', _placement_patch_3), patch('drover.placement_host.Path', _placement_patch_3), patch('drover.placement_paths.Path', _placement_patch_3), patch('drover.placement_process.Path', _placement_patch_3), patch('drover.placement_proof.Path', _placement_patch_3):
-            self.assertTrue(placement.cleanup_contains(request, '/data/candidate'))
-            self.assertFalse(placement.cleanup_contains(request, '/Data/candidate'))
+            self.assertTrue(placement.cleanup_contains(request['drive']['path'], '/data/candidate'))
+            self.assertFalse(placement.cleanup_contains(request['drive']['path'], '/Data/candidate'))
 
 
 class ProtectedTreeProperty(ProcessFreeDiskCase):

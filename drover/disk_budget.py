@@ -7,6 +7,7 @@ import os
 import time
 
 from . import placement
+from .disk_stage import result
 
 SIDE = 'wsl'
 GIB = 1024 ** 3
@@ -55,7 +56,7 @@ def purge(request: dict) -> dict:
     candidate, so this ends; short of the target it reports the shortfall. Unreadable used space stops it, because
     nothing then proves a removal is needed. Past its deadline it stops between folders and returns what it did, so a
     worker timeout cannot lose the outcome. A report-only request removes nothing and projects the plan from sizes."""
-    from .disk_paths import disposable_rows, result
+    from .disk_paths import disposable_rows
     out = result()
     if placement.cleanup_side() != SIDE:
         return out

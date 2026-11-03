@@ -17,24 +17,24 @@ class ElevatedProcesses(unittest.TestCase):
         data = dict(sid='owner', processes=[dict(
             ProcessId=123456789, Name=name, ExecutablePath=None, CommandLine=cmd,
             SessionId=1, OwnerSid='owner' if same_user else None)])
-        request = dict(paths={} if policy is None else dict(process_ignore=policy))
+        paths = {} if policy is None else dict(process_ignore=policy)
         with patch.object(process.subprocess, 'run', return_value=SimpleNamespace(
                 returncode=0, stdout=json.dumps(data).encode(), stderr=b'')), \
                 patch.object(placement_process, '_windows_image_path', return_value=exe) as query:
-            proof = placement_proof.cleanup_processes(windows=True, request=request,
+            proof = placement_proof.cleanup_processes(windows=True, paths=paths,
                 cim=lambda: [dict(row, cwd=cwd) for row in placement_process._cim_rows()])
-        return proof, request, query
+        return proof, {(row['pid'], row['name']): row for row in proof.unreadable}, query
 
     def test_elevated_system_helpers_allow_unrelated_worktree_evaluation(self):
         for name in ('taskhostw.exe', 'dllhost.exe', 'CTFMON.EXE'):
             for owner in (True, None):
                 with self.subTest(name=name, owner=owner):
                     exe = 'C:\\Windows\\System32\\' + name
-                    proof, request, query = self.proof(name, exe, same_user=owner)
+                    proof, diagnostics, query = self.proof(name, exe, same_user=owner)
                     self.assertFalse(proof.busy(r'H:\worktrees\candidate'))
                     self.assertIsNone(proof.reason)
                     self.assertEqual(proof.out_of_scope, 1)
-                    self.assertEqual(request['_process_diagnostics'], {})
+                    self.assertEqual(diagnostics, {})
                     query.assert_called_once_with(123456789)
 
     def test_unknown_image_and_unproven_helper_paths_fail_closed_with_pid(self):
@@ -46,10 +46,10 @@ class ElevatedProcesses(unittest.TestCase):
                 ('taskhostw.exe', r'H:\worktrees\candidate\taskhostw.exe'),
                 ('taskhostw.exe', r'C:\Windows-lookalike\taskhostw.exe')):
             with self.subTest(name=name, exe=exe):
-                proof, request, _ = self.proof(name, exe)
+                proof, diagnostics, _ = self.proof(name, exe)
                 self.assertTrue(proof.busy(r'H:\unrelated'))
                 self.assertEqual(proof.reason, 'process visibility unavailable')
-                row = request['_process_diagnostics'][(123456789, name)]
+                row = diagnostics[(123456789, name)]
                 self.assertEqual(row['owner_action'],
                     f'close {name} (pid 123456789) or add it to [disk_cleanup] process_ignore')
 
@@ -78,7 +78,7 @@ class ElevatedProcesses(unittest.TestCase):
         proof, _, _ = self.proof('taskhostw.exe', r'C:\Windows\System32\taskhostw.exe')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
-            request = dict(_processes=proof, now=1000, apply=False, drive=dict(level='hold'))
+            request = dict(_processes=proof, now=1000, apply=False, drive=dict(level='hold', path=directory))
             machine = dict(repo=str(path / 'repo'), name='fixture')
             entry = dict(worktree=str(path), locked='windows')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \

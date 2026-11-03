@@ -116,7 +116,7 @@ def _windows_paths(cfg, base):
     """What Windows processes name inside WSL, which the WSL worker cannot see. (paths, unreadable); paths is None
     when the snapshot is unknown or failed."""
     try:
-        proof = placement.cleanup_windows_proof(dict(paths=base['paths'], state_dir=base['state_dir'], budget=True))
+        proof = placement.cleanup_windows_proof(paths=base['paths'], state_dir=base['state_dir'], budget=True)
         return (proof.wsl_paths(disk.tracker_distro(cfg)), proof.unreadable) if proof else (None, [])
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return None, []

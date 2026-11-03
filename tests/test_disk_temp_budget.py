@@ -7,7 +7,7 @@ from tests.disk_fixture import DiskCase
 
 
 def evidence(rows, windows=False):
-    proof = placement._CleanupProcesses(windows=windows, proc_root='/nonexistent', request={})
+    proof = placement._CleanupProcesses(windows=windows, proc_root='/nonexistent')
     proof.rows[:] = rows
     proof.unknown = False
     return proof

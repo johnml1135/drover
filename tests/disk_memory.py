@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_cleanup, disk_worktrees, git_worktrees, ownership, placement, repos
+from drover import config, disk_cleanup, disk_paths, disk_worktrees, git_worktrees, ownership, placement, repos
 from drover.git_worktrees import Proof, Refusal
 from tests.disk_fixture import DiskCase
 
@@ -150,7 +150,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
             path = Path(path)
             if any(p.name == '.git' for p in path.rglob('*')):
                 raise ValueError('independent or broken git metadata')
-            if placement.cleanup_processes(request=request).busy(str(path)):
+            if disk_paths.processes({} if request is None else request).busy(str(path)):
                 raise ValueError('snapshot busy')
             repo = repository(machine['repo'])
             expected = repo.tree(repo.repo)['tracked']

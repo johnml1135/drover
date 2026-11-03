@@ -18,7 +18,7 @@ def listing(*extra):
 def proof(rows, alive, **request):
     request = dict(paths={'process_ignore': []}, **request)
     with mock.patch.object(placement_proof, '_windows_processes', side_effect=alive) as taken:
-        result = placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, request=request)
+        result = placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, **request)
     return result, taken
 
 
@@ -52,7 +52,7 @@ class Exited(unittest.TestCase):
         """The real route (no injected listing): a native list, then the CIM answer, then the fresh list."""
         request = dict(paths={'process_ignore': []}, clear_ignored=True)
         with mock.patch.object(placement_proof, '_windows_processes', side_effect=alive),                 mock.patch.object(placement_proof, '_cleanup_cim', return_value=answer),                 mock.patch.object(placement_proof, '_cim_rows', return_value=[]):
-            return placement_proof._CleanupProcesses(windows=True, request=request)
+            return placement_proof._CleanupProcesses(windows=True, **request)
 
     def test_a_failed_query_is_never_cleared(self):
         born = ['git.exe', 5]

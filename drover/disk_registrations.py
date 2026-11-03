@@ -14,7 +14,8 @@ import uuid
 from pathlib import Path
 
 from . import durable, git_client, git_worktrees, placement
-from .disk_paths import item, safe_path, worktree_roots
+from .disk_paths import safe_path, worktree_roots
+from .disk_stage import item
 from .disk_worktrees import _out, gitdir_at
 
 THRESHOLD = 10   # percent of the branch's tracked files that may differ from the directory

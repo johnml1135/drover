@@ -1,9 +1,11 @@
 """Configured repo/path scope and owning-side isolation through real handlers."""
 import copy
 import os
+import tempfile
+import unittest
 from unittest import mock
 
-from drover import disk_runtime, placement
+from drover import disk_runtime, placement, placement_process, placement_proof
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 
 
@@ -124,3 +126,90 @@ class Scope(WorktreeCase):
             disk_cleanup.run(self.cfg, runtime=low)
             disk_cleanup.run(self.cfg, apply=True, runtime=low)
         self.assertFalse(wt.exists(), 'worktree-only drive still includes its configured repo')
+
+
+class PlainArguments(unittest.TestCase):
+    """Placement takes plain arguments: the drive's path, the policy and the proof's settings, never a request dict."""
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        self.state = folder.name
+
+    def test_cleanup_scope_takes_plain_arguments_and_returns_errors(self):
+        hosts = {'H:/': 'H', 'H:/temp': 'H', 'H:/report': 'H', 'C:/temp': 'C', 'H:/cache': 'H', 'C:/cache': 'C'}
+        paths = dict(temp_roots=['H:/temp', 'C:/temp', 'X:/unknown', 'H:/temp'], report_roots=['H:/report'],
+                     caches=[dict(path='H:/cache', placement='windows'), dict(cwd='C:/cache', argv=['x'], placement='windows'),
+                             dict(path='H:/cache', placement='wsl')], worker_timeout_s=60)
+        before = copy.deepcopy(paths)
+        with mock.patch.object(placement, 'physical_disk_path', side_effect=hosts.get), \
+                mock.patch.object(placement, 'cleanup_side', return_value='windows'), \
+                mock.patch.object(placement, 'cleanup_path_side', return_value='windows'), \
+                mock.patch.object(placement, 'native', side_effect=str):
+            scoped, errors = placement.cleanup_scope('H:/', paths)
+            self.assertTrue(placement.cleanup_contains('H:/', 'H:/temp'))
+            self.assertFalse(placement.cleanup_contains('H:/', 'C:/temp'))
+            _, unknown = placement.cleanup_scope('X:/unknown', dict(temp_roots=[]))
+        self.assertEqual(paths, before)
+        self.assertEqual(scoped, dict(before, temp_roots=['H:/temp'], report_roots=['H:/report'],
+                                      caches=[dict(path='H:/cache', placement='windows')]))
+        self.assertEqual(errors, [dict(path='X:/unknown', reason_code='physical_disk_unknown')])
+        self.assertEqual(unknown, [dict(path='X:/unknown', reason_code='physical_disk_unknown')])
+
+    def test_cleanup_processes_cache_key_keeps_stage_and_drive(self):
+        """Two stages, or two drives, of one inventory do not share a snapshot; rechecks within one reuse it."""
+        settings = dict(paths={}, state_dir=self.state, inventory_id='decisions', stage=2, drive=dict(path='H:/'))
+        row = dict(pid=77, name='python.exe', same_user=True, cmd='', cwd=r'C:\elsewhere')
+        with mock.patch.object(placement_proof, '_windows_processes', return_value={'77': ['python.exe', 20]}), \
+                mock.patch.object(placement_process, '_cim_rows', return_value=[row]) as query, \
+                mock.patch.object(placement_proof, '_cim_rows', query):
+            placement.cleanup_processes(windows=True, **settings)
+            placement.cleanup_processes(windows=True, **settings)
+            self.assertEqual(query.call_count, 1)
+            placement.cleanup_processes(windows=True, **dict(settings, stage=4))
+            self.assertEqual(query.call_count, 2)
+            placement.cleanup_processes(windows=True, **dict(settings, drive=dict(path='C:/')))
+            self.assertEqual(query.call_count, 3)
+
+    def blocked(self, **settings):
+        """An ignored image whose executable cannot be read, as Windows shows a non-elevated hub csrss.exe."""
+        rows = [dict(pid=600, name='csrss.exe', same_user=True, cwd=None, cmd='', session_id=1, exe=None)]
+        with mock.patch.object(placement_proof, '_windows_processes', return_value={'600': ['csrss.exe', 3]}):
+            return placement.cleanup_processes(windows=True, cim=lambda: rows,
+                                               paths=dict(process_ignore=['csrss.exe']), **settings)
+
+    def test_cleanup_processes_budget_and_clear_ignored_change_what_counts(self):
+        self.assertTrue(self.blocked().unknown)
+        for settings in (dict(budget=True), dict(clear_ignored=True)):
+            with self.subTest(**settings):
+                proof = self.blocked(**settings)
+                self.assertFalse(proof.unknown)
+                self.assertEqual(proof.out_of_scope, 1)
+
+    def test_cleanup_processes_returns_diagnostics_and_mutates_nothing(self):
+        paths = dict(process_ignore=['csrss.exe'])
+        before = copy.deepcopy(paths)
+        proof = self.blocked(state_dir=self.state, inventory_id='run', stage=4, drive=dict(path='H:/'))
+        self.assertEqual(paths, before)
+        self.assertEqual([(row['pid'], row['name']) for row in proof.unreadable], [(600, 'csrss.exe')])
+        self.assertIsNone(proof.query_failure)
+        def fail():
+            raise OSError('no cim')
+        failed = placement.cleanup_processes(windows=True, cim=fail, paths=paths)
+        self.assertEqual(failed.query_failure, dict(reason_code='process_visibility_unavailable', error='no cim'))
+        self.assertEqual(paths, before)
+        self.assertEqual(os.listdir(self.state), [])
+
+    def test_cleanup_windows_proof_takes_plain_arguments(self):
+        rows = [dict(pid=600, name='csrss.exe', same_user=True, cwd=None, cmd='', session_id=1, exe=None)]
+        answer = dict(rows=rows, identities={'600': ['csrss.exe', 3]})
+        with mock.patch.object(placement_proof, 'IS_WINDOWS', True), \
+                mock.patch.object(placement_proof, '_windows_processes', return_value={'600': ['csrss.exe', 3]}), \
+                mock.patch.object(placement_proof, '_cleanup_cim', return_value=answer) as cim:
+            proof = placement.cleanup_windows_proof(paths=dict(process_ignore=['csrss.exe'], process_query_timeout_s=7),
+                                                    state_dir=self.state, budget=True)
+        self.assertFalse(proof.unknown)
+        self.assertEqual(proof.out_of_scope, 1)
+        self.assertEqual(cim.call_args.kwargs['timeout_s'], 7)
+        self.assertEqual(cim.call_args.kwargs['state_dir'], self.state)
+        with mock.patch.object(placement_proof, 'IS_WINDOWS', False):
+            self.assertIsNone(placement.cleanup_windows_proof(paths={}, state_dir=self.state, budget=True))

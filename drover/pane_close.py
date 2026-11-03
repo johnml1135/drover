@@ -137,7 +137,7 @@ def _snapshot(row, cfg=None):
     if row.get('placement') != placement.cleanup_side():
         return None
     ignore = list((config.get() if cfg is None else cfg)['disk_cleanup']['process_ignore'])
-    return placement.cleanup_processes(request={'paths': {'process_ignore': ignore}, 'clear_ignored': True})
+    return placement.cleanup_processes(paths={'process_ignore': ignore}, clear_ignored=True)
 
 
 def _busy(herdr, row, pane, path, processes):

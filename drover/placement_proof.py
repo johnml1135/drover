@@ -41,9 +41,9 @@ def _process_os_location(exe, windows):
 WSL_UNC = re.compile(r'^(?:\\\\\?\\UNC\\|\\\\|//)(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$', re.I | re.S)
 
 
-def cleanup_windows_proof(request):
+def cleanup_windows_proof(*, paths, state_dir, budget):
     """A fresh Windows snapshot for the coordinator, or None off Windows, where nothing can take one."""
-    return _CleanupProcesses(windows=True, request=request) if IS_WINDOWS else None
+    return _CleanupProcesses(windows=True, paths=paths, state_dir=state_dir, budget=budget) if IS_WINDOWS else None
 
 
 def seed_cleanup_process_policy(policy):
@@ -56,16 +56,16 @@ def seed_cleanup_process_policy(policy):
     policy.setdefault('process_query_timeout_s', 240)
 
 
-def cleanup_processes(*, proc_root=None, cim=None, windows=None, request=None):
-    """Snapshot invoking-user visibility; foreign processes still contribute path evidence."""
-    proof = _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows, request=request)
-    if request is not None:
-        diagnostics = request.setdefault('_process_diagnostics', {})
-        for row in proof.unreadable:
-            diagnostics[(row['pid'], row['name'])] = row
-        if proof.query_failure:
-            request.setdefault('_process_query_failures', []).append(proof.query_failure)
-    return proof
+def cleanup_processes(*, paths=None, state_dir=None, inventory_id=None, stage=None, drive=None, budget=False,
+                      clear_ignored=False, proc_root=None, cim=None, windows=None):
+    """Snapshot invoking-user visibility; foreign processes still contribute path evidence.
+
+    `paths` is the disk_cleanup policy. `inventory_id`, `stage` and `drive` key the run's cached CIM query, so two stages
+    or two drives never share one; `budget` and `clear_ignored` change what counts as cleared. The proof returned
+    carries its own diagnostics, `unreadable` and `query_failure`, and nothing else is written."""
+    return _CleanupProcesses(proc_root=proc_root, cim=cim, windows=windows, paths=paths, state_dir=state_dir,
+                             inventory_id=inventory_id, stage=stage, drive=drive, budget=budget,
+                             clear_ignored=clear_ignored)
 
 
 def _parent(entry):
@@ -78,22 +78,26 @@ def _parent(entry):
 class _CleanupProcesses:
     """One invoking-user snapshot. Unknown ownership fails closed; foreign argv still retains named paths."""
 
-    def __init__(self, proc_root=None, windows=None, cim=None, request=None):
+    def __init__(self, proc_root=None, windows=None, cim=None, *, paths=None, state_dir=None, inventory_id=None,
+                 stage=None, drive=None, budget=False, clear_ignored=False):
         self.rows, self.pids, self.ppids, self.unreadable, self.out_of_scope, self.unknown = [], [], [], [], 0, False
         self._indexed, self._prefixes = -1, (set(), False)
         self.windows = IS_WINDOWS if windows is None else windows
-        self.budget = bool((request or {}).get('budget'))
-        self.clear_ignored = bool((request or {}).get('clear_ignored'))
-        self.ignored = (request or {}).get('paths', {}).get('process_ignore', PROCESS_IGNORE)
+        self.budget = bool(budget)
+        self.clear_ignored = bool(clear_ignored)
+        self.ignored = (paths or {}).get('process_ignore', PROCESS_IGNORE)
         self.ignored = {_ordinal_case(name) if self.windows else name for name in self.ignored}
+        self.timeout_s = (paths or {}).get('process_query_timeout_s', 240)
+        self.state_dir = state_dir
         self.query_failure = None
         self.current = None
-        self.request = request or {}
         if self.windows:
             try:
-                current = _windows_processes() if not cim and request else None
+                current = _windows_processes() if not cim else None
                 self.current = current
-                answer = dict(rows=cim()) if cim else _cleanup_cim(request, current)
+                answer = dict(rows=cim()) if cim else _cleanup_cim(
+                    current, timeout_s=self.timeout_s, state_dir=state_dir, inventory_id=inventory_id, stage=stage,
+                    drive=drive)
                 self.query_failure = {k: v for k, v in answer.items() if k not in ('rows', 'identities')} or None
                 rows = answer['rows']
                 self.unknown = bool(self.query_failure) or (not rows and current is None)
@@ -110,8 +114,7 @@ class _CleanupProcesses:
                         # Never inherit ownership/argv from a PID whose birth is unknown or changed.
                         started = time.monotonic()
                         try:
-                            fresh = {str(row['pid']): row for row in _cim_rows(
-                                self.request.get('paths', {}).get('process_query_timeout_s', 240), refresh)}
+                            fresh = {str(row['pid']): row for row in _cim_rows(self.timeout_s, refresh)}
                         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                             fresh = {}
                             self.query_failure = dict(error=str(error), elapsed_s=time.monotonic() - started,
@@ -270,10 +273,10 @@ class _CleanupProcesses:
         self.ppids.append(ppid)
 
     def _own_cwd(self, pid):
-        if not self.request.get('state_dir'):
+        if not self.state_dir:
             return None
         side = 'windows' if self.windows else 'wsl'
-        path = Path(self.request['state_dir']) / 'disk' / f'process-{side}-{pid}.json'
+        path = Path(self.state_dir) / 'disk' / f'process-{side}-{pid}.json'
         try:
             record = json.loads(path.read_text(encoding='utf-8'))
             identity = record['identity']

@@ -4,7 +4,8 @@ import time
 from pathlib import Path
 
 from . import placement
-from .disk_paths import item, live_tree, repository_root, result, safe_path, within, worktree_roots
+from .disk_paths import live_tree, processes, repository_root, safe_path, worktree_roots
+from .disk_stage import item, result, within
 
 
 class TempBudgetExceeded(ValueError):
@@ -44,7 +45,7 @@ def temp_facts(path, request):
         if deadline is not None and time.monotonic() > deadline:
             raise TempBudgetExceeded('temp root scan budget exceeded')
         if placement.cleanup_link(current) or current.name.casefold() in ('.git', '.venv') or \
-                not placement.cleanup_contains(request, str(current)) or repository_root(current):
+                not placement.cleanup_contains(request['drive']['path'], str(current)) or repository_root(current):
             raise ValueError('protected descendant')
         info = current.stat()
         files, size, newest = 0, 0, info.st_mtime
@@ -66,7 +67,7 @@ def temp_facts(path, request):
 
 def temporary(request):
     out = result()
-    proof = request.get('_processes') or placement.cleanup_processes(request=request)
+    proof = request.get('_processes') or processes(request)
     request['_temp_facts'], request['_temp_children'] = {}, {}
     for root in sorted({Path(p).absolute() for p in request['paths'].get('temp_roots', [])}, key=lambda p: len(p.parts)):
         started = time.monotonic()
@@ -88,10 +89,10 @@ def temporary(request):
                         else:
                             row.update(action='candidate', reason_code='stale_temp')
                             if request['apply']:
-                                current = placement.cleanup_processes(request=request)
+                                current = processes(request)
                                 if current.busy(str(path)):
                                     row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
-                                elif temp_facts(path, dict(request, _temp_facts={}, _temp_children={})) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request, str(path)):
+                                elif temp_facts(path, dict(request, _temp_facts={}, _temp_children={})) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request['drive']['path'], str(path)):
                                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                                     row['action'] = 'removed'
                                     out['reclaimed_bytes'] += row['bytes']

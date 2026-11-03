@@ -60,7 +60,10 @@
     "drover.placement_exec.NO_WINDOW",
     "drover.placement.NO_WINDOW",
     "drover.placement_exec.CREATE_NO_WINDOW",
-    "drover.placement.CREATE_NO_WINDOW"
+    "drover.placement.CREATE_NO_WINDOW",
+    "drover.disk_paths.item",
+    "drover.disk_paths.result",
+    "drover.disk_paths.within"
   ],
   "removed_receipt_fields": [
     "infra"

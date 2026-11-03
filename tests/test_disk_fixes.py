@@ -53,8 +53,8 @@ class PlacementSafety(DiskCase):
             self.assertEqual(placement.physical_disk_path('/data/deep space/build'), '/data/deep space')
             request = self.request()
             request['drive']['path'] = '/data'
-            self.assertTrue(placement.cleanup_contains(request, '/data/build'))
-            self.assertFalse(placement.cleanup_contains(request, '/home/build'))
+            self.assertTrue(placement.cleanup_contains(request['drive']['path'], '/data/build'))
+            self.assertFalse(placement.cleanup_contains(request['drive']['path'], '/home/build'))
             seen = []
             with patch('shutil.disk_usage', side_effect=lambda p: seen.append(p) or type('Usage', (), {'free': 10})()):
                 placement.cleanup_free('/data/build')
@@ -188,6 +188,6 @@ class PlacementSafety(DiskCase):
         request['paths']['caches'] = [dict(path='/mnt/h/cache folder', placement='windows')]
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                 patch.object(placement, 'physical_disk_path', return_value='H:/'):
-            scoped = placement.cleanup_scope(request)
-        self.assertEqual(scoped['paths']['temp_roots'], [r'H:\temp with spaces'])
-        self.assertEqual(scoped['paths']['caches'][0]['path'], r'H:\cache folder')
+            scoped, _ = placement.cleanup_scope(request['drive']['path'], request['paths'])
+        self.assertEqual(scoped['temp_roots'], [r'H:\temp with spaces'])
+        self.assertEqual(scoped['caches'][0]['path'], r'H:\cache folder')

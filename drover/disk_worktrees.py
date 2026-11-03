@@ -4,7 +4,8 @@ from pathlib import Path
 import subprocess
 
 from . import git_client, git_worktrees, ownership, placement, repos
-from .disk_paths import deadline_row, worktree_roots, facts, item, result, safe_path, within, disposable_match, repository_tree
+from .disk_paths import deadline_row, worktree_roots, facts, processes, safe_path, disposable_match, repository_tree
+from .disk_stage import item, result, within
 
 
 def _out(repo, *args, env=None):     # any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end
@@ -162,13 +163,13 @@ def inspect(request, machine, entry):
     checks['other_side'] = placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side()
     if checks['other_side']:
         return decision()
-    checks['other_drive'] = not placement.cleanup_contains(request, entry['worktree'])
+    checks['other_drive'] = not placement.cleanup_contains(request['drive']['path'], entry['worktree'])
     if checks['other_drive']:
         return decision()
     checks['main'] = placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo'])
     if checks['main']:
         return decision()
-    proof = request.get('_processes') or placement.cleanup_processes(request=request)
+    proof = request.get('_processes') or processes(request)
     checks.update(busy=task_facts(request, path, None)[0] or proof.busy(str(path)),
                   process_reason=getattr(proof, 'reason', None))
     if checks['busy']:
@@ -350,7 +351,7 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
         store.append(record)
         if rescue:
             rescue_at(machine['repo'], rescue, row['head'])
-        if not safe_path(path) or not placement.cleanup_contains(request, str(path)):
+        if not safe_path(path) or not placement.cleanup_contains(request['drive']['path'], str(path)):
             raise ValueError('worktree path became linked or protected')
         if row.get('unlisted') and unlisted_live(request, path):
             row.update(action='keep', reason_code='live_owner')
@@ -418,11 +419,10 @@ def quarantine(request, machine, row, *, store=None):
 
 def snapshot(machine, path, request=None):
     """Prove an unlisted directory equals this repo's HEAD, using a disposable index."""
-    import os
     import tempfile
     if not safe_path(path) or any(p.name == '.git' for p in path.rglob('*')):
         raise ValueError('independent or broken git metadata')
-    if placement.cleanup_processes(request=request).busy(str(path)):
+    if processes({} if request is None else request).busy(str(path)):
         raise ValueError('snapshot busy')
     head = _out(machine['repo'], 'rev-parse', '--verify', 'HEAD^{commit}').strip()
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:
@@ -437,8 +437,7 @@ def snapshot(machine, path, request=None):
 
 def unlisted_live(request, path):
     tag = ownership.read(str(path))
-    return task_facts(request, path, tag)[0] or bool(
-        tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
+    return task_facts(request, path, tag)[0] or bool(tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
 
 
 def unlisted(request, machine, listed, skip=()):
@@ -447,7 +446,7 @@ def unlisted(request, machine, listed, skip=()):
     roots = [r for r in worktree_roots(machine, this_side=True)
              if r.name.endswith('.worktrees') and r.is_dir() and safe_path(r)]
     for path in (p for root in roots for p in root.iterdir()):
-        if str(path) in registered or any(k == str(path) or k.startswith(str(path) + os.sep) for k in skip) or not placement.cleanup_contains(request, str(path)):
+        if str(path) in registered or any(k == str(path) or k.startswith(str(path) + os.sep) for k in skip) or not placement.cleanup_contains(request['drive']['path'], str(path)):
             continue
         row = item(path, request, 'unknown_folder', repo=machine['repo'], name=machine['name'])
         try:

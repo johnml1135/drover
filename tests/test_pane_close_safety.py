@@ -99,7 +99,7 @@ class Cleared(PaneCloseBase):
         rows = self.rows(**over)
         alive = {str(row['pid']): [row['name'], 3] for row in rows}    # nothing here has exited
         with mock.patch.object(placement_proof, '_windows_processes', return_value=alive):
-            return placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, request=request)
+            return placement_proof._CleanupProcesses(windows=True, cim=lambda: rows, **request)
 
     def test_ignored_images_with_unreadable_executables_are_cleared_only_when_asked(self):
         paths = {'process_ignore': ['csrss.exe']}
@@ -119,7 +119,7 @@ class Cleared(PaneCloseBase):
         cfg = {'disk_cleanup': {'process_ignore': ['a.exe']}}
         with mock.patch.object(pane_close.placement, 'cleanup_side', return_value='windows'),                 mock.patch.object(pane_close.placement, 'cleanup_processes') as taken:
             pane_close._snapshot(row, cfg)
-        taken.assert_called_once_with(request={'paths': {'process_ignore': ['a.exe']}, 'clear_ignored': True})
+        taken.assert_called_once_with(paths={'process_ignore': ['a.exe']}, clear_ignored=True)
 
 
 class DryFirst(PaneCloseBase):

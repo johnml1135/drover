@@ -395,31 +395,30 @@ def _windows_processes():
         kernel.CloseHandle(snapshot)
 
 
-def _cleanup_cim(request, current=None):
-    """Cache one narrow process query per stage/drive decision; rechecks verify identity."""
+def _cleanup_cim(current=None, *, timeout_s=240, state_dir=None, inventory_id=None, stage=None, drive=None):
+    """Cache one narrow process query per stage/drive decision; rechecks verify identity. `inventory_id` names the
+    run's cache and `stage` and `drive` key it, so two stages or two drives never share a snapshot."""
     from . import disk_state
-    request = request or {}
     cache = None
-    if request.get('_inventory_id'):
+    if inventory_id:
         suffix = ''
-        if 'stage' in request:
+        if stage is not None:
             import hashlib
-            suffix = '-' + hashlib.sha256(json.dumps([request['stage'], request.get('drive')], sort_keys=True).encode()).hexdigest()[:16]
-        cache = 'processes-' + request['_inventory_id'] + suffix + '.json'
+            suffix = '-' + hashlib.sha256(json.dumps([stage, drive], sort_keys=True).encode()).hexdigest()[:16]
+        cache = 'processes-' + inventory_id + suffix + '.json'
         try:
-            return json.loads((Path(request['state_dir']) / 'disk' / cache).read_text(encoding='utf-8'))
+            return json.loads((Path(state_dir) / 'disk' / cache).read_text(encoding='utf-8'))
         except FileNotFoundError:
             pass
-    timeout = request.get('paths', {}).get('process_query_timeout_s', 240)
     started = time.monotonic()
     try:
-        answer = dict(rows=_cim_rows(timeout), identities=current)
+        answer = dict(rows=_cim_rows(timeout_s), identities=current)
     except (OSError, ValueError, KeyError, TypeError) as error:
         answer = dict(rows=[], error=str(error), elapsed_s=time.monotonic() - started,
                       reason_code='process_query_timeout' if isinstance(error, TimeoutError)
                       else 'process_visibility_unavailable')
     if cache:
-        disk_state.save_file(request['state_dir'], cache, answer)
+        disk_state.save_file(state_dir, cache, answer)
     return answer
 
 

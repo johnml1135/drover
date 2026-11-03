@@ -271,7 +271,8 @@ class UserScope(ProcessFreeDiskCase):
             done.stdout = json.dumps(dict(sid='invoker', processes=rows)).encode()
             with self.subTest(same_user=same_user), \
                     patch.object(process.subprocess, 'run', return_value=done) as query, \
-                    patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2):
+                    patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2), \
+                    patch('drover.placement_proof._windows_processes', return_value={'123456789': ['fixture', 1]}):
                 proof = placement.cleanup_processes(windows=True)
             self.assertIn('OpenProcessToken', query.call_args.args[0][-1])  # one batched pass, owners from tokens
             self.assertTrue(proof.busy(r'H:\candidate'))

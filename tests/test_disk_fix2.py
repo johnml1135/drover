@@ -125,7 +125,7 @@ class PathSafety(ProcessFreeDiskCase):
         with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}), \
                 patch('pathlib.Path.read_text', return_value=mountinfo):
-            self.assertFalse(placement.cleanup_contains(request, '/Data/candidate'))
+            self.assertFalse(placement.cleanup_contains(request['drive']['path'], '/Data/candidate'))
 
 
 class OutputSafety(WorktreeCase):

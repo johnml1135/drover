@@ -132,6 +132,23 @@ class StageClock:
         return inner
 
 
+def result():
+    """An empty stage answer."""
+    return dict(items=[], errors=[], reclaimed_bytes=0)
+
+
+def within(path, root):
+    """Whether `path` is `root` or under it, compared as cleanup paths; a path test, unlike `StageClock.within`."""
+    parts, parent = placement_paths.cleanup_parts(path), placement_paths.cleanup_parts(root)
+    return parts[:len(parent)] == parent
+
+
+def item(path, request, reason, **extra):
+    """A kept row for `path`. `request` is unused."""
+    return dict(path=str(path), action='keep', reason_code=reason, owner=None,
+                files=0, age_s=0, bytes=0, **extra)
+
+
 class StageAbandoned(BaseException):
     """The reader has gone, so the worker has lost its authority: the stage ends. A BaseException, so that no row's
     `except Exception`, nor its `except OSError` (BrokenPipeError is one), reads it as a row failure."""

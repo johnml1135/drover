@@ -12,7 +12,7 @@ SYSTEM = r'C:\Windows\System32\svchost.exe'
 
 class ForeignUnreadableBirth(DiskCase):
     def proof(self, row, cwd=None, native=None, birth=None, after=None):
-        request = dict(paths={}, state_dir=str(self.state), _inventory_id='foreign')
+        settings = dict(paths={}, state_dir=str(self.state), inventory_id='foreign')
         disk_state.save_file(self.state, 'processes-foreign.json', dict(rows=[], identities={}))
         pid = str(row['pid'])
         with patch.object(placement, '_windows_processes', side_effect=[{pid: [native or row['name'], birth]}, {pid: [native or row['name'], after]}]) as native, \
@@ -20,7 +20,7 @@ class ForeignUnreadableBirth(DiskCase):
                 patch('drover.placement_proof._windows_cwd', return_value=cwd), \
                 patch('drover.placement_process._cim_rows', return_value=[row]) as cim, \
                 patch('drover.placement_proof._cim_rows', cim):
-            return placement.cleanup_processes(windows=True, request=request)
+            return placement.cleanup_processes(windows=True, **settings)
 
     def test_foreign_service_with_unreadable_start_time_does_not_block(self):
         proof = self.proof(dict(pid=88, name='svchost.exe', same_user=False, exe=SYSTEM, cmd='', session_id=0))

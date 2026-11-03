@@ -15,15 +15,15 @@ CACHE_LIMIT_BYTES = 4 * 1024 * 1024
 class Inventory:
     """One tree traversal per root across report stages, with bounded directory summaries."""
 
-    def __init__(self, now, request=None, *, ignore_activity=()):
+    def __init__(self, now, side=None, drive_path=None, state_dir=None, inventory_id=None, *, ignore_activity=()):
+        """With `inventory_id`, the run's cache in `state_dir`, keyed by `side` and `drive_path`, is read and saved."""
         self.now = now
         self.ignore_activity = {placement.cleanup_parts(path) for path in ignore_activity}
         self.directories, self.cache = {}, None
         self.peak_intermediate_bytes = 0
-        if request and request.get('_inventory_id'):
-            suffix = hashlib.sha256(json.dumps([request.get('side', placement.cleanup_side()),
-                                                request['drive']['path']]).encode()).hexdigest()[:16]
-            self.cache = (request['state_dir'], 'inventory-' + request['_inventory_id'] + '-' + suffix + '.json')
+        if inventory_id:
+            suffix = hashlib.sha256(json.dumps([side, drive_path]).encode()).hexdigest()[:16]
+            self.cache = (state_dir, 'inventory-' + inventory_id + '-' + suffix + '.json')
             try:
                 cache_path = Path(self.cache[0]) / 'disk' / self.cache[1]
                 if cache_path.stat().st_size <= CACHE_LIMIT_BYTES:
@@ -106,12 +106,13 @@ class Inventory:
                                           key=lambda r: (r['bytes'], r['path'])))
 
 
-def compact(items, request):
-    """Retained reasons aggregate by reason/root; full samples and path lists are capped."""
+def compact(items, policy, repos):
+    """Retained reasons aggregate by reason/root; full samples and path lists are capped. `policy` is the disk_cleanup
+    settings, whose temp and report roots group rows, as do `repos` and their worktree roots."""
     roots = [Path(placement.native(p)) for key in ('temp_roots', 'report_roots')
-             for p in request['paths'].get(key, [])]
-    roots += [Path(placement.native(m['repo'])) for m in request['repos']]
-    roots += [r for m in request['repos'] for r in worktree_roots(m)]
+             for p in policy.get(key, [])]
+    roots += [Path(placement.native(m['repo'])) for m in repos]
+    roots += [r for m in repos for r in worktree_roots(m)]
     groups, answer = {}, []
     for original in items:
         row = dict(original)
