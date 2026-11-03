@@ -86,6 +86,20 @@ class Windows(DiskCase):
             disk_schedule.install(self.cfg)
         self.assertNotIn('automation', disk_state.read(self.state))
 
+    def test_a_failed_step_reports_its_stderr_by_locale(self):
+        """schtasks writes in the code page: a non-ASCII word keeps its letters in the failure."""
+        import locale
+        import sys
+        encoding = 'utf-8' if sys.flags.utf8_mode else locale.getencoding()
+        fake = FakeCommands(self.root / 'commands')
+        steps = dict(files={}, argv=[['schtasks.exe', '/Create', '/TN', 'DroverDiskTracker']])
+        fake.expect(steps['argv'][0], returncode=1, stderr_output='Zugriff verweigert: Jösé'.encode(encoding),
+                    **process_options(600.0))
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=steps), refuse_real_spawns(), \
+                fake.patch(process), self.assertRaisesRegex(RuntimeError, 'failed: Zugriff verweigert: Jösé$'):
+            disk_schedule.install(self.cfg)
+        self.assertNotIn('automation', disk_state.read(self.state))
+
     def test_install_dry_run_and_first_live_report_receipt(self):
         from drover import disk_schedule, disk_cleanup, placement
         commands = []

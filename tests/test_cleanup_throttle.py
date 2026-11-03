@@ -193,7 +193,7 @@ class SingleProcess(Trigger):
     def test_identity_timeout_after_spawn_keeps_the_claim(self):
         proc = type('P', (), {'pid': 4242})()
         with patch.object(placement, 'detach', return_value=(proc, False)), \
-                patch.object(placement, 'cleanup_identity', side_effect=__import__('subprocess').TimeoutExpired('ps', 15)) as _placement_patch_1, patch('drover.placement_process.cleanup_identity', _placement_patch_1), patch('drover.placement_proof.cleanup_identity', _placement_patch_1):
+                patch.object(placement, 'cleanup_identity', side_effect=TimeoutError('identity read timed out')) as _placement_patch_1, patch('drover.placement_process.cleanup_identity', _placement_patch_1), patch('drover.placement_proof.cleanup_identity', _placement_patch_1):
             answer = disk_runtime.cleanup_enqueue(self.cfg, dict(id='x', applied=False))
         self.assertEqual(answer['identity']['pid'], 4242)
         self.assertIsNone(answer['identity']['birth'])
@@ -241,10 +241,9 @@ class Defaults(unittest.TestCase):
 
 
 class StuckClaim(Trigger):
-    """A claim whose process cannot be read (PowerShell keeps timing out) is released by age."""
+    """A claim whose process cannot be read (its identity read keeps timing out) is released by age."""
 
     def stuck(self, at):
-        import subprocess
         self.cfg['disk_cleanup']['cooldown_s'] = 0
         self.activate()
         self.free = 60
@@ -267,7 +266,7 @@ class StuckClaim(Trigger):
 
         def flaky(pid=None):
             if pid is not None:
-                raise subprocess.TimeoutExpired('powershell', 15)
+                raise TimeoutError('identity read timed out')
             return original()
         return launches, enqueue, flaky
 

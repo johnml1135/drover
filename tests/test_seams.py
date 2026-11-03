@@ -343,6 +343,20 @@ class Seams(unittest.TestCase):
         self.assertLessEqual({name.split('.')[0] for name in names if project_module(name) is None},
                              set(sys.stdlib_module_names))
 
+    def test_the_console_flag_is_defined_only_in_its_three_homes(self):
+        """Section 5.1: `process` holds the flag; frozen hub/runtime (ruling 15) and the standalone hook keep a copy."""
+        def defines(node):
+            if isinstance(node, ast.Constant) and node.value == 0x08000000 and not isinstance(node.value, bool):
+                return True
+            if isinstance(node, ast.Attribute) and node.attr == 'CREATE_NO_WINDOW':
+                return not (isinstance(node.value, ast.Name) and node.value.id == 'process')
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+            return any(isinstance(t, ast.Name) and t.id in ('NO_WINDOW', 'CREATE_NO_WINDOW') for t in targets)
+        trees = {**parsed('drover'), **parsed('hub'), **parsed('scripts')}
+        homes = {path for path, tree in trees.items() if any(defines(node) for node in ast.walk(tree))}
+        self.assertEqual(homes, {'drover/process.py', 'hub/runtime.py', 'drover/pane_status_hook.py'})
+        self.assertTrue(defines(ast.parse('import subprocess\nf = subprocess.CREATE_NO_WINDOW').body[1].value))
+
     def test_rows_equal_the_manifest(self):
         compare(self, found_rows(), manifest(EXCEPTIONS), KEYS, 'seam exceptions')
 

@@ -1,12 +1,54 @@
 """Each writer moved to durable keeps the sync, mode and encoding it had, and gains the wait section 5.4 gives it."""
+import ast
 import contextlib
 import io
 import os
+import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from drover import allowance, config, disk_cleanup, durable, handoff, placement_git, wizard_files
 from drover.durable import ORDINARY
 from tests.test_durable import Base, Flaky, refused_site
+
+DROVER = Path(__file__).resolve().parent.parent / 'drover'
+# Section 5.4's ordinary run files: no fsync and the ordinary wait, in source order by enclosing function. The three
+# runner_supervise exceptions are the table's own rows: Status.routine, Status.terminal and record.json.
+RUN_FILE_WRITES = {
+    'ci': [(name, 'ORDINARY') for name in ('prepare', 'stop_active', 'defer', 'run', 'run', 'run', 'run', '_supervise',
+                                           '_classify', 'refuse', '_execute')],
+    'dispatcher_finish': [('_continue_worker', 'ORDINARY')],
+    'landing_batch': [('build_tip', 'ORDINARY')],
+    'runner': [('detach', 'ORDINARY')],
+    'runner_supervise': [('set', 'ORDINARY'), ('routine', 'ROUTINE'), ('terminal', 'TERMINAL'),
+                         ('request_stop', 'ORDINARY'), ('request_stop', 'ORDINARY'), ('_supervise', 'TERMINAL')],
+}
+
+
+def durable_writes(module):
+    """(enclosing function, wait) for each `durable.*` call in `module`; fails on any sync other than a literal False."""
+    found = []
+
+    def visit(node, function):
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else function
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) \
+                    and isinstance(child.func.value, ast.Name) and child.func.value.id == 'durable':
+                given = {keyword.arg: ast.unparse(keyword.value) for keyword in child.keywords}
+                if child.func.attr != 'write_json' or given.get('sync') != 'False':
+                    raise AssertionError(f'{module}:{child.lineno} {ast.unparse(child)[:80]}: not an unsynced write_json')
+                found.append((inner, given.get('wait', 'durable.ORDINARY').removeprefix('durable.')))
+            visit(child, inner)
+    visit(ast.parse((DROVER / f'{module}.py').read_text(encoding='utf-8')), None)
+    return found
+
+
+class RunFileWaits(unittest.TestCase):
+    def test_every_ordinary_run_file_write_is_unsynced_with_the_ordinary_wait(self):
+        """A NO_WAIT here loses a run file to a brief Windows reader; a sync adds an fsync on /mnt/c to every write."""
+        for module, expected in RUN_FILE_WRITES.items():
+            with self.subTest(module):
+                self.assertEqual(durable_writes(module), expected)
 
 
 class Sites(Base):

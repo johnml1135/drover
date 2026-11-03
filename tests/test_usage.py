@@ -1,5 +1,6 @@
 """Per-account readings and allowance ordering, using fictional seats only."""
 from drover import placement as placement_mod
+import io
 import json
 import ntpath
 import os
@@ -7,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -379,7 +380,6 @@ class ObservationEdges(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM task_events WHERE kind='usage.alert'").fetchone()[0], 5)
 
     def test_invalid_codex_limits_preserve_raw_payload_locally_and_in_wsl(self):
-        from unittest.mock import patch
         raw = json.dumps({'primary': {'used_percent': 'changed', 'window_minutes': 300, 'resets_at': NOW + 3600}})
         root = Path(self.tmp.name) / 'sessions'
         root.mkdir()
@@ -388,10 +388,10 @@ class ObservationEdges(unittest.TestCase):
         seat = {**self.seat, 'backend': 'codex', 'name': 'acme-codex', 'placement': 'wsl', 'codex_home': self.tmp.name}
         for windows in (False, True):
             with self.subTest(windows=windows):
-                def run(argv, **kw):
-                    # Execute the WSL reader with fictional local paths, without starting WSL.
-                    code = argv[argv.index('-c') + 1]
-                    return subprocess.run([sys.executable, '-c', code, *argv[-2:]], **kw)
+                def run(argv, **kw):    # the WSL reader's code, run in this process with fictional local paths
+                    with patch.object(sys, 'argv', ['-c', *argv[-2:]]), patch.object(sys, 'path', list(sys.path)), redirect_stdout(io.StringIO()) as out:
+                        exec(argv[argv.index('-c') + 1], {'__name__': '__main__'})
+                    return subprocess.CompletedProcess(argv, 0, out.getvalue())
                 with patch('drover.placement.to_wsl_path', side_effect=lambda p: p) as _placement_patch_2, patch('drover.placement_exec.to_wsl_path', _placement_patch_2), patch('drover.placement_git.to_wsl_path', _placement_patch_2), patch('drover.placement_host.to_wsl_path', _placement_patch_2), patch('drover.placement_paths.to_wsl_path', _placement_patch_2):
                     answer_spawns(self, run)
                     poller = usage.Poller(self.conn, now=lambda: NOW, windows=windows)

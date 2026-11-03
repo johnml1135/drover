@@ -355,6 +355,47 @@ class PlacementCallers(unittest.TestCase):
             (row,) = placement_process._cim_rows(240)
         self.assertEqual((row['exe'], row['cmd']), (exe, f'{exe} "{exe}" --flag'))
 
+    def test_toast_and_compaction_failures_keep_a_windows_tools_words(self):
+        """placement_worker:174 and compaction_vhd's `_pwsh` read a failed tool's stderr by locale."""
+        from drover import compaction_vhd, placement_worker
+        encoding = 'utf-8' if sys.flags.utf8_mode else locale.getencoding()
+        notice = dict(title='t', body='b')
+        self.fake.expect(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', AnyText()], returncode=1,
+                         stderr_output='Zugriff verweigert: Jösé'.encode(encoding),
+                         **process_options(15, input=json.dumps(notice).encode('utf-8')))
+        script = 'Optimize-VHD -Path x'
+        self.fake.expect(['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], returncode=1,
+                         stderr_output='Jösé \xff'.encode(encoding, 'replace') + b'\x81',
+                         **process_options(compaction_vhd.STEP_TIMEOUT_S))
+        with self.fake.patch(process), mock.patch.object(placement_worker, 'IS_WINDOWS', True):
+            with self.assertRaisesRegex(OSError, '^toast unavailable: Zugriff verweigert: Jösé$'):
+                placement_worker.disk_toast(notice)
+            failed = compaction_vhd._pwsh(script)
+        self.assertTrue(failed.startswith('Optimize-VHD exited 1: Jösé'), failed)     # undecodable bytes replaced
+
+    def test_ci_closure_scan_reads_rows_by_locale_and_a_failed_scan_is_unknown(self):
+        """placement_process's Windows confirmation: a run that did not end, or a non-zero exit, raises ScanError."""
+        from drover import placement_process
+        encoding = 'utf-8' if sys.flags.utf8_mode else locale.getencoding()
+        argv = ['powershell.exe', '-NoProfile', '-Command', AnyText()]
+        status = dict(pid=7, runner_pid=8, run_id='r')
+        alive = json.dumps([dict(ProcessId=9, ParentProcessId=7, Name='Jösé.exe')], ensure_ascii=False)
+        gone = json.dumps(dict(ProcessId=10, ParentProcessId=1, Name='Jösé.exe'), ensure_ascii=False)
+        self.fake.expect(argv, output=alive.encode(encoding), **process_options(60))
+        self.fake.expect(argv, output=gone.encode(encoding), **process_options(60))
+        self.fake.expect(argv, error=subprocess.TimeoutExpired(['powershell.exe'], 60), **process_options(60))
+        self.fake.expect(argv, returncode=1, **process_options(60))
+        with self.fake.patch(process), mock.patch.object(placement_process, 'IS_WINDOWS', True), \
+                mock.patch.object(placement_process, '_powershell', return_value='powershell.exe'), \
+                mock.patch.object(placement_process.time, 'monotonic', return_value=0.0), \
+                mock.patch.object(placement_process.time, 'sleep') as slept:
+            self.assertIs(placement_process.stop_ci_children(status), True)        # alive, then gone
+            self.assertEqual(slept.call_count, 1)
+            with self.assertRaisesRegex(placement_process.ScanError, 'cannot confirm CI job closure: timed out'):
+                placement_process.stop_ci_children(status)
+            with self.assertRaisesRegex(placement_process.ScanError, '^cannot confirm CI job closure$'):
+                placement_process.stop_ci_children(status)
+
 
 if __name__ == '__main__':
     unittest.main()

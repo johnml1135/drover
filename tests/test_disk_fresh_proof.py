@@ -6,7 +6,7 @@ from drover import disk_cleanup, disk_state, git_worktrees
 from drover.git_worktrees import Listings
 from tests.disk_fixture import DAY, empty_result
 from tests.disk_trace import Scene, lost_registration, missing
-from tests.disk_trace_scene import Failed
+from tests.disk_trace_scene import Failed, quick_state
 from tests.disk_trace_stages import budget, output
 
 ROOT = 'worktrees/alpha.worktrees'
@@ -43,7 +43,9 @@ class FreshProof(unittest.TestCase):
             if side != scene.side or request['stage'] == 1:
                 return empty_result()
             return scene.serve(False, scene.now, None, 1800, {}, stage=request['stage'])
-        with patch.object(disk_cleanup, '_repos', return_value=scene.machines), patch.object(disk_cleanup, 'scope_key', return_value='scope'):
+        lock, fsync = quick_state()         # as the scenes: no lock or fsync, real state files
+        with patch.object(disk_cleanup, '_repos', return_value=scene.machines), patch.object(disk_cleanup, 'scope_key', return_value='scope'), \
+                lock, fsync:
             scene.run_cleanup(apply=False, handler=stage)
         return 'report_scope' in disk_state.read(scene.state)
 
@@ -145,6 +147,27 @@ class FreshProof(unittest.TestCase):
             return real(common_dir, **options)
         with patch.object(git_worktrees, '_read_admin', read):
             self.assert_kept(scene.record(apply=True), 'registration_unknown')
+
+    def test_stage_4_measures_nesting_against_what_the_proof_read(self):
+        """Stage 4's twin of test_disk_outputs' revalidation: a registration only the proof sees keeps the unit."""
+        from drover import placement
+        scene = self.scene()
+        tree = scene.worktree('w')
+        reach = (placement.cleanup_parts(tree / 'nested'),)
+        with patch.object(git_worktrees, 'prove', return_value=git_worktrees.Proof((), reach)):
+            trace = scene.record(apply=True)
+        self.assert_kept(trace, 'nested_worktree')
+
+    def test_a_registered_candidate_with_no_row_at_removal_keeps(self):
+        """Section 7.3 step 1 at stage 4: the stage listing lost the target's row, so the removal keeps it."""
+        scene = self.scene()
+        tree = scene.worktree('w')
+        scene.midstage = lambda request: request['_listings'].removed(scene.machines[0]['repo'], tree)
+        with patch.object(git_worktrees, 'prove', side_effect=AssertionError('proved a target with no row')):
+            trace = scene.record(apply=True)
+        self.assert_kept(trace, 'settled')
+        self.assertEqual([(error['path'], error['action'], error['error']) for error in trace['errors']],
+                         [(TREE, 'keep', 'registration changed')])
 
     def test_one_removal_lists_nothing_and_proves_once(self):
         for stage in (4, 5):

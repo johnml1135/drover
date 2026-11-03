@@ -311,7 +311,7 @@ class ProcessQueryTimeout(DiskCase):
     def test_timeout_skips_the_disk_step_instead_of_failing_the_tick(self):
         from drover import disk
         launches = []
-        slow = subprocess.TimeoutExpired('powershell.exe', 15)
+        slow = TimeoutError('identity read timed out')
         with patch('drover.placement.cleanup_identity', side_effect=slow) as _placement_patch_5, patch('drover.placement_process.cleanup_identity', _placement_patch_5), patch('drover.placement_proof.cleanup_identity', _placement_patch_5):
             result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60,
                                enqueue=lambda: launches.append(1) or {})
@@ -322,6 +322,6 @@ class ProcessQueryTimeout(DiskCase):
         from drover import disk, disk_state
         disk_state.update(self.state, lambda s: s.update(episodes={'test-drive': {'claim': dict(
             id='c1', identity=dict(pid=5, birth='b', side=self.side), applied=False)}}))
-        with patch('drover.placement.cleanup_identity', side_effect=subprocess.TimeoutExpired('p', 15)) as _placement_patch_6, patch('drover.placement_process.cleanup_identity', _placement_patch_6), patch('drover.placement_proof.cleanup_identity', _placement_patch_6):
+        with patch('drover.placement.cleanup_identity', side_effect=TimeoutError('identity read timed out')) as _placement_patch_6, patch('drover.placement_process.cleanup_identity', _placement_patch_6), patch('drover.placement_proof.cleanup_identity', _placement_patch_6):
             result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60, enqueue=lambda: {})
         self.assertIn('drives', result)

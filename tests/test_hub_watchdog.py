@@ -145,6 +145,20 @@ class WatchdogTests(unittest.TestCase):
 
 
 class RealWsl(unittest.TestCase):
+    def test_the_keep_alive_starts_with_the_console_flag_and_no_stdin(self):
+        """The keep-alive's long-lived Popen stays outside `process`, yet takes its one console flag."""
+        from types import SimpleNamespace
+        from drover import process
+        from hub import watchdog
+        flag = {'creationflags': process.CREATE_NO_WINDOW}
+        wsl = lambda distro: SimpleNamespace(command=lambda argv: ['wsl.exe', '-d', distro, '--exec', *argv])
+        with mock.patch.object(watchdog.subprocess, 'Popen') as popen, mock.patch.object(watchdog, 'WSL', wsl), \
+                mock.patch.object(watchdog.process, 'NO_WINDOW', flag):
+            self.assertIs(watchdog.real_keepalive('Dist', 60.5), popen.return_value)
+        popen.assert_called_once_with(['wsl.exe', '-d', 'Dist', '--exec', 'sleep', '60'], stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      creationflags=process.CREATE_NO_WINDOW)
+
     def test_watchdog_17_runs_through_process(self):
         """The boot probe runs through `process`; the keep-alive at :27 stays outside by rule."""
         from drover import compaction_hold, process
