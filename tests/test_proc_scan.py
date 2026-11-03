@@ -1,12 +1,13 @@
 """The Windows process scan resolves every owner in one batched query, not one CIM call per process."""
 import json
+import os
 import subprocess
 import sys
 import time
 import unittest
 from unittest.mock import patch
 
-from drover import placement
+from drover import placement, process
 
 
 class BatchedOwners(unittest.TestCase):
@@ -41,6 +42,51 @@ class BatchedOwners(unittest.TestCase):
         finally:
             child.kill()
             child.wait()
+
+
+# The child starts a grandchild that inherits the output pipes, as Git\cmd\git.exe starts mingw64's git.exe.
+TREE = ('import subprocess, sys, time\n'
+        "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(6)'])\n"
+        'print(grandchild.pid, flush=True)\n'
+        'time.sleep(6)\n')
+
+
+def gone(pid, within):
+    """Whether `pid` has exited, waiting up to `within` seconds."""
+    if sys.platform == 'win32':
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(0x00100000, False, pid)      # SYNCHRONIZE
+        if not handle:
+            return True
+        try:
+            return kernel.WaitForSingleObject(ctypes.c_void_p(handle), int(within * 1000)) == 0
+        finally:
+            kernel.CloseHandle(ctypes.c_void_p(handle))
+    deadline = time.monotonic() + within
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+class ProcessTree(unittest.TestCase):
+    """Real processes, here because this module may spawn: `process.run`'s timeout ends the whole tree."""
+
+    def test_a_timeout_ends_the_grandchild_and_returns_promptly(self):
+        started = time.monotonic()
+        result = process.run(process.Command((sys.executable, '-c', TREE), 1))
+        took = time.monotonic() - started
+        self.assertEqual(result.kind, 'timed_out')
+        self.assertLess(took, 3.5)
+        self.assertLess(result.elapsed_s, 3.5)
+        self.assertTrue(result.out.strip(), 'the child printed no grandchild pid before the timeout')
+        self.assertTrue(gone(int(result.out.split()[0]), within=2), 'the grandchild outlived the timeout')
 
 
 if __name__ == '__main__':

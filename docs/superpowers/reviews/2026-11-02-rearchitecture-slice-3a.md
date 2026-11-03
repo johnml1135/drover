@@ -11,6 +11,8 @@
 
 A timeout is now typed: `Result.kind == 'timed_out'`, and `process.run` raises nothing for a process that failed. That is what the Task 23 carry needs to narrow `git_worktrees._git`'s `except Exception`, once `git_client` sits on `process` (slice 4). Nothing here touches that handler.
 
+**A timeout ends the whole tree** (lead ruling, fix round 1, overriding the brief's "calls `subprocess.run` once"). The module's `subprocess` reference is a small adapter: the real module, except that `run` spawns with `Popen`. On Windows the child starts suspended, joins a job object with kill-on-close, and is then resumed; a timeout terminates the job. On POSIX the child leads its own session, and a timeout kills the process group. After the kill the run drains its pipes for at most `DRAIN_S` (2 s) and returns `timed_out` with the real elapsed time. A tree that finishes in time has kill-on-close lifted before the job closes, so a descendant that outlives it survives, as before. If no job can be had (for example, when the process is already in a job that forbids breakaway), it logs one warning and a timeout ends only the direct child; the run is still bounded by the drain. `FakeCommands.patch(process)` replaces the whole reference, so fakes see the same options as before. The real-tree test is `tests.test_proc_scan.ProcessTree`, in the default tier, in an IMPURE module that already spawns; neither ceiling moves.
+
 `process.NO_WINDOW` is a second definition of the flag beside `placement_exec.NO_WINDOW` until Task 20 moves the others onto it.
 
 ## The call lists (Step 1)
@@ -44,10 +46,14 @@ Git wrapper calls that reach `placement_git.git` with `timeout=None`:
 | `origin.git`, `fast_forward(run=git)` | origin.py:27 (`worktree list`), :34 (`update-ref` CAS), :40, :42, :43, :46 (`merge --ff-only`) |
 | `origin.git`, `sync(run=git)` | origin.py:56, :58, :59, :61 (the `fetch` at :53 has one) |
 | `origin.git`, `push_main` | origin.py:91, :93, :100 (`update-ref` of tracking; the `push` at :97 has one) |
+| `placement.add_worktree` given `run=pipeline.git` (pipeline.py:138) or `run=landing_batch.git` (landing_batch.py:157) | placement.py:134 (`worktree add`), :142 (the retry without `--relative-paths`), :146 (`config gc.worktreePruneExpire`); `LONG` per section 5.1's Adapter paragraph |
+| `pipeline.git` through `origin.sync(run=git)` (pipeline.py:125) | the `origin.py` `sync` and `fast_forward` lines above run with `pipeline.git`, not `origin.git`, on this path |
 
-Every other `placement.git` and `placement_git.git` call names a timeout. Wrappers that always set one: `ci.git` 60, `disk_worktrees.git` 60, `dispatch_hold._git` 60, `task_access._git` 60, `pane_close._git` 30, `replan`'s 60, `placement.add_worktree`'s default `run` 60. `origin.ahead` defaults to `None`, and its one caller, hub/task_views.py:128, passes 30.
+Every other `placement.git` and `placement_git.git` call names a timeout. Wrappers that always set one: `ci.git` 60, `disk_worktrees.git` 60, `dispatch_hold._git` 60, `task_access._git` 60, `pane_close._git` 30, `replan`'s 60. `placement.add_worktree`'s default `run` sets 60, but both of its callers pass an untimed `run` (row above). `origin.ahead` defaults to `None`, and its one caller, hub/task_views.py:128, passes 30.
 
-Section 5.1's table matches this list. It did not name `cleanup.git`'s own line (:16), `origin.push_main`'s reads, or `landing_control`'s pass-through; they fall in its `cleanup.git`, `origin.git` and `landing_control` rows.
+Section 5.1's table matches this list. It did not name `cleanup.git`'s own line (:16), `origin.push_main`'s reads, or `landing_control`'s pass-through; they fall in its `cleanup.git`, `origin.git` and `landing_control` rows. `add_worktree`'s path is in section 5.1's Adapter paragraph, not its table.
+
+Scope: `drover/` and `hub/` only, as the spec's. `scripts/` is not listed (scripts/deploy_hub.py:36 runs git with no timeout).
 
 ### `text=True` with no `encoding`
 
