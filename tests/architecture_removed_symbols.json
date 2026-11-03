@@ -13,6 +13,9 @@
   "qualified_names": [
     "drover.pipeline.git",
     "drover.landing.timed_git",
+    "drover.origin.git",
+    "drover.landing_batch.git",
+    "drover.landing_control._controlled_git",
     "drover.durable.publish",
     "drover.durable._UMASK",
     "drover.placement_sweep.marked",

@@ -373,3 +373,31 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(service._resumed['work'], ('request-key', INFRA))
             with self.assertRaises(ci.CIInfrastructure):
                 service.resume({}, 'work')
+
+
+class ControlledGitTests(unittest.TestCase):
+    def test_controlled_git_guards_merge_update_ref_push_only(self):
+        from drover import git_client
+        from drover.launch import AdmissionHeld
+        guarded, ran = [], []
+
+        def verb(name):
+            return lambda repo, *args, **kw: ran.append((name, args)) or name
+        with patch.object(landing_control, '_control_guard', side_effect=lambda conn, epoch: guarded.append((conn, epoch))), \
+                patch.object(git_client, 'ask', verb('ask')), patch.object(git_client, 'out', verb('out')), \
+                patch.object(git_client, 'mutate', verb('mutate')):
+            git = landing_control.ControlledGit('conn', 7)
+            for name in ('ask', 'out', 'mutate'):
+                for args in (('merge', '--ff-only', SHA), ('update-ref', 'refs/heads/main', SHA, SHA), ('push', 'origin'),
+                             ('fetch', 'origin'), ('rev-parse', 'HEAD'), ('worktree', 'list'), ('status',), ()):
+                    with self.subTest(verb=name, args=args):
+                        guarded.clear()
+                        self.assertEqual(getattr(git, name)('repo', *args, timeout_s=1), name)
+                        self.assertEqual(guarded, [('conn', 7)] if args and args[0] in ('merge', 'update-ref', 'push') else [])
+                        self.assertEqual(ran[-1], (name, args))
+        ran.clear()
+        with patch.object(landing_control, '_control_guard', side_effect=AdmissionHeld('stopped')), \
+                patch.object(git_client, 'mutate', verb('mutate')):
+            with self.assertRaises(AdmissionHeld):
+                landing_control.ControlledGit('conn', 7).mutate('repo', 'merge', '--ff-only', SHA, timeout_s=1)
+        self.assertEqual(ran, [])                                   # a held control epoch runs nothing

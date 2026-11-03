@@ -13,7 +13,7 @@ from .landing_batch import (
     _failure_detail, _gate, explain,
 )
 from .landing_control import (
-    _control_guard, _controlled_git, local_fast_forward, fast_forward, _epic, _failure_signature,
+    _control_guard, local_fast_forward, fast_forward, _epic, _failure_signature,
     base_status, base_red, _dirty_wait, sync_main, designate_base_repair, _base_repair,
     _block_repair, _recovery_key, _clear_recovery, _infra_failure, _queue_stop, _recovery_stop, INFRA_BACKOFF_S,
 )

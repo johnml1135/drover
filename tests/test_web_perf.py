@@ -249,7 +249,7 @@ class WebPerfTests(unittest.TestCase):
         fake = FakeCommands(Path(self.tmp.name) / 'commands')
         fake.expect([*git, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'],
                     output=b'main\n', **process_options(1))
-        fake.expect([*git, 'worktree', 'list', '--porcelain'], output=b'', **process_options(1))
+        fake.expect([*git, 'worktree', 'list', '--porcelain', '-z'], output=b'', **process_options(1))
         with fake.patch(process), refuse_real_spawns(), \
              patch('hub.task_views.origin.ahead', return_value=3) as ahead:
             snapshot = probe(prog)

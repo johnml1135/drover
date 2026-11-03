@@ -167,7 +167,6 @@ class MemoryLandingCase(ProcessFreeCase):
         self.gate = self.r.gate
         for context in (
             git_answers(lambda repo, *args, timeout: self.r.observe(repo, *args)),     # git_client and placement.git
-            patch.object(landing_batch, 'git', side_effect=self.r.observe), patch.object(landing_control, 'git', side_effect=self.r.observe),
             patch.object(landing, 'branch_head', side_effect=self.r.branch_head), patch.object(landing_batch, 'branch_head', side_effect=self.r.branch_head),
             patch.object(landing_batch, 'task_files', side_effect=self.r.task_files),
             patch.object(landing, 'build_tip', side_effect=self.r.replay), patch.object(landing_control, 'build_tip', side_effect=self.r.replay),

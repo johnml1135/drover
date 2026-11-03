@@ -1,5 +1,4 @@
 """ADR 0007: an ext4 (WSL) worktree is created by the WSL git against the one Windows repository."""
-import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -25,21 +24,25 @@ def spelled(path):
     return repos.native(cleanup_path(path))
 
 
+def mutations(calls, answer=lambda args: git_client.GitDone(True, "", "", 0, None)):
+    """`git_client.mutate` keeping (repo, args, side, timeout_s) for each call."""
+    def mutate(repo, *args, timeout_s, side=None, env=None):
+        calls.append((repo, args, side, timeout_s))
+        return answer(args)
+    return patch.object(git_client, "mutate", mutate)
+
+
 class AddOnExt4(unittest.TestCase):
     def run_add(self, dest, nt):
         calls = []
-
-        def run(repo, *args, check=False, **kw):
-            calls.append((repo, args, kw))
-            return subprocess.CompletedProcess(args, 0, "", "")
-        with patch.object(placement, "IS_WINDOWS", nt) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
-            placement.add_worktree("H:\\repos\\acme", dest, "-b", "drover/T1", dest, "main", run=run)
+        with mutations(calls), patch.object(placement, "IS_WINDOWS", nt) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
+            placement.add_worktree("H:\\repos\\acme", dest, "-b", "drover/T1", dest, "main")
         return calls
 
     def test_an_ext4_destination_runs_every_git_call_on_the_wsl_side(self):
         calls = self.run_add(EXT4, True)
         self.assertEqual([c[1][c[1].index("worktree") + 1] for c in calls if "worktree" in c[1]], ["add"])
-        self.assertTrue(all(c[2] == {"side": "wsl"} for c in calls), calls)
+        self.assertTrue(all(c[2] == "wsl" for c in calls), calls)
         self.assertEqual(calls[-1][1], ("config", "gc.worktreePruneExpire", "never"))      # neither side's gc expires it
         self.assertIn("--relative-paths", calls[0][1])
         i = calls[0][1].index("--lock")
@@ -47,9 +50,27 @@ class AddOnExt4(unittest.TestCase):
 
     def test_a_windows_destination_keeps_windows_git(self):
         calls = self.run_add("H:\\repos\\acme.worktrees\\drover-T1", True)
-        self.assertTrue(all(c[2] == {} for c in calls), calls)
+        self.assertTrue(all(c[2] is None for c in calls), calls)
         i = calls[0][1].index("--lock")
         self.assertEqual(calls[0][1][i + 2], "windows")
+
+    def test_add_worktree_keeps_no_60_second_limit(self):
+        from drover import ci, landing_batch, pipeline
+        self.assertEqual({c[3] for c in self.run_add("H:\\repos\\acme.worktrees\\drover-T1", True)}, {git_client.LONG})
+        for name, add, refused in (
+                ("pipeline.Repository.add", lambda: pipeline.Repository().add("H:\\repos\\acme", "H:\\w\\T1", "drover/T1",
+                                                                              "main"), pipeline.WorktreeRefused),
+                ("landing_batch.build_tip", lambda: landing_batch.build_tip("H:\\repos\\acme", "H:\\w\\group", "a" * 40, []),
+                 ci.CIError)):
+            for why in ("timeout", "exit"):
+                with self.subTest(name, why=why):
+                    calls = []
+                    failed = lambda args: git_client.GitDone(False, "", "fatal: no", None if why == "timeout" else 128, why)
+                    with mutations(calls, failed), patch.object(landing_batch.ci, "read_result", return_value=None):
+                        with self.assertRaisesRegex(refused, "git worktree add failed: " + (
+                                "timed out after 600s" if why == "timeout" else "fatal: no")):
+                            add()
+                    self.assertEqual([(c[1][2:4], c[3]) for c in calls], [(("worktree", "add"), git_client.LONG)])
 
     def test_wsl_side_argv_reaches_the_repository_through_mnt(self):
         argv = placement.git_argv("H:\\repos\\acme", ["worktree", "add", "-b", "b", EXT4, "main"], nt=True, side="wsl")

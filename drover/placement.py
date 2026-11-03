@@ -122,28 +122,30 @@ def cleanup_free(path):
         return None
 
 
-def add_worktree(repo, dest, *tail, run=None, error=RuntimeError):
-    """Create a worktree; old git may use absolute pointers only on a native filesystem."""
-    if run is None:
-        def run(repo, *args, check=False, **kw):
-            return git(repo, *args, timeout=60, **kw)
+def add_worktree(repo, dest, *tail, error=RuntimeError):
+    """Create a worktree; old git may use absolute pointers only on a native filesystem. `LONG`: its callers named no
+    limit before, and a slow `worktree add` that succeeds must not fail at 60 s."""
     # An ext4 destination is written by the WSL git so its `.git` file and the repository's `gitdir` record are
     # paths WSL can resolve; Windows git would turn the Linux path into a Windows one.
-    side = {'side': 'wsl'} if routes_through_wsl(dest) else {}
+    side = 'wsl' if routes_through_wsl(dest) else None
     # Locked at birth with the creating side's name so the other OS's `git worktree prune` cannot drop it.
     lock = ('--lock', '--reason', 'wsl' if routes_through_wsl(dest) or not IS_WINDOWS else 'windows')
-    r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *lock, '--relative-paths', *tail, check=False, **side)
+
+    def mutate(*args):
+        return git_client.mutate(repo, *args, timeout_s=git_client.LONG, side=side)
+    r = mutate('-c', 'core.autocrlf=false', 'worktree', 'add', *lock, '--relative-paths', *tail)
     rejected = re.search(r'(unknown|unrecognized|unsupported|invalid) (option|argument|switch)[^\n]*relative-paths',
-                         r.stderr, re.IGNORECASE)
-    if r.returncode and rejected:
+                         r.err, re.IGNORECASE)
+    if r.why == 'exit' and rejected:
         if not is_linux_native(dest):
             raise error('this git has no `worktree add --relative-paths`, and a worktree under '
                         f'{dest} is opened from both Windows and WSL: update git (2.48 or newer)')
-        r = run(repo, '-c', 'core.autocrlf=false', 'worktree', 'add', *lock, *tail, check=False, **side)
-    if r.returncode:
-        raise error(f'git worktree add failed: {r.stderr.strip()[-300:]}')
+        r = mutate('-c', 'core.autocrlf=false', 'worktree', 'add', *lock, *tail)
+    if not r.ok:
+        said = f'timed out after {git_client.LONG:g}s' if r.why == 'timeout' else r.err.strip()[-300:]
+        raise error(f'git worktree add failed: {said}')
     # The repository is shared by both OSes: neither side's gc may expire an entry the other cannot see. Best effort.
-    run(repo, 'config', 'gc.worktreePruneExpire', 'never', check=False, **side)
+    mutate('config', 'gc.worktreePruneExpire', 'never')
 
 
 def unlock_worktree(repo, path):

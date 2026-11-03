@@ -10,7 +10,7 @@ import time
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, ownership, ci, placement, origin, repos, git_client, git_worktrees, landing_batch
+from . import config, ownership, ci, placement, origin, repos, git_client, git_worktrees
 from .ledger import states
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -119,7 +119,7 @@ class Repository:
         ownership.tag(path, name, OWNER_PREFIX + tid, time.time() + 86400)
 
     def sync(self, repo, remote, default):
-        return origin.sync(repo, remote, default, run=origin.git, timeout=FETCH_TIMEOUT_S)     # git= in Task 25
+        return origin.sync(repo, remote, default, timeout=FETCH_TIMEOUT_S)
 
     def start_ref(self, repo, branch, base, remote):
         for ref in (f"refs/heads/{branch}", f"refs/remotes/{remote}/{branch}"):
@@ -132,8 +132,7 @@ class Repository:
             tail = [str(dest), branch]
         else:
             tail = ["-b", branch, str(dest), start_ref]
-        # Untimed and check-free, as add_worktree's other caller passes it, until Task 25 puts LONG inside.
-        placement.add_worktree(repo, dest, *tail, run=landing_batch.git, error=WorktreeRefused)
+        placement.add_worktree(repo, dest, *tail, error=WorktreeRefused)
 
     def remove(self, repo, path):
         placement.unlock_worktree(repo, path)
@@ -416,8 +415,8 @@ class Pipeline:
                             options=[{"label": "Retry origin sync", "recommended": True}], allow_text=False)
             self.port.append_event("origin-sync-failed", {"repo": name, "reason": str(e)})
             return False
-        except origin.SyncError as e:
-            raise WorktreeRefused(str(e)) from e
+        except origin.SyncError as e:       # a failed read keeps git's own words here, as pipeline.git gave them
+            raise refused(e.__cause__) if isinstance(e.__cause__, git_client.GitFailed) else WorktreeRefused(str(e)) from e
         self.port.append_event("origin-synced", {"repo": name})
         base = self.base_ref(prog)
         if source:                       # the branch's own worktree is unusable: branch from its committed tip

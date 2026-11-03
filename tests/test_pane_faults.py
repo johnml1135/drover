@@ -184,7 +184,7 @@ class Compaction(Faults, Overnight):
 
 class Reads(Faults, Resident):
     def test_a_bug_reading_a_checkout_is_not_an_unreadable_checkout(self):
-        def broken(*args):
+        def broken(*args, **kw):
             raise AttributeError(SECRET)
         with self.assertRaises(AttributeError):
             pane_close.worktree_facts('.', broken)

@@ -2,7 +2,6 @@
 import subprocess
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from drover.port import DirectPort
 from drover import ci, landing, landing_control
@@ -85,11 +84,11 @@ class LandingDiagnosis(unittest.TestCase):
         import threading
         stopped, moved = threading.Event(), threading.Event()
         remote_sha = 'd' * 40
-        response = SimpleNamespace(returncode=0, stdout=f'{remote_sha}\trefs/heads/main\n')
-        with patch.object(landing.origin, 'git', return_value=response) as git:
-            landing.origin.observe('.', 'origin', 'main', stopped, moved, SHA, 120)
+        from tests.test_origin_sync import FakeGit
+        git = FakeGit(lambda repo, args: (0, f'{remote_sha}\trefs/heads/main\n'))
+        landing.origin.observe('.', 'origin', 'main', stopped, moved, SHA, 120, git=git)
         self.assertTrue(moved.is_set())
-        self.assertEqual(git.call_args.args, ('.', 'ls-remote', '--heads', 'origin', 'refs/heads/main'))
+        self.assertEqual(git.calls, [('ask', '.', ('ls-remote', '--heads', 'origin', 'refs/heads/main'), 120.0)])
 
     def test_named_failed_module_is_forwarded_to_exact_base_diagnosis(self):
         calls = []

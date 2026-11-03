@@ -1,5 +1,6 @@
 """Fixtures for tests.test_pane_close: a fake Herdr fleet, fake git answers and a fake process snapshot."""
 from drover import pane_close, placement_proof
+from drover.git_client import Answer, GitReply
 from drover.herdr_client import Herdr
 from drover.ledger import ops_panes
 from drover.port import DirectPort
@@ -22,14 +23,23 @@ def agent(pane, *, status='done', kind='claude', name='dir', seq=10, revision=1,
     return row
 
 
+def reply(code, out, no):
+    """A GitReply as git_client.ask gives it for this exit."""
+    answer = Answer.YES if code == 0 else Answer.NO if code in no else Answer.UNKNOWN
+    return GitReply(answer, out, '', code, 'exit' if answer is Answer.UNKNOWN else None)
+
+
 class Git:
-    """Answers `git` for one checkout from a table; `top` None is a folder outside any checkout."""
+    """Answers `git` like git_client.ask, for one checkout, from a table; `top` None is a folder outside any checkout."""
 
     def __init__(self, top=REPO, status='', merged=True, pushed=True):
         self.top, self.status, self.merged, self.pushed = top, status, merged, pushed
         self.calls = []
 
-    def __call__(self, cwd, *args):
+    def __call__(self, cwd, *args, timeout_s, no):
+        return reply(*self.answer(args), no)
+
+    def answer(self, args):
         self.calls.append(args)
         if args[0] == 'rev-parse' and '--show-toplevel' in args:
             return (0, self.top) if self.top else (128, '')

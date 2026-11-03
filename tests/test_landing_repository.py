@@ -3,12 +3,11 @@ import json
 import sqlite3
 import time
 import sys
-import subprocess
 import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
-from drover import ci, landing, landing_batch, landing_control, origin, repos
+from drover import ci, git_client, landing, origin, repos
 from drover.ledger import ci as slots
 from drover.ledger import landing as landing_storage
 from drover.ledger import db as ledger_db
@@ -23,7 +22,7 @@ from tests.test_landing import LandingCase, fake_decider, SCRIPT
 @integration
 class WorktreeTests(LandingCase):
     def test_relative_layout_repair_and_native_legacy_fallback(self):
-        real = landing_batch.git
+        real, real_out = git_client.mutate, git_client.out
         base = self.r.git('rev-parse', 'main')
         self.r.git('config', 'core.autocrlf', 'true')
         calls = []
@@ -32,16 +31,16 @@ class WorktreeTests(LandingCase):
             if 'add' in args:
                 calls.append(args)
                 if '--relative-paths' in args:
-                    return subprocess.CompletedProcess(args, 129, '', "error: unknown option `relative-paths'")
+                    return git_client.GitDone(False, '', "error: unknown option `relative-paths'", 129, 'exit')
             return real(repo, *args, **kw)
 
-        with patch.object(landing_batch, 'git', git), patch.object(placement, 'is_linux_native', return_value=False) as _placement_patch_1, patch('drover.placement_exec.is_linux_native', _placement_patch_1), patch('drover.placement_host.is_linux_native', _placement_patch_1), patch('drover.placement_paths.is_linux_native', _placement_patch_1), patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_2, patch('drover.placement_git.routes_through_wsl', _placement_patch_2), patch('drover.placement_paths.routes_through_wsl', _placement_patch_2):
+        with patch.object(git_client, 'mutate', git), patch.object(placement, 'is_linux_native', return_value=False) as _placement_patch_1, patch('drover.placement_exec.is_linux_native', _placement_patch_1), patch('drover.placement_host.is_linux_native', _placement_patch_1), patch('drover.placement_paths.is_linux_native', _placement_patch_1), patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_2, patch('drover.placement_git.routes_through_wsl', _placement_patch_2), patch('drover.placement_paths.routes_through_wsl', _placement_patch_2):
             with self.assertRaisesRegex(ci.CIError, 'both Windows and WSL: update git'):
                 landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 1)
         self.assertFalse(self.work.exists())
         calls.clear()
-        with patch.object(landing_batch, 'git', git), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_3, patch('drover.placement_exec.is_linux_native', _placement_patch_3), patch('drover.placement_host.is_linux_native', _placement_patch_3), patch('drover.placement_paths.is_linux_native', _placement_patch_3), patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_4, patch('drover.placement_git.routes_through_wsl', _placement_patch_4), patch('drover.placement_paths.routes_through_wsl', _placement_patch_4):
+        with patch.object(git_client, 'mutate', git), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_3, patch('drover.placement_exec.is_linux_native', _placement_patch_3), patch('drover.placement_host.is_linux_native', _placement_patch_3), patch('drover.placement_paths.is_linux_native', _placement_patch_3), patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_4, patch('drover.placement_git.routes_through_wsl', _placement_patch_4), patch('drover.placement_paths.routes_through_wsl', _placement_patch_4):
             landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual(len(calls), 2)
         for args in calls:
@@ -68,9 +67,9 @@ class WorktreeTests(LandingCase):
             if Path(repo) == self.work:
                 pointer = (self.work / '.git').read_text().strip().removeprefix('gitdir: ')
                 self.assertFalse(Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute())
-            return real(repo, *args, **kw)
+            return real_out(repo, *args, **kw)
 
-        with patch.object(landing_batch, 'git', assert_repaired):
+        with patch.object(git_client, 'out', assert_repaired):
             tip, applied, conflicts = landing.build_tip(self.r.repo, self.work, base, [])
         self.assertEqual((tip, applied, conflicts), (base, [], []))
         self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=self.work), base)
@@ -103,7 +102,7 @@ class RepositoryLandingTests(LandingCase):
         self.r.git('worktree', 'remove', '--force', str(checkout))
         tid = self.task('third', {'base.txt': 'third content'}, base='main')
         old = self.r.git('rev-parse', 'main')
-        with patch.object(landing_control, 'git', wraps=landing_batch.git) as run:
+        with patch.object(git_client, 'mutate', wraps=git_client.mutate) as run:
             third = self.land(push=False)
         self.assertEqual(third['landed'], [tid])
         self.assertTrue(any(c.args[1:] == ('update-ref', 'refs/heads/main', third['tip'], old)
@@ -120,7 +119,7 @@ class RepositoryLandingTests(LandingCase):
         old = self.r.git('rev-parse', 'main')
         tip, tasks, _ = landing.build_tip(self.r.repo, self.work, old, tasks)
         receipt = self.gate(self.work, tip, tasks)
-        real = landing_batch.git
+        real = git_client.out
         moved = self.r.git('rev-parse', 'main^')
 
         def run(repo, *args, **kw):
@@ -128,7 +127,7 @@ class RepositoryLandingTests(LandingCase):
                 self.r.git('reset', '--hard', moved)
             return real(repo, *args, **kw)
 
-        with patch.object(landing_control, 'git', side_effect=run):
+        with patch.object(git_client, 'out', side_effect=run):
             with self.assertRaisesRegex(ci.CIError, 'local main moved; rebase and regate'):
                 landing.local_fast_forward(self.conn, self.r.repo, self.work, 'main', tip, receipt)
         self.assertEqual(self.r.git('rev-parse', 'main'), moved)

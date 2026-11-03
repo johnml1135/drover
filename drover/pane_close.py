@@ -18,7 +18,8 @@ import hashlib
 import json
 import logging
 
-from . import config, pane_fault, pane_guard, pane_screen, pane_send, placement, placement_git
+from . import config, git_client, pane_fault, pane_guard, pane_screen, pane_send, placement
+from .git_client import QUICK, Answer
 from .herdr_client import HerdrRefused, HerdrUnavailable
 from .ledger import ops_panes
 from .ledger.db import tx
@@ -31,30 +32,35 @@ ACTOR = 'pane_close'
 log = logging.getLogger(__name__)
 
 
+class _Unknown(Exception):
+    """git did not say, as a timeout did before: stop reading this checkout."""
+
+
 def worktree_facts(cwd, run=None):
-    """Facts about the checkout holding cwd, or None when it is not inside a readable git checkout."""
+    """Facts about the checkout holding cwd, or None when it is not inside a readable git checkout. `run` is shaped
+    like git_client.ask, which is the default."""
     try:
-        return _facts(cwd, run or _git)
-    except (*pane_fault.EXPECTED, ValueError):      # git timing out, or an answer that is not text
+        return _facts(cwd, run or git_client.ask)
+    except (_Unknown, *pane_fault.EXPECTED, ValueError):      # git timing out, or an answer that is not text
         return None     # a stuck or unreadable checkout is unknown, and unknown keeps the pane
 
 
-def _facts(cwd, run):
-    rc, top = run(cwd, 'rev-parse', '--show-toplevel')
-    if rc or not top:
+def _facts(cwd, ask):
+    def read(path, *args, no):
+        reply = ask(path, *args, timeout_s=QUICK, no=no)
+        if reply.answer is Answer.UNKNOWN:
+            raise _Unknown(reply.why)
+        return reply.answer is Answer.YES, reply.out.strip()
+    found, top = read(cwd, 'rev-parse', '--show-toplevel', no=(128,))
+    if not found or not top:
         return None
-    rc, status = run(top, 'status', '--porcelain', '--untracked-files=all')
-    base = 'origin/main' if run(top, 'rev-parse', '--verify', '-q', 'origin/main')[0] == 0 else 'main'
-    rc_up, upstream = run(top, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
-    return dict(path=top, branch=run(top, 'rev-parse', '--abbrev-ref', 'HEAD')[1] or None,
-                clean=rc == 0 and status == '',
-                merged=run(top, 'merge-base', '--is-ancestor', 'HEAD', base)[0] == 0,
-                pushed=rc_up == 0 and run(top, 'rev-list', '--count', upstream + '..HEAD')[1] == '0')
-
-
-def _git(cwd, *args):
-    done = placement_git.git(cwd, *args, timeout=30)
-    return done.returncode, (done.stdout or '').strip()
+    clean, status = read(top, 'status', '--porcelain', '--untracked-files=all', no=())
+    on_origin = read(top, 'rev-parse', '--verify', '-q', 'origin/main', no=(1,))[0]
+    tracked, upstream = read(top, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}', no=(128,))
+    return dict(path=top, branch=read(top, 'rev-parse', '--abbrev-ref', 'HEAD', no=(128,))[1] or None,
+                clean=clean and status == '',
+                merged=read(top, 'merge-base', '--is-ancestor', 'HEAD', 'origin/main' if on_origin else 'main', no=(1,))[0],
+                pushed=tracked and read(top, 'rev-list', '--count', upstream + '..HEAD', no=())[1] == '0')
 
 
 def fingerprint(agent, screen):

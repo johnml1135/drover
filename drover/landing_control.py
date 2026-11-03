@@ -4,19 +4,36 @@ import inspect
 import json
 import re
 import time
-from . import ci, origin
+from . import ci, git_client, origin
+from .git_client import LONG, Answer
 from .ledger import ops, states, landing as storage
 from .ledger.db import tx
-from .landing_batch import git, reviewed_tasks, build_tip, _gate, RETRY, KEEP_HOLDING, FETCH_TIMEOUT_S
+from .landing_batch import _out, reviewed_tasks, build_tip, _gate, RETRY, KEEP_HOLDING, FETCH_TIMEOUT_S
 def _control_guard(conn, epoch=None):
     from .port import DirectPort
     return DirectPort(conn).require_admission(epoch)['epoch']
-def _controlled_git(conn, epoch):
-    def run(repo, *args, **kwargs):
-        if args and args[0] in ('merge', 'update-ref', 'push'):
-            _control_guard(conn, epoch)
-        return git(repo, *args, **kwargs)
-    return run
+class ControlledGit:
+    """git_client's `ask`, `out` and `mutate`, checking the control epoch before any merge, update-ref or push."""
+    GUARDED = ('merge', 'update-ref', 'push')
+
+    def __init__(self, conn, epoch):
+        self.conn, self.epoch = conn, epoch
+
+    def _guard(self, args):
+        if args and args[0] in self.GUARDED:
+            _control_guard(self.conn, self.epoch)
+
+    def ask(self, repo, *args, **kw):
+        self._guard(args)
+        return git_client.ask(repo, *args, **kw)
+
+    def out(self, repo, *args, **kw):
+        self._guard(args)
+        return git_client.out(repo, *args, **kw)
+
+    def mutate(self, repo, *args, **kw):
+        self._guard(args)
+        return git_client.mutate(repo, *args, **kw)
 def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch=None, required_platforms=None):
     """Advance local main and its checkout, with a receipt and an explicit ancestry check."""
     control_epoch = _control_guard(conn, control_epoch)
@@ -40,11 +57,12 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch
         raise ci.CIError(str(error)) from error
     try:
         ref = f'refs/heads/{branch}'
-        old = git(repo, 'rev-parse', ref).stdout.strip()
-        if git(repo, 'merge-base', '--is-ancestor', old, sha, check=False).returncode:
+        old = _out(repo, 'rev-parse', ref).strip()
+        # Not YES, unknown included, is a moved main as rc 124 was: nothing lands, and the next pass regates.
+        if git_client.ask(repo, 'merge-base', '--is-ancestor', old, sha, timeout_s=LONG, no=(1,)).answer is not Answer.YES:
             raise ci.CIError('local main moved; rebase and regate')
         try:
-            origin.fast_forward(repo, branch, sha, old, run=_controlled_git(conn, control_epoch))
+            origin.fast_forward(repo, branch, sha, old, git=ControlledGit(conn, control_epoch))
         except origin.MainMoved as e:
             raise ci.CIError('local main moved; rebase and regate') from e
         except origin.DirtyCheckout:
@@ -58,7 +76,7 @@ def local_fast_forward(conn, repo, worktree, branch, tip, receipt, control_epoch
 def fast_forward(conn, worktree, remote, branch, tip, receipt):
     """Compatibility entry point: sync, land locally, then push without force."""
     epoch = _control_guard(conn)
-    origin.sync(worktree, remote, branch, run=_controlled_git(conn, epoch))
+    origin.sync(worktree, remote, branch, git=ControlledGit(conn, epoch))
     local_fast_forward(conn, worktree, worktree, branch, tip, receipt, control_epoch=epoch)
     origin.push_main(worktree, remote, branch, guard=lambda: _control_guard(conn, epoch))
 
@@ -169,10 +187,10 @@ def sync_main(conn, repo, remote, branch, repo_name=None, control_epoch=None):
         dirty_probe = waiting.state(dirty) == 'authorized' and waiting.consume_retry(dirty)
         origin_probe = waiting.state(cause) == 'authorized' and waiting.consume_retry(cause)
     try:
-        origin.sync(repo, remote, branch, run=_controlled_git(conn, control_epoch), timeout=FETCH_TIMEOUT_S)
+        origin.sync(repo, remote, branch, git=ControlledGit(conn, control_epoch), timeout=FETCH_TIMEOUT_S)
         if dirty_probe:
-            sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
-            origin.fast_forward(repo, branch, sha, sha, run=_controlled_git(conn, control_epoch))
+            sha = _out(repo, 'rev-parse', branch).strip()
+            origin.fast_forward(repo, branch, sha, sha, git=ControlledGit(conn, control_epoch))
     except AdmissionHeld as error:
         return {'outcome': 'held', 'reason': str(error)}
     except origin.DirtyCheckout as e:
@@ -201,7 +219,7 @@ def sync_main(conn, repo, remote, branch, repo_name=None, control_epoch=None):
     if dirty_probe:
         ops.event(conn, 'landing-clean', 'landing', {'repo': name})
     ops.event(conn, 'origin-synced', 'landing', {'repo': name})
-    sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
+    sha = _out(repo, 'rev-parse', branch).strip()
     ops.event(conn, 'base-observed', 'landing', {'repo': name, 'sha': sha})
     return None
 

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, contract, dispatcher, ci, placement, landing, launch, origin, pipeline, repos, runner
+from drover import config, contract, dispatcher, ci, git_client, placement, landing, launch, pipeline, repos, runner
 from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -57,6 +57,22 @@ class Safety(PolicyBase):
         self.assertEqual(self.status(tid), "needs-owner")
         self.assertEqual(self.states(tid)[-1][1], "main diverged from origin")
         self.assertIsNone(self.get(tid)["worktree"])
+
+    def test_a_failed_sync_read_keeps_gits_words_in_the_owner_reason(self):
+        tracking = ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}")
+        self.repository.sync = pipeline.Repository().sync
+
+        def out(repo, *args, **kw):
+            self.assertEqual(args, tracking)
+            failed = git_client.GitFailed(args, "exit", 128, "fatal: Needed a single revision\n", "")
+            raise kw["error"](failed) from failed
+        tid = self.task()
+        fetched = git_client.GitDone(True, "", "", 0, None)
+        with patch.object(git_client, "mutate", return_value=fetched), patch.object(git_client, "out", out):
+            self.assertEqual(self.d.tick()["launched"], [])
+        self.assertEqual(self.status(tid), "needs-owner")
+        self.assertEqual(self.states(tid)[-1][1],        # origin's SyncError holds no stderr; the owner's reason does
+                         "git rev-parse --verify refs/remotes/origin/main^{commit}: fatal: Needed a single revision")
 
     def test_offline_pauses_only_affected_repo_and_alerts_once(self):
         self.fix.online = False
@@ -131,16 +147,12 @@ class Safety(PolicyBase):
         tid = self.task()
         fetch_args = ("fetch", "origin", "main",
                       "--refmap=+refs/heads/main:refs/remotes/origin/main")
-        timeout_error = subprocess.TimeoutExpired(["git", *fetch_args], timeout=pipeline.FETCH_TIMEOUT_S)
         self.repository.sync = pipeline.Repository().sync
-        # Exercise the production fetch caller and origin's wrapper, while making its timeout deterministic.
-        with mock.patch.object(placement, "git", side_effect=timeout_error) as placed_git, mock.patch('drover.placement_git.git', placed_git):
-            with mock.patch.object(origin, "git", wraps=origin.git) as run_git:
-                self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))     # FetchFailed
-        run_git.assert_called_once_with(self.fix.repo, *fetch_args, check=False,
-                                        timeout=pipeline.FETCH_TIMEOUT_S)
-        placed_git.assert_called_once_with(self.fix.repo, *fetch_args,
-                                           timeout=pipeline.FETCH_TIMEOUT_S)
+        # Exercise the production fetch caller and origin, while making its timeout deterministic.
+        timed_out = git_client.GitDone(False, '', '', None, 'timeout')
+        with mock.patch.object(git_client, "mutate", return_value=timed_out) as fetch:
+            self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))     # FetchFailed
+        fetch.assert_called_once_with(self.fix.repo, *fetch_args, timeout_s=pipeline.FETCH_TIMEOUT_S)
 
     def test_a_land_verdict_needs_the_whole_sha(self):
         tid, sha = self.to_gated()

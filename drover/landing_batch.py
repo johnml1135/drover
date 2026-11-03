@@ -2,7 +2,6 @@
 import json
 import re
 import statistics
-import subprocess
 import time
 from pathlib import Path, PureWindowsPath
 
@@ -25,18 +24,8 @@ PRIORITY_ORDER = ('P0', 'P1', 'P2', 'P3', 'P4')
 FETCH_TIMEOUT_S = 120
 
 
-def git(repo, *args, check=True, timeout=None, **kw):
-    try:
-        r = placement.git(repo, *args, timeout=timeout, **kw)
-    except subprocess.TimeoutExpired as error:     # error.timeout: the limit it ran under, LONG when none was named
-        r = subprocess.CompletedProcess(args, 124, '', f'git {args[0]} timed out after {error.timeout:g}s')
-    if check and r.returncode:
-        raise ci.CIError(f'git {" ".join(args)}: {r.stderr.strip()}')
-    return r
-
-
 def ci_error(failed):
-    """`error=` for git_client: the CIError `git` raises, the command and git's stderr, or why git never answered."""
+    """`error=` for git_client: CIError with the command and git's stderr, or why git never answered."""
     return ci.CIError(f'git {" ".join(failed.args_)}: {failed if failed.why == "timeout" else failed.err.strip()}')
 
 
@@ -163,14 +152,14 @@ def build_tip(repo, worktree, base_sha, tasks):
         try:
             ownership.tag(str(worktree), Path(placement.native(repo)).name,
                           'session:merge-group:' + worktree.name, time.time() + 86400)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError) as error:     # worktree_metadata's timeout joins OSError as GitFailed in Task 27
             raise ci.CIError(f'created {worktree} but could not record ownership: {error}') from error
     if saved and saved.get('identity') == identity and (worktree / '.git').exists():
         if ci.head(worktree) == saved['tip']:
             renew_owner()
             return saved['tip'], saved['applied'], saved['conflicts']
     if not (worktree / '.git').exists():
-        placement.add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, run=git, error=ci.CIError)
+        placement.add_worktree(repo, worktree, '-q', '--detach', str(worktree), base_sha, error=ci.CIError)
     else:
         pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
         if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():

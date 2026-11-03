@@ -33,3 +33,30 @@ Handlers, `file:line, what it catches, what now reaches it, change`:
 - outside_land.py:147, :405, :462, :467: unchanged; `_out` gives `TimeoutExpired` for a timeout and `GitUnknown` for any other unknown, as `timed_git` did (`exited 127` now reads `unavailable`).
 
 Line counts: pipeline 490 to 489, landing 275 to 272, landing_batch 307 to 326. Trace files unchanged.
+
+## Task 25: `origin` and `ControlledGit`
+
+`origin.git`, `landing_batch.git` and `landing_control._controlled_git` are deleted, and the R1 rows for `origin` and `landing_batch` go. Every `origin` function takes `git=`, an object with `ask`, `out` and `mutate`; the `git_client` module is the default. `landing_control.ControlledGit(conn, epoch)` has those three and checks the control epoch before any `merge`, `update-ref` or `push`, by `args[0]`, whichever verb carries it. The fetch, the compare-and-swap `update-ref`, the ff-only `merge` and the push are `mutate`s; every `check=True` read is `out(error=origin.sync_error)`, a SyncError naming only the command (`git rev-parse failed`), as `origin.git` did. Reads with no timeout take `LONG`; fetch, push and `ls-remote` take `FETCH` (120 s, as `FETCH_TIMEOUT_S`). `landing_control`'s own reads use `landing_batch._out` (CIError by `error=`) and `ask`. `placement.add_worktree` takes `error=` only and runs `git_client.mutate` at `LONG`; its `run=` is gone. `pane_close`'s `run` is shaped like `ask`, `git_client.ask` by default, and `pane_close._git` is deleted. `tests.test_origin_sync` runs on a FakeGit, so it leaves `tests.IMPURE` (ceiling 63 to 62).
+
+The shipping defect: a merge that timed out (rc 124) raised MainMoved, so landing read it as `stale-base` and regated against a checkout that might hold `.git/index.lock`. Now only a merge that exited raises MainMoved. A timed-out or unavailable merge raises SyncError, `main fast-forward did not finish (git merge: timeout); owner intervention required`.
+
+Handlers, `file:line, what it catches, what now reaches it, change`:
+- landing_control.py:66 `local_fast_forward`, `origin.MainMoved` → CIError `rebase and regate`: a non-zero `update-ref` (a timeout included: it is atomic), a merge that exited, or a moved HEAD or branch, as before. A merge timeout no longer reaches it. Fixed.
+- landing_control.py:68, `origin.DirtyCheckout`: re-raised to landing.py:206, as before. None.
+- landing_control.py:70, `origin.SyncError` → `CIError(str(e))`: now also gets the merge-timeout SyncError, so landing.py:209 records `refused` with that reason, not `stale-base`. A failed read is still `git <cmd> failed`. Fixed.
+- landing_control.py:62, `merge-base --is-ancestor` before the fast-forward: anything but YES, unknown included, raises `local main moved; rebase and regate`, as rc 124 did. Nothing lands. None (see report: kept, not split).
+- landing_control.py:60, :192 and :222 `_out(rev-parse)`: CIError with git's stderr, or `timeout`, as `landing_batch.git(check=True)` gave. Not caught in `sync_main`; it reaches landing.py:40/:143/:196's callers as before. None.
+- landing_control.py:194 `sync_main`, `AdmissionHeld`: ControlledGit's guard raises it from inside `origin`, as `_controlled_git` did. None.
+- landing_control.py:196 `DirtyCheckout`, :200 `FetchFailed`: a fetch that exited, timed out or could not run is FetchFailed, as before. None.
+- landing_control.py:210 `sync_main`, `origin.SyncError` → needs-owner: also gets the merge-timeout SyncError (in `sync` it was already SyncError, `moved during origin sync; retry`, so only the reason changes), and `git merge-base failed` when the second ancestry check is unknown (it read as `main diverged from origin` before). Message only.
+- landing.py:225 `run_batch` push, `origin.SyncError`: `push_main`'s read and push failures, no stderr, as before. None.
+- hub/store_ui.py:303 owner push, `origin.SyncError`: the same. None.
+- pipeline.py:410 `_create`, `origin.FetchFailed`: as before. None.
+- pipeline.py:418 `_create`, `origin.SyncError` → WorktreeRefused: when the SyncError's cause is GitFailed (a `check=True` read), the reason is `pipeline.refused(cause)`: the command and git's stderr tail, as `pipeline.git` gave it before Task 24. SyncError's own `str()` still holds no stderr. Other SyncErrors keep `str(e)`. Restored.
+- landing_batch.py:155 `renew_owner`, `(OSError, ValueError)` → CIError: `subprocess.SubprocessError` goes with the R1 row. `ownership.tag` reaches `placement_git.worktree_metadata`, which raises `TimeoutExpired` on a timeout until Task 27, so that timeout now reaches landing.py:85 (`BaseException`: outcome `error`, batch recorded, re-raised) instead of a CIError. Same window as pipeline.py:346/:457; Task 27's carry covers it.
+- landing_batch.py:162, pipeline.py:135 `add_worktree(error=)`: at `LONG` as before (each passed an untimed `run=`); a timeout raises `CIError` / `WorktreeRefused` `git worktree add failed: timed out after 600s` (was `... git worktree timed out after 600s`). Wording.
+- worktree.py:18 and disk_registrations.py:265 `add_worktree` (default `run`): the limit goes from 60 s to `LONG`. A timeout now raises the given error (RuntimeError, ValueError) instead of `TimeoutExpired`; worktree.py:41 and disk_registrations.py:276 hold both. Limit change, recorded.
+- pane_close.py:44 `worktree_facts`, `(_Unknown, *EXPECTED, ValueError)`: any UNKNOWN reply stops reading the checkout and keeps the pane, as a raised `TimeoutExpired` did. An exit outside each read's `no` (for example `merge-base` 128 on a repo with no `main`) is now unknown, where it read as "not merged"; it keeps the pane. Towards keeping.
+- origin.ahead: YES gives the count, a timeout `None`, anything else 0, as rc 124 and other codes did. A bad `.git` pointer (`ValueError`, which `origin.git` turned into 124, `None`) is now `unavailable`, 0. Display only.
+
+Line counts: origin 100 to 105, landing_batch 326 to 315, landing_control 324 to 342, pipeline 489 to 488, placement 177 to 179, pane_close 285 to 291. Trace files unchanged.

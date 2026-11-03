@@ -63,7 +63,7 @@ class UiTests(unittest.TestCase):
             self.assertEqual(self.c.post('/repos/missing/push-main', headers=SAME).status_code, 404)
 
     def test_owner_push_obeys_stop_and_captured_epoch_at_final_git_boundary(self):
-        import subprocess
+        from drover import git_client
         from drover.notifications import Notifications
         prog = repos.normalize({'name': 'acme-lib', 'repo': self.tmp.name})
         service = Notifications(self.st.conn)
@@ -82,9 +82,12 @@ class UiTests(unittest.TestCase):
                         stopped = control.stop('owner', scenario)
                         if scenario == 'stop-resume-during-prepare':
                             control.resume('owner', stopped['epoch'], scenario + '-resume')
-                    return subprocess.CompletedProcess(args, 0, 'a' * 40, '')
                 with patch('hub.store_ui.repos.load_all', return_value={'acme-lib': prog}), \
-                        patch('drover.origin.git', side_effect=git):
+                        patch.object(git_client, 'out', lambda *a, **k: git(*a) or 'a' * 40), \
+                        patch.object(git_client, 'ask', lambda *a, **k: git(*a) or git_client.GitReply(
+                            git_client.Answer.YES, 'a' * 40, '', 0, None)), \
+                        patch.object(git_client, 'mutate', lambda *a, **k: git(*a) or git_client.GitDone(
+                            True, '', '', 0, None)):
                     response = self.c.post('/repos/acme-lib/push-main', headers=SAME)
                 self.assertEqual(response.status_code, 400, response.text)
                 self.assertIn('control-epoch-changed' if scenario.endswith('resume-during-prepare')

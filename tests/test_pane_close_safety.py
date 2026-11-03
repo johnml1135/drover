@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from drover import pane_close, placement_proof
+from drover.git_client import Answer, GitReply
 from drover.ledger import ops_panes
 from tests.fakeci import answer_spawns
 from tests.pane_close_fixtures import CLAUDE_READY, NOW, REPO, Fleet, PaneCloseBase, agent, snapshot
@@ -224,14 +225,26 @@ class Isolation(PaneCloseBase):
         herdr = self.two()
         seen = []
 
-        def run(cwd, *args):
+        def run(cwd, *args, timeout_s, no):
             seen.append(cwd)
             if len(seen) == 1:
-                raise subprocess.TimeoutExpired('git', 30)
-            return self.git(cwd, *args)
+                return GitReply(Answer.UNKNOWN, '', '', None, 'timeout')
+            return self.git(cwd, *args, timeout_s=timeout_s, no=no)
 
         results = self.tick(herdr, 0, run=run)
         self.assertEqual([r['verdict'] for r in results], ['keep', 'wait'])
+
+    def test_a_read_git_does_not_answer_stops_reading_that_checkout(self):
+        for why in ('timeout', 'unavailable', 'exit'):
+            calls = []
+
+            def ask(cwd, *args, timeout_s, no):
+                calls.append(args[0])
+                if args[0] == 'status':
+                    return GitReply(Answer.UNKNOWN, '', '', 128 if why == 'exit' else None, why)
+                return self.git(cwd, *args, timeout_s=timeout_s, no=no)
+            self.assertIsNone(pane_close.worktree_facts(REPO, ask), why)
+            self.assertEqual(calls, ['rev-parse', 'status'])     # a stuck checkout costs one limit, not seven
 
     def test_an_unexpected_error_in_one_pane_is_kept_and_logged(self):
         herdr = self.two()

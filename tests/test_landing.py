@@ -3,13 +3,12 @@ import json
 import sqlite3
 import time
 import sys
-import subprocess
 import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 from drover.port import DirectPort
-from drover import ci, landing, landing_batch, landing_control, origin, repos
+from drover import ci, git_client, landing, landing_batch, origin, repos
 from drover.ledger import ci as slots
 from drover.ledger import landing as landing_storage
 from drover.ledger import db as ledger_db
@@ -111,8 +110,8 @@ class WorktreeErrorTests(ProcessFreeCase):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
             work = Path(root) / 'batch'
-            result = subprocess.CompletedProcess([], 128, '', 'fatal: relative-paths metadata is corrupt')
-            with patch.object(landing_batch, 'git', return_value=result) as run:
+            result = git_client.GitDone(False, '', 'fatal: relative-paths metadata is corrupt', 128, 'exit')
+            with patch.object(git_client, 'mutate', return_value=result) as run:
                 with self.assertRaisesRegex(ci.CIError, 'metadata is corrupt'):
                     landing.build_tip(Path(root) / 'repo', work, 'a' * 40, [])
             self.assertEqual(run.call_count, 1)
@@ -122,13 +121,11 @@ class PushContractTests(ProcessFreeCase):
     def test_fast_forward_pushes_a_sha_not_a_ref(self):
         sha = 'a' * 40
         previous = 'b' * 40
-        with patch.object(origin, 'git', side_effect=[
-                subprocess.CompletedProcess([], 0, sha, ''),
-                subprocess.CompletedProcess([], 0, previous, ''),
-                subprocess.CompletedProcess([], 0, '', ''),
-                subprocess.CompletedProcess([], 0, '', '')]) as calls:
-            origin.push_main(Path('fixture'))
-        push = [call.args[1:] for call in calls.call_args_list if call.args[1] == 'push'][0]
+        from tests.test_origin_sync import FakeGit
+        answers = {'rev-parse': (0, sha), 'push': (0, ''), 'update-ref': (0, '')}
+        git = FakeGit(lambda repo, args: (0, previous) if args[-1] == 'refs/remotes/origin/main' else answers[args[0]])
+        origin.push_main(Path('fixture'), git=git)
+        push = [args for verb, _, args, _ in git.calls if args[0] == 'push'][0]
         self.assertRegex(push[2].split(':')[0], r'^[0-9a-f]{40}$')
         self.assertEqual(push, ('push', 'origin', sha + ':refs/heads/main'))
 
