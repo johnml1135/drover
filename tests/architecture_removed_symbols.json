@@ -20,6 +20,7 @@
     "drover.pane_close._git",
     "drover.ci.git",
     "drover.cleanup.git",
+    "drover.cleanup._git_ok",
     "drover.disk_worktrees.git",
     "drover.dispatch_hold._git",
     "drover.task_access._git",
