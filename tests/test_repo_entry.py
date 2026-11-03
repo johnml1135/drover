@@ -171,3 +171,31 @@ class CommittedConfig(unittest.TestCase):
                         repos.parse_committed_config(text, SHA)
                     for detail in (ENTRY, SHA, key):
                         self.assertIn(detail, str(caught.exception))
+
+
+class UnreadableConfig(unittest.TestCase):
+    """Each of load's three git reads gives RepoError when git fails, times out or cannot start; callers catch it alone."""
+    def test_every_read_that_does_not_answer_is_a_repo_error(self):
+        import subprocess
+        from tests.fakeci import git_answers
+        reads = (('rev-parse', 'cannot resolve repo config commit HEAD: '), ('ls-tree', f'cannot inspect {ENTRY} at {SHA}: '),
+                 ('show', f'cannot read {ENTRY} at {SHA}: '))
+        answers = {'rev-parse': SHA + '\n', 'ls-tree': f'100644 blob {SHA}\t{ENTRY}\n', 'show': entry()}
+        failures = {'exit 128': ((128, 'fatal: bad object'), 'fatal: bad object'),
+                    'timeout': (subprocess.TimeoutExpired(['git'], 15), 'timeout'),
+                    'unavailable': (FileNotFoundError(2, 'No such file or directory'), 'unavailable')}
+        machine = {'name': 'alpha', 'repo': '/repo', 'worktrees': '/trees'}
+        for failing, prefix in reads:
+            for name, (failure, detail) in failures.items():
+                def git(repo, *args, timeout):
+                    if args[0] != failing:
+                        return subprocess.CompletedProcess(args, 0, answers[args[0]], '')
+                    if isinstance(failure, BaseException):
+                        raise failure
+                    return subprocess.CompletedProcess(args, failure[0], '', failure[1])
+                with self.subTest(read=failing, failure=name):
+                    with git_answers(git), patch.object(repos.placement, 'reachable', return_value=True), \
+                            self.assertRaises(repos.RepoError) as caught:
+                        repos.load(machine, machine_path='/registration.toml')
+                    self.assertTrue(str(caught.exception).startswith(prefix), caught.exception)
+                    self.assertIn(detail, str(caught.exception))
