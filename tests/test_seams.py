@@ -335,6 +335,14 @@ class Seams(unittest.TestCase):
         names = {name.split('.')[0] for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))}
         self.assertLessEqual(names, set(sys.stdlib_module_names))
 
+    def test_process_imports_only_placement_paths_and_compaction_hold(self):
+        path, tree = 'drover/process.py', parsed('drover')['drover/process.py']
+        self.assertEqual(rule_violations('R5', {path: tree}), [])
+        names = [name for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))]
+        self.assertLessEqual({project_module(name) for name in names} - {None}, {'placement_paths', 'compaction_hold'})
+        self.assertLessEqual({name.split('.')[0] for name in names if project_module(name) is None},
+                             set(sys.stdlib_module_names))
+
     def test_rows_equal_the_manifest(self):
         compare(self, found_rows(), manifest(EXCEPTIONS), KEYS, 'seam exceptions')
 

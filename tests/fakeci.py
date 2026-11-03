@@ -16,7 +16,16 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import mock
 
-from drover import ci, durable, runner
+from drover import ci, durable, process, runner
+
+
+def process_options(timeout, *, cwd=None, env=None, input=None) -> dict:
+    """The options `process.run` passes on every spawn, stated once for `FakeCommands.expect(argv, **options)`.
+
+    `input` is the payload as the child receives it, in bytes; without one, stdin is DEVNULL.
+    """
+    stdin = {'stdin': subprocess.DEVNULL} if input is None else {'input': input}
+    return dict(capture_output=True, timeout=timeout, cwd=cwd, env=env, shell=False, **stdin, **process.NO_WINDOW)
 
 
 class FakeCommands:
