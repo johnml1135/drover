@@ -3,7 +3,7 @@ import subprocess
 from functools import partial
 from pathlib import Path
 
-from . import git_worktrees, placement, process
+from . import git_client, git_worktrees, placement, process
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
 
@@ -70,18 +70,16 @@ def repository_config(candidate):
     """Git's config/administrative evidence, separate from path safety policy."""
     import os
     cfg = candidate / 'config'
-    try:
-        env = dict(os.environ, GIT_DIR=str(candidate))
-        bare = placement.git(candidate, 'rev-parse', '--is-bare-repository',
-                             env=env, timeout=60)
-        if bare.returncode == 0 and bare.stdout.strip() in ('true', 'false'):
+    try:      # anything but a clean YES, a timeout or no git included, is evidence: retain
+        ask = lambda *args: git_client.ask(candidate, *args, env=dict(os.environ, GIT_DIR=str(candidate)),
+                                           timeout_s=git_client.NORMAL, no=())
+        bare = ask('rev-parse', '--is-bare-repository')
+        if bare.answer is git_client.Answer.YES and bare.out.strip() in ('true', 'false'):
             return True
-        # Git owns its config grammar (BOM, quoting, comments, casing).
-        parsed = placement.git(candidate, 'config', '--file', str(cfg), '--list',
-                               env=env, timeout=60)
-        if parsed.returncode or parsed.stderr:
+        parsed = ask('config', '--file', str(cfg), '--list')     # git owns its config grammar (BOM, quoting, comments, casing)
+        if parsed.answer is not git_client.Answer.YES or parsed.err:
             return True
-        keys = [line.partition('=')[0].casefold() for line in parsed.stdout.splitlines()]
+        keys = [line.partition('=')[0].casefold() for line in parsed.out.splitlines()]
         return any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys)
     except (OSError, ValueError, subprocess.SubprocessError):
         return True  # No certain parse, including unavailable Git: retain.

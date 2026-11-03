@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import config, dispatch_hold, placement, repos
+from drover import config, dispatch_hold, git_client, placement, repos
+from drover.git_client import Answer, GitReply
 from drover.ledger import connect, ops
 from drover.port import DirectPort
 
@@ -21,6 +22,14 @@ def holds(ready, active, cfg=CFG, repo_of=lambda t: "/r", **kw):
     return dispatch_hold.holds(ready, active, cfg, repo_of, **kw)
 
 
+def yes(out):
+    return GitReply(Answer.YES, out, "", 0, None)
+
+
+def unknown(out="", why="timeout"):
+    return GitReply(Answer.UNKNOWN, out, "", None if why != "exit" else 128, why)
+
+
 class FakeGit:
     """for-each-ref lists refs/heads/<branch> and the base refs; diff answers by (base sha, tip sha)."""
 
@@ -32,14 +41,15 @@ class FakeGit:
         self.refs[f"refs/heads/{name}"] = tip or name + "-tip"
         return self
 
-    def __call__(self, repo, *args):
+    def __call__(self, repo, *args, timeout_s, no):
+        """Shaped like git_client.ask: a YES reply carrying stdout, or UNKNOWN for a command it does not know."""
         self.calls.append((repo, *args))
         if args[0] == "for-each-ref":
-            return "".join(f"{sha} {name}\n" for name, sha in self.refs.items())
+            return yes("".join(f"{sha} {name}\n" for name, sha in self.refs.items()))
         if args[0] == "diff":
             base, tip = args[-1].split("...")
-            return "\n".join(self.files.get((base, tip), self.files.get(tip, []))) + "\n"
-        return None
+            return yes("\n".join(self.files.get((base, tip), self.files.get(tip, []))) + "\n")
+        return unknown()
 
     def diffs(self):
         return [c for c in self.calls if c[1] == "diff"]
@@ -113,7 +123,27 @@ class Reasons(unittest.TestCase):
         self.assertEqual(holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="ghost")], git=git, cache={}), {})
         self.assertEqual([c[1] for c in git.calls], ["for-each-ref"])     # a missing ref costs no further git call
         self.assertEqual(holds([task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")],
-                               git=lambda *a: None, cache={}), {})
+                               git=lambda *a, **kw: unknown(), cache={}), {})
+
+    def test_unknown_is_not_read_as_no(self):
+        """An unknown diff, with whatever partial stdout, is not "changed nothing": it is not cached, so the next tick
+        asks again and holds on what git then says."""
+        git, cache = fake({"b1-tip": ["src/a.py"]}, "b1"), {}
+        real = FakeGit.__call__
+
+        def diff_unknown(repo, *args, timeout_s, no):
+            if args[0] == "diff":
+                git.calls.append((repo, *args))
+                return unknown("", why)
+            return real(git, repo, *args, timeout_s=timeout_s, no=no)
+        ready, active = [task("T2", ["src/a.py"])], [task("T1", ["x"], branch="b1")]
+        for why in ("timeout", "unavailable", "exit"):
+            with self.subTest(why=why):
+                cache.clear()
+                self.assertEqual(holds(ready, active, git=diff_unknown, cache=cache), {})
+                self.assertEqual(dispatch_hold.changed_files("/r", "b1", "refs/heads/main", cache, diff_unknown), None)
+                self.assertEqual(cache, {})
+                self.assertIn("T2", holds(ready, active, git=git, cache=cache))
 
     def test_a_repo_with_no_checkout_is_left_alone(self):
         git = fake({"b1-tip": ["src/a.py"]}, "b1")
@@ -176,20 +206,20 @@ class Reasons(unittest.TestCase):
 
 
 class GitSeam(unittest.TestCase):
-    def test_git_goes_through_placement(self):
-        done = mock.Mock(returncode=0, stdout="sha refs/heads/main\n")
-        with mock.patch.object(placement, "git", return_value=done) as git:
-            self.assertEqual(dispatch_hold._git("R:/r", "for-each-ref"), done.stdout)
-        git.assert_called_once_with("R:/r", "for-each-ref", timeout=60)
-        with mock.patch.object(placement, "git", side_effect=OSError("offline")):
-            self.assertIsNone(dispatch_hold._git("R:/r", "for-each-ref"))
+    def test_git_goes_through_git_client_ask(self):
+        with mock.patch.object(git_client, "ask", return_value=yes("sha refs/heads/main\n")) as ask:
+            self.assertEqual(dispatch_hold.branch_tips("R:/r"), {"refs/heads/main": "sha"})
+        ask.assert_called_once_with("R:/r", "for-each-ref", "--format=%(objectname) %(refname)",
+                                    timeout_s=git_client.NORMAL, no=())
+        with mock.patch.object(git_client, "ask", return_value=unknown(why="unavailable")):
+            self.assertIsNone(dispatch_hold.branch_tips("R:/r"))
 
 
 class InTick(Base):
     def setUp(self):
         super().setUp()
         self.git = fake({"b1-tip": ["src/a.py"]}, "b1")
-        patch = mock.patch.object(dispatch_hold, "_git", self.git)
+        patch = mock.patch.object(git_client, "ask", self.git)
         patch.start()
         self.addCleanup(patch.stop)
         dispatch_hold._CACHE.clear()
@@ -252,7 +282,7 @@ class InTick(Base):
 
     def test_git_failure_in_tick_holds_nothing(self):
         t = self.task(scope_files=["src/a.py"])
-        with mock.patch.object(dispatch_hold, "_git", side_effect=RuntimeError("boom")):
+        with mock.patch.object(git_client, "ask", side_effect=RuntimeError("boom")):
             self.assertEqual(self.d.tick()["launched"], [t])
 
 

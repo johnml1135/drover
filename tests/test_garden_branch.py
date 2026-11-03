@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import cleanup, config, git_client
+from drover import cleanup, config, git_client, process
 from tests.gitfix import Repo, sh
 
 NOW = 1_792_000_000  # a fixed day
@@ -127,28 +127,40 @@ class TestFailClosed(Base):
         self.refused(self.run_del("feat/x"), "does not resolve")
 
     def test_cherry_error_is_not_merged(self):
-        real = cleanup.git
+        real = git_client.ask
 
         def fake(cwd, *args, **kw):
             if "cherry" in args:
-                r = real(cwd, *args, **kw)
-                r.returncode, r.stdout = 128, ""
-                return r
+                return git_client.GitReply(git_client.Answer.UNKNOWN, "", "fatal", 128, "exit")
             return real(cwd, *args, **kw)
-        with mock.patch.object(cleanup, "git", fake):
+        with mock.patch.object(git_client, "ask", fake):
             self.refused(self.run_del("feat/x", approved=row("feat/x", "land-task")), "not approved")
 
     def test_merge_base_error_refuses(self):
-        real = cleanup.git
+        real = git_client.ask
 
         def fake(cwd, *args, **kw):
             if "merge-base" in args:
-                r = real(cwd, *args, **kw)
-                r.returncode = 128
-                return r
+                return git_client.GitReply(git_client.Answer.UNKNOWN, "", "fatal", 128, "exit")
             return real(cwd, *args, **kw)
-        with mock.patch.object(cleanup, "git", fake):
+        with mock.patch.object(git_client, "ask", fake):
             self.refused(self.run_del("feat/x"), "git error")
+
+    def test_a_read_that_does_not_end_refuses_as_a_git_error(self):
+        """cleanup's reads had no timeout: at LONG, one that times out or cannot start is a GitError refusal, never a raw
+        timeout escaping delete_branch, whichever read it is."""
+        for word in ("check-ref-format", "symbolic-ref", "rev-parse", "merge-base", "cherry"):
+            for why in ("timeout", "unavailable"):
+                with self.subTest(word=word, why=why):
+                    real = process.run
+
+                    def stuck(command):
+                        if word in command.argv:
+                            return process.Result("timed_out" if why == "timeout" else "unavailable", None, b"", b"", 0.0, why)
+                        return real(command)
+                    with mock.patch.object(process, "run", stuck):
+                        self.refused(self.run_del("feat/x"), "git error")
+                    self.assertTrue(self.exists("feat/x"))
 
     def test_worktree_list_error_refuses(self):
         def fake(repo, *args, error, **kw):     # the listing goes through git_worktrees on git_client
@@ -175,15 +187,15 @@ class TestFailClosed(Base):
         self.assertEqual(self.r.git("rev-parse", taken), self.r.git("rev-parse", "origin/main"))
 
     def test_moved_branch_is_not_deleted(self):
-        real = cleanup.git
+        real = git_client.mutate
         moved = []
 
         def fake(cwd, *args, **kw):
             if "update-ref" in args and "-d" in args and not moved:
                 moved.append(1)
-                real(cwd, "update-ref", "refs/heads/feat/x", real(cwd, "rev-parse", "origin/main").stdout.strip())
+                self.r.git("update-ref", "refs/heads/feat/x", self.r.git("rev-parse", "origin/main"))
             return real(cwd, *args, **kw)
-        with mock.patch.object(cleanup, "git", fake):
+        with mock.patch.object(git_client, "mutate", fake):
             res = self.run_del("feat/x")
         self.assertFalse(res["ok"])
         self.assertTrue(self.exists("feat/x"))

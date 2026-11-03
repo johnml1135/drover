@@ -1,12 +1,12 @@
 """Fresh agents load only short, accepted ADRs whose applies_to matches their scope."""
 import os
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from drover import config_defaults, context_files
+from drover.git_client import Answer, GitReply
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -127,12 +127,12 @@ class SelectTests(unittest.TestCase):
     def test_a_wsl_worktree_reads_committed_files_through_git(self):
         calls = []
 
-        def git(root, *args, **kw):
+        def git(root, *args, timeout_s, no):
             calls.append(args)
             if args[0] == 'ls-tree':
-                return subprocess.CompletedProcess(args, 0, 'docs/adr/0001-a.md\ndocs/adr/README.md\n', '')
-            return subprocess.CompletedProcess(args, 0, adr(1), '')
-        with patch('drover.placement.routes_through_wsl', return_value=True), patch('drover.placement.git', git):
+                return GitReply(Answer.YES, 'docs/adr/0001-a.md\ndocs/adr/README.md\n', '', 0, None)
+            return GitReply(Answer.YES, adr(1), '', 0, None)
+        with patch('drover.placement.routes_through_wsl', return_value=True), patch('drover.git_client.ask', git):
             result = context_files.select('/home/s/w', ['drover/x.py'], file_limit=6144, total_limit=12288)
         self.assertEqual(self.paths(result), ['0001-a.md'])
         self.assertEqual([c[0] for c in calls], ['ls-tree', 'show'])

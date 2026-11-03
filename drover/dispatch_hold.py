@@ -8,9 +8,8 @@ never fills it, so the checkout comes from the repo registry. Git never runs ins
 import fnmatch
 import logging
 import os
-import subprocess
 
-from . import placement
+from . import git_client
 from .config_defaults import DEFAULT_MAGNETS
 from .ledger import scope as scopes
 from .ledger import states
@@ -20,18 +19,16 @@ log = logging.getLogger(__name__)
 _CACHE = {}        # (repo, branch tip, base tip) -> changed files; a tip names its content, so it never goes stale
 
 
-def _git(repo, *args):
-    """Stdout of git in the checkout, or None when git fails."""
-    try:
-        done = placement.git(repo, *args, timeout=60)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    return done.stdout if done.returncode == 0 else None
+def _stdout(git, repo, *args):
+    """Stdout of git in the checkout, or None for anything but YES: `git` is shaped like `git_client.ask`, which is the
+    default, and no exit is a "no" here, so a failure, a timeout or no git is unknown and is never read as an answer."""
+    reply = (git or git_client.ask)(repo, *args, timeout_s=git_client.NORMAL, no=())
+    return reply.out if reply.answer is git_client.Answer.YES else None
 
 
 def branch_tips(repo, git=None):
     """{refname: sha} for every ref in the repo, from one `git for-each-ref`; None when git fails."""
-    out = (git or _git)(repo, "for-each-ref", "--format=%(objectname) %(refname)")
+    out = _stdout(git, repo, "for-each-ref", "--format=%(objectname) %(refname)")
     if out is None:
         return None
     tips = {}
@@ -49,7 +46,6 @@ def changed_files(repo, branch, base_ref, cache, git=None, tips=None, seen=None)
     one for-each-ref per repo (pass `tips` to share it); git runs again only on a cache miss, keyed by
     (repo, base tip, branch tip). A ref missing from the listing is unknown and costs no further git call.
     """
-    git = git or _git
     if not repo or not branch or not base_ref:
         return None
     if tips is None:
@@ -63,7 +59,7 @@ def changed_files(repo, branch, base_ref, cache, git=None, tips=None, seen=None)
     if seen is not None:
         seen.add(key)
     if key not in cache:
-        out = git(repo, "diff", "--name-only", f"{base}...{tip}")
+        out = _stdout(git, repo, "diff", "--name-only", f"{base}...{tip}")
         if out is None:
             return None
         cache[key] = {line.strip() for line in out.splitlines() if line.strip()}

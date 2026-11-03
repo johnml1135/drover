@@ -3,47 +3,45 @@ import os
 from pathlib import Path
 import subprocess
 
-from . import git_worktrees, ownership, placement, repos
+from . import git_client, git_worktrees, ownership, placement, repos
 from .disk_paths import deadline_row, worktree_roots, facts, item, result, safe_path, within, disposable_match, repository_tree
 
 
-def git(repo, *args, env=None):
-    done = placement.git(str(repo), *map(str, args), timeout=60, env=env)
-    if done.returncode:
-        raise ValueError(done.stderr.strip() or 'git command failed')
-    return done.stdout
+def _out(repo, *args, env=None):     # any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end
+    return git_client.out(str(repo), *map(str, args), timeout_s=git_client.NORMAL, env=env,
+                          error=lambda f: ValueError(str(f) if f.why == 'timeout' else f.err.strip() or 'git command failed'))
 
 
 def head_at(path):
-    return git(path, 'rev-parse', '--verify', 'HEAD').strip()
+    return _out(path, 'rev-parse', '--verify', 'HEAD').strip()
 
 
 def gitdir_at(path):
-    return git(path, 'rev-parse', '--absolute-git-dir').strip()
+    return _out(path, 'rev-parse', '--absolute-git-dir').strip()
 
 
 def tracked_at(path, relative=None):
     args = ['ls-files', '-z'] + (['--', str(relative)] if relative is not None else [])
-    return [name for name in git(path, *args).split('\0') if name]
+    return [name for name in _out(path, *args).split('\0') if name]
 
 
 def unlock_at(repo, path):
-    git(repo, 'worktree', 'unlock', '--', path)
+    _out(repo, 'worktree', 'unlock', '--', path)
 
 
 def lock_at(repo, path, reason):
-    # Recovery is best effort, like the original unchecked Git command.
-    placement.git(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout=60)
+    # Recovery is best effort, like the original unchecked Git command: a mutate raises nothing, a timeout included.
+    git_client.mutate(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout_s=git_client.NORMAL)
 
 
 def discard_at(repo, path, listings):
-    git(repo, 'worktree', 'remove', '--force', '--', path)
+    _out(repo, 'worktree', 'remove', '--force', '--', path)
     listings.removed(repo, path)
 
 
 def rescue_at(repo, ref, head):
-    git(repo, 'update-ref', ref, head, '')
-    if git(repo, 'rev-parse', ref).strip() != head:
+    _out(repo, 'update-ref', ref, head, '')
+    if _out(repo, 'rev-parse', ref).strip() != head:
         raise ValueError('rescue ref verification failed')
 
 
@@ -68,7 +66,7 @@ def outputs_at(machine, path):
 
 def status(path, *, expand=True):
     """NUL-safe full status; expand ignored directories without following links."""
-    raw = git(path, 'status', '--porcelain=v1', '-z', '--untracked-files=all' if expand else '--untracked-files=normal', '--ignored=matching')
+    raw = _out(path, 'status', '--porcelain=v1', '-z', '--untracked-files=all' if expand else '--untracked-files=normal', '--ignored=matching')
     fields = iter(raw.split('\0'))
     dirty, ignored = [], []
     for field in fields:
@@ -136,19 +134,20 @@ def needs_idle_gate(request, tag):
 
 def merged(machine, head):
     repo = machine['repo']
-    base = git(repo, 'rev-parse', '--verify', machine['remote'] + '/' + machine['default_branch'] + '^{commit}').strip()
-    ancestor = placement.git(repo, 'merge-base', '--is-ancestor', head, base, timeout=60)
-    if ancestor.returncode == 0:
+    base = _out(repo, 'rev-parse', '--verify', machine['remote'] + '/' + machine['default_branch'] + '^{commit}').strip()
+    yes, unknown = git_client.Answer.YES, git_client.Answer.UNKNOWN
+    ancestor = git_client.ask(repo, 'merge-base', '--is-ancestor', head, base, timeout_s=git_client.NORMAL, no=(1,))
+    if ancestor.answer is yes:
         return True
-    if ancestor.returncode != 1:
+    if ancestor.answer is unknown:
         raise ValueError('ancestry unavailable')
-    cherry = git(repo, 'cherry', base, head).splitlines()
+    cherry = _out(repo, 'cherry', base, head).splitlines()
     if cherry and all(line.startswith('- ') for line in cherry):
         return True
-    tree = placement.git(repo, 'merge-tree', '--write-tree', base, head, timeout=60)
-    if tree.returncode not in (0, 1):
+    tree = git_client.ask(repo, 'merge-tree', '--write-tree', base, head, timeout_s=git_client.NORMAL, no=(1,))
+    if tree.answer is unknown:
         raise ValueError('merge-tree unavailable')
-    return tree.returncode == 0 and tree.stdout.splitlines()[0] == git(repo, 'rev-parse', base + '^{tree}').strip()
+    return tree.answer is yes and tree.out.splitlines()[0] == _out(repo, 'rev-parse', base + '^{tree}').strip()
 
 
 def inspect(request, machine, entry):
@@ -425,12 +424,12 @@ def snapshot(machine, path, request=None):
         raise ValueError('independent or broken git metadata')
     if placement.cleanup_processes(request=request).busy(str(path)):
         raise ValueError('snapshot busy')
-    head = git(machine['repo'], 'rev-parse', '--verify', 'HEAD^{commit}').strip()
+    head = _out(machine['repo'], 'rev-parse', '--verify', 'HEAD^{commit}').strip()
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / 'index'))
-        git(machine['repo'], 'read-tree', head, env=env)
-        git(machine['repo'], '--work-tree=' + str(path), 'diff', '--exit-code', head, '--', env=env)
-        others = git(machine['repo'], '--work-tree=' + str(path), 'ls-files', '--others', '-z', env=env)
+        _out(machine['repo'], 'read-tree', head, env=env)
+        _out(machine['repo'], '--work-tree=' + str(path), 'diff', '--exit-code', head, '--', env=env)
+        others = _out(machine['repo'], '--work-tree=' + str(path), 'ls-files', '--others', '-z', env=env)
         if others:
             raise ValueError('snapshot has untracked data')
     return head

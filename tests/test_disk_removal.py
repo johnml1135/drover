@@ -2,11 +2,11 @@
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from unittest import mock
 
-from drover import placement
+from drover import placement, process
+from tests.fakeci import git_spy
 from tests.gitfix import sh
 from tests.test_disk_worktrees import WorktreeCase
 from tests.disk_fixture import MemoryCleanupCase, listing_answers
@@ -172,11 +172,7 @@ class RemovalContracts(WorktreeCase):
         branches = self.branches()
         self.cleanup()
         calls = []
-        real_git = placement.git
-        def git(repo, *args, **kw):
-            calls.append(args)
-            return real_git(repo, *args, **kw)
-        with mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_2, mock.patch('drover.placement_git.git', _placement_patch_2):
+        with git_spy(lambda repo, *args: calls.append(args)):
             self.cleanup(apply=True)
         listed = self.registrations()
         self.assertNotIn(str(native), listed)
@@ -196,10 +192,9 @@ class RemovalContracts(WorktreeCase):
                 self.r.commit('done-' + change + '.txt', cwd=wt)
                 self.merge(wt)
                 self.cleanup()
-                real_git = placement.git
                 status_calls = []
-                def git(repo, *args, **kw):
-                    if str(repo) == str(wt) and 'status' in args:
+                def git(repo, *args, wt=wt, change=change):
+                    if Path(repo) == Path(wt) and 'status' in args:
                         status_calls.append(args)
                         if len(status_calls) == 2:
                             if change == 'dirty':
@@ -213,9 +208,9 @@ class RemovalContracts(WorktreeCase):
                                 self.r.git('worktree', 'unlock', wt)
                                 self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
                             elif change == 'status-error':
-                                return subprocess.CompletedProcess(['git'], 128, '', 'unavailable')
-                    return real_git(repo, *args, **kw)
-                with mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_4, mock.patch('drover.placement_git.git', _placement_patch_4):
+                                return process.Result('exited', 128, b'', b'unavailable', 0.0, '')
+                    return None
+                with git_spy(git):
                     result = self.cleanup(apply=True)
                 self.assertGreaterEqual(len(status_calls), 2, 'must revalidate full status')
                 self.assertTrue(wt.exists(), change)
@@ -286,12 +281,8 @@ class RemovalContracts(WorktreeCase):
         self.assertTrue(wt.exists(), 'owner deletion requires a matching report scope')
         self.cleanup()
         calls = []
-        real_git = placement.git
-        def git(repo, *args, **kwargs):
-            calls.append(args)
-            return real_git(repo, *args, **kwargs)
         with mock.patch.object(disk_state, 'append_manifest', side_effect=OSError('cannot sync journal')), \
-             mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_3, mock.patch('drover.placement_git.git', _placement_patch_3):
+             git_spy(lambda repo, *args: calls.append(args)):
             result = self.cleanup(apply=True)
         self.assertTrue(wt.exists(), result)
         self.assertIn('locked ' + self.side, self.registrations())

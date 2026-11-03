@@ -62,3 +62,40 @@ Handlers, `file:line, what it catches, what now reaches it, change`:
 Line counts: origin 100 to 105, landing_batch 326 to 315, landing_control 324 to 342, pipeline 489 to 488, placement 177 to 179, pane_close 285 to 291. Trace files unchanged.
 
 Fix round 1 (lead ruling): `placement.add_worktree` takes `timeout_s=LONG`, a departure from the brief's "`error=` only". disk_registrations.py:265 passes `git_client.NORMAL`, because the registration repair runs inside a disk stage and section 6.1 holds a stage's changes to 60 s; worktree.py:18, pipeline.py:135 and landing_batch.py:162 keep `LONG`. `drover.pane_close._git` joins `qualified_names`. Trace unchanged.
+
+## Task 26: `ci`, `cleanup`, disk git, small callers
+
+`ci.git`, `cleanup.git`, `disk_worktrees.git`, `dispatch_hold._git`, `task_access._git` and `decisions._git` are deleted and named in `qualified_names`; R1's `dispatch_hold` row and R3's `decisions._git` row go. Every `placement.git` call in `ci`, `cleanup`, `disk_worktrees`, `disk_paths`, `disk_registrations`, `dispatch_hold`, `task_access`, `decisions`, `brief`, `context_files` and `repos` now goes through `git_client`; `ledger/ops_outside` is Task 27's. Each module keeps its domain type:
+- `ci`: `_out` is `out(error=ci_error)`, CIError worded as `ci.git` worded it (`git <args> timed out after 60 seconds`, or `git <args>: <stderr>`), at `NORMAL` with `git_environment()`. `contains` asks with `no=(1,)`: any exit reads as before (a base that does not resolve is not found, an ancestry exit is not contained); a timeout raises CIError, as before, and so now does git that cannot start (it read as "base not found" or "not contained", rc 127). `ci.py:119` stays an R3 row.
+- `cleanup`: `_ask` at `LONG`, `_changed` (`mutate`) at `LONG`, both with `GIT_OPTIONAL_LOCKS=0`. Any exit is read by its code as before; a read that times out or cannot start raises GitError, so `delete_branch` refuses with `git error, nothing deleted` instead of letting `TimeoutExpired` escape (ledger carry). A ref change or bundle that does not finish refuses as a failed one did. `_git_ok` no longer exists (Task 23 replaced its one use with `git_worktrees.listing`).
+- `disk_worktrees`: `_out` is `out(error=ValueError)`, git's stderr or `git command failed` as before, and `str(GitFailed)` for a timeout, at `NORMAL`. `lock_at` is a `mutate`, so the best-effort relock raises nothing. `merged` asks with `no=(1,)`; an unknown is `ancestry unavailable` / `merge-tree unavailable` as before. `disk_registrations` imports `_out` in place of `git`.
+- `disk_registrations`: `config --get` and `rev-parse --verify --quiet` ask with `no=(1,)`, and an UNKNOWN now raises ValueError (it read as "unset" and "no such branch" for any exit, and raised for a timeout). The report-only `suggest` reads go through `_out`. reregister's cleanup removal is a `mutate`.
+- `disk_paths.repository_config`: both reads `ask` with `no=()`; anything but a clean YES (and, for `config --list`, no stderr) returns the fail-closed True, as before. No GitFailed is raised there; the `OSError` tuple stays.
+- `dispatch_hold`: the injected `git` is shaped like `git_client.ask`, which is the default, with `no=()`; only YES gives stdout, so an unknown diff is never cached as "changed nothing".
+- `task_access`: `_out` is `out(error=ValueError)` (`read checkout: <stderr tail>`, or `str(GitFailed)`), so a timed-out local ref falls through to the remote ref at lines 58-63.
+- `decisions`: `_out` is `out(error=DecisionError)` at `QUICK` (30 s, as before), worded as before: git's words for an exit, `git: timed out after 30 s`, `git: <detail>` when git cannot start.
+- `brief.framework_text`, `context_files._read_all`: `ask` with `no=()`; anything but YES lists nothing, as a non-zero exit did. `context_files` reports a listing that did not end as `unreadable: git timeout` (a raised TimeoutExpired gave `unreadable: TimeoutExpired`).
+- `repos.load`: three `out(error=RepoError)` reads at `QUICK`, with today's messages.
+
+Handlers, `file:line, what it catches, what now reaches it, change`:
+- landing.py:209 `run_batch`, `ci.CIError` around `local_fast_forward` (`ci.problems`, `ci.head`): CIError for any git failure, as before. None.
+- landing_batch.py:158 `ci.head` in `build_tip`: CIError, reaching landing.py:85 as before. None.
+- pipeline.py:81, :113, :482 (`changed_docs_only`, `dirty`, `head`): CIError as before; :213 `commit_ready` catches it. None.
+- landing_control.py:43 `repos.load` in `local_fast_forward`, `(RepoError, OSError, ValueError, KeyError)` → CIError: a timeout is now RepoError (TimeoutExpired escaped it before). Fixed.
+- cleanup.py:104 `delete_branch`, `(GitError, OSError)`: now also gets GitError for a read that timed out or could not start, and RegistrationsUnknown from the listing as before. A raw timeout no longer escapes to hub/services.py:242. Fixed.
+- disk_worktrees.py:234, :253, :278, :469, `(OSError, ValueError, SubprocessError)`: ValueError for every `_out` failure, a timeout included (TimeoutExpired before, caught by the same tuples). None.
+- disk_worktrees.py:370 `remove`, `(OSError, ValueError, SubprocessError)` (section 5.2's :381): a git miss after `unlock_at`, a timeout included, is ValueError; `lock_at` then relocks through `mutate`, which raises nothing, so `failed` is always journalled. Before, a relock that timed out raised TimeoutExpired out of the handler: no `failed` row and the worktree left unlocked. Fixed; pinned by `test_git_failure_after_unlock_restores_the_marker_and_journals_failed`.
+- disk_worktrees.py:378, `OSError` around the `failed` append: unchanged.
+- disk_registrations.py:69 (was :66) `protect`, `ValueError` around `config gc.worktreePruneExpire never`: ValueError from `_out`, as before. None.
+- disk_registrations.py:234, :245 (`report`), `(OSError, ValueError, [RuntimeError,] SubprocessError)`: ValueError now also for an unknown `rev-parse` in `candidate` (the folder is unproven, as a timeout made it). Same row.
+- disk_registrations.py:282 `reregister`, `(OSError, ValueError, RuntimeError, SubprocessError)`: the cleanup removal is a `mutate`, so a slow removal no longer replaces the original error, and `failed` is journalled. None to the caller.
+- disk_worktrees.py:278 `registrations` (calls `protect`): an unknown `config --get` is now a repo error, and the repo's orphans are not judged (it read as unset before). Towards keeping.
+- disk_cleanup.py:43 `scope_key`, `(OSError, ValueError)` around `outputs_at` → `repos.load`: a timeout is RepoError, so the policy reads `<unavailable>` (TimeoutExpired escaped scope_key before). Towards keeping: the scope differs, so no report authorizes against it.
+- disk_paths.py:84 `repository_config`, `(OSError, ValueError, SubprocessError)` → True: `ask` raises nothing for git's failure; CommandTooLong (ValueError) still reaches it. None.
+- dispatch_hold.py `tick_holds`, `Exception`: unchanged; git failures no longer reach it (they are None).
+- dispatcher_finish.py:219, `(ValueError, OSError)` around `task_access.verify`; replan.py:106 (`prepare` in `_inspect`) and :155, `(OSError, ValueError, WorktreeRefused)`: a timeout is now ValueError (TimeoutExpired escaped both before). Fixed.
+- dispatcher_admission.py:389 `_worktree`, `Exception` around `task_access.prepare`: a timeout is ValueError, needs-owner `worktree failed: ValueError(...)`. Message only.
+- config.py:464 `config sync`, `decisions.DecisionError`; decisions.py:99 (was :88) push, `DecisionError` → warning; wizard.py:122 tuple naming DecisionError: DecisionError for any failure, as before. None.
+- context_files.py:120 `Exception`; brief.py `framework_text` (no handler): a timeout no longer raises; see above.
+
+Line counts: ci 493 to 491, disk_worktrees 483 to 482, disk_paths 490 to 488, disk_registrations 289 to 294, cleanup 141 to 152. Trace file unchanged.

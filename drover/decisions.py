@@ -6,7 +6,7 @@ import re
 import tomllib
 from pathlib import Path
 
-from . import process
+from . import git_client
 from .lock import FileLock
 
 IGNORE = 'ledger.db*\nruns/\nrescue/\nlogs/\nhub-token\n*.log\n*.tmp\n.decisions.lock\n'
@@ -17,14 +17,18 @@ class DecisionError(RuntimeError):
     pass
 
 
-def _git(state, *args):
-    result = process.run(process.Command(['git', '-C', str(state), '-c', 'user.name=Drover',
-                                          '-c', 'user.email=drover@example.invalid', *args], 30))
-    if result.kind != 'exited':
-        raise DecisionError(f'git: {result.detail}')
-    if result.code:
-        raise DecisionError(result.stderr.strip() or result.stdout.strip() or 'git failed')
-    return result.stdout.strip()
+def _refused(failed):
+    """git's failure as DecisionError, worded as before, so config.py's `drover config sync:` and the push warning
+    still catch it: git's own words for an exit, else what stopped it."""
+    if failed.why == 'exit':
+        return DecisionError(failed.err.strip() or failed.out.strip() or 'git failed')
+    return DecisionError('git: ' + (f'timed out after {git_client.QUICK:g} s' if failed.why == 'timeout'
+                                    else failed.err.removeprefix('git unavailable: ')))
+
+
+def _out(state, *args):
+    return git_client.out(state, '-c', 'user.name=Drover', '-c', 'user.email=drover@example.invalid', *args,
+                          timeout_s=git_client.QUICK, error=_refused).strip()
 
 
 def _top_up_ignore(state, errors='strict'):
@@ -43,7 +47,7 @@ def initialize(state_dir):
     state.mkdir(parents=True, exist_ok=True)
     _top_up_ignore(state)
     if not (state / '.git').exists():
-        _git(state, 'init')
+        _out(state, 'init')
     return state
 
 
@@ -76,21 +80,21 @@ def _sync(state, settings=None, reason=None, *, write_record=True):
     except OSError as exc:
         logging.getLogger(__name__).warning('%s was not topped up: %s', state / '.gitignore', exc)
     if write_record:
-        pending = _git(state, 'status', '--porcelain')
+        pending = _out(state, 'status', '--porcelain')
         if pending:
             _record(state, 'Configuration', reason or 'Owner requested sync of the pending configuration edits.',
                    {'files': pending.splitlines()}, 'owner', commit=False)
-    _git(state, 'add', '--all', '--', '.')
-    changed = bool(_git(state, 'diff', '--cached', '--name-only'))
+    _out(state, 'add', '--all', '--', '.')
+    changed = bool(_out(state, 'diff', '--cached', '--name-only'))
     if changed:
-        _git(state, 'commit', '-m', 'Record Drover configuration changes')
+        _out(state, 'commit', '-m', 'Record Drover configuration changes')
     result = {'committed': changed, 'pushed': False}
     cfg = _sync_config(state) if settings is None else settings
     remote = cfg.get('remote')
     if cfg.get('auto_push', True) and remote:
         try:
             # -- makes even a URL beginning with '-' data rather than a git option.
-            _git(state, 'push', '--', str(remote), 'HEAD')
+            _out(state, 'push', '--', str(remote), 'HEAD')
             result['pushed'] = True
         except DecisionError as exc:
             result['warning'] = f'push failed; local history is safe: {exc}'

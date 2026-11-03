@@ -80,25 +80,27 @@ def _narrowness(globs, paths):
 
 def _read_all(root, file_limit=None):
     """-> ({name: text}, [skipped]) for docs/adr/*.md at the checkout's HEAD for a WSL root, else on disk."""
-    from . import compaction_hold, placement
+    from . import compaction_hold, git_client, placement
     skipped = []
     if compaction_hold.active():
         return {}, [{'path': ADR_DIR, 'reason': 'compaction hold is active'}]
     texts = {}
     try:
         if placement.routes_through_wsl(root):
-            listing = placement.git(root, 'ls-tree', '--name-only', 'HEAD', ADR_DIR + '/', timeout=15)
-            if listing.returncode:
+            listing = git_client.ask(root, 'ls-tree', '--name-only', 'HEAD', ADR_DIR + '/', timeout_s=15, no=())
+            if listing.why == 'exit':
                 return {}, []
-            for rel in sorted(listing.stdout.splitlines()):
+            if listing.answer is not git_client.Answer.YES:       # did not end or could not start: say so, as a raise did
+                return {}, [{'path': ADR_DIR, 'reason': f'unreadable: git {listing.why}'}]
+            for rel in sorted(listing.out.splitlines()):
                 rel = rel.strip()
                 if not ADR_NAME.match(PurePosixPath(rel).name):
                     continue
-                shown = placement.git(root, 'show', f'HEAD:{rel}', timeout=15)
-                if shown.returncode:
+                shown = git_client.ask(root, 'show', f'HEAD:{rel}', timeout_s=15, no=())
+                if shown.answer is not git_client.Answer.YES:
                     skipped.append({'path': rel, 'reason': 'unreadable: git show failed'})
                 else:
-                    texts[rel] = shown.stdout
+                    texts[rel] = shown.out
         else:
             folder = Path(placement.native(root)) / 'docs' / 'adr'
             if not folder.is_dir():

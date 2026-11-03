@@ -50,7 +50,7 @@ class PolicyCITests(unittest.TestCase):
                          (self.repo.head(base), self.repo.ancestor(base, sha))),
             patch.object(ci, 'changed_paths', self.source.changed_paths),
             patch.object(ci.CI, '_diff_lines', side_effect=self.source.diff_lines),
-            patch.object(ci, 'git', side_effect=self.raw_diff),
+            patch.object(ci, '_out', side_effect=self.raw_diff),
             patch.object(disk, 'read', return_value=[dict(name='fixture', path=str(self.repo.root), free_gb=1000., level='ok')]),
             patch('subprocess.Popen', side_effect=AssertionError('policy tests must not start a process')),
             patch('time.sleep', side_effect=AssertionError('policy tests must not sleep')),
@@ -61,7 +61,7 @@ class PolicyCITests(unittest.TestCase):
 
     def raw_diff(self, repo, *args, **kw):
         self.assertEqual(args[:4], ('diff', '--raw', '--no-renames', '-z'))
-        return subprocess.CompletedProcess(args, 0, self.raw_modes, '')
+        return self.raw_modes
 
     repo_config = test_ci.CITests.repo_config
 
@@ -297,6 +297,38 @@ class PolicyCITests(unittest.TestCase):
         self.assertIn('uncommitted', result['reason'])
         self.assertEqual(self.launcher.commands, [])
         self.assertEqual(slots.lease_queue(conn), [])
+
+
+class GitFailures(unittest.TestCase):
+    """head, dirty, contains and changed_paths have no entry to catch at: landing.py:209 needs CIError from each."""
+
+    def test_head_dirty_contains_changed_paths_raise_ci_error_with_todays_type(self):
+        from tests.fakeci import git_answers
+        repo = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, repo, True)
+        calls = (('head', lambda: ci.head(repo)), ('dirty', lambda: ci.dirty(repo)),
+                 ('contains', lambda: ci.contains(repo, 'main', 'abc')),
+                 ('changed_paths', lambda: ci.changed_paths(repo, 'main')))
+
+        def timeout(repo, *args, timeout):
+            raise subprocess.TimeoutExpired(['git', *args], timeout)
+
+        def missing(repo, *args, timeout):
+            raise FileNotFoundError(2, 'No such file or directory')
+
+        def exits(repo, *args, timeout):
+            return subprocess.CompletedProcess(args, 128, '', 'fatal: bad object\n')
+        for kind, reply, message in (('timeout', timeout, 'timed out after 60 seconds'),
+                                     ('unavailable', missing, 'unavailable'),
+                                     ('exit', exits, 'fatal: bad object')):
+            for name, call in calls:
+                with self.subTest(kind=kind, name=name), git_answers(reply):
+                    if (kind, name) == ('exit', 'contains'):
+                        self.assertEqual(call(), (None, False))      # a base that does not resolve is not found
+                        continue
+                    with self.assertRaisesRegex(ci.CIError, message) as raised:
+                        call()
+                    self.assertIs(type(raised.exception), ci.CIError)
 
 
 if __name__ == '__main__':

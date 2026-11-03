@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import allowance, brief, config, contract, dispatcher, launch, launch_usage, process, route
+from drover.git_client import Answer, GitReply
 from tests.fakeci import FakeCommands, process_options
 from tests.test_dispatcher import Base, res
 
@@ -127,7 +128,7 @@ class BriefPolicy(unittest.TestCase):
 
     def test_wsl_framework_detection_handles_nested_tree_listing(self):
         with patch('drover.placement.routes_through_wsl', return_value=True), \
-                patch('drover.placement.git', return_value=SimpleNamespace(returncode=0, stdout='docs/superpowers/plans\n')):
+                patch('drover.git_client.ask', return_value=GitReply(Answer.YES, 'docs/superpowers/plans\n', '', 0, None)):
             self.assertIn('docs/superpowers/', brief.framework_text('/home/seat/work/task'))
 
     def test_review_preserves_finding_classification(self):

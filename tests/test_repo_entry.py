@@ -1,6 +1,5 @@
 """Committed repository entry is the public policy boundary."""
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 from drover import config, repos
 from tests.gitfix import Repo
@@ -108,10 +107,9 @@ class CommittedConfig(unittest.TestCase):
                 with self.assertRaises(repos.RepoError) as caught:
                     repos.normalize(config._merge(raw, machine))
                 self.assertEqual(str(caught.exception), error)
-                results = [SimpleNamespace(returncode=0, stdout=value)
-                           for value in (SHA, ENTRY, text)]
+                results = [SHA, ENTRY, text]      # stdout of git_client.out: the commit, the listing, the file
                 with patch.object(repos.placement, 'reachable', return_value=True), \
-                        patch.object(repos.placement, 'git', side_effect=results), \
+                        patch.object(repos.git_client, 'out', side_effect=results), \
                         patch('drover.repos_normalize.worktrees_for', return_value=machine['worktrees']), \
                         self.assertRaises(repos.RepoError) as caught:
                     repos.load(machine, machine_path='/registration.toml')

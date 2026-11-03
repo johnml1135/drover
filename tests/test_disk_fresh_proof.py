@@ -1,4 +1,5 @@
 """A removal takes its row from the stage listing and one fresh proof, through `disk_side.serve` over a scene's tree."""
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -218,6 +219,29 @@ class FreshProof(unittest.TestCase):
             scene.git.after_listing = lambda: scene.advance('moved')
             self.assertEqual(row_at(scene.record(apply=True))['reason_code'], 'identity_changed')
             proved.assert_called_once()
+
+    def test_git_failure_after_unlock_restores_the_marker_and_journals_failed(self):
+        """disk_worktrees.py's removal handler (ruling 12): a git miss after `unlock_at`, a timeout included, relocks the
+        worktree and journals `failed`, even when the relock itself times out."""
+        for stuck in (('worktree remove',), ('worktree remove', 'worktree lock')):
+            with self.subTest(stuck=stuck):
+                scene = self.scene()
+                scene.worktree('w')
+                refused = scene.check_refused
+
+                def timing_out(where, command, refused=refused, stuck=stuck):
+                    if command.startswith(stuck):
+                        raise subprocess.TimeoutExpired(['git', command], 60)
+                    refused(where, command)
+                scene.check_refused = timing_out
+                trace = scene.record(apply=True)
+                row = row_at(trace)
+                marker = '<TMP>/repos/alpha/.git/worktrees/w/locked'      # gone only if the relock did not run
+                self.assertEqual((row['action'], trace['deleted']), ('keep', [] if len(stuck) == 1 else [marker]))
+                self.assertEqual([(e['path'], e['action'], 'time' in e['error']) for e in trace['errors']], [(TREE, 'keep', True)])
+                self.assertEqual([record['phase'] for record in trace['journal']], ['planned', 'failed'])
+                self.assertEqual(scene.git.count('worktree', 'lock'), 1)
+                self.assertEqual((admin(scene) / 'locked').exists(), len(stuck) == 1)
 
     def test_a_repo_that_fails_once_stays_failed_so_a_purge_spares_the_other_repos_unit(self):
         scene = self.scene()

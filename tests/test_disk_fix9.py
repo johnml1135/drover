@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from drover import disk_paths, disk_state, disk_worktrees, placement
 from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request
+from tests.fakeci import git_answers
 
 
 class Processes(DiskCase):
@@ -98,7 +99,7 @@ class DefaultBranchPolicy(DiskCase):
                 patch.object(placement, 'reachable', return_value=True),
                 patch.object(placement, 'cleanup_contains', return_value=True),
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)),
-                patch.object(placement, 'git', side_effect=self.git), patch('drover.placement_git.git', side_effect=self.git),
+                git_answers(self.git),     # below git_client and placement.git alike
                 listing_answers([self.entry]), agreeing_proof()):
             context.start()
             self.addCleanup(context.stop)

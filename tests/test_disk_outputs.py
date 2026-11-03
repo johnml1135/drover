@@ -232,14 +232,14 @@ class Outputs(WorktreeCase):
 class OutputsContracts(GitWorktreeCase):
     def test_output_rechecks_marker_after_final_status(self):
         from unittest import mock
-        from drover import placement
+        from drover import git_client
         wt = self.worktree('output-race')
         self.r.commit('pending.txt', cwd=wt)
         output = wt / 'generated' / 'result'
         output.parent.mkdir()
         output.write_text('preserve on ownership change')
         self.cleanup()
-        real_git = placement.git
+        real_git = git_client.out      # disk_worktrees.status reads through git_client
         checks = []
         def git(repo, *args, **kw):
             if str(repo) == str(wt) and 'status' in args:
@@ -248,7 +248,7 @@ class OutputsContracts(GitWorktreeCase):
                     self.r.git('worktree', 'unlock', wt)
                     self.r.git('worktree', 'lock', '--reason', self.other_side, wt)
             return real_git(repo, *args, **kw)
-        with mock.patch.object(placement, 'git', side_effect=git) as _placement_patch_1, mock.patch('drover.placement_git.git', _placement_patch_1):
+        with mock.patch.object(git_client, 'out', side_effect=git):
             self.cleanup(apply=True)
         self.assertGreaterEqual(len(checks), 3)
         self.assertEqual(output.read_text(), 'preserve on ownership change')

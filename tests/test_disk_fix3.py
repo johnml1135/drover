@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState, agreeing_proof, listing_answers
 from tests import test_disk_fix2 as fix2
+from tests.fakeci import git_answers
 from drover import disk_runtime, process
 
 
@@ -19,10 +20,16 @@ def output_facts(path, side, registrations=None):
         return [], [str(p) for p in generated.rglob('*') if p.is_file() or p.is_symlink()]
     with listing_answers(entries), agreeing_proof(), \
          patch.object(disk_worktrees, 'status', side_effect=status) as observed_status, \
-         patch.object(disk_worktrees, 'git', return_value=''), \
+         patch.object(disk_worktrees, '_out', return_value=''), \
          patch.object(disk_paths, 'output_evidence', side_effect=lambda request, machine, entry, **kw:
                       (Path(entry['worktree']), 'head', None, ['generated'])):
         yield observed_status
+
+
+def unavailable_git():
+    """Every git spawn fails, below git_client and placement.git alike: unknown config parsing fails closed in-process."""
+    import subprocess
+    return git_answers(lambda repo, *args, timeout: subprocess.CompletedProcess([], 128, '', 'unavailable'))
 
 
 class ProcessFreeDiskCase(DiskCase):
@@ -309,7 +316,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                             # Real path detectors produce facts at the adapter boundary.
                             # Unknown config parsing fails closed in-process; native grammar
                             # is checked by the real deletion contract.
-                            with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')) as _placement_patch_6, patch('drover.placement_git.git', _placement_patch_6):
+                            with unavailable_git():
                                 excluded = disk_paths.repository_tree(candidate / 'generated', boundary=candidate)
                             observation['excluded'] = [str(folder)] if excluded else []
                             observation['checks'].update(other_drive=kind == 'mount', busy=kind == 'live')
@@ -347,7 +354,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                                 patch.object(placement, 'cleanup_free', return_value=80), \
                                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
                                 patch.object(placement, 'trim_argv', return_value=None), \
-                                patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')) as _placement_patch_5, patch('drover.placement_git.git', _placement_patch_5):
+                                unavailable_git():
                             first = serve(request)
                             request['now'] += 4 * 86400
                             request['tasks']['at'] = request['now']
@@ -392,6 +399,6 @@ class RepositorySafety(ProcessFreeDiskCase):
                     valuable = self.file(root / 'unpublished')
                     self.age(root, 40 * 86400)
                     self.cfg['disk_cleanup']['caches'] = [dict(path=str(root), placement=self.side)]
-                    with patch.object(placement, 'git', return_value=subprocess.CompletedProcess([], 128, '', 'unavailable')) as _placement_patch_4, patch('drover.placement_git.git', _placement_patch_4):
+                    with unavailable_git():
                         result = self.execute(self.request(stage))
                     self.assertTrue(valuable.exists(), result)

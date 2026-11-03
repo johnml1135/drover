@@ -26,18 +26,43 @@ class Git(unittest.TestCase):
             fake.expect(argv, error=subprocess.TimeoutExpired(argv, 30), **process_options(30))
             fake.expect(argv, error=FileNotFoundError(2, 'No such file'), **process_options(30))
             with fake.patch(process), patch('subprocess.run', side_effect=AssertionError('real process')):
-                self.assertEqual(decisions._git(state, 'log'), 'caf� \xe9')      # UTF-8, errors replaced
+                self.assertEqual(decisions._out(state, 'log'), 'caf� \xe9')      # UTF-8, errors replaced
                 for message in ('^fatal: bad$', '^git: timed out after 30 s$', '^git: git: No such file or directory$'):
                     with self.subTest(message), self.assertRaisesRegex(decisions.DecisionError, message):
-                        decisions._git(state, 'log')
+                        decisions._out(state, 'log')
+
+    def test_git_failure_is_decision_error_at_config_475_and_decisions_88(self):
+        """A push that times out is decisions.py's warning, and a failed sync is config's `drover config sync:` exit 2,
+        not the OSError handler beneath it: both need DecisionError, whatever the failure."""
+        from tests.fakeci import git_answers
+
+        def reply(repo, *args, timeout):
+            words = [a for a in args if not a.startswith(('-c', 'user.'))]
+            if words[0] in failing:
+                raise subprocess.TimeoutExpired(['git', *args], timeout)
+            return subprocess.CompletedProcess(args, 0, 'changed\n' if words[0] == 'diff' else '', '')
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d)
+            (state / '.git').mkdir()
+            (state / 'config.toml').write_text('[config_sync]\nauto_push = true\nremote = "./elsewhere"\n')
+            failing = ('push',)
+            with git_answers(reply):
+                result = decisions.sync(state)
+            self.assertEqual((result['committed'], result['pushed']), (True, False))
+            self.assertEqual(result['warning'], 'push failed; local history is safe: git: timed out after 30 s')
+            failing = ('status',)
+            with git_answers(reply), patch.object(config, 'load', return_value=config.validate({'paths': {'state_dir': d}})), \
+                    patch('sys.stderr', new_callable=io.StringIO) as err:
+                self.assertEqual(config.main(['sync']), 2)
+            self.assertEqual(err.getvalue(), 'drover config sync: git: timed out after 30 s\n')
 
 
 class Records(unittest.TestCase):
     def assert_concurrent_records(self, state, paths, count):
         self.assertEqual(len(set(paths)), count)
         self.assertEqual(len(list((state / 'decisions').glob('*.md'))), count)
-        self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), str(count))
-        self.assertEqual(decisions._git(state, 'status', '--porcelain'), '')
+        self.assertEqual(decisions._out(state, 'rev-list', '--count', 'HEAD'), str(count))
+        self.assertEqual(decisions._out(state, 'status', '--porcelain'), '')
         for path in paths:
             self.assertTrue(Path(path).is_file())
 
@@ -135,8 +160,8 @@ class IgnoreTopUp(unittest.TestCase):
             state = decisions.initialize(d)
             ignore = state / '.gitignore'
             ignore.write_text('private/\n' + ignore.read_text().replace('*.tmp\n', '').rstrip('\n'))
-            decisions._git(state, 'add', '--all', '--', '.')
-            decisions._git(state, 'commit', '-m', 'A repo from before the top-up')
+            decisions._out(state, 'add', '--all', '--', '.')
+            decisions._out(state, 'commit', '-m', 'A repo from before the top-up')
             stray = state / 'allowance' / 'manual-claude.json.abc123.tmp'
             stray.parent.mkdir()
             stray.write_text('half a write')
@@ -146,9 +171,9 @@ class IgnoreTopUp(unittest.TestCase):
             self.assertEqual((first['committed'], second['committed']), (True, False))
             lines = ignore.read_text().splitlines()
             self.assertEqual((lines.count('*.tmp'), lines[0], lines.count('hub-token')), (1, 'private/', 1))
-            self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), '2')
-            self.assertEqual(decisions._git(state, 'status', '--porcelain'), '')
-            self.assertNotIn('.tmp', decisions._git(state, 'ls-files'))
+            self.assertEqual(decisions._out(state, 'rev-list', '--count', 'HEAD'), '2')
+            self.assertEqual(decisions._out(state, 'status', '--porcelain'), '')
+            self.assertNotIn('.tmp', decisions._out(state, 'ls-files'))
             self.assertTrue(stray.exists())
             record = next((state / 'decisions').glob('*.md')).read_text()
             self.assertIn('.gitignore', record)
@@ -157,8 +182,8 @@ class IgnoreTopUp(unittest.TestCase):
     def old_repo(self, d, ignore_bytes):
         state = decisions.initialize(d)
         (state / '.gitignore').write_bytes(ignore_bytes)
-        decisions._git(state, 'add', '--all', '--', '.')
-        decisions._git(state, 'commit', '-m', 'A repo from before the top-up')
+        decisions._out(state, 'add', '--all', '--', '.')
+        decisions._out(state, 'commit', '-m', 'A repo from before the top-up')
         return state
 
     def test_a_non_utf8_ignore_file_keeps_its_bytes_and_gains_the_line(self):
@@ -168,8 +193,8 @@ class IgnoreTopUp(unittest.TestCase):
             decisions.sync(state)
             self.assertEqual((state / '.gitignore').read_bytes().replace(b'\r\n', b'\n'), old + b'*.tmp\n')
             decisions.record(state, 'Worker cap', 'Keep memory free', 'cap = 2', 'owner')
-            self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), '3')
-            self.assertEqual(decisions._git(state, 'status', '--porcelain'), '')
+            self.assertEqual(decisions._out(state, 'rev-list', '--count', 'HEAD'), '3')
+            self.assertEqual(decisions._out(state, 'status', '--porcelain'), '')
 
     def test_an_unreadable_ignore_file_is_a_warning_and_the_record_still_commits(self):
         with tempfile.TemporaryDirectory() as d:
@@ -184,7 +209,7 @@ class IgnoreTopUp(unittest.TestCase):
             with patch.object(Path, 'read_text', refused), self.assertLogs('drover.decisions', 'WARNING') as logs:
                 decisions.record(state, 'Worker cap', 'Keep memory free', 'cap = 2', 'owner')
             self.assertIn(str(state / '.gitignore'), '\n'.join(logs.output))
-            self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), '2')
+            self.assertEqual(decisions._out(state, 'rev-list', '--count', 'HEAD'), '2')
             self.assertNotIn('*.tmp', (state / '.gitignore').read_text().splitlines())
 
 

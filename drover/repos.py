@@ -11,7 +11,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import config, placement
+from . import config, git_client, placement
 from .placement import native
 from .repos_normalize import (DEFAULTS, DOCS_ONLY_GLOBS, GATE_PLATFORMS, PLATFORMS, RepoError,
                               _ResolvedRepo, cleanup_config, local_disposable, machine_config, normalize, worktrees_for)
@@ -248,19 +248,13 @@ def load(machine, revision="HEAD", checkout=None, *, machine_path=None, sources=
     repo = checkout or machine["repo"]
     versioned = {}
     if placement.reachable(repo):
-        result = placement.git(repo, "rev-parse", "--verify", revision + "^{commit}", timeout=30)
-        if result.returncode:
-            raise RepoError(f"cannot resolve repo config commit {revision}: {result.stderr.strip()}")
-        commit = result.stdout.strip()
+        def read(*args, failed):        # RepoError for any failure, a timeout or no git included, with git's stderr
+            return git_client.out(repo, *args, timeout_s=git_client.QUICK,
+                                  error=lambda e: RepoError(f"{failed}: {e.err.strip() or e}"))
+        commit = read("rev-parse", "--verify", revision + "^{commit}", failed=f"cannot resolve repo config commit {revision}").strip()
         entry = ".drover/config.toml"
-        listing = placement.git(repo, "ls-tree", commit, "--", entry, timeout=30)
-        if listing.returncode:
-            raise RepoError(f"cannot inspect {entry} at {commit}: {listing.stderr.strip()}")
-        if listing.stdout.strip():
-            result = placement.git(repo, "show", f"{commit}:{entry}", timeout=30)
-            if result.returncode:
-                raise RepoError(f"cannot read {entry} at {commit}: {result.stderr.strip()}")
-            versioned = parse_committed_config(result.stdout, commit)
+        if read("ls-tree", commit, "--", entry, failed=f"cannot inspect {entry} at {commit}").strip():
+            versioned = parse_committed_config(read("show", f"{commit}:{entry}", failed=f"cannot read {entry} at {commit}"), commit)
             try:
                 normalize(config._merge(versioned, {"name": machine.get("name"), "repo": machine["repo"]}))
             except (RepoError, TypeError, ValueError, AttributeError) as e:

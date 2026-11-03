@@ -65,6 +65,19 @@ def git_answers(reply):
     return mock.patch.object(process, 'subprocess', answering(run))
 
 
+def git_spy(on_git):
+    """A patch showing each git command to `on_git(repo, *args)` before it runs for real, below git_client and
+    placement.git alike. A `process.Result` it returns answers in place of git; None lets the real command run."""
+    real = process.run
+
+    def run(command):
+        argv = list(command.argv)
+        at = next((i for i in range(len(argv) - 2) if argv[i:i + 2] == ['git', '-C']), None)
+        answer = None if at is None else on_git(argv[at + 2], *argv[at + 3:])
+        return real(command) if answer is None else answer
+    return mock.patch.object(process, 'run', run)
+
+
 def git_spawns(case, reply):
     """`git_answers` until the test ends."""
     patcher = git_answers(reply)

@@ -92,16 +92,16 @@ def _section(title, body):
 
 
 def framework_text(root):
-    from . import placement
+    from . import git_client, placement
     if not root:
         return ''
     paths = ('openspec/', '.specify/', 'docs/superpowers/')
     if placement.routes_through_wsl(root):
         # A trailing slash lists children; -d then hides directories containing only files.
-        result = placement.git(root, 'ls-tree', '-d', '--name-only', 'HEAD', '--',
-                               *(p.rstrip('/') for p in paths), timeout=10)
+        result = git_client.ask(root, 'ls-tree', '-d', '--name-only', 'HEAD', '--',
+                                *(p.rstrip('/') for p in paths), timeout_s=10, no=())     # anything but YES lists none
         found = [p for p in paths if any(name == p.rstrip('/') or name.startswith(p)
-                 for name in result.stdout.splitlines())] if not result.returncode else []
+                 for name in result.out.splitlines())] if result.answer is git_client.Answer.YES else []
     else:
         found = [p for p in paths if (Path(placement.native(root)) / p).is_dir()]
     names = {'openspec/': 'OpenSpec', '.specify/': 'Spec Kit', 'docs/superpowers/': 'superpowers'}

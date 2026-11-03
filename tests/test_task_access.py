@@ -92,11 +92,11 @@ class AccessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             reads = task_access.prepare(['p'], {'p': {'repo': str(repo.repo), 'default_branch': 'main'}}, tmp)
             dest = Path(reads[0]['path'])
-            real, calls = task_access.placement.git, []
+            real, calls = task_access.git_client.out, []
             def counting(path, *args, **kw):
                 calls.append(args)
                 return real(path, *args, **kw)
-            with patch.object(task_access.placement, 'git', counting):
+            with patch.object(task_access.git_client, 'out', counting):
                 task_access.verify(reads)
             self.assertEqual(len(calls), 1, calls)
             (dest / '.git' / 'info' / 'exclude').write_text('hidden\n')
@@ -139,6 +139,33 @@ class AccessTests(unittest.TestCase):
             self.assertEqual(repo.git('show', previous + ':versioned.txt', cwd=reads[0]['path']), 'old contents')
             self.assertIn('current contents', repo.git('blame', 'versioned.txt', cwd=reads[0]['path']))
             task_access.verify(reads)
+
+    def test_lines_58_63_still_fall_through_to_the_remote_ref(self):
+        """A local ref that will not resolve, by exit or by timeout, falls through to the remote ref, as a ValueError did."""
+        import subprocess
+        from tests.fakeci import git_answers
+        sha = 'a' * 40
+        for local in ('exit', 'timeout'):
+            with self.subTest(local=local), tempfile.TemporaryDirectory() as tmp:
+                asked = []
+
+                def reply(repo, *args, timeout):
+                    asked.append(args)
+                    if args[-1] == 'refs/heads/main^{commit}':
+                        if local == 'timeout':
+                            raise subprocess.TimeoutExpired(['git', *args], timeout)
+                        return subprocess.CompletedProcess(args, 128, '', 'fatal: needed a single revision\n')
+                    if args[-2:] == ('--verify', 'refs/remotes/origin/main^{commit}'):
+                        return subprocess.CompletedProcess(args, 0, sha + '\n', '')
+                    if args[:2] == ('--no-optional-locks', 'status'):
+                        return subprocess.CompletedProcess(args, 0, f'# branch.oid {sha}\n# branch.head (detached)\n', '')
+                    return subprocess.CompletedProcess(args, 0, '', '')
+                (Path(tmp) / 'src').mkdir()
+                with git_answers(reply):
+                    reads = task_access.prepare(['p'], {'p': {'repo': str(Path(tmp) / 'src'), 'default_branch': 'main'}},
+                                                Path(tmp) / 'reads')
+                self.assertEqual(reads[0]['sha'], sha)
+                self.assertEqual([a[-1] for a in asked[:2]], ['refs/heads/main^{commit}', 'refs/remotes/origin/main^{commit}'])
 
     def test_brief_states_access_and_kind(self):
         b = brief.assemble(dict(id='T-a', title='Read', kind='research', write=False,

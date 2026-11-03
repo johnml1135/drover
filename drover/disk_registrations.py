@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import durable, git_client, git_worktrees, placement
 from .disk_paths import item, safe_path, worktree_roots
-from .disk_worktrees import git, gitdir_at
+from .disk_worktrees import _out, gitdir_at
 
 THRESHOLD = 10   # percent of the branch's tracked files that may differ from the directory
 WIN = re.compile(r'^[A-Za-z]:[\\/]')
@@ -36,7 +36,7 @@ def owning_side(admin, pointer):
 
 
 def common_dir(machine):
-    return Path(placement.native(git(machine['repo'], 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()))
+    return Path(placement.native(_out(machine['repo'], 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()))
 
 
 def pointer_at(admin):
@@ -55,13 +55,16 @@ def protect(request, machine):
     cannot address a Linux worktree by its path. A worktree this side can see is gone is left prunable."""
     repo, out, apply = machine['repo'], [], request['apply']
     common = common_dir(machine)
-    current = placement.git(repo, 'config', '--get', 'gc.worktreePruneExpire', timeout=60).stdout.strip()
+    expiry = git_client.ask(repo, 'config', '--get', 'gc.worktreePruneExpire', timeout_s=git_client.NORMAL, no=(1,))
+    if expiry.answer is git_client.Answer.UNKNOWN:      # not "unset": the repo is an error and its orphans are not judged
+        raise ValueError(f'git config failed: {expiry.why}')
+    current = expiry.out.strip()
     if current != 'never':
         row = item(repo, request, 'prune_expiry_unset', repo=repo, name=machine['name'], value=current or None)
         row.update(action='report')
         if apply:
             try:
-                git(repo, 'config', 'gc.worktreePruneExpire', 'never')
+                _out(repo, 'config', 'gc.worktreePruneExpire', 'never')
                 row.update(action='configured')
             except ValueError as error:
                 row.update(action='keep', error=str(error))
@@ -93,9 +96,9 @@ def differing(repo, path, ref):
     """(files that differ, tracked files): the branch's tree against the directory, using a disposable index."""
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / 'index'))
-        git(repo, 'read-tree', ref, env=env)
-        total = [n for n in git(repo, 'ls-files', '-z', env=env).split('\0') if n]
-        changed = [n for n in git(repo, '--work-tree=' + str(path), 'diff', '--name-only', '-z', env=env).split('\0') if n]
+        _out(repo, 'read-tree', ref, env=env)
+        total = [n for n in _out(repo, 'ls-files', '-z', env=env).split('\0') if n]
+        changed = [n for n in _out(repo, '--work-tree=' + str(path), 'diff', '--name-only', '-z', env=env).split('\0') if n]
     return len(changed), len(total)
 
 
@@ -103,7 +106,10 @@ def candidate(repo, name, rel=None):
     """The local branch named like the directory: its path under the worktree root (`hx/api-names`), or its last
     component, which `drover-T1` also reads as `drover/T1`."""
     for branch in dict.fromkeys(filter(None, (rel, name, name.replace('-', '/', 1)))):
-        if placement.git(repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch, timeout=60).returncode == 0:
+        found = git_client.ask(repo, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch, timeout_s=git_client.NORMAL, no=(1,))
+        if found.answer is git_client.Answer.UNKNOWN:       # unknown is not "no such branch": the folder stays unproven
+            raise ValueError(f'git rev-parse failed: {found.why}')
+        if found.answer is git_client.Answer.YES:
             return branch
     return None
 
@@ -127,13 +133,12 @@ def suggest(repo, path):
     """Report-only: the one local branch alone holding a newest file of the directory exactly as committed (the skill's
     SUGGEST ranked trees; this reads one blob per file and costs one `git log` each, at most five). Never applied."""
     for name in newest_files(path):
-        blob = placement.git(repo, 'hash-object', '--path=' + name, '--', str(path / name), timeout=60).stdout.strip()
-        commit = placement.git(repo, 'log', '--branches', '--format=%H', '-1', '--raw', '--find-object=' + blob,
-                              timeout=60).stdout.split()[:1]
+        blob = _out(repo, 'hash-object', '--path=' + name, '--', str(path / name)).strip()
+        commit = _out(repo, 'log', '--branches', '--format=%H', '-1', '--raw', '--find-object=' + blob).split()[:1]
         commit = commit[0] if commit else ''
         if not commit:
             continue
-        held = placement.git(repo, 'branch', '--contains', commit, '--format=%(refname:short)', timeout=60).stdout.split()
+        held = _out(repo, 'branch', '--contains', commit, '--format=%(refname:short)').split()
         if len(held) == 1:
             return held[0]
     return None
@@ -266,10 +271,10 @@ def reregister(request, machine, path, target, branch, store):
                                    timeout_s=git_client.NORMAL)     # a stage change: section 6.1's 60 s
             durable.move(place / '.git', path / '.git', wait=durable.NO_WAIT)
             moved = True
-        git(repo, 'worktree', 'repair', str(path))
+        _out(repo, 'worktree', 'repair', str(path))
         admin = Path(placement.native(gitdir_at(path)))
         if not (admin / 'index').exists():
-            git(path, 'reset', '-q')
+            _out(path, 'reset', '-q')
         if git_worktrees.listing(repo, timeout_s=git_worktrees.LISTING_TIMEOUT_S).row(path) is None:
             raise ValueError('registration did not take')
         request['_listings'].repaired(repo, path)
@@ -277,7 +282,7 @@ def reregister(request, machine, path, target, branch, store):
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         try:
             if not moved and place.exists():
-                placement.git(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout=60)
+                git_client.mutate(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout_s=git_client.NORMAL)
         finally:
             store.append(dict(record, phase='failed'))
         raise

@@ -14,13 +14,13 @@ import uuid
 from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from drover import durable, placement, repos, runner, contract
+    from drover import durable, git_client, placement, repos, runner, contract
     from drover.ledger import ci as slots, ops
     from drover.ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
                                   _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail,
                                   GIT_PROMPT_ENV, COMPACTION_STOP, git_environment, _unfinished, active_wsl, stop_for_compaction)
 else:
-    from . import durable, placement, repos, runner, contract
+    from . import durable, git_client, placement, repos, runner, contract
     from .ledger import ci as slots, ops
     from .ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
                             _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail,
@@ -43,36 +43,34 @@ class CIInterrupted(CIError):
 class CIDeferred(CIInterrupted):
     """No execution issued: retain the prepared request until resources recover."""
 # ---- git ------------------------------------------------------------------------------------------------
-def git(repo, *args, check=True):
-    try:
-        result = placement.git(repo, *args, env=git_environment(), timeout=60)
-    except subprocess.TimeoutExpired as error:
-        raise CIError(f'git {" ".join(args)} timed out after 60 seconds') from error
-    if check and result.returncode:
-        raise CIError(f'git {" ".join(args)}: {result.stderr.strip()}')
-    return result
+def ci_error(failed):     # git's failure as CIError, worded as before: a timeout by its limit, anything else by its stderr
+    words = f'git {" ".join(failed.args_)}'
+    return CIError(f'{words} timed out after 60 seconds' if failed.why == 'timeout' else f'{words}: {failed.err.strip()}')
+def _out(repo, *args):
+    return git_client.out(repo, *args, timeout_s=git_client.NORMAL, env=git_environment(), error=ci_error)
 def head(repo):
-    return git(repo, 'rev-parse', 'HEAD').stdout.strip()
+    return _out(repo, 'rev-parse', 'HEAD').strip()
 def dirty(repo, *, post_run=False):
     """Tracked edits, plus bounded untracked discovery before testing or verifying a commit."""
-    tracked = git(repo, *placement.status_args(repo)).stdout.strip()
-    if tracked or post_run:
-        return tracked
-    return git(repo, 'ls-files', '--others', '--exclude-standard', '--directory', '--no-empty-directory').stdout.strip()
-def contains(repo, base_ref, sha):
-    base = git(repo, 'rev-parse', '--verify', '--quiet', base_ref + '^{commit}', check=False).stdout.strip()
-    if not base:
-        return None, False
-    return base, git(repo, 'merge-base', '--is-ancestor', base, sha, check=False).returncode == 0
+    tracked = _out(repo, *placement.status_args(repo)).strip()
+    return tracked if tracked or post_run else _out(repo, 'ls-files', '--others', '--exclude-standard', '--directory', '--no-empty-directory').strip()
+def contains(repo, base_ref, sha):      # any exit is an answer, as an unchecked call read it; a run that did not exit is CIError
+    def ask(*args):
+        reply = git_client.ask(repo, *args, timeout_s=git_client.NORMAL, no=(1,), env=git_environment())
+        if reply.why in ('timeout', 'unavailable'):
+            raise ci_error(git_client.GitFailed(args, reply.why, reply.code, reply.err, reply.out))
+        return reply
+    base = ask('rev-parse', '--verify', '--quiet', base_ref + '^{commit}').out.strip()
+    return (base, ask('merge-base', '--is-ancestor', base, sha).answer is git_client.Answer.YES) if base else (None, False)
 # ---- changed paths and documentation guards ---------------------------------------------------------------
 def changed_paths(repo, base, tip='HEAD'):
-    return [p for p in git(repo, '-c', 'core.quotepath=false', 'diff', '--name-only', '--no-renames', '-z', f'{base}...{tip}').stdout.split('\0') if p]
+    return [p for p in _out(repo, '-c', 'core.quotepath=false', 'diff', '--name-only', '--no-renames', '-z', f'{base}...{tip}').split('\0') if p]
 def changed_docs_only(repo, base, tip, globs):
     """docs_only for `base...tip`, and false when any changed path is or was a symlink (git mode 120000)."""
     paths = changed_paths(repo, base, tip)
     if not docs_only(paths, globs):
         return False
-    raw = git(repo, 'diff', '--raw', '--no-renames', '-z', f'{base}...{tip}').stdout
+    raw = _out(repo, 'diff', '--raw', '--no-renames', '-z', f'{base}...{tip}')
     return not any(f.startswith(':') and '120000' in f.lstrip(':').split()[:2] for f in raw.split('\0'))
 
 
@@ -149,7 +147,7 @@ class CI:
 
     @staticmethod
     def _diff_lines(checkout, base, commit):
-        rows = git(checkout, 'diff', '--numstat', '--no-renames', f'{base}...{commit}').stdout.splitlines()
+        rows = _out(checkout, 'diff', '--numstat', '--no-renames', f'{base}...{commit}').splitlines()
         return sum(int(n) for row in rows for n in row.split('\t')[:2] if n.isdigit())
 
     def result(self, run_id, execution=None, spec=None):

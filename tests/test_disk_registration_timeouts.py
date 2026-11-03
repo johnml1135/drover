@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import disk_registrations, disk_worktrees, placement
+from drover import disk_registrations, disk_worktrees, git_client, placement
 from tests.disk_fixture import listing_answers, stage_request
 
 TIMEOUT = subprocess.TimeoutExpired(['git'], 60)
@@ -62,23 +62,22 @@ class ReregisterFailure(unittest.TestCase):
             self.added.append(kwargs)
             Path(place).mkdir(parents=True)
             raise TIMEOUT
-        with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(placement, 'git', side_effect=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
+        with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(git_client, 'mutate', return_value=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
             with self.assertRaises(subprocess.TimeoutExpired):
                 disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b', store)
         return records, git
 
     def test_failure_removes_the_temporary_worktree_and_journals_failed(self):
-        records, git = self.run_reregister(lambda *a, **k: None)
+        records, git = self.run_reregister(git_client.GitDone(True, '', '', 0, None))
         self.assertEqual(git.call_count, 1)
         self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
 
     def test_the_repair_adds_its_worktree_within_a_stage_change_limit(self):
-        from drover import git_client
-        self.run_reregister(lambda *a, **k: None)
+        self.run_reregister(git_client.GitDone(True, '', '', 0, None))
         self.assertEqual([kw.get('timeout_s') for kw in self.added], [git_client.NORMAL])     # section 6.1: 60 s
 
     def test_second_timeout_in_the_removal_still_journals_failed(self):
-        records, git = self.run_reregister(TIMEOUT)
+        records, git = self.run_reregister(git_client.GitDone(False, '', '', None, 'timeout'))     # mutate raises nothing
         self.assertEqual(git.call_count, 1)
         self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
 

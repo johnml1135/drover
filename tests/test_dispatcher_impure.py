@@ -298,10 +298,11 @@ class FrameworkDetection(unittest.TestCase):
                                        f'040000 tree {leaf}\topenspec\n')).stdout.strip()
             self.assertEqual(git('ls-tree', '-d', '--name-only', tree).stdout.splitlines(),
                              ['.specify', 'docs', 'openspec'])
-            def wsl_git(root, *args, **kw):
-                return git(*(tree if arg == 'HEAD' else arg for arg in args), **kw)
+            def wsl_git(root, *args, timeout_s, no):     # shaped like git_client.ask
+                from drover.git_client import Answer, GitReply
+                return GitReply(Answer.YES, git(*(tree if arg == 'HEAD' else arg for arg in args)).stdout, '', 0, None)
             with patch('drover.placement.routes_through_wsl', return_value=True), \
-                    patch('drover.placement.git', side_effect=wsl_git):
+                    patch('drover.git_client.ask', side_effect=wsl_git):
                 text = brief.framework_text('/home/seat/work/task')
             for path in ('openspec/', '.specify/', 'docs/superpowers/'):
                 self.assertIn(path, text)

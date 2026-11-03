@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import threading
 
-from . import config, placement, repos, task_context
+from . import config, git_client, placement, repos, task_context
 
 _LOCK = threading.Lock()
 
@@ -23,18 +23,20 @@ def check_read_roots(cwd, paths):
             raise ValueError(f'read-only checkout inside or containing writable workspace: {path}')
 
 
-def _git(path, *args):
-    r = placement.git(path, '--no-optional-locks', *args, timeout=60)
-    if r.returncode:
-        raise ValueError(f'read checkout: {r.stderr.strip()[-250:]}')
-    return r.stdout.strip()
+def _refused(failed):
+    """Any failure, a timeout or no git included, is the ValueError `prepare` falls through on and `verify` refuses on."""
+    return ValueError(f'read checkout: {(failed.err.strip() or str(failed))[-250:]}')
+
+
+def _out(path, *args):
+    return git_client.out(path, '--no-optional-locks', *args, timeout_s=git_client.NORMAL, error=_refused).strip()
 
 
 def verify(reads):
     """One status call carries both the commit (branch.oid header) and any change, including ignored files."""
     for read in reads:
         path = read['path']
-        lines = _git(path, 'status', '--porcelain=v2', '--branch', '--untracked-files=all',
+        lines = _out(path, 'status', '--porcelain=v2', '--branch', '--untracked-files=all',
                      '--ignored=matching').splitlines()
         head = next((line.split(' ', 2)[2] for line in lines if line.startswith('# branch.oid ')), None)
         if head != read['sha'] or any(not line.startswith('# ') for line in lines):
@@ -57,7 +59,7 @@ def prepare(entries, configured=None, root=None):
             # Only named branches, never revision syntax or an arbitrary path.
             for ref in (f'refs/heads/{branch}', f'refs/remotes/{repos.remote_name(prog)}/{branch}'):
                 try:
-                    sha = _git(source, 'rev-parse', '--verify', ref + '^{commit}')
+                    sha = _out(source, 'rev-parse', '--verify', ref + '^{commit}')
                     break
                 except ValueError:
                     pass
@@ -73,13 +75,13 @@ def prepare(entries, configured=None, root=None):
                     via_wsl = placement.routes_through_wsl(source)
                     url = (PurePosixPath(source).as_uri() if via_wsl else Path(source).resolve().as_uri())
                     clone_dest = placement.to_wsl_path(temp) if via_wsl else str(temp)
-                    _git(source, 'clone', '--no-checkout', '--', url, clone_dest)
+                    _out(source, 'clone', '--no-checkout', '--', url, clone_dest)
                     if via_wsl:
-                        _git(source, '-C', clone_dest, 'fetch', '--no-tags', '--', url, sha)
+                        _out(source, '-C', clone_dest, 'fetch', '--no-tags', '--', url, sha)
                     else:
-                        _git(temp, 'fetch', '--no-tags', '--', url, sha)
-                    _git(temp, 'config', 'core.filemode', 'false')
-                    _git(temp, '-c', 'core.autocrlf=false', 'checkout', '--detach', sha)
+                        _out(temp, 'fetch', '--no-tags', '--', url, sha)
+                    _out(temp, 'config', 'core.filemode', 'false')
+                    _out(temp, '-c', 'core.autocrlf=false', 'checkout', '--detach', sha)
                     temp.rename(dest)
                 except Exception:
                     shutil.rmtree(temp)
