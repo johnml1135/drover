@@ -8,7 +8,8 @@
     "default_disk_trackers",
     "default_process_ignore",
     "_PROCESS_IGNORE_R11_WINDOWS",
-    "_PROCESS_IGNORE_WSL"
+    "_PROCESS_IGNORE_WSL",
+    "GIT_TIMED_OUT"
   ],
   "qualified_names": [
     "drover.pipeline.git",
@@ -24,6 +25,12 @@
     "drover.task_access._git",
     "drover.decisions._git",
     "drover.outside_land.GitUnknown",
+    "drover.placement_git.git",
+    "drover.placement.git",
+    "drover.placement_git.LONG",
+    "drover.placement_git.request_git",
+    "drover.placement_git.git_spawns",
+    "drover.placement_git.git_spawn_lock",
     "drover.durable.publish",
     "drover.durable._UMASK",
     "drover.placement_sweep.marked",

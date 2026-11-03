@@ -192,14 +192,14 @@ class FakeCommandBoundaries(unittest.TestCase):
         self.fake.assert_done()
 
     def test_patch_is_local_and_production_git_checks_the_boundary(self):
-        from drover import placement_git, process
+        from drover import git_client, process
         original, real_run = process.subprocess, subprocess.run
         argv = ['git', '-C', str(self.fake.cwd), 'rev-parse', 'HEAD']
         options = process_options(23, env=self.fake.env)
         self.fake.expect(argv, output='abc123\n', **options)
         with self.fake.patch(process):
-            result = placement_git.git(self.fake.cwd, 'rev-parse', 'HEAD', timeout=23, env=self.fake.env)
-            self.assertEqual(result.stdout, 'abc123\n')
+            stdout = git_client.out(self.fake.cwd, 'rev-parse', 'HEAD', timeout_s=23, env=self.fake.env)
+            self.assertEqual(stdout, 'abc123\n')
             self.assertIs(subprocess.run, real_run)
             with self.assertRaisesRegex(AssertionError, 'unscripted subprocess API'):
                 process.subprocess.Popen(argv)
@@ -231,14 +231,13 @@ class FakeCommandBoundaries(unittest.TestCase):
         self.fake.assert_done()
 
     def test_patched_git_preserves_missing_executable_result(self):
-        from drover import placement_git, process
+        from drover import git_client, process
         argv = ['git', '-C', str(self.fake.cwd), 'rev-parse', 'HEAD']
         self.fake.expect(argv, error=FileNotFoundError('fixture git is missing'), **process_options(23, env=self.fake.env))
         with self.fake.patch(process):
-            result = placement_git.git(self.fake.cwd, 'rev-parse', 'HEAD', timeout=23, env=self.fake.env)
-        self.assertIsInstance(result, subprocess.CompletedProcess)
-        self.assertEqual((result.returncode, result.stdout), (127, ''))
-        self.assertIn('git: No such file or directory', result.stderr)     # process's fixed missing detail
+            reply = git_client.ask(self.fake.cwd, 'rev-parse', 'HEAD', timeout_s=23, no=(1,), env=self.fake.env)
+        self.assertEqual((reply.answer, reply.why, reply.code), (git_client.Answer.UNKNOWN, 'unavailable', None))
+        self.assertIn('git: No such file or directory', reply.err)     # process's fixed missing detail; no rc 127
 
     def test_in_process_ci_uses_fake_pwsh_python_and_git_without_processes_or_sleeps(self):
         from drover import ci, placement_exec, process, runner

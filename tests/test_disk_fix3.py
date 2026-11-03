@@ -27,7 +27,7 @@ def output_facts(path, side, registrations=None):
 
 
 def unavailable_git():
-    """Every git spawn fails, below git_client and placement.git alike: unknown config parsing fails closed in-process."""
+    """Every git spawn fails, below git_client: unknown config parsing fails closed in-process."""
     import subprocess
     return git_answers(lambda repo, *args, timeout: subprocess.CompletedProcess([], 128, '', 'unavailable'))
 

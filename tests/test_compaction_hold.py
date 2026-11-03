@@ -186,11 +186,13 @@ class Hold(DiskCase):
         with self.assertRaises(OSError):
             placement.WSL('U').command(['true'])
 
-    def test_git_in_wsl_offline_is_a_failed_command(self):
+    def test_git_in_wsl_offline_is_unavailable(self):
+        from drover import git_client
         self.cfg['paths']['wsl_distro'] = 'Ubuntu'
         self.live('offline')
         with mock.patch.object(placement_git, 'routes_through_wsl', return_value=True):
-            self.assertEqual(placement_git.git('/home/j/x', 'status').returncode, 127)
+            reply = git_client.ask('/home/j/x', 'status', timeout_s=git_client.QUICK, no=())
+        self.assertEqual((reply.answer, reply.why, reply.code), (git_client.Answer.UNKNOWN, 'unavailable', None))
 
     def test_draining_still_lets_a_wsl_command_through(self):
         self.live('draining')

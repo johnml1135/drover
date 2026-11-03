@@ -16,6 +16,7 @@ from drover.durable import (NO_WAIT, ORDINARY, RELEASE, ROUTINE, TERMINAL, Wait,
                             write_json, write_text)
 from drover import disk_registrations, durable, launch_handle, placement, runner_supervise
 from tests.disk_trace_scene import quick_state
+from tests.fakeci import git_answers
 
 REAL_REPLACE, REAL_UNLINK, REAL_RMDIR, REAL_FDOPEN = os.replace, os.unlink, os.rmdir, os.fdopen
 
@@ -439,12 +440,15 @@ class Sites(Base):
             Path(place).mkdir(parents=True)
             (Path(place) / '.git').write_text('gitdir: new', encoding='utf-8')
 
-        with patch.object(placement, 'add_worktree', side_effect=add), patch.object(placement, 'git'), \
+        git = []
+        with patch.object(placement, 'add_worktree', side_effect=add), \
+                git_answers(lambda repo, *args, timeout: git.append(args[:2]) or SimpleNamespace(returncode=0, stdout='')), \
                 patch.object(placement, 'cleanup_side', return_value='wsl'), patch.object(durable.os, 'replace', refused), \
                 patch.object(durable, 'move', wraps=durable.move) as moved, self.assertRaises(PermissionError):
             disk_registrations.reregister(dict(now=0, state_dir=str(self.dir / 'state')), dict(name='a', repo='/repo'), orphan,
                                           None, 'b', SimpleNamespace(append=records.append))
         moved.assert_called_once()
+        self.assertEqual(git, [('worktree', 'remove')])     # the unmoved holder goes; nothing else touches git
         self.assertEqual((refused.calls, self.clock.slept), (1, []))
         self.assertEqual([record['phase'] for record in records], ['planned', 'failed'])
         self.assertEqual((orphan / '.git').read_text(encoding='utf-8'), 'gitdir: old')

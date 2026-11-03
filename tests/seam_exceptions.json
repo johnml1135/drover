@@ -10,7 +10,6 @@
 {"rule": "R1", "module": "drover/pane_fault.py", "where": "<module>", "count": 1, "reason": "Names SubprocessError but spawns nothing itself; goes in Task 45."},
 {"rule": "R1", "module": "drover/pane_status_hook.py", "where": "<module>", "count": 1, "reason": "Standalone hook script, run without the package. Section 13 end row."},
 {"rule": "R1", "module": "drover/placement_exec.py", "where": "<module>", "count": 1, "reason": "ADR-0002: `spawn_worker` and `detach`. Section 13 end row."},
-{"rule": "R1", "module": "drover/placement_git.py", "where": "<module>", "count": 1, "reason": "Spawns directly; goes in Task 28."},
 {"rule": "R1", "module": "drover/placement_proof.py", "where": "<module>", "count": 1, "reason": "Names SubprocessError but spawns nothing itself; goes in Task 45."},
 {"rule": "R1", "module": "drover/placement_tree.py", "where": "<module>", "count": 1, "reason": "ADR-0002: waits on and kills the process tree. Section 13 end row."},
 {"rule": "R1", "module": "drover/runner.py", "where": "<module>", "count": 1, "reason": "ADR-0002. Section 13 end row. The import names nothing in this file at the base."},

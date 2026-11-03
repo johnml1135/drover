@@ -5,18 +5,23 @@ run that did not end, or could not start, has its own `why`: there is no 124 or 
 Path mapping stays in `placement_git` (ADR-0007): argv and env come from there, then `process.run`, then the count.
 Nothing retries.
 """
+import contextvars
 import os
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Literal
 
 from . import placement_git, process
-from .placement_git import request_git     # the hub's per-request count; the same object until Task 28 moves it
 
 __all__ = ['Answer', 'Why', 'GitReply', 'GitDone', 'GitFailed', 'QUICK', 'NORMAL', 'FETCH', 'LONG',
-           'ask', 'out', 'mutate', 'argv', 'request_git']
+           'ask', 'out', 'mutate', 'argv', 'request_git', 'git_spawns', 'git_spawn_lock']
 
 QUICK, NORMAL, FETCH, LONG = 30.0, 60.0, 120.0, 600.0     # seconds
+
+git_spawns = 0                  # every git spawn in this process, for the hub's performance log
+git_spawn_lock = threading.Lock()
+request_git = contextvars.ContextVar('request_git', default=None)     # hub/app.py's per-request count
 
 
 class Answer(Enum):
@@ -65,8 +70,14 @@ class GitFailed(OSError):
 _WHY = {'timed_out': 'timeout', 'unavailable': 'unavailable'}
 
 
+def _text(data):
+    """Git's bytes as `text=True, encoding='utf-8', errors='replace'` read them: newlines made LF."""
+    return data.decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
+
+
 def _run(repo, args, timeout_s, env, side):
     """(code, out, err, why): why is None for an exit, which `code` then holds."""
+    global git_spawns
     try:
         command, extra = placement_git._git_command(repo, args, side=side)
     except process.CommandTooLong:
@@ -76,12 +87,12 @@ def _run(repo, args, timeout_s, env, side):
     if extra:
         env = {**(os.environ if env is None else env), **extra}
     done = process.run(process.Command(command, timeout_s, env=env))
-    with placement_git.git_spawn_lock:
-        placement_git.git_spawns += 1
+    with git_spawn_lock:
+        git_spawns += 1
     count = request_git.get()
     if count is not None:
         count['spawns'] += 1
-    out, err = placement_git._text(done.out), placement_git._text(done.err)
+    out, err = _text(done.out), _text(done.err)
     if done.kind == 'exited':
         return done.code, out, err, None
     return None, out, err if done.kind == 'timed_out' else f'git unavailable: {done.detail}', _WHY[done.kind]

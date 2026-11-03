@@ -7,7 +7,7 @@ import shutil
 import unittest
 from pathlib import Path
 
-from drover import placement, worktree
+from drover import git_client, worktree
 from drover.disk_registrations import owning_side
 from tests.test_disk_worktrees import WorktreeCase
 from tests.tiers import integration
@@ -39,8 +39,9 @@ class Registry(WorktreeCase):
         return self.common / 'worktrees' / name
 
     def expiry(self):
-        done = placement.git(self.r.repo, 'config', '--get', 'gc.worktreePruneExpire', timeout=30)
-        return done.stdout.strip()
+        reply = git_client.ask(self.r.repo, 'config', '--get', 'gc.worktreePruneExpire',
+                               timeout_s=git_client.QUICK, no=(1,))
+        return reply.out.strip()
 
     def rows(self, result, code):
         return [i for i in result['items'] if i.get('reason_code') == code]

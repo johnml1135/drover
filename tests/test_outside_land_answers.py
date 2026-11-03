@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from drover import git_client, outside_land, placement
 from drover.ledger import ops, states
+from tests.fakeci import git_answers
 from tests.outside_land_fixture import Decider, FakeGitCase
 
 
@@ -243,11 +244,12 @@ class OwnerAnswerTests(FakeGitCase):
         tid, _, commit = self.unproved()
         self.scan()
         self.answer(f'Landed at {commit}')
+        spawned = []
         with patch.object(placement, 'routes_through_wsl', return_value=True), \
-                patch.object(placement, 'wsl_running', return_value=False), patch.object(placement, 'git') as git, \
-                patch.object(git_client, 'ask') as ask:
+                patch.object(placement, 'wsl_running', return_value=False), \
+                git_answers(lambda repo, *args, timeout: spawned.append(args)):
             self.assertEqual(self.scan(), {'scanned': 0, 'landed': []})
-        git.assert_not_called(), ask.assert_not_called()
+        self.assertEqual(spawned, [])
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
 
 

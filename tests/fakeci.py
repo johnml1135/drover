@@ -53,27 +53,33 @@ def answer_spawns(case, run):
     case.addCleanup(patcher.stop)
 
 
+def _git_c(argv):
+    """`(repo, *args)` of a `git -C <repo> ...` argv, alone or inside a WSL command; None for any other argv."""
+    argv = list(argv)
+    at = next((i for i in range(len(argv) - 2) if argv[i:i + 2] == ['git', '-C']), None)
+    return None if at is None else (argv[at + 2], *argv[at + 3:])
+
+
 def git_answers(reply):
-    """A patch sending every git spawn to `reply(repo, *args, timeout=)`, below git_client and placement.git alike,
-    so a test reads one behaviour whichever route its caller takes. It answers as `answering` says, and a raised
+    """A patch sending every git spawn to `reply(repo, *args, timeout=)`, below git_client, so a test reads one
+    behaviour whichever verb its caller takes. It answers as `answering` says, and a raised
     `subprocess.TimeoutExpired` is a timeout. The argv must hold `git -C <repo>`, alone or inside a WSL command."""
     def run(argv, **options):
-        at = next((i for i in range(len(argv) - 2) if argv[i:i + 2] == ['git', '-C']), None)
-        if at is None:
+        command = _git_c(argv)
+        if command is None:
             raise AssertionError(f'not a git argv: {argv!r}')
-        return reply(argv[at + 2], *argv[at + 3:], timeout=options['timeout'])
+        return reply(*command, timeout=options['timeout'])
     return mock.patch.object(process, 'subprocess', answering(run))
 
 
 def git_spy(on_git):
-    """A patch showing each git command to `on_git(repo, *args)` before it runs for real, below git_client and
-    placement.git alike. A `process.Result` it returns answers in place of git; None lets the real command run."""
+    """A patch showing each git command to `on_git(repo, *args)` before it runs for real, below git_client.
+    A `process.Result` it returns answers in place of git; None lets the real command run."""
     real = process.run
 
     def run(command):
-        argv = list(command.argv)
-        at = next((i for i in range(len(argv) - 2) if argv[i:i + 2] == ['git', '-C']), None)
-        answer = None if at is None else on_git(argv[at + 2], *argv[at + 3:])
+        found = _git_c(command.argv)
+        answer = None if found is None else on_git(*found)
         return real(command) if answer is None else answer
     return mock.patch.object(process, 'run', run)
 

@@ -10,7 +10,7 @@ from drover.ledger import ops, states
 from drover.ledger.waiting import Waiting, cause_key
 from drover.port import DirectPort
 from tests.dispatch_fixture import make_dispatcher
-from tests.fakeci import InProcessLauncher
+from tests.fakeci import InProcessLauncher, git_answers
 from tests.outside_land_fixture import Decider, FakeGitCase, LedgerCase
 
 
@@ -152,9 +152,10 @@ class ScanLimitTests(LedgerCase):
     def test_stopped_wsl_gets_no_git_call(self):
         running, routes = self.on_wsl(False)
         self.repo_task('acme'), self.repo_task('acme')
-        with running as asked, routes, patch.object(placement, 'git') as git, patch.object(git_client, 'ask') as ask:
+        spawned = []
+        with running as asked, routes, git_answers(lambda repo, *args, timeout: spawned.append(args)):
             self.assertEqual(self.scan(), {'scanned': 0, 'landed': []})
-        git.assert_not_called(), ask.assert_not_called()
+        self.assertEqual(spawned, [])
         self.assertEqual(asked.call_count, 1)
 
     def test_running_wsl_is_scanned(self):

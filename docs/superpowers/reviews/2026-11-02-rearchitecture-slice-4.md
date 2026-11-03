@@ -17,7 +17,18 @@ Tasks 24 to 27 add their handler lists here, one line per handler: `file:line, w
 - **R5.** `test_seams` pins the live rule for `git_client` (it imports only `process`, `placement_git` and `placement_paths`) and that `placement_git` reaches `git_client` only by stated, function-level rows; there are none until Task 27.
 - **Trace.** Untouched.
 
-## Task 24: `pipeline`, `replan`, `landing`, `landing_batch`
+## Task 23: `git_worktrees` swaps; four listings move
+
+Recorded here by Task 28 from Task 23's report, so the slice's handler list is whole; line numbers are at 9306b61. `git_worktrees._git` is `git_client.out(error=_unknown)`, which turns only `GitFailed` into `RegistrationsUnknown` (its broad `except Exception` is gone). `prove`'s tip calls `git_client.out` and raises `GitFailed`. `placement.unlock_worktree`, `pipeline.Repository.inventory`, `cleanup.checked_out_anywhere` and `hub/task_views.probe` list through `git_worktrees.listing`.
+
+Handlers, `file:line, what it catches, what now reaches it, change`:
+- landing.py:98 (`finally`), nothing: `RegistrationsUnknown` on an unlock-listing timeout (was `TimeoutExpired`). None: it propagates as before.
+- pipeline.py:459, `(ValueError, OSError, SubprocessError)` around `Repository.remove`: `RegistrationsUnknown`, an OSError, on an unlock-listing timeout. None: still caught.
+- pipeline.py:376 `_worktree_of_branch`: `inventory` gives `[]` on any listing failure, a timeout included, as rc 124 did. None.
+- cleanup.py:93 `delete_branch`, `(GitError, OSError)`: `RegistrationsUnknown` from `checked_out_anywhere` (was GitError; a timeout escaped as `TimeoutExpired`). Refuses `git error, nothing deleted`; towards keeping.
+- hub/task_views.py `RepoStates.get`, `Exception`: `RegistrationsUnknown`. None.
+- disk_paths.py:300, disk_worktrees.py:319 (`prove`), the stage-level OSError tuples: `GitFailed` for a failed tip (was `RegistrationsUnknown`); both are OSError. None.
+
 
 `pipeline.git` and `landing.timed_git` are deleted (`GIT_TIMED_OUT` too), and both R1 rows go. `pipeline.Repository` keeps its methods over `git_client`: `out` with `error=pipeline.refused` (WorktreeRefused, the first three arguments and the last 300 characters of stderr, or stdout) at every `check=True` site, `ask` elsewhere, `LONG` where no timeout was named, 10 s for `status`. `replan` inspects through `out(..., timeout_s=60, error=refused)`. `landing_batch`'s own reads and the replay use `out(error=ci_error)` (CIError, as `landing_batch.git` words it) and `ask`; `landing_batch.git` stays for `landing_control` and for `add_worktree`'s `run=` until Task 25. `contained` returns `Answer`, at `LONG`, and its caller raises unless it is `YES`. `outside_land._out` now asks `git_client` and still raises `TimeoutExpired` or `GitUnknown`, so its handlers are unchanged until Task 27.
 
@@ -127,3 +138,15 @@ Handlers, `file:line, what it catches, what now reaches it, change`:
 Line counts: outside_land 472 to 467, ops_outside 138 to 138, task_views 170 to 165, placement 179 to 181, placement_git 227 to 229. Trace file unchanged.
 
 Fix round 1: `reachable` (yes, no, and a timeout raising GitFailed) and `unlock_worktree`'s timeout are pinned in `test_wsl_worktree.UnknownIsNotMissing`, each red under a mutant that drops the raise. outside_land 467 to 469.
+
+## Task 28: `placement.git` goes; slice exit
+
+`placement_git.git`, its re-export `placement.git`, and `placement_git.LONG` are deleted. `git_spawns`, `git_spawn_lock` and `request_git` move to `git_client`, which counts each spawn under its own lock as before, so the hub's performance log reads the same counts (`hub/app.py` already read `request_git` from `git_client`). `git_client` decodes git's bytes itself (`_text` moved with the counter). `placement_git` no longer imports `subprocess`, `compaction_hold`, `threading` or `contextvars`, so its R1 row goes. `qualified_names` gains `drover.placement_git.git`, `drover.placement.git`, `drover.placement_git.LONG` and the three moved names; `global_names` gains `GIT_TIMED_OUT`, already gone since Task 24.
+
+Handlers: none new. At 62591ae no production code called `placement.git` or `placement_git.git`; `placement.py` only re-exported it. Every caller at `SLICE_BASE` is in a section above: `git_worktrees` and the four listings in Task 23; `pipeline`, `replan`, `landing`, `landing_batch` in Task 24; `origin`, `landing_control`, `pane_close`, `placement.add_worktree` in Task 25; `ci`, `cleanup`, `disk_worktrees`, `disk_paths`, `disk_registrations`, `dispatch_hold`, `task_access`, `decisions`, `brief`, `context_files`, `repos` in Task 26; `outside_land`, `ledger/ops_outside`, `hub/task_views`, `hub/app`, `placement.unlock_worktree`, `placement_git.reachable` and `worktree_metadata` in Task 27.
+
+Slice exit:
+- All git but the frozen `hub/runtime._git` goes through `git_client`. The R3 rows left are section 13's end rows: `ci.CI.prepare` (a gate step's `git diff --check`, data for the runner), `pane_files.repo_trusted` (a read through `_wsl_read`) and `hub/runtime._git`.
+- R3 is final, with its `Answer.NO` check (`test_r3_requires_unknown_beside_answer_no`). R8 has one row, `origin.fast_forward`. R5 has the two `placement_git` rows, `reachable` and `worktree_metadata`. R1 has 19 rows.
+- Tests: the remaining test fakes of `placement.git` moved to `git_answers` or to `git_client` itself; dead `placement.git` patches in test_durable, test_outside_land_answers and test_outside_land_limits became `git_answers` checks. `fakeci.git_spy` shares `git_answers`' one `git -C` parser. Tests that asserted rc 127 or a raised `TimeoutExpired` from `placement.git` are restated as `Answer` assertions or removed where `test_git_client` already holds the same assertion.
+- Trace: `git diff 4d8039d -- tests/disk_decision_trace.json` prints nothing.

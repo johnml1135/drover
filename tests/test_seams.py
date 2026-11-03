@@ -284,7 +284,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.found('R5', 'drover/durable.py', 'from . import config'), at_load)
         self.assertEqual(self.found('R5', 'drover/run_output.py', 'from drover.ledger import codec'), at_load)
         self.assertEqual(self.found('R5', 'drover/process.py', 'from . import compaction_hold, placement_paths'), [])
-        self.assertEqual(self.found('R5', 'drover/process.py', 'from .placement import git'), at_load)
+        self.assertEqual(self.found('R5', 'drover/process.py', 'from .placement import WSL'), at_load)
         self.assertEqual(self.found('R5', 'drover/git_client.py', 'from . import placement_git, process'), [])
         self.assertEqual(self.found('R5', 'drover/git_client.py', 'from . import config'), at_load)
         self.assertEqual(self.found('R5', 'drover/git_worktrees.py', 'from . import git_client, placement'), at_load)

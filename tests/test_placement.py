@@ -103,7 +103,7 @@ class PlacementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / '.git').write_text('broken metadata')
             with self.assertRaisesRegex(ValueError, 'invalid git metadata pointer'):
-                placement.git(tmp, 'status')
+                placement._git_location(tmp)     # git_client reads it as unavailable (test_git_client)
 
     @unittest.skipIf(os.name == 'nt', 'other-host adapter check')
     def test_windows_spawn_requires_windows_process_ownership(self):

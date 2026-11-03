@@ -77,12 +77,6 @@ class Answers(FakedGit):
                           (Answer.UNKNOWN, 'timeout'), (Answer.UNKNOWN, 'unavailable')])
         self.assertEqual((replies[3].out, replies[3].err), ('part', 'slow'))
 
-    def test_missing_git_is_unavailable_not_127(self):
-        self.missing()
-        reply = ask(REPO, *HEAD, timeout_s=git_client.QUICK, no=(1,))
-        self.assertEqual((reply.answer, reply.why, reply.code), (Answer.UNKNOWN, 'unavailable', None))
-        self.assertIn(process.MISSING, reply.err)
-
     def test_wsl_offline_at_build_is_unavailable(self):
         offline = compaction_hold.WslOffline('WSL is down for the overnight compaction')
         with mock.patch.object(placement_git, '_git_command', side_effect=offline):
@@ -190,11 +184,12 @@ class Conventions(FakedGit):
         self.assertFalse(hasattr(git_client, 'GIT_TIMED_OUT'))
 
     def test_spawn_counts_stay_for_the_hub_performance_log(self):
-        self.assertIs(git_client.request_git, placement_git.request_git)
+        for moved in ('request_git', 'git_spawns', 'git_spawn_lock', 'git'):
+            self.assertFalse(hasattr(placement_git, moved), moved)
         self.expect()
         self.expect()
         self.missing()
-        before, counts = placement_git.git_spawns, {'spawns': 0}
+        before, counts = git_client.git_spawns, {'spawns': 0}
         token = git_client.request_git.set(counts)
         try:
             ask(REPO, *HEAD, timeout_s=git_client.QUICK, no=(1,))
@@ -202,10 +197,10 @@ class Conventions(FakedGit):
             mutate(REPO, *HEAD, timeout_s=git_client.QUICK)
         finally:
             git_client.request_git.reset(token)
-        self.assertEqual((placement_git.git_spawns - before, counts['spawns']), (3, 3))
+        self.assertEqual((git_client.git_spawns - before, counts['spawns']), (3, 3))
         with mock.patch.object(placement_git, '_git_command', side_effect=compaction_hold.WslOffline('down')):
             ask(REPO, *HEAD, timeout_s=git_client.QUICK, no=(1,))
-        self.assertEqual(placement_git.git_spawns - before, 3, 'nothing spawned, nothing counted')
+        self.assertEqual(git_client.git_spawns - before, 3, 'nothing spawned, nothing counted')
 
     def test_argv_equals_the_journals_restore_argv(self):
         args = ['worktree', 'add', '--detach', '/trees/one', 'abc']

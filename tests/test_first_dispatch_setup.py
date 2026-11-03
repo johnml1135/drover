@@ -1,7 +1,6 @@
 """First dispatch git deadline, allowance path, brief, review and retry regressions."""
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,39 +28,21 @@ class GitTimeouts(unittest.TestCase):
         return argv, (patch.object(placement, '_git_command', return_value=(argv, {})), self.fake.patch(process),
                       patch.object(process, 'time', SimpleNamespace(perf_counter=lambda: next(clock))))
 
-    def test_completed_git_past_deadline_keeps_output_on_timeout(self):
-        from drover import placement_git as placement
-        argv, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 1.0, output='fetched',
-                                                    stderr_output='diagnostic')
-        with located, faked, clocked, self.assertRaises(subprocess.TimeoutExpired) as raised:
-            placement.git('repo', 'fetch', 'origin', timeout=0.5)
-        self.assertEqual(raised.exception.cmd, argv)
-        self.assertEqual(raised.exception.timeout, 0.5)
-        self.assertEqual(raised.exception.output, 'fetched')
-        self.assertEqual(raised.exception.stderr, 'diagnostic')
-
-    def test_git_client_reports_late_completion_as_unknown(self):
+    def test_git_client_reports_late_completion_as_unknown_and_keeps_its_output(self):
         from drover import git_client
-        _, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 1.0)
+        _, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 1.0, output='fetched',
+                                                 stderr_output='diagnostic')
         with located, faked, clocked:
             reply = git_client.ask('repo', 'fetch', 'origin', timeout_s=0.5, no=())
         self.assertIs(reply.answer, git_client.Answer.UNKNOWN)
-        self.assertEqual((reply.why, reply.code), ('timeout', None))
+        self.assertEqual((reply.why, reply.code, reply.out, reply.err), ('timeout', None, 'fetched', 'diagnostic'))
 
     def test_git_within_deadline_returns_result_and_passes_timeout(self):
-        from drover import placement_git as placement
-        argv, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 0.25, output='fetched')
+        from drover import git_client
+        _, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 0.25, output='fetched')
         with located, faked, clocked:
-            result = placement.git('repo', 'fetch', 'origin', timeout=0.5)
-        self.assertEqual((result.args, result.returncode, result.stdout, result.stderr), (argv, 0, 'fetched', ''))
-
-    def test_git_without_deadline_takes_the_long_timeout(self):
-        from drover import placement_git as placement
-        self.assertEqual(placement.LONG, 600.0)
-        argv, (located, faked, clocked) = self.git(['status'], 600.0, 599.0, output='clean\r\n')
-        with located, faked, clocked:
-            result = placement.git('repo', 'status')
-        self.assertEqual((result.returncode, result.stdout), (0, 'clean\n'))     # text mode's newlines, as before
+            reply = git_client.ask('repo', 'fetch', 'origin', timeout_s=0.5, no=())
+        self.assertEqual(reply, GitReply(Answer.YES, 'fetched', '', 0, None))
 
     def test_pipeline_read_without_a_timeout_is_unknown_at_the_long_limit(self):
         from drover import git_client, pipeline

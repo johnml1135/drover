@@ -31,7 +31,7 @@ from .placement_exec import (
     detach, distro, executable, native_runner_cwd, spawn_worker,
 )
 from .placement_git import (
-    _METADATA_IO, _PATH_OPTS, _WORKTREE_PATH_SUBS, _git_command, _git_location, _map_paths, git,
+    _METADATA_IO, _PATH_OPTS, _WORKTREE_PATH_SUBS, _git_command, _git_location, _map_paths,
     git_argv, prepare_worktree, reachable, relativize_gitdir, status_args, worktree_metadata,
 )
 from .placement_process import (

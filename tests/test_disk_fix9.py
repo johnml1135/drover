@@ -99,7 +99,7 @@ class DefaultBranchPolicy(DiskCase):
                 patch.object(placement, 'reachable', return_value=True),
                 patch.object(placement, 'cleanup_contains', return_value=True),
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)),
-                git_answers(self.git),     # below git_client and placement.git alike
+                git_answers(self.git),     # below git_client
                 listing_answers([self.entry]), agreeing_proof()):
             context.start()
             self.addCleanup(context.stop)

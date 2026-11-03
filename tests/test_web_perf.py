@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import repos, origin
-from drover import placement_git, process
+from drover import git_client, process
 from drover.ledger import ops
 from hub.perf import Perf
 from hub.app import create_app
@@ -283,9 +283,9 @@ class WebPerfTests(unittest.TestCase):
             perf.record('/route', 'GET', n, 0)
         data = perf.snapshot()
         self.assertEqual(data['routes'][0], dict(method='GET', path='/route', count=500, p50_ms=250, p95_ms=475))
-        before = placement_git.git_spawns
-        placement_git.git(self.tmp.name, 'rev-parse', 'HEAD')
-        self.assertEqual(placement_git.git_spawns, before + 1)
+        before = git_client.git_spawns
+        git_client.ask(self.tmp.name, 'rev-parse', 'HEAD', timeout_s=git_client.QUICK, no=())
+        self.assertEqual(git_client.git_spawns, before + 1)
 
     def test_snapshots_and_request_metrics(self):
         view = self.app.state.ui_view
