@@ -1,37 +1,81 @@
 """Explicit branch approval remains a separate, restorable owner operation."""
 import ast
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 from drover import config
-from tests.gitfix import Repo, sh
+from tests.fakeci import git_answers
+
+TIP, MAIN = 'a' * 40, 'b' * 40
+
+
+class Refs:
+    """The refs of one repo, answering the git commands `cleanup.delete_branch` runs: git is setup here, not the point
+    (test_garden_branch runs delete_branch against real git)."""
+    def __init__(self, repo, branch):
+        self.repo = repo
+        self.refs = {'refs/heads/main': MAIN, 'refs/remotes/origin/main': MAIN, f'refs/heads/{branch}': TIP}
+
+    def __call__(self, repo, *args, timeout):
+        def done(code=0, out=''):
+            return subprocess.CompletedProcess(args, code, out, '')
+        if args[:2] == ('check-ref-format', '--branch'):
+            return done()
+        if args == ('symbolic-ref', '--short', 'refs/remotes/origin/HEAD'):
+            return done(0, 'origin/main\n')
+        if args[:3] == ('rev-parse', '--verify', '-q'):
+            sha = self.refs.get(args[3].removesuffix('^{commit}'))
+            return done(0, sha + '\n') if sha else done(1)
+        if args[:2] == ('worktree', 'list'):
+            return done(0, f'worktree {self.repo}\0HEAD {MAIN}\0branch refs/heads/main\0\0')
+        if args[:2] == ('merge-base', '--is-ancestor'):
+            return done(1)
+        if args[0] == 'cherry':
+            return done(0, f'+ {args[2]}\n')
+        if args[:2] == ('update-ref', '-d'):
+            if self.refs.get(args[2]) != args[3]:
+                return done(1)
+            del self.refs[args[2]]
+            return done()
+        if args[0] == 'update-ref' and args[3] == '0' * 40:
+            if args[1] in self.refs:
+                return done(1)
+            self.refs[args[1]] = args[2]
+            return done()
+        raise AssertionError(f'unexpected git {args!r}')
 
 
 class ApprovedBranch(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        self.addCleanup(config.reset)
+        config.use(config.validate({'paths': {'state_dir': str(self.root / 'state')}}))
+
     def test_explicit_approval_remains_separate(self):
         from drover import cleanup
-
-        fix = Repo()
-        self.addCleanup(fix.cleanup)
-        self.addCleanup(config.reset)
-        config.use(config.validate({'paths': {'state_dir': str(fix.root / 'state')}}))
-        fix.git('remote', 'set-head', 'origin', 'main')
-        tip = fix.branch('owner/topic', {'unique.txt': 'preserve this commit\n'})
+        fake = Refs(self.repo, 'owner/topic')
         approved = {'branch': 'owner/topic', 'disposition': 'propose-delete', 'worktree': ''}
-        before = fix.git('for-each-ref')
-        refused = cleanup.delete_branch(fix.repo, 'owner/topic', {})
+        before = dict(fake.refs)
+        with git_answers(fake):
+            refused = cleanup.delete_branch(self.repo, 'owner/topic', {})
         self.assertFalse(refused['ok'], refused)
-        self.assertEqual(fix.git('for-each-ref'), before)
+        self.assertEqual(fake.refs, before)
         events = []
-        result = cleanup.delete_branch(
-            fix.repo, 'owner/topic', approved, now=1_800_000_000,
-            rescue_root=fix.root / 'rescue', log=lambda step, **data: events.append(step))
+        with git_answers(fake):
+            result = cleanup.delete_branch(
+                self.repo, 'owner/topic', approved, now=1_800_000_000,
+                rescue_root=self.root / 'rescue', log=lambda step, **data: events.append(step))
         self.assertTrue(result['ok'], result)
-        self.assertEqual(fix.git('rev-parse', result['rescue_ref']), tip)
-        self.assertEqual(sh('git', '-C', fix.repo, 'show-ref', '--verify', '--quiet',
-                            'refs/heads/owner/topic', check=False).returncode, 1)
+        self.assertEqual(fake.refs[result['rescue_ref']], TIP)
+        self.assertNotIn('refs/heads/owner/topic', fake.refs)
         self.assertEqual(events, ['checked', 'rescue-ref', 'deleted'])
-        self.assertEqual(fix.git('rev-parse', 'main'), fix.git('rev-parse', 'origin/main'))
+        self.assertEqual((fake.refs['refs/heads/main'], fake.refs['refs/remotes/origin/main']), (MAIN, MAIN))
         self.assertIsNone(result['bundle'])
         for path in (Path(__file__).resolve().parents[1] / 'drover').glob('disk*.py'):
             tree = ast.parse(path.read_text(encoding='utf-8'))
@@ -42,17 +86,11 @@ class ApprovedBranch(unittest.TestCase):
 
     def test_cleanup_lock_refuses_branch_mutation(self):
         from drover import cleanup, disk_state
-        fix = Repo()
-        self.addCleanup(fix.cleanup)
-        self.addCleanup(config.reset)
-        state = fix.root / 'state'
-        config.use(config.validate({'paths': {'state_dir': str(state)}}))
-        fix.git('remote', 'set-head', 'origin', 'main')
-        fix.branch('locked/topic', {'only.txt': 'preserve\n'})
-        before = fix.git('for-each-ref')
-        with disk_state.CleanupLock(state):
-            result = cleanup.delete_branch(fix.repo, 'locked/topic',
-                {'branch': 'locked/topic', 'disposition': 'propose-delete'})
+        fake = Refs(self.repo, 'locked/topic')
+        before = dict(fake.refs)
+        with disk_state.CleanupLock(config.state_dir()), git_answers(fake):
+            result = cleanup.delete_branch(self.repo, 'locked/topic',
+                                           {'branch': 'locked/topic', 'disposition': 'propose-delete'})
         self.assertFalse(result['ok'], result)
         self.assertIn('lock busy', result['reason'])
-        self.assertEqual(fix.git('for-each-ref'), before)
+        self.assertEqual(fake.refs, before)
