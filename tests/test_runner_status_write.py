@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import runner_common, runner_supervise
-from drover.runner_common import REPLACE_WAIT_S, TERMINAL_WAIT_S, write_json_atomic
+from drover.runner_common import REPLACE_WAIT_S, TERMINAL_WAIT_S
 
 REAL_REPLACE = os.replace
 
@@ -53,38 +53,6 @@ class Base(unittest.TestCase):
 
     def temps(self):
         return sorted(p.name for p in self.dir.glob("*.tmp"))
-
-
-class WriteJsonAtomic(Base):
-    def test_a_replace_that_fails_a_few_times_then_succeeds_lands(self):
-        target = self.dir / "status.json"
-        flaky = Flaky(fails=5)
-        with patch("os.replace", flaky):
-            write_json_atomic(target, {"a": 1})
-        self.assertEqual((json.loads(target.read_text()), flaky.calls, self.temps()), ({"a": 1}, 6, []))
-
-    def test_giving_up_raises_and_leaves_no_temp_file(self):
-        target = self.dir / "status.json"
-        target.write_text('{"old": true}')
-        with patch("os.replace", Flaky(blocked=lambda: True)), self.assertRaises(PermissionError):
-            write_json_atomic(target, {"a": 1})
-        self.assertEqual((self.temps(), json.loads(target.read_text())), ([], {"old": True}))
-        self.assertGreaterEqual(self.clock.now - 1000.0, REPLACE_WAIT_S)
-
-    def test_a_longer_wait_outlasts_a_conflict_the_default_gives_up_on(self):
-        target = self.dir / "status.json"
-        until = lambda: self.clock.now < 1000.0 + REPLACE_WAIT_S + 3
-        with patch("os.replace", Flaky(blocked=until)), self.assertRaises(PermissionError):
-            write_json_atomic(target, {"a": 1})
-        self.clock.now = 1000.0
-        with patch("os.replace", Flaky(blocked=until)):
-            write_json_atomic(target, {"a": 2}, TERMINAL_WAIT_S)
-        self.assertEqual((json.loads(target.read_text()), self.temps()), ({"a": 2}, []))
-
-    def test_another_error_does_not_retry_and_leaves_no_temp_file(self):
-        with patch("os.replace", side_effect=OSError("disk gone")) as replace, self.assertRaises(OSError):
-            write_json_atomic(self.dir / "status.json", {})
-        self.assertEqual((replace.call_count, self.temps()), (1, []))
 
 
 class FakeProc:

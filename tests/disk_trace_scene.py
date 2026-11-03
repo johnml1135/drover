@@ -1,6 +1,5 @@
 """A temp tree of real repositories and admin files, and `TraceGit`, the git that reads every answer from it."""
 import json
-import os
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import disk_state, ownership, placement
+from drover import disk_state, durable, ownership, placement
 from tests.disk_fixture import DAY, DiskCase
 
 NOW = 2_000_000_000.
@@ -48,8 +47,8 @@ class NoLock:
 
 
 def quick_state():
-    """No scene sees a lock or an fsync; the state and the manifest stay real files. Slice 2's `durable` repoints these."""
-    return [patch.object(disk_state, '_StateLock', NoLock), patch.object(os, 'fsync', lambda fd: None)]
+    """No scene sees a lock or an fsync; the state and the manifest stay real files. `durable.os` is also the manifest's `os`."""
+    return [patch.object(disk_state, '_StateLock', NoLock), patch.object(durable.os, 'fsync', lambda fd: None)]
 
 
 class Failed(Exception):

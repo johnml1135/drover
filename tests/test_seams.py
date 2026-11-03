@@ -2,6 +2,7 @@
 import ast
 from collections import Counter
 from functools import lru_cache
+import sys
 import unittest
 
 from tests.test_architecture import ROOT, call_name, compare, manifest, module, parsed
@@ -328,6 +329,12 @@ class Rules(unittest.TestCase):
 
 
 class Seams(unittest.TestCase):
+    def test_durable_imports_no_drover_module(self):
+        path, tree = 'drover/durable.py', parsed('drover')['drover/durable.py']
+        self.assertEqual(rule_violations('R5', {path: tree}), [])
+        names = {name.split('.')[0] for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))}
+        self.assertLessEqual(names, set(sys.stdlib_module_names))
+
     def test_rows_equal_the_manifest(self):
         compare(self, found_rows(), manifest(EXCEPTIONS), KEYS, 'seam exceptions')
 
