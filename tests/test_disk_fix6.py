@@ -27,7 +27,7 @@ class Recovery(unittest.TestCase):
                 patch.object(process.subprocess, 'run', side_effect=execute):
             self.assertTrue(placement.recover_ci_children('wsl', dict(
                 pid=123456789, runner_pid=123456789, run_id='fixture', result='RESULT_SENTINEL' * 6000), '/tmp'))
-        self.assertEqual(json.loads(captured[0][0][-1]), dict(pid=123456789, runner_pid=123456789, run_id='fixture'))
+        self.assertEqual(json.loads(captured[0][0][-1]), dict(pid=123456789, runner_pid=123456789, run_id='fixture', nonce=None))
 
     def test_all_wsl_builders_use_bounded_command_boundary(self):
         tree = ast.parse(Path(placement.__file__).with_name("placement_exec.py").read_text())

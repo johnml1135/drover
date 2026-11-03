@@ -164,7 +164,8 @@ def recover_ci_children(platform, status, drover_dir, distro_name=None):
     if IS_WINDOWS and platform == 'wsl':
         code = ('import json,sys; from drover.placement import stop_ci_children; '
                 'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
-        command = WSL(distro_name).command(['python3', '-c', code, json.dumps({key: status.get(key) for key in ('pid', 'runner_pid', 'run_id')})], cd=drover_dir)
+        identity = {key: status.get(key) for key in ('pid', 'runner_pid', 'run_id', 'nonce')}     # nonce: the sweep's
+        command = WSL(distro_name).command(['python3', '-c', code, json.dumps(identity)], cd=drover_dir)
         result = process.run(process.Command(command, 90))
         if result.kind != 'exited':
             raise ScanError(f'cannot confirm WSL CI child termination: {result.detail}')

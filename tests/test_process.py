@@ -168,7 +168,7 @@ class PlacementCallers(unittest.TestCase):
         content = json.dumps({'owner': 'é'})
         self.fake.expect(['wsl.exe', '--exec', 'python3', '-c', placement_git._METADATA_IO, admin, 'tag.json'],
                          output='written', **process_options(30, input=json.dumps(content).encode('utf-8')))
-        status = dict(pid=7, runner_pid=8, run_id='r')
+        status = dict(pid=7, runner_pid=8, run_id='r', nonce='n0nce')     # the nonce reaches the WSL sweep
         code = ('import json,sys; from drover.placement import stop_ci_children; '
                 'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
         self.fake.expect(['wsl.exe', '--exec', 'python3', '-c', code, json.dumps(status)], returncode=0,

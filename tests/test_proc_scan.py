@@ -106,8 +106,8 @@ class ProcessTree(unittest.TestCase):
                 os.kill(pid, signal.SIGTERM)
 
 
-if __name__ == '__main__':
-    unittest.main()
+
+TOKEN = '0123456789abcdef0123456789abcdef'     # a disk worker's run id: uuid4 hex, unique without a nonce
 
 
 class MarkerSweep(unittest.TestCase):
@@ -116,11 +116,14 @@ class MarkerSweep(unittest.TestCase):
     def setUp(self):
         import tempfile
         from pathlib import Path
-        from drover import placement_process
+        from drover import placement_process, placement_sweep
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.proc, self.pp = Path(temp.name), placement_process
-        for item in (patch.object(placement_process, '_PROC', self.proc),
+        self.killed, self.groups = [], []
+        self.clock = iter(range(0, 1000))
+        self.sweep = placement_sweep
+        for item in (patch.object(placement_sweep, 'PROC', self.proc),
                      patch.object(os, 'getuid', return_value=os.stat(temp.name).st_uid, create=True)):
             item.start()
             self.addCleanup(item.stop)
@@ -135,41 +138,94 @@ class MarkerSweep(unittest.TestCase):
             (entry / 'environ').mkdir()     # reading it raises, as EACCES does
         return entry
 
+    def gone(self, pid):
+        import shutil
+        shutil.rmtree(self.proc / str(pid), ignore_errors=True)
+
+    def stop(self, status, kill=None):
+        """stop_ci_children on a POSIX host over the fake table; by default a signal ends its targets at once."""
+        def default_kill(pid, sig):
+            self.gone(pid)
+        def killpg(group, sig):
+            self.groups.append((group, sig))
+            for entry in list(self.proc.iterdir()):
+                if entry.name.isdigit() and (entry / 'stat').read_text().split()[5] == str(group):
+                    self.gone(entry.name)
+        def record(pid, sig):
+            self.killed.append((pid, sig))
+            (kill or default_kill)(pid, sig)
+        with patch.object(self.pp, 'IS_WINDOWS', False), \
+                patch.object(self.pp.signal, 'SIGKILL', 9, create=True), \
+                patch.object(self.pp.os, 'kill', side_effect=record), \
+                patch.object(self.pp.os, 'killpg', side_effect=killpg, create=True), \
+                patch.object(self.pp.time, 'monotonic', side_effect=lambda: next(self.clock)), \
+                patch.object(self.pp.time, 'sleep'):
+            return self.pp.stop_ci_children(status)
+
     def test_only_this_users_live_processes_with_the_exact_marker_match(self):
-        me = os.getpid()
-        self.task(me, b'DROVER_RUN_ID=tok\0', parent=999_999)       # the sweeper itself
-        self.task(999_999, b'DROVER_RUN_ID=tok\0')                    # and its parent
-        self.task(101, b'HOME=/h\0DROVER_RUN_ID=tok\0PATH=/bin\0')    # the only match
-        self.task(102, b'DROVER_RUN_ID=tok2\0')
-        self.task(103, b'XDROVER_RUN_ID=tok\0')
-        self.task(104, b'DROVER_RUN_ID=to\0')
-        self.task(105, b'DROVER_RUN_ID=tok\0', state='Z')
+        me, marker = os.getpid(), f'DROVER_RUN_ID={TOKEN}'.encode()
+        self.task(me, marker + b'\0', parent=999_999)                # the sweeper itself
+        self.task(999_999, marker + b'\0')                             # and its parent
+        self.task(101, b'HOME=/h\0' + marker + b'\0PATH=/bin\0')       # the only match
+        self.task(102, marker + b'2\0')
+        self.task(103, b'X' + marker + b'\0')
+        self.task(104, marker[:-1] + b'\0')
+        self.task(105, marker + b'\0', state='Z')
         self.task(106, 'unreadable')
         self.task(107, None)                                           # gone between listing and reading
         (self.proc / 'self').mkdir()
-        self.assertEqual(self.pp._marked('tok'), [101])
+        entries = self.sweep.marks(dict(run_id=TOKEN))
+        self.assertEqual(self.sweep.marked(entries), [101])
         with patch.object(os, 'getuid', return_value=os.stat(self.proc).st_uid + 1, create=True):
-            self.assertEqual(self.pp._marked('tok'), [])                # another user's processes are never read
+            self.assertEqual(self.sweep.marked(entries), [])        # another user's processes are never read
 
     def test_a_surviving_match_leaves_the_proof_unconfirmed_and_a_killed_one_confirms(self):
-        killed = []
-        clock = iter(range(0, 1000))
-        def kill(pid, sig, gone=True):
-            killed.append((pid, sig))
-            if gone:
-                import shutil
-                shutil.rmtree(self.proc / str(pid))
         for gone, confirmed in ((False, False), (True, True)):
             with self.subTest(gone=gone):
-                killed.clear()
-                self.task(101, b'DROVER_RUN_ID=tok\0')
-                with patch.object(self.pp, 'IS_WINDOWS', False), \
-                        patch.object(self.pp.signal, 'SIGKILL', 9, create=True), \
-                        patch.object(self.pp.os, 'kill', side_effect=lambda pid, sig: kill(pid, sig, gone)), \
-                        patch.object(self.pp.time, 'monotonic', side_effect=lambda: next(clock)), \
-                        patch.object(self.pp.time, 'sleep'):
-                    self.assertIs(self.pp.stop_ci_children(dict(pid=500, run_id='tok')), confirmed)
-                self.assertEqual(killed[0], (101, 9))
-                if not gone:
-                    import shutil
-                    shutil.rmtree(self.proc / '101')
+                self.killed.clear()
+                self.task(101, f'DROVER_RUN_ID={TOKEN}\0'.encode())
+                kill = None if gone else (lambda pid, sig: None)
+                self.assertIs(self.stop(dict(pid=500, run_id=TOKEN), kill=kill), confirmed)
+                self.assertEqual(self.killed[0], (101, 9))
+                self.gone(101)
+
+    def test_group_ownership_is_read_before_any_kill(self):
+        """A killed member still exiting shows an empty environ; the group stays this run's, from the read before."""
+        self.task(501, f'DROVER_RUN_ID={TOKEN}\0'.encode(), group=500)
+        def emptied(pid, sig):
+            (self.proc / str(pid) / 'environ').write_bytes(b'')        # exit_mm: still listed, environ empty
+        self.assertIs(self.stop(dict(pid=500, run_id=TOKEN), kill=emptied), True)
+        self.assertEqual(self.groups, [(500, 9)])
+
+    def test_a_member_gone_on_the_ownership_read_is_gone_not_an_error(self):
+        self.task(502, None, group=500)                                # listed, then reaped before its environ read
+        self.assertIs(self.stop(dict(pid=500, run_id=TOKEN)), True)
+        self.assertEqual(self.groups, [])
+
+    def test_a_gate_marker_needs_its_nonce(self):
+        """A gate's run id is a per-ledger integer: only the process with this launch's nonce is this run's."""
+        self.task(601, b'DROVER_RUN_ID=7\0DROVER_RUN_ID_NONCE=aaa\0')
+        self.task(602, b'DROVER_RUN_ID=7\0DROVER_RUN_ID_NONCE=bbb\0')
+        self.task(603, b'DROVER_RUN_ID=7\0')
+        self.assertIs(self.stop(dict(pid=500, run_id=7, nonce='aaa')), True)
+        self.assertEqual(self.killed, [(601, 9)])
+        self.killed.clear()
+        self.assertIs(self.stop(dict(pid=500, run_id=7)), True)      # no nonce: an integer id alone sweeps nothing
+        self.assertEqual(self.killed, [])
+
+    def test_gate_children_carry_the_launch_nonce(self):
+        import tempfile
+        from drover import placement, runner_supervise
+        seen = []
+        def spawn(argv, out, stdin, cwd, env):
+            seen.append(env)
+            raise OSError('stop here')
+        with tempfile.TemporaryDirectory() as runs, patch.object(placement, 'spawn_worker', side_effect=spawn), \
+                patch.dict(os.environ, {'DROVER_RUN_NONCE': 'outer'}):
+            runner_supervise.supervise('7', runs, ['gate'], nonce='n0nce')
+        self.assertEqual((seen[0]['DROVER_RUN_ID'], seen[0]['DROVER_RUN_ID_NONCE']), ('7', 'n0nce'))
+        self.assertNotIn('DROVER_RUN_NONCE', seen[0])      # a nested runner must not adopt this launch's nonce
+
+
+if __name__ == '__main__':
+    unittest.main()

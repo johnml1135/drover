@@ -36,7 +36,6 @@ class ProcessFreeDiskCase(DiskCase):
 class CancellationSafety(ProcessFreeDiskCase):
     def test_every_exception_confirms_termination_before_releasing_lock(self):
         import json
-        import subprocess
         from types import SimpleNamespace
         from drover import disk_cleanup, disk_state, placement
         for failure in (KeyboardInterrupt, SystemExit,
@@ -83,7 +82,6 @@ class CancellationSafety(ProcessFreeDiskCase):
                         shutil.rmtree(lock)
 
     def test_windows_job_is_drained_even_without_worker_identity(self):
-        import subprocess
         from types import SimpleNamespace
         from drover import placement
         drained = []

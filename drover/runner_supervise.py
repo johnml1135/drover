@@ -164,6 +164,7 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
                watch_globs=WATCH_GLOBS, run_config=None):
     env = {k: v for k, v in os.environ.items() if k not in ("DROVER_RUN_NONCE", "DROVER_DETACHED_IN_JOB")}
     env["DROVER_RUN_ID"] = st.d["run_id"]
+    env["DROVER_RUN_ID_NONCE"] = nonce     # with the id, unique across ledgers: the sweep of a lost run matches both
     run_config = run_config or {}
     try:
         prepare_writable_roots(run_config.get("sandbox_writable_roots", []))

@@ -11,7 +11,7 @@ from .placement_paths import (
     IS_WINDOWS,
     cleanup_side,
 )
-from . import process
+from . import placement_sweep as sweep, process
 from .placement_exec import (
     WSL,
     locale_text,
@@ -117,38 +117,6 @@ def process_cmdlines():
     return _proc_cmdlines_windows() if IS_WINDOWS else _proc_cmdlines_linux()
 
 
-_PROC = Path('/proc')      # the POSIX process table
-
-
-def _ancestors():
-    """This process and its ancestors, which the marker sweep never touches."""
-    seen, pid = set(), os.getpid()
-    while pid > 0 and pid not in seen:
-        seen.add(pid)
-        try:
-            pid = int((_PROC / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            break
-    return seen
-
-
-def _marked(run_id):
-    """Live processes of this user whose environment holds the exact entry `DROVER_RUN_ID=<run_id>`. One that cannot
-    be read (gone, EACCES) is skipped and never fails the sweep."""
-    marker, mine, skip, found = ('DROVER_RUN_ID=' + str(run_id)).encode(), os.getuid(), _ancestors(), []
-    for entry in _PROC.iterdir():
-        if not entry.name.isdigit() or int(entry.name) in skip:
-            continue
-        try:
-            if entry.stat().st_uid != mine or (entry / 'stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z':
-                continue
-            if marker in (entry / 'environ').read_bytes().split(b'\0'):
-                found.append(int(entry.name))
-        except (OSError, ValueError, IndexError):
-            continue
-    return found
-
-
 def stop_ci_children(status):
     """After confirmed runner loss, stop its POSIX group and this user's processes carrying its marker, or await
     Windows job closure.
@@ -159,7 +127,7 @@ def stop_ci_children(status):
     if not status.get('pid') or not status.get('run_id'):
         return False  # no recorded child identity: termination remains unknown
     deadline = time.monotonic() + 3
-    signalled = False
+    signalled, owned = False, set()
     while True:
         if IS_WINDOWS:
             # KILL_ON_JOB_CLOSE ends all children when their runner dies. Include
@@ -179,14 +147,11 @@ def stop_ci_children(status):
                         for row in rows)
         else:
             # A `process` child leads its own session, so what it leaves behind is outside the group: end it by marker.
-            marked = _marked(status['run_id'])
-            for pid in marked:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            marks = sweep.marks(status)
+            marked = sweep.marked(marks) if marks else []
+            owned.update(marked)
             members = []
-            for entry in _PROC.iterdir():
+            for entry in sweep.PROC.iterdir():
                 if not entry.name.isdigit():
                     continue
                 try:
@@ -195,17 +160,22 @@ def stop_ci_children(status):
                         members.append(entry)
                 except FileNotFoundError:
                     continue
-            alive = bool(members) or bool(marked)
             if members and not signalled:
-                marker = ('DROVER_RUN_ID=' + str(status['run_id'])).encode()
-                # Never signal a reused group id lacking this execution's marker.
-                if not any(marker in (entry / 'environ').read_bytes().split(b'\0') for entry in members):
-                    return False
+                members, ours = sweep.owned(members, owned, status['run_id'])
+                if members and not ours:
+                    return False    # never signal a reused group id lacking this execution's marker
+                if members:
+                    try:
+                        os.killpg(status['pid'], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    signalled = True
+            for pid in marked:
                 try:
-                    os.killpg(status['pid'], signal.SIGKILL)
-                except ProcessLookupError:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
                     pass
-                signalled = True
+            alive = bool(members) or bool(marked)
         if not alive:
             return True
         if time.monotonic() >= deadline:

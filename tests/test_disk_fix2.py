@@ -202,7 +202,7 @@ class WorkerSafety(ProcessFreeDiskCase):
     def test_composed_worker_reaps_descendants_after_success_failure_and_inner_timeout(self):
         # Child inherits the worker's group/job; its stdio does not delay parent exit.
         # The finalizer is only a hermetic test safety net, never the asserted cleanup.
-        execute, spawn = subprocess.run, process.subprocess.run     # spawn: what `process` starts the worker with
+        execute, spawn = subprocess.run, process.subprocess.run     # execute: the taskkill below; spawn: the worker's start
         for mode in ('success', 'failure', 'worker-failure', 'timeout'):
             observations = ('without-readiness', 'after-readiness') if mode == 'timeout' else ('default',)
             for observation in observations:
