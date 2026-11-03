@@ -1,12 +1,15 @@
 """Watchdog decisions with a fake wsl.exe."""
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hub.events import Bus
 from hub.settings import Settings
 from hub.store import Store
 from hub.watchdog import Watchdog
+from tests.fakeci import FakeCommands, process_options, refuse_real_spawns
 
 
 class Fake:
@@ -139,6 +142,30 @@ class WatchdogTests(unittest.TestCase):
         self.need()
         self.dog.check()
         self.assertEqual(self.fake.calls[0][:2], ["-d", "Other"])
+
+
+class RealWsl(unittest.TestCase):
+    def test_watchdog_17_runs_through_process(self):
+        """The boot probe runs through `process`; the keep-alive at :27 stays outside by rule."""
+        from drover import compaction_hold, process
+        from hub import watchdog
+        argv = ['wsl.exe', '-d', 'Dist', '--exec', 'true']
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            fake = FakeCommands(d)
+            fake.expect(argv, output='up\r\n'.encode('utf-16-le'), **process_options(5))
+            fake.expect(argv, returncode=1, stderr_output=b'boom\n', **process_options(5))
+            fake.expect(argv, error=subprocess.TimeoutExpired(argv, 5), **process_options(5))
+            fake.expect(argv, error=FileNotFoundError(2, 'Das System kann die Datei nicht finden'),
+                        **process_options(5))
+            with fake.patch(process), refuse_real_spawns(), \
+                    mock.patch.object(compaction_hold, 'refuse_when_offline'):
+                self.assertEqual(watchdog.real_wsl(argv[1:], 5), (0, 'up'))
+                self.assertEqual(watchdog.real_wsl(argv[1:], 5), (1, 'boom'))
+                self.assertEqual(watchdog.real_wsl(argv[1:], 5), (-1, 'timeout'))
+                self.assertEqual(watchdog.real_wsl(argv[1:], 5), (-2, f'wsl.exe: {process.MISSING}'))
+            offline = compaction_hold.WslOffline('WSL is offline for compaction')
+            with refuse_real_spawns(), mock.patch.object(compaction_hold, 'refuse_when_offline', side_effect=offline):
+                self.assertEqual(watchdog.real_wsl(argv[1:], 5), (-2, 'WSL is offline for compaction'))
 
 
 if __name__ == "__main__":

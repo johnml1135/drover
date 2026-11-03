@@ -3,13 +3,13 @@ import hmac
 import json
 import logging
 import os
-import subprocess
 import secrets
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
-from drover.placement import NO_WINDOW
+from drover import process
+from drover.placement_exec import locale_text
 
 TS_HEADER = "tailscale-user-login"
 
@@ -25,8 +25,10 @@ def _icacls(settings):
         return None
 
     def run(args):
-        return subprocess.run(["icacls", *args], capture_output=True, text=True,
-                              timeout=30, check=True, **NO_WINDOW).stdout
+        done = process.run(process.Command(["icacls", *args], 30))
+        if not done.ok:             # raised as check=True did; a run that did not end raises too
+            raise OSError(done.detail or f"icacls exited {done.code}: {locale_text(done.err, 'replace').strip()}")
+        return locale_text(done.out)    # icacls writes the code page: a non-ASCII path keeps its letters
     return run
 
 
@@ -79,13 +81,10 @@ def load_token(settings) -> str:
 
 
 def real_tailscale(args: list[str]) -> str:
-    import subprocess
     for exe in ("tailscale", r"C:\Program Files\Tailscale\tailscale.exe"):
-        try:
-            return subprocess.run([exe, *args], capture_output=True, text=True,
-                                  timeout=20, check=True, **NO_WINDOW).stdout
-        except (OSError, subprocess.SubprocessError):
-            continue
+        done = process.run(process.Command([exe, *args], 20))
+        if done.ok:                 # Go writes UTF-8
+            return done.stdout
     return ""
 
 

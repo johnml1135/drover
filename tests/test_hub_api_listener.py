@@ -75,6 +75,70 @@ class TokenFileTests(unittest.TestCase):
         self.assertTrue(any("broad group" in m for m in cm.output))
 
 
+class ShortCommandTests(unittest.TestCase):
+    """The hub's short-lived commands run through `process`, each keeping its timeout, decoding and failure."""
+    def setUp(self):
+        from tests.fakeci import FakeCommands
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.fake = FakeCommands(tmp.name)
+
+    def test_auth_28_icacls_keeps_locale_decoding_and_raises_on_failure(self):
+        import locale
+        import subprocess
+        import sys
+        from drover import process
+        from hub import auth
+        from tests.fakeci import process_options, refuse_real_spawns
+        encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
+        listing = "C:\\Users\\Jösé\\hub-token BUILTIN\\Users:(R)\r\n"
+        self.fake.expect(["icacls", "x"], output=listing.encode(encoding), **process_options(30))
+        self.fake.expect(["icacls", "x"], returncode=5, stderr_output=b"denied", **process_options(30))
+        self.fake.expect(["icacls", "x"], error=subprocess.TimeoutExpired(["icacls"], 30), **process_options(30))
+        self.fake.expect(["icacls", "x"], error=FileNotFoundError(2, "nicht gefunden"), **process_options(30))
+        with patch.object(auth.os, "name", "nt"):
+            run = auth._icacls(Settings(token="t"))
+        with self.fake.patch(process), refuse_real_spawns():
+            self.assertEqual(run(["x"]), listing.replace("\r\n", "\n"))
+            for _ in range(3):
+                with self.assertRaises(OSError):
+                    run(["x"])
+
+    def test_auth_85_tailscale_tries_each_executable_and_reads_utf8(self):
+        import subprocess
+        from drover import process
+        from hub import auth
+        from tests.fakeci import process_options, refuse_real_spawns
+        installed = r"C:\Program Files\Tailscale\tailscale.exe"
+        self.fake.expect(["tailscale", "status", "--json"], error=FileNotFoundError(2, "x"), **process_options(20))
+        self.fake.expect([installed, "status", "--json"], output='{"n": "Jösé"}'.encode(), **process_options(20))
+        self.fake.expect(["tailscale", "version"], returncode=1, output=b"no", **process_options(20))
+        self.fake.expect([installed, "version"], error=subprocess.TimeoutExpired([installed], 20),
+                         **process_options(20))
+        with self.fake.patch(process), refuse_real_spawns():
+            self.assertEqual(auth.real_tailscale(["status", "--json"]), '{"n": "Jösé"}')
+            self.assertEqual(auth.real_tailscale(["version"]), "")
+
+    def test_main_26_wsl_ip_is_read_through_process(self):
+        import os
+        import subprocess
+        from drover import process
+        from hub import __main__ as m
+        from tests.fakeci import process_options, refuse_real_spawns
+        ps = ("(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $env:DROVER_ADAPTER "
+              "| Select-Object -First 1 -ExpandProperty IPAddress)")
+        argv = ["powershell.exe", "-NoProfile", "-Command", ps]
+        options = process_options(30, env={**os.environ, "DROVER_ADAPTER": "vEthernet (WSL*)"})
+        self.fake.expect(argv, output=b"172.20.0.1\r\n", **options)
+        self.fake.expect(argv, returncode=1, output=b"127.0.0.1\r\n", **options)
+        self.fake.expect(argv, error=subprocess.TimeoutExpired(argv, 30, output=b"172.20.0.1"), **options)
+        self.fake.expect(argv, error=FileNotFoundError(2, "x"), **options)
+        with self.fake.patch(process), refuse_real_spawns():
+            self.assertEqual(m.discover_wsl_ip("vEthernet (WSL*)"), "172.20.0.1")
+            for _ in range(3):
+                self.assertIsNone(m.discover_wsl_ip("vEthernet (WSL*)"))
+
+
 class SettingsGuardTests(HubCase):
     def put(self, body, **kw):
         return self.c.put("/api/v1/settings", json=body, headers=AUTH, **kw)

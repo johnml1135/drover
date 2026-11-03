@@ -4,8 +4,8 @@ The dispatcher runs inside the hub (ADR 0002), so there is no dispatcher to rest
 note when it defers a WSL task because WSL is down; this is the only thing that starts WSL. A booted WSL VM idles
 out in about a minute, so the watchdog holds it up with a tracked `wsl.exe --exec sleep` child until the note
 expires (no WSL work is waiting), then kills that child."""
-from drover import compaction_hold, placement
-import subprocess
+from drover import compaction_hold, placement, process
+import subprocess                   # the keep-alive's Popen only: long-lived, outside process by rule
 import threading
 import time
 from drover.placement import NO_WINDOW, WSL, wsl_control, decode_output
@@ -14,12 +14,14 @@ from drover.placement import NO_WINDOW, WSL, wsl_control, decode_output
 def real_wsl(args: list[str], timeout: float) -> tuple[int, str]:
     """Run wsl.exe; return (returncode, output). Timeout gives (-1, 'timeout')."""
     try:
-        p = subprocess.run(wsl_control(args), capture_output=True, timeout=timeout, **NO_WINDOW)
-    except subprocess.TimeoutExpired:
-        return -1, "timeout"
-    except OSError as e:
+        done = process.run(process.Command(wsl_control(args), timeout))
+    except OSError as e:            # WslOffline, raised at build under the compaction hold
         return -2, str(e)
-    return p.returncode, decode_output(p.stdout + p.stderr).strip()
+    if done.kind == "timed_out":
+        return -1, "timeout"
+    if done.kind == "unavailable":
+        return -2, done.detail
+    return done.code, decode_output(done.out + done.err).strip()
 
 
 def real_keepalive(distro: str, seconds: float):

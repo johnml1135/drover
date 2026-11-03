@@ -4,15 +4,13 @@ import asyncio
 import contextlib
 import logging
 import os
-import subprocess
 import sys
 
 import uvicorn
 
 from hub.app import create_app
 from hub.settings import Settings
-from drover.placement import NO_WINDOW
-from drover import placement
+from drover import placement, process
 
 log = logging.getLogger("hub")
 
@@ -22,12 +20,11 @@ def discover_wsl_ip(adapter_glob: str) -> str | None:
     # the glob travels in the environment, never inside the script text
     ps = ("(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $env:DROVER_ADAPTER "
           "| Select-Object -First 1 -ExpandProperty IPAddress)")
-    try:
-        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
-                             capture_output=True, text=True, timeout=30,
-                             env={**os.environ, "DROVER_ADAPTER": adapter_glob}, **NO_WINDOW).stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
+    done = process.run(process.Command(["powershell.exe", "-NoProfile", "-Command", ps], 30,
+                                       env={**os.environ, "DROVER_ADAPTER": adapter_glob}))
+    if done.kind != "exited":
         return None
+    out = done.stdout.strip()       # an IP address: ASCII, so UTF-8 reads it as the locale did
     return out if out and out != "0.0.0.0" and not out.startswith("127.") else None
 
 

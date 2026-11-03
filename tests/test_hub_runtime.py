@@ -356,3 +356,25 @@ class RuntimeTests(_RuntimeBase):
                 b = self.commit()
                 with self.assertRaisesRegex(ReleaseError, reason):
                     prepare_release(self.source, b, self.release_root, self.enrolled)
+
+
+class GitTimeout(unittest.TestCase):
+    def test_hub_git_read_takes_600_seconds(self):
+        """`_git` stays in the frozen module and reads under `LONG`; a timeout is a `SubprocessError`, which its
+        callers' handlers already hold."""
+        from types import SimpleNamespace
+        from hub import runtime
+        seen = []
+        def run(argv, **kw):
+            seen.append((argv[3:], kw['timeout']))
+            if len(seen) == 2:
+                raise subprocess.TimeoutExpired(argv, kw['timeout'])
+            kw['stdout'].write(b'abc\n')
+            return subprocess.CompletedProcess(argv, 0)
+        fake = SimpleNamespace(run=run, DEVNULL=subprocess.DEVNULL, TimeoutExpired=subprocess.TimeoutExpired,
+                               SubprocessError=subprocess.SubprocessError)
+        with patch.object(runtime, 'subprocess', fake):
+            self.assertEqual(runtime._git('/source', 'rev-parse', 'HEAD'), b'abc\n')
+            with self.assertRaises(subprocess.SubprocessError):
+                runtime._git('/source', 'merge-base', 'a', 'b')
+        self.assertEqual(seen, [(['rev-parse', 'HEAD'], 600.0), (['merge-base', 'a', 'b'], 600.0)])

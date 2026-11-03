@@ -65,3 +65,31 @@ The injected `run=`/`runner=` parameters are gone from compaction, compaction_vh
   - Three tests pinned the old short detail ('No such file', or the fake's own message), and now expect the fixed phrase: test_decisions, test_worker_continuation and test_guards' missing-git case. test_seat_paths_contract's EXPECTED gains launch's use of `missing_executable`.
 - **Carry.** If the hub's job refuses breakaway, a detach timeout now ends a runner that used to survive (review Minor 3). This is already in the ledger's carries for the final review.
 - **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.
+
+## Task 19: hub callers
+
+Section 5.1's Hub sites now run through `process`: hub/__main__:26, hub/auth:28, :85, hub/task_views:113 and hub/watchdog:17. hub/runtime:90 stays outside (ruling 15) and gains `timeout=600.0` on its existing line, so the file stays at 612 lines. hub/watchdog's keep-alive `Popen` stays outside by rule.
+
+- **R1.** The rows for `hub/__main__`, `hub/auth` (both) and `hub/task_views` are gone. `hub/watchdog` keeps its row for the keep-alive. `hub/runtime`'s R1 and R3 reasons now state the frozen bootstrap and its own timeout. `hub/task_views`' R3 row (`probe.git`) stays until Task 27.
+- **Decoding** (Task 14's call list):
+  - hub/auth:28 (`icacls`) decodes `Result.out` by `placement_exec.locale_text`, strict, as `text=True` did.
+  - hub/__main__:26, hub/auth:85 and hub/task_views:113 decode UTF-8 with `replace` (`Result.stdout`/`.stderr`). task_views still turns CRLF into LF, as text mode did.
+  - hub/watchdog:17 keeps bytes, read by `decode_output` as before.
+- **Outcomes kept, site by site:**
+  - `discover_wsl_ip`: a run that did not end is `None`, as `OSError` and `TimeoutExpired` were. An ended run is read whatever its exit status, as before.
+  - `auth._icacls`: a run that is not `ok` raises `OSError`, with the detail or the exit status and stderr. Before, `check=True` raised `CalledProcessError`, and a timeout raised `TimeoutExpired`. `acl_warnings` catches `Exception`. `restrict_acl` lets the error through to `load_token`, as before.
+  - `auth.real_tailscale`: anything but an `ok` run tries the next executable, then gives `''`, as before.
+  - `task_views.probe.git`: a run that did not end raises `OSError(detail)`, where `TimeoutExpired` or `FileNotFoundError` was raised before. A non-zero exit raises `OSError(stderr[-200:])`, as before. `RepoStates.get` catches `Exception`, so either one reads as an error snapshot.
+  - `watchdog.real_wsl`:
+    - `timed_out` gives `(-1, 'timeout')`.
+    - `unavailable` gives `(-2, detail)`; a missing wsl.exe has the fixed `process.MISSING` detail.
+    - `WslOffline`, raised at build, is still `(-2, str(e))`.
+  - `hub/runtime._git`: a timeout raises `TimeoutExpired`, which is a `SubprocessError`. The handlers at runtime.py:360, :516 and :535 hold it.
+- **Gains, by design.** All four migrated sites now get DEVNULL stdin and the elapsed check.
+- **Tests:**
+  - New: `test_hub_runtime.GitTimeout.test_hub_git_read_takes_600_seconds`, faked at `hub.runtime`'s own `subprocess`.
+  - New: `test_hub_watchdog.RealWsl.test_watchdog_17_runs_through_process`.
+  - New: `test_hub_api_listener.ShortCommandTests`, three tests for :28, :85 and `__main__`:26. The :28 test pins locale decoding of a non-ASCII path.
+  - Restated: `test_web_perf.test_repo_state_probe_records_ahead_in_background_snapshot`. It patched `hub.task_views.subprocess.run`; it now uses `FakeCommands.patch(process)`.
+  - The ceilings and `tests.IMPURE` are unchanged.
+- **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.

@@ -2,15 +2,13 @@
 import html
 from pathlib import Path
 import re
-import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from markupsafe import Markup
-from drover import repos, placement, origin
-from drover.placement import NO_WINDOW
+from drover import repos, placement, origin, process
 
 
 def first_paragraph(text):
@@ -110,11 +108,12 @@ def _join(base, name):
 def probe(prog):
     """Probe repository state only on the cache's background thread."""
     def git(*args):
-        r = subprocess.run(['git', '-C', repos.native(repos.repo_path(prog)), *args],
-                           capture_output=True, text=True, timeout=1, **NO_WINDOW)
-        if r.returncode:
+        r = process.run(process.Command(['git', '-C', repos.native(repos.repo_path(prog)), *args], 1))
+        if r.kind != 'exited':      # raised, as TimeoutExpired and a missing git were; the cache reads it as error
+            raise OSError(r.detail)
+        if r.code:
             raise OSError(r.stderr[-200:])
-        return r.stdout
+        return r.stdout.replace('\r\n', '\n')
     branches = set(git('for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes').splitlines())
     paths, branch_paths = set(), {}
     for record in git('worktree', 'list', '--porcelain').split('\n\n'):

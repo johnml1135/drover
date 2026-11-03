@@ -16,6 +16,7 @@ from hub.perf import Perf
 from hub.app import create_app
 from hub.settings import Settings
 from fastapi.testclient import TestClient
+from tests.fakeci import FakeCommands, process_options, refuse_real_spawns
 
 class WebPerfTests(unittest.TestCase):
     def setUp(self):
@@ -244,11 +245,15 @@ class WebPerfTests(unittest.TestCase):
         from concurrent.futures import Future
         from hub.task_views import RepoStates, probe
         prog = repos.normalize({'name': 'one', 'repo': self.tmp.name})
-        def run(argv, **kwargs):
-            return subprocess.CompletedProcess(argv, 0, '', '')
-        with patch('hub.task_views.subprocess.run', side_effect=run), \
+        git = ['git', '-C', repos.native(repos.repo_path(prog))]
+        fake = FakeCommands(Path(self.tmp.name) / 'commands')
+        fake.expect([*git, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'],
+                    output=b'main\n', **process_options(1))
+        fake.expect([*git, 'worktree', 'list', '--porcelain'], output=b'', **process_options(1))
+        with fake.patch(process), refuse_real_spawns(), \
              patch('hub.task_views.origin.ahead', return_value=3) as ahead:
             snapshot = probe(prog)
+        self.assertEqual(snapshot['branches'], {'main'})
         self.assertEqual(snapshot['ahead'], 3)
         ahead.assert_called_once()
         self.assertEqual(ahead.call_args.kwargs['timeout'], 30)
