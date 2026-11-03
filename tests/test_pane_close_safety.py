@@ -262,11 +262,22 @@ class Isolation(PaneCloseBase):
         self.assertEqual([a[-1] for a in calls if a[:2] == ('rev-parse', '--verify')], ['origin/main', 'main'])
         self.assertNotIn('merge-base', [a[0] for a in calls])
 
-        def stuck(cwd, *args, timeout_s, no):              # main exists, but merge-base does not answer: unknown
-            if args[0] == 'merge-base':
-                return GitReply(Answer.UNKNOWN, '', '', 128, 'exit')
-            return self.git(cwd, *args, timeout_s=timeout_s, no=no)
-        self.assertIsNone(pane_close.worktree_facts(REPO, stuck))
+    def test_an_unknown_base_or_ancestry_keeps_the_pane(self):
+        missing = GitReply(Answer.NO, '', '', 1, None)
+        for read, earlier in ((('rev-parse', '--verify', '-q', 'origin/main'), {}),
+                              (('rev-parse', '--verify', '-q', 'main'), {'origin/main': missing}),
+                              (('merge-base', '--is-ancestor'), {})):
+            for why in ('exit', 'timeout', 'unavailable'):
+                with self.subTest(read=read[-1], why=why):
+                    unknown = GitReply(Answer.UNKNOWN, '', '', 128 if why == 'exit' else None, why)
+
+                    def ask(cwd, *args, timeout_s, no):
+                        if args[:len(read)] == read:
+                            return unknown
+                        if args[:2] == ('rev-parse', '--verify') and args[-1] in earlier:
+                            return earlier[args[-1]]
+                        return self.git(cwd, *args, timeout_s=timeout_s, no=no)
+                    self.assertIsNone(pane_close.worktree_facts(REPO, ask))     # unknown is never "not merged"
 
     def test_an_unexpected_error_in_one_pane_is_kept_and_logged(self):
         herdr = self.two()
