@@ -2,11 +2,12 @@
 import time
 import threading
 from pathlib import Path
-from . import ci, placement, origin
+from . import ci, git_client, placement, origin
+from .git_client import LONG, Answer
 from .ledger import ops, states, landing as storage
 from .landing_batch import (
     MIN_SIZE, MAX_SIZE, default_size, BATCHING_OFF_MEDIAN_S, MIN_GATES_FOR_OFF, VERDICT,
-    RETRY, KEEP_HOLDING, PRIORITY_ORDER, FETCH_TIMEOUT_S, git, policy_batch_size, velocity,
+    RETRY, KEEP_HOLDING, PRIORITY_ORDER, FETCH_TIMEOUT_S, _out, _ask, policy_batch_size, velocity,
     effective_batch_size, branch_head, review_landed, task_files, reviewed_tasks, candidates,
     form_batch, build_tip, _recorder, _path_matches, owners_of, attribute, bisect, requeue,
     _failure_detail, _gate, explain,
@@ -21,7 +22,6 @@ def __getattr__(name):   # DEFAULT_SIZE stays importable; it follows the active 
         return default_size()
     raise AttributeError(name)
 ORIGIN_OBSERVE_INTERVAL_S = 120
-GIT_TIMED_OUT = 124   # the exit code landing_batch.git gives a timed-out command
 def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', branch='main', size=None, repo_name=None,
               decider=None, actor='landing', push=False, control_epoch=None, required_platforms=None, land_stage):
     """Form, run full CI, attribute, land one batch. Returns a result dict; every task is landed, requeued or untouched.
@@ -42,7 +42,7 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
     from .ledger.waiting import Waiting, repo_key, cause_key
     waiting = Waiting(conn, actor)
     name = repo_key(repo_name, repo)
-    sha = git(repo, 'rev-parse', branch, check=True).stdout.strip()
+    sha = _out(repo, 'rev-parse', branch).strip()
     base_cause = cause_key('base', name, sha)
     repair = _base_repair(conn, name, sha)
     if repair and repair.get('blocked'):
@@ -96,7 +96,7 @@ def run_batch(conn, repo, gate_fn, *, observe=None, workdir, remote='origin', br
             from . import ownership
             if ownership.owned_by(str(work), 'session:merge-group:' + work.name):
                 placement.unlock_worktree(repo, str(work))
-            git(repo, 'worktree', 'remove', '--force', str(work), check=False)
+            git_client.mutate(repo, 'worktree', 'remove', '--force', str(work), timeout_s=LONG)
             (work.parent / ('.' + work.name + '.merge-group.json')).unlink(missing_ok=True)
     if repair and result['outcome'] in ('base-red', 'red', 'refused', 'conflict'):
         _block_repair(conn, name, repair, result, 'Designated repair did not pass fresh full CI: ' + result['outcome'])
@@ -108,7 +108,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
     stale_retries = 0
     while tasks:
         _control_guard(conn, result.get('control_epoch'))
-        base_sha = git(repo, 'rev-parse', base_ref).stdout.strip()
+        base_sha = _out(repo, 'rev-parse', base_ref).strip()
         tip, tasks, conflicts = build_tip(repo, work, base_sha, tasks)
         for tid in conflicts:
             if storage.yanked(conn, tid):
@@ -122,7 +122,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
         _control_guard(conn, result.get('control_epoch'))
         stopped, moved = threading.Event(), threading.Event()
         if observe:
-            tracking = git(repo, 'rev-parse', '--verify', f'refs/remotes/{remote}/{branch}', check=False).stdout.strip()
+            tracking = (_ask(repo, 'rev-parse', '--verify', f'refs/remotes/{remote}/{branch}') or '').strip()
             watcher = threading.Thread(target=observe, args=(repo, remote, branch, stopped, moved, tracking,
                                                             ORIGIN_OBSERVE_INTERVAL_S),
                                        daemon=True, name='landing-origin-observer')
@@ -143,7 +143,7 @@ def _drive(conn, repo, work, gate_fn, tasks, result, base_ref, remote, branch, d
             if synced := sync_main(conn, repo, remote, branch, repo_name, control_epoch=result.get('control_epoch')):
                 result.update(synced)
                 return
-            if git(repo, 'rev-parse', base_ref).stdout.strip() != base_sha:
+            if _out(repo, 'rev-parse', base_ref).strip() != base_sha:
                 result['outcome'] = 'stale-base'
                 return
         if not red:
@@ -228,32 +228,29 @@ def _land(conn, repo, work, tasks, tip, receipt, result, remote, branch, push=Fa
                              options=[{'label': 'Acknowledged'}], actor='landing')
 def land_sha(conn, task_id):
     return storage.land_sha(conn, task_id)
-def timed_git(repo, *args, timeout, **kw):
-    """`git` with check off, where a timeout raises TimeoutExpired: it is neither a yes nor a no."""
-    import subprocess
-    result = git(repo, *args, check=False, timeout=timeout, **kw)
-    if result.returncode == GIT_TIMED_OUT:
-        raise subprocess.TimeoutExpired(args, timeout)
-    return result
-def contained(repo, branch, main_sha, timeout=None):
-    """True when every commit of `branch` is in `main_sha`: an ancestor, or (replayed commits) all patch-equivalent."""
-    if timed_git(repo, 'rev-parse', '--verify', '-q', f'{branch}^{{commit}}', timeout=timeout).returncode:
-        return False
-    if timed_git(repo, 'merge-base', '--is-ancestor', branch, main_sha, timeout=timeout).returncode == 0:
-        return True
-    cherry = timed_git(repo, 'cherry', main_sha, branch, timeout=timeout)
-    return cherry.returncode == 0 and not any(line.startswith('+') for line in cherry.stdout.splitlines())
+def contained(repo, branch, main_sha, timeout=LONG):
+    """YES when every commit of `branch` is in `main_sha`: an ancestor, or (replayed commits) all patch-equivalent.
+    NO when git says a commit is missing, or there is no such branch; UNKNOWN when git could not say."""
+    def ask(*args, no=(1,)):
+        return git_client.ask(repo, *args, timeout_s=timeout, no=no).answer
+    if (found := ask('rev-parse', '--verify', '-q', f'{branch}^{{commit}}')) is not Answer.YES:
+        return found
+    if (ancestor := ask('merge-base', '--is-ancestor', branch, main_sha)) is not Answer.NO:
+        return ancestor          # YES, or UNKNOWN
+    cherry = git_client.ask(repo, 'cherry', main_sha, branch, timeout_s=timeout, no=())
+    if cherry.answer is Answer.UNKNOWN:
+        return Answer.UNKNOWN
+    return Answer.NO if any(line.startswith('+') for line in cherry.out.splitlines()) else Answer.YES
 def verify_manual_land(repo, branch, main_sha, default_branch):
     """The full main_sha, once it is on `default_branch` (ancestor or equal) and holds all of `branch`'s commits."""
     if not branch:
         raise ValueError('the task has no branch, so its commits cannot be checked')
-    full = git(repo, 'rev-parse', '--verify', '-q', f'{main_sha}^{{commit}}', check=False)
-    if full.returncode or not full.stdout.strip():
+    full = (_ask(repo, 'rev-parse', '--verify', '-q', f'{main_sha}^{{commit}}', no=(1,)) or '').strip()
+    if not full:
         raise ValueError(f'{main_sha} is not a commit in the repo')
-    full = full.stdout.strip()
-    if git(repo, 'merge-base', '--is-ancestor', full, default_branch, check=False).returncode:
+    if _ask(repo, 'merge-base', '--is-ancestor', full, default_branch, no=(1,)) is None:
         raise ValueError(f'{full[:12]} is not on {default_branch}')
-    if not contained(repo, branch, full):
+    if contained(repo, branch, full) is not Answer.YES:
         raise ValueError(f'commits of {branch!r} are not all contained in {full[:12]}')
     return full
 def base_holds(conn):

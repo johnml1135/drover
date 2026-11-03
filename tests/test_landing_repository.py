@@ -23,7 +23,7 @@ from tests.test_landing import LandingCase, fake_decider, SCRIPT
 @integration
 class WorktreeTests(LandingCase):
     def test_relative_layout_repair_and_native_legacy_fallback(self):
-        real = landing.git
+        real = landing_batch.git
         base = self.r.git('rev-parse', 'main')
         self.r.git('config', 'core.autocrlf', 'true')
         calls = []
@@ -103,7 +103,7 @@ class RepositoryLandingTests(LandingCase):
         self.r.git('worktree', 'remove', '--force', str(checkout))
         tid = self.task('third', {'base.txt': 'third content'}, base='main')
         old = self.r.git('rev-parse', 'main')
-        with patch.object(landing_control, 'git', wraps=landing.git) as run:
+        with patch.object(landing_control, 'git', wraps=landing_batch.git) as run:
             third = self.land(push=False)
         self.assertEqual(third['landed'], [tid])
         self.assertTrue(any(c.args[1:] == ('update-ref', 'refs/heads/main', third['tip'], old)
@@ -120,7 +120,7 @@ class RepositoryLandingTests(LandingCase):
         old = self.r.git('rev-parse', 'main')
         tip, tasks, _ = landing.build_tip(self.r.repo, self.work, old, tasks)
         receipt = self.gate(self.work, tip, tasks)
-        real = landing.git
+        real = landing_batch.git
         moved = self.r.git('rev-parse', 'main^')
 
         def run(repo, *args, **kw):

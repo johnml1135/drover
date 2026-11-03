@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from drover import outside_land, placement
+from drover import git_client, outside_land, placement
 from drover.ledger import ops, states
 from tests.outside_land_fixture import Decider, FakeGitCase
 
@@ -245,9 +245,10 @@ class OwnerAnswerTests(FakeGitCase):
         self.scan()
         self.answer(f'Landed at {commit}')
         with patch.object(placement, 'routes_through_wsl', return_value=True), \
-                patch.object(placement, 'wsl_running', return_value=False), patch.object(placement, 'git') as git:
+                patch.object(placement, 'wsl_running', return_value=False), patch.object(placement, 'git') as git, \
+                patch.object(git_client, 'ask') as ask:
             self.assertEqual(self.scan(), {'scanned': 0, 'landed': []})
-        git.assert_not_called()
+        git.assert_not_called(), ask.assert_not_called()
         self.assertEqual(self.status(tid), states.NEEDS_OWNER)
 
 

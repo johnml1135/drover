@@ -2,8 +2,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import brief, contract, placement, repos, task_access
-from .pipeline import WorktreeRefused, git
+from . import brief, contract, git_client, placement, repos, task_access
+from .pipeline import WorktreeRefused, refused
 from .ledger import states, scope
 from .ledger.waiting import REPLAN
 
@@ -46,7 +46,7 @@ class Replanning:
             reads = own + [r for r in reads if r not in own]
         # prepare() has just verified each read checkout, so they are not verified a second time here.
         def inspect(*args):
-            return git(checkout, '--no-optional-locks', *args, check=True, timeout=60).stdout
+            return git_client.out(checkout, '--no-optional-locks', *args, timeout_s=60, error=refused)
         # One call: the commit, then the full ref HEAD names ("HEAD" itself when detached).
         head, ref = inspect('rev-parse', 'HEAD', '--symbolic-full-name', 'HEAD').split()
         branch = None if ref == 'HEAD' else ref

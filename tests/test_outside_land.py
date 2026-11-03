@@ -1,10 +1,8 @@
 """Git proves a landing made outside Drover, and nothing weaker does."""
-import subprocess
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import ci, landing, outside_land
+from drover import git_client, landing, outside_land
 from tests.outside_land_fixture import GitCase
 
 
@@ -228,7 +226,7 @@ class GitProofTests(GitCase):
         self.r.git('add', 'unlanded.txt', cwd=wt)
         self.r.git('commit', '-q', '--amend', '--no-edit', cwd=wt)
         tip = self.r.git('rev-parse', 'HEAD', cwd=wt)
-        self.assertTrue(landing.contained(self.r.repo, tip, self.main()))    # cherry skips the merge
+        self.assertIs(landing.contained(self.r.repo, tip, self.main()), git_client.Answer.YES)  # cherry skips merges
         self.assertIsNone(self.proof([tip]))
 
     def test_branch_with_only_a_merge_of_the_base_has_no_commits_of_its_own(self):
@@ -252,18 +250,18 @@ class GitProofTests(GitCase):
         tip = self.r.branch('feat', {'f.txt': 'x'})
         self.r.git('merge', '-q', '--ff-only', 'feat')
         self.assertIsNotNone(self.proof([tip]))
-        for error in (OSError('no git'), ci.CIError('broken')):
-            with patch.object(landing, 'git', side_effect=error):
+        for why, code in (('unavailable', None), ('exit', 128)):
+            with patch.object(git_client, 'ask', return_value=git_client.GitReply(
+                    git_client.Answer.UNKNOWN, '', 'git unavailable: no git', code, why)):
                 self.assertIsNone(self.proof([tip]))
 
     def test_timeout_is_unknown(self):
         tip = self.r.branch('feat', {'f.txt': 'x'})
         self.r.git('merge', '-q', '--ff-only', 'feat')
-        timed_out = SimpleNamespace(returncode=landing.GIT_TIMED_OUT, stdout='', stderr='')
-        with patch.object(landing, 'git', return_value=timed_out):
+        timed_out = git_client.GitReply(git_client.Answer.UNKNOWN, '', '', None, 'timeout')
+        with patch.object(git_client, 'ask', return_value=timed_out):
             self.assertIsNone(self.proof([tip]))
-            with self.assertRaises(subprocess.TimeoutExpired):
-                landing.contained(self.r.repo, 'feat', 'main', timeout=1)
+            self.assertIs(landing.contained(self.r.repo, 'feat', 'main', timeout=1), git_client.Answer.UNKNOWN)
 
 
 if __name__ == '__main__':

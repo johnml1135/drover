@@ -18,7 +18,7 @@ import re
 import subprocess
 import time
 
-from . import ci, config, decide as decide_module, disk, dispatch_repos, landing, placement, repos
+from . import ci, config, decide as decide_module, disk, dispatch_repos, git_client, landing, placement, repos
 from .ledger import disk_notices, ops, ops_bypass, scope, states, tx
 
 INTERVAL_S = 600
@@ -54,10 +54,13 @@ def interval_s(cfg):
 def _out(repo, *args):
     """Git's stripped stdout, or None when it answers no by exiting 1. Any other exit raises GitUnknown, and a timeout
     raises TimeoutExpired."""
-    result = landing.timed_git(repo, *args, timeout=GIT_TIMEOUT_S)
-    if result.returncode not in (0, 1):
-        raise GitUnknown(f'git {args[0]} exited {result.returncode}: {result.stderr.strip()[:200]}')
-    return None if result.returncode else result.stdout.strip()
+    reply = git_client.ask(repo, *args, timeout_s=GIT_TIMEOUT_S, no=(1,))
+    if reply.why == 'timeout':      # GitUnknown and this raise become one GitFailed in Task 27
+        raise subprocess.TimeoutExpired(args, GIT_TIMEOUT_S)
+    if reply.answer is git_client.Answer.UNKNOWN:
+        how = f'exited {reply.code}' if reply.why == 'exit' else reply.why
+        raise GitUnknown(f'git {args[0]} {how}: {reply.err.strip()[:200]}')
+    return None if reply.answer is git_client.Answer.NO else reply.out.strip()
 
 
 def _commit(repo, name):

@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from drover import placement
+from drover import git_client
 from drover.ledger import ops, states
 from tests.outside_land_fixture import ScanCase
 
@@ -78,12 +78,12 @@ class TickTests(ScanCase):
     def test_no_git_inside_a_transaction(self):
         tid = self.task()
         self.worker_done(tid, self.landed_by_hand())
-        real = placement.git
+        real = git_client.ask
         seen = []
         def spy(*args, **kw):
-            seen.append((self.conn.in_transaction, kw.get('timeout')))
+            seen.append((self.conn.in_transaction, kw.get('timeout_s')))
             return real(*args, **kw)
-        with patch.object(placement, 'git', side_effect=spy):
+        with patch.object(git_client, 'ask', side_effect=spy):
             self.assertEqual(self.scan()['landed'], [tid])
         self.assertTrue(seen)
         self.assertFalse(any(open_tx for open_tx, _ in seen))

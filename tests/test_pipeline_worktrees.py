@@ -18,7 +18,7 @@ from hub.dispatch import DispatcherService, LandingService
 from hub.settings import Settings
 from hub.store import Store
 from tests.tiers import integration
-from tests.fakeci import execute_gate, resources_go
+from tests.fakeci import execute_gate, git_answers, resources_go
 from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
 from tests.pipeline_fixture import MemoryRepo, MemoryRepository, CheckoutGit, finish_gate, read_checkouts
@@ -34,7 +34,7 @@ class Worktrees(PolicyBase):
                 fake = CheckoutGit(committed, legacy=legacy)
                 tid = self.task()
                 wt = Path(self.tmp.name) / 'wts' / f'drover-{tid}'
-                with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_9, patch('drover.placement_exec.is_linux_native', _placement_patch_9), patch('drover.placement_host.is_linux_native', _placement_patch_9), patch('drover.placement_paths.is_linux_native', _placement_patch_9), \
+                with git_answers(lambda repo, *args, timeout: fake(repo, *args)), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_9, patch('drover.placement_exec.is_linux_native', _placement_patch_9), patch('drover.placement_host.is_linux_native', _placement_patch_9), patch('drover.placement_paths.is_linux_native', _placement_patch_9), \
                         patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_10, patch('drover.placement_git.routes_through_wsl', _placement_patch_10), patch('drover.placement_paths.routes_through_wsl', _placement_patch_10):
                     pipeline.Repository().add(self.fix.repo, wt, f'drover/{tid}', 'main')
                 self.assertEqual(len(fake.adds), 2 if legacy else 1)
@@ -272,3 +272,65 @@ class Worktrees(PolicyBase):
         self.assertEqual(repos.native("R:\\repos\\x") if sys.platform != "win32" else "/mnt/r/repos/x",
                          "/mnt/r/repos/x")
         self.assertEqual(pipeline.join_cfg("R:\\repos\\acme-lib.worktrees", "drover-T1"), "R:\\repos\\acme-lib.worktrees\\drover-T1")
+
+
+class GitSites(unittest.TestCase):
+    """Repository's own git and replan's inspection, at the one process fake."""
+    def spawns(self, failing=None, out='', err=''):
+        """git answers every command, except that `failing` (a subcommand) exits 128 with `out` and `err`."""
+        from tests.fakeci import git_spawns
+        self.seen = []
+
+        def reply(repo, *args, timeout):
+            self.seen.append((args, timeout))
+            name = next(a for a in args if not a.startswith('-'))
+            if name == failing:
+                return subprocess.CompletedProcess(args, 128, out, err)
+            return subprocess.CompletedProcess(args, 0, '', '')
+        git_spawns(self, reply)
+
+    def sites(self):
+        """(where, subcommand that fails, call): pipeline :72 :89 :92 :142 :145 :146 :151 :155-157 and replan :49."""
+        from types import SimpleNamespace
+        from drover import replan
+        r = pipeline.Repository()
+        planner = replan.Replanning(SimpleNamespace(port=None, repo=lambda task: prog_dict('repo', 'wts'),
+                                                    all_repos=dict))
+        task = {'worktree': 'repo', 'branch': 'feat', 'read_access': ['p']}
+        return [(':72', 'diff', lambda: r.changed_paths('repo', 'main')), (':89', 'rev-parse', lambda: r.head('repo')),
+                (':92', 'rev-parse', lambda: r.resolve('repo', 'main')),
+                (':142', 'worktree', lambda: r.remove('repo', 'wt')),
+                (':145', 'diff', lambda: r.changes('repo')), (':146', 'ls-files', lambda: r.changes('repo')),
+                (':151', 'log', lambda: r.trailers('repo')), (':155', 'add', lambda: r.commit('repo', 'm')),
+                (':156', 'commit', lambda: r.commit('repo', 'm')), (':157', 'rev-parse', lambda: r.commit('repo', 'm')),
+                ('replan :49', 'rev-parse', lambda: planner._inputs(task))]
+
+    def test_every_check_true_site_raises_worktree_refused_with_stderr_tail(self):
+        from drover import git_client, replan
+        with patch.object(placement, 'unlock_worktree'), patch.object(replan.task_access, 'prepare', return_value=[]), \
+                patch.object(replan.placement, 'reachable', return_value=True):
+            for where, failing, call in self.sites():
+                for out, err in (('ignored', 'fatal: ' + 'x' * 400), ('only stdout\n', '')):
+                    with self.subTest(where=where, stderr=bool(err)):
+                        self.spawns(failing, out, err)
+                        with self.assertRaises(pipeline.WorktreeRefused) as caught:
+                            call()
+                        args = self.seen[-1][0]
+                        self.assertEqual(str(caught.exception),
+                                         f"git {' '.join(args[:3])}: {(err or out).strip()[-300:]}")
+                        self.assertIsInstance(caught.exception.__cause__, git_client.GitFailed)
+
+    def test_reads_without_a_timeout_take_600_seconds(self):
+        from drover.git_client import LONG
+        r = pipeline.Repository()
+        self.spawns()
+        with patch.object(placement, 'unlock_worktree'):
+            r.changed_paths('repo', 'main'), r.fork_point('repo', 'main', 'HEAD'), r.head('repo')
+            r.resolve('repo', 'main'), r.ancestor('repo', 'a', 'b'), r.branch('repo')
+            r.start_ref('repo', 'b', 'main', 'o')
+            r.remove('repo', 'wt'), r.changes('repo'), r.trailers('repo'), r.commit('repo', 'm')
+            r.diff_lines('repo', 'a', 'b'), r.diff_text('repo', 'a', 'b')
+        self.assertEqual(len(self.seen), 16)
+        self.assertEqual({timeout for _, timeout in self.seen}, {LONG})
+        r.status('repo')
+        self.assertEqual(self.seen[-1][1], 10)          # status keeps its own limit

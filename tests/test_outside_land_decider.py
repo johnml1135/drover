@@ -1,9 +1,8 @@
 """What git leaves unproved goes to the decider and the owner, and real git has the last word on what they cite."""
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import landing, outside_land, placement
+from drover import git_client, outside_land
 from drover.ledger import ops, states
 from tests.outside_land_fixture import Decider, DeciderCase, GitCase
 
@@ -78,8 +77,8 @@ class LiveCitationTests(DeciderCase):
 class UnknownTests(DeciderCase):
     def test_git_failure_asks_nothing_and_the_next_interval_retries(self):
         self.unproved()
-        failed = SimpleNamespace(returncode=128, stdout='', stderr='fatal: broken')
-        with patch.object(landing, 'git', return_value=failed), self.assertLogs('drover.outside_land', 'WARNING'):
+        failed = git_client.GitReply(git_client.Answer.UNKNOWN, '', 'fatal: broken', 128, 'exit')
+        with patch.object(git_client, 'ask', return_value=failed), self.assertLogs('drover.outside_land', 'WARNING'):
             self.scan()
         self.assertEqual((self.decider.calls, ops.open_questions(self.conn)), ([], []))
         self.scan()
@@ -87,20 +86,20 @@ class UnknownTests(DeciderCase):
 
     def test_git_timeout_asks_nothing_and_the_next_interval_retries(self):
         self.unproved()
-        timed_out = SimpleNamespace(returncode=landing.GIT_TIMED_OUT, stdout='', stderr='')
-        with patch.object(landing, 'git', return_value=timed_out), self.assertLogs('drover.outside_land', 'WARNING'):
+        timed_out = git_client.GitReply(git_client.Answer.UNKNOWN, '', '', None, 'timeout')
+        with patch.object(git_client, 'ask', return_value=timed_out), self.assertLogs('drover.outside_land', 'WARNING'):
             self.scan()
         self.assertEqual((self.decider.calls, ops.open_questions(self.conn)), ([], []))
         self.scan()
         self.assertEqual(len(ops.open_questions(self.conn)), 1)
 
     def fail_only(self, command, returncode=128):
-        real = landing.git
+        real = git_client.ask
         def broken(repo, *args, **kw):
             if args and args[0] == command:
-                return SimpleNamespace(returncode=returncode, stdout='', stderr='fatal: disk full')
+                return git_client.GitReply(git_client.Answer.UNKNOWN, '', 'fatal: disk full', returncode, 'exit')
             return real(repo, *args, **kw)
-        return patch.object(landing, 'git', side_effect=broken)
+        return patch.object(git_client, 'ask', side_effect=broken)
 
     def test_failure_of_one_git_step_asks_nothing_and_the_next_interval_proves_it(self):
         tid = self.task('yanked')
@@ -120,11 +119,11 @@ class UnknownTests(DeciderCase):
 
     def test_no_git_inside_a_transaction(self):
         _, _, commit = self.unproved()
-        real, seen = placement.git, []
+        real, seen = git_client.ask, []
         def spy(*args, **kw):
             seen.append(self.conn.in_transaction)
             return real(*args, **kw)
-        with patch.object(placement, 'git', side_effect=spy):
+        with patch.object(git_client, 'ask', side_effect=spy):
             self.scan()
             self.answer(f'Landed at {commit}')
             self.scan()
@@ -204,8 +203,8 @@ class AmbiguousTests(GitCase):
         self.assertEqual(self.ambiguous(self.task(start=None, branch='gone')), [])
 
     def test_failed_git_is_not_an_empty_answer(self):
-        failed = SimpleNamespace(returncode=128, stdout='', stderr='fatal')
-        with patch.object(landing, 'git', return_value=failed), self.assertRaises(outside_land.GitUnknown):
+        failed = git_client.GitReply(git_client.Answer.UNKNOWN, '', 'fatal', 128, 'exit')
+        with patch.object(git_client, 'ask', return_value=failed), self.assertRaises(outside_land.GitUnknown):
             self.ambiguous()
 
     def test_a_subject_cannot_forge_a_changed_file(self):

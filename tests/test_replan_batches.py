@@ -101,3 +101,48 @@ class BatchPipelineCase(single.PlannerDispatchCase):
         records = records or [single.REVISE] * len(tids)
         self.fl.handles[spec['run_id']].result = single.result(
             contract.NO_RECORD, envelope(list(zip(tids, records))))
+
+
+class CherryPick(unittest.TestCase):
+    """The batch tip's replay, at the one process fake: a timed-out cherry-pick is not a rebase conflict."""
+    BASE, BEFORE, FORK, COMMIT = 'a' * 40, 'b' * 40, 'c' * 40, 'd' * 40
+
+    def replay(self, pick):
+        import tempfile
+        from drover import ci, landing_batch, ownership
+        from tests.fakeci import git_spawns
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        work = Path(root.name) / 'batch'
+        work.mkdir()
+        (work / '.git').write_text('gitdir: ../repo/.git/worktrees/batch\n', encoding='utf-8')     # relative: no repair
+        self.calls = []
+
+        def reply(repo, *args, timeout):
+            self.calls.append(args)
+            if args[0] == 'cherry-pick' and args[1] != '--abort':
+                return pick()
+            out = {'rev-parse': self.BEFORE, 'merge-base': self.FORK, 'rev-list': self.COMMIT}.get(args[0], '')
+            return subprocess.CompletedProcess(args, 0, out + '\n' if out else '', '')
+        git_spawns(self, reply)
+        with patch.object(ownership, 'tag'):
+            return landing_batch.build_tip(Path(root.name) / 'repo', work, self.BASE,
+                                           [{'id': 't1', 'branch': 'feat', 'head': self.COMMIT}])
+
+    def after_pick(self):
+        picked = self.calls.index(('cherry-pick', '--allow-empty', self.COMMIT))
+        return self.calls[picked + 1:]
+
+    def test_cherry_pick_timeout_raises_ci_error_and_neither_drops_the_task_nor_resets(self):
+        from drover import ci
+
+        def stuck():
+            raise subprocess.TimeoutExpired(['git', 'cherry-pick'], 600.0)
+        with self.assertRaisesRegex(ci.CIError, 'cherry-pick'):
+            self.replay(stuck)       # raised, so no conflict list names t1
+        self.assertEqual(self.after_pick(), [])     # no abort, and no reset over a lock the timed-out pick may hold
+
+    def test_cherry_pick_conflict_is_still_a_conflict(self):
+        tip, applied, conflicts = self.replay(lambda: subprocess.CompletedProcess([], 1, '', 'CONFLICT (content)'))
+        self.assertEqual((applied, conflicts), ([], ['t1']))
+        self.assertEqual(self.after_pick()[:2], [('cherry-pick', '--abort'), ('reset', '-q', '--hard', self.BEFORE)])

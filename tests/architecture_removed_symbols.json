@@ -11,6 +11,8 @@
     "_PROCESS_IGNORE_WSL"
   ],
   "qualified_names": [
+    "drover.pipeline.git",
+    "drover.landing.timed_git",
     "drover.durable.publish",
     "drover.durable._UMASK",
     "drover.placement_sweep.marked",

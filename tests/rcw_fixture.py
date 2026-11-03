@@ -82,6 +82,7 @@ class PolicyCase:
         self.pipe = pipeline.Pipeline(self.port, repos_map={'p': self.prog}, runs_dir=self.runs)
         for method in ('resolve', 'ancestor', 'changes', 'trailers', 'commit', 'head', 'changed_paths'):
             setattr(self.pipe.repository, method, getattr(self.source, method))
+        self.pipe.repository.fork_point = lambda repo, ref, tip: None      # scope is judged from the run base
         self.fl = FakeLauncher(self.runs)
         self.fl.launch = self.launch
         ops.set_setting(self.conn, 'dispatch_enabled', 'true')

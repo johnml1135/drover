@@ -5,7 +5,7 @@ import unittest.mock
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import dispatcher, landing, outside_land, placement, repos
+from drover import dispatcher, git_client, landing, outside_land, placement, repos
 from drover.ledger import landing as landing_storage
 from drover.ledger import ops, states
 from drover.ledger.waiting import Waiting, cause_key
@@ -84,9 +84,10 @@ class ScanLimitTests(LedgerCase):
         calls = []
         def stuck_acme(repo, *args, **kw):
             calls.append(str(repo))
-            code = landing.GIT_TIMED_OUT if str(repo) == self.acme else 1
-            return SimpleNamespace(returncode=code, stdout='', stderr='')
-        with patch.object(landing, 'git', side_effect=stuck_acme), self.assertLogs('drover.outside_land', 'WARNING'):
+            if str(repo) == self.acme:
+                return git_client.GitReply(git_client.Answer.UNKNOWN, '', '', None, 'timeout')
+            return git_client.GitReply(git_client.Answer.NO, '', '', 1, None)
+        with patch.object(git_client, 'ask', side_effect=stuck_acme), self.assertLogs('drover.outside_land', 'WARNING'):
             self.assertEqual(self.scan()['scanned'], 2)
         self.assertEqual(calls.count(self.acme), 1)
         self.assertIn(self.beta, calls)
@@ -123,9 +124,9 @@ class ScanLimitTests(LedgerCase):
     def test_stopped_wsl_gets_no_git_call(self):
         running, routes = self.on_wsl(False)
         self.repo_task('acme'), self.repo_task('acme')
-        with running as asked, routes, patch.object(placement, 'git') as git:
+        with running as asked, routes, patch.object(placement, 'git') as git, patch.object(git_client, 'ask') as ask:
             self.assertEqual(self.scan(), {'scanned': 0, 'landed': []})
-        git.assert_not_called()
+        git.assert_not_called(), ask.assert_not_called()
         self.assertEqual(asked.call_count, 1)
 
     def test_running_wsl_is_scanned(self):

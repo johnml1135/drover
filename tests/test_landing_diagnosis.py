@@ -1,4 +1,5 @@
 """Landing diagnostic and origin-liveness regressions."""
+import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from drover.port import DirectPort
 from drover import ci, landing, landing_control
 from drover.ledger import ops
 from tests import test_landing_recovery as fixture
+from tests.fakeci import git_answers
 SHA, INFRA = fixture.SHA, fixture.INFRA
 
 class LandingDiagnosis(unittest.TestCase):
@@ -58,8 +60,6 @@ class LandingDiagnosis(unittest.TestCase):
             state['syncs'] += 1
             if state['syncs'] > 1:
                 state['sha'] = new_sha
-        def git(repo, *args, **kwargs):
-            return SimpleNamespace(stdout=state['sha'], returncode=0)
         def build(repo, work, base, tasks):
             built.append(base)
             return ('b' if base == SHA else 'e') * 40, tasks, []
@@ -71,7 +71,8 @@ class LandingDiagnosis(unittest.TestCase):
                 moved.set()
         def land(conn, repo, work, tasks, tip, receipt, result, *args, **kwargs):
             result.update(outcome='landed', landed=[self.task['id']])
-        with patch.object(landing, 'sync_main', side_effect=sync), patch.object(landing, 'git', side_effect=git), \
+        sha = lambda repo, *args, timeout: subprocess.CompletedProcess(args, 0, state['sha'], '')
+        with patch.object(landing, 'sync_main', side_effect=sync), git_answers(sha), \
                 patch.object(landing, 'build_tip', side_effect=build), patch.object(landing, '_land', side_effect=land):
             self.assertEqual(landing.run_batch(self.conn, '.', gate, land_stage=DirectPort(self.conn).land_stage, workdir='unused-recovery-work',
                                                repo_name='p', observe=observe, required_platforms=['wsl'])['outcome'], 'stale-base')

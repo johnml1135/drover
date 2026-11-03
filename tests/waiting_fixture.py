@@ -1,7 +1,7 @@
 """Landing policy fixtures: a commit graph and receipts, with no child processes.
 
 Repository operations are semantic (branch, replay, sync, advance). The narrow
-landing.git stub only answers observations and acknowledges scratch cleanup; it
+git stub only answers observations and acknowledges scratch cleanup; it
 cannot execute or emulate Git mutations. Real Git contracts live in test_landing.
 """
 import copy
@@ -16,6 +16,7 @@ from drover.port import DirectPort
 from drover import ci, config, landing, origin, ownership
 from drover import landing_batch, landing_control
 from drover.ledger import db, ops
+from tests.fakeci import git_answers
 
 class CommitGraph:
     def __init__(self, root):
@@ -148,7 +149,8 @@ class MemoryLandingCase(unittest.TestCase):
         config.use(cfg)
         self.gate = self.r.gate
         for context in (
-            patch.object(landing, 'git', side_effect=self.r.observe), patch.object(landing_batch, 'git', side_effect=self.r.observe), patch.object(landing_control, 'git', side_effect=self.r.observe),
+            git_answers(lambda repo, *args, timeout: self.r.observe(repo, *args)),     # git_client and placement.git
+            patch.object(landing_batch, 'git', side_effect=self.r.observe), patch.object(landing_control, 'git', side_effect=self.r.observe),
             patch.object(landing, 'branch_head', side_effect=self.r.branch_head), patch.object(landing_batch, 'branch_head', side_effect=self.r.branch_head),
             patch.object(landing_batch, 'task_files', side_effect=self.r.task_files),
             patch.object(landing, 'build_tip', side_effect=self.r.replay), patch.object(landing_control, 'build_tip', side_effect=self.r.replay),

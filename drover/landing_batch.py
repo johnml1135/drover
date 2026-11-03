@@ -6,7 +6,8 @@ import subprocess
 import time
 from pathlib import Path, PureWindowsPath
 
-from . import config, ci, durable, placement
+from . import config, ci, durable, git_client, placement
+from .git_client import LONG, Answer
 from .ledger import ops, landing as storage
 
 MIN_SIZE, MAX_SIZE = 1, 5
@@ -32,6 +33,21 @@ def git(repo, *args, check=True, timeout=None, **kw):
     if check and r.returncode:
         raise ci.CIError(f'git {" ".join(args)}: {r.stderr.strip()}')
     return r
+
+
+def ci_error(failed):
+    """`error=` for git_client: the CIError `git` raises, the command and git's stderr, or why git never answered."""
+    return ci.CIError(f'git {" ".join(failed.args_)}: {failed if failed.why == "timeout" else failed.err.strip()}')
+
+
+def _out(repo, *args):
+    return git_client.out(repo, *args, timeout_s=LONG, error=ci_error)
+
+
+def _ask(repo, *args, no=()):
+    """stdout when git answers yes, else None."""
+    reply = git_client.ask(repo, *args, timeout_s=LONG, no=no)
+    return reply.out if reply.answer is Answer.YES else None
 
 
 # ---- policy and velocity ---------------------------------------------------------------------------------
@@ -70,8 +86,8 @@ def effective_batch_size(conn):
 # ---- formation ---------------------------------------------------------------------------------------------
 
 def branch_head(repo, branch):
-    r = git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}^{{commit}}', check=False)
-    return r.stdout.strip() if r.returncode == 0 else None
+    head = _ask(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}^{{commit}}', no=(1,))
+    return None if head is None else head.strip()
 
 
 def review_landed(conn, task_id, head):
@@ -87,8 +103,8 @@ def review_landed(conn, task_id, head):
 
 
 def task_files(repo, base_ref, branch):
-    r = git(repo, 'diff', '--name-only', '--no-renames', f'{base_ref}...{branch}', check=False)
-    return [p for p in r.stdout.splitlines() if p] if r.returncode == 0 else []
+    changed = _ask(repo, 'diff', '--name-only', '--no-renames', f'{base_ref}...{branch}') or ''
+    return [p for p in changed.splitlines() if p]
 
 
 def reviewed_tasks(conn, repo, repo_name=None):
@@ -98,8 +114,8 @@ def reviewed_tasks(conn, repo, repo_name=None):
         return tasks
 
     def common(path):
-        r = git(config.native(path), 'rev-parse', '--path-format=absolute', '--git-common-dir', check=False)
-        return Path(config.native(r.stdout.strip())).resolve() if r.returncode == 0 else None
+        found = _ask(config.native(path), 'rev-parse', '--path-format=absolute', '--git-common-dir')
+        return None if found is None else Path(config.native(found.strip())).resolve()
 
     wanted = common(repo)
     return [t for t in tasks if wanted is not None and any(
@@ -158,29 +174,32 @@ def build_tip(repo, worktree, base_sha, tasks):
     else:
         pointer = (worktree / '.git').read_text(encoding='utf-8').strip().removeprefix('gitdir: ')
         if Path(pointer).is_absolute() or PureWindowsPath(pointer).is_absolute():
-            git(repo, 'worktree', 'repair', '--relative-paths', str(worktree))
+            _out(repo, 'worktree', 'repair', '--relative-paths', str(worktree))
     renew_owner()
-    git(worktree, 'reset', '-q', '--hard')
-    git(worktree, 'checkout', '-q', '--detach', base_sha)
-    git(worktree, 'clean', '-fdq')
+    _out(worktree, 'reset', '-q', '--hard')
+    _out(worktree, 'checkout', '-q', '--detach', base_sha)
+    _out(worktree, 'clean', '-fdq')
     applied, conflicts = [], []
     for t in tasks:
-        before = git(worktree, 'rev-parse', 'HEAD').stdout.strip()
+        before = _out(worktree, 'rev-parse', 'HEAD').strip()
         tip_ref = t.get('head') or t['branch']      # the recorded, reviewed SHA: a branch that moved since is not replayed
-        fork = git(repo, 'merge-base', base_sha, tip_ref).stdout.strip()
-        commits = git(repo, 'rev-list', '--reverse', '--no-merges', f'{fork}..{tip_ref}').stdout.split()
+        fork = _out(repo, 'merge-base', base_sha, tip_ref).strip()
+        commits = _out(repo, 'rev-list', '--reverse', '--no-merges', f'{fork}..{tip_ref}').split()
         ok = True
         for c in commits:
-            if git(worktree, 'cherry-pick', '--allow-empty', c, check=False).returncode:
-                git(worktree, 'cherry-pick', '--abort', check=False)
-                git(worktree, 'reset', '-q', '--hard', before)
+            picked = git_client.mutate(worktree, 'cherry-pick', '--allow-empty', c, timeout_s=LONG)
+            if picked.why in ('timeout', 'unavailable'):     # not a conflict: no abort, no reset over its lock
+                raise ci.CIError(f'git cherry-pick {c}: {picked.why}, not a conflict; nothing aborted or reset')
+            if not picked.ok:
+                git_client.mutate(worktree, 'cherry-pick', '--abort', timeout_s=LONG)
+                _out(worktree, 'reset', '-q', '--hard', before)
                 ok = False
                 break
         if ok:
-            applied.append({**t, 'last_sha': git(worktree, 'rev-parse', 'HEAD').stdout.strip()})
+            applied.append({**t, 'last_sha': _out(worktree, 'rev-parse', 'HEAD').strip()})
         else:
             conflicts.append(t['id'])
-    tip = git(worktree, 'rev-parse', 'HEAD').stdout.strip()
+    tip = _out(worktree, 'rev-parse', 'HEAD').strip()
     durable.write_json(checkpoint, dict(identity=identity, tip=tip, applied=applied, conflicts=conflicts), sync=False)
     return tip, applied, conflicts
 

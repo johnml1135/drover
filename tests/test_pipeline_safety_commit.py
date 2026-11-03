@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, contract, dispatcher, ci, placement, landing, launch, pipeline, repos, runner
+from drover import config, contract, dispatcher, ci, placement, landing, launch, origin, pipeline, repos, runner
 from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -18,7 +18,7 @@ from hub.dispatch import DispatcherService, LandingService
 from hub.settings import Settings
 from hub.store import Store
 from tests.tiers import integration
-from tests.fakeci import execute_gate, resources_go
+from tests.fakeci import execute_gate, git_answers, resources_go
 from tests.gitfix import Repo
 from tests.dispatch_fixture import Observations, make_dispatcher
 from tests.pipeline_fixture import MemoryRepo, MemoryRepository, CheckoutGit, finish_gate, read_checkouts
@@ -112,13 +112,13 @@ class Safety(PolicyBase):
         tid = self.task()
         dest = Path(self.tmp.name) / 'wts' / f'drover-{tid}'
         adapter = pipeline.Repository()
-        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=False) as _placement_patch_4, patch('drover.placement_exec.is_linux_native', _placement_patch_4), patch('drover.placement_host.is_linux_native', _placement_patch_4), patch('drover.placement_paths.is_linux_native', _placement_patch_4), \
+        with git_answers(lambda repo, *args, timeout: fake(repo, *args)), patch.object(placement, 'is_linux_native', return_value=False) as _placement_patch_4, patch('drover.placement_exec.is_linux_native', _placement_patch_4), patch('drover.placement_host.is_linux_native', _placement_patch_4), patch('drover.placement_paths.is_linux_native', _placement_patch_4), \
                 patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_5, patch('drover.placement_git.routes_through_wsl', _placement_patch_5), patch('drover.placement_paths.routes_through_wsl', _placement_patch_5):
             with self.assertRaises(pipeline.WorktreeRefused) as cm:
                 adapter.add(self.fix.repo, dest, f'drover/{tid}', 'main')
         self.assertIn('relative-paths', str(cm.exception))
         self.assertFalse(dest.exists())
-        with patch.object(pipeline, 'git', fake), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_6, patch('drover.placement_exec.is_linux_native', _placement_patch_6), patch('drover.placement_host.is_linux_native', _placement_patch_6), patch('drover.placement_paths.is_linux_native', _placement_patch_6), \
+        with git_answers(lambda repo, *args, timeout: fake(repo, *args)), patch.object(placement, 'is_linux_native', return_value=True) as _placement_patch_6, patch('drover.placement_exec.is_linux_native', _placement_patch_6), patch('drover.placement_host.is_linux_native', _placement_patch_6), patch('drover.placement_paths.is_linux_native', _placement_patch_6), \
                 patch.object(placement, 'routes_through_wsl', return_value=False) as _placement_patch_7, patch('drover.placement_git.routes_through_wsl', _placement_patch_7), patch('drover.placement_paths.routes_through_wsl', _placement_patch_7):
             # A native filesystem may use absolute pointers with old Git.
             adapter.add(self.fix.repo, dest, f'drover/{tid}', 'main')
@@ -133,23 +133,14 @@ class Safety(PolicyBase):
                       "--refmap=+refs/heads/main:refs/remotes/origin/main")
         timeout_error = subprocess.TimeoutExpired(["git", *fetch_args], timeout=pipeline.FETCH_TIMEOUT_S)
         self.repository.sync = pipeline.Repository().sync
-        real_pipeline_git = pipeline.git
-        results = []
-
-        def run_pipeline_git(*args, **kwargs):
-            result = real_pipeline_git(*args, **kwargs)
-            results.append(result)
-            return result
-        # Exercise the production fetch caller and wrapper, while making its timeout deterministic.
+        # Exercise the production fetch caller and origin's wrapper, while making its timeout deterministic.
         with mock.patch.object(placement, "git", side_effect=timeout_error) as placed_git, mock.patch('drover.placement_git.git', placed_git):
-            with mock.patch.object(pipeline, "git", side_effect=run_pipeline_git) as run_git:
-                self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))
+            with mock.patch.object(origin, "git", wraps=origin.git) as run_git:
+                self.assertFalse(self.pipe._create(self.get(tid), self.prog, self.fix.repo, None))     # FetchFailed
         run_git.assert_called_once_with(self.fix.repo, *fetch_args, check=False,
                                         timeout=pipeline.FETCH_TIMEOUT_S)
         placed_git.assert_called_once_with(self.fix.repo, *fetch_args,
                                            timeout=pipeline.FETCH_TIMEOUT_S)
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].returncode, 124)
 
     def test_a_land_verdict_needs_the_whole_sha(self):
         tid, sha = self.to_gated()
@@ -272,9 +263,10 @@ class ReadyToCommit(PolicyBase):
     def test_rename_cannot_hide_an_out_of_scope_deletion(self):
         replies = [subprocess.CompletedProcess([], 0, 'base.txt\0work.txt\0', ''),
                    subprocess.CompletedProcess([], 0, '', '')]
-        with patch.object(pipeline, 'git', side_effect=replies) as run:
+        calls = []
+        with git_answers(lambda repo, *args, timeout: calls.append((repo, *args)) or replies.pop(0)):
             self.assertEqual(pipeline.Repository().changes('checkout'), ['base.txt', 'work.txt'])
-        self.assertEqual([call.args for call in run.call_args_list], [
+        self.assertEqual(calls, [
             ('checkout', 'diff', '--name-only', '--no-renames', '-z', 'HEAD'),
             ('checkout', 'ls-files', '--others', '--exclude-standard', '-z')])
         tid = self.task(scope_files=["work.txt"])
@@ -334,11 +326,12 @@ class ReadyToCommit(PolicyBase):
         replies = [subprocess.CompletedProcess([], 0, 'base-sha\n', ''),
                    subprocess.CompletedProcess([], 0, '', ''),
                    subprocess.CompletedProcess([], 0, 'work.txt\0', '')]
-        with patch.object(placement, 'git', side_effect=replies) as calls:
+        calls = []
+        with git_answers(lambda repo, *args, timeout: calls.append(args) or replies.pop(0)):
             self.assertEqual(adapter.resolve('checkout', 'main'), 'base-sha')
             self.assertTrue(adapter.ancestor('checkout', 'base-sha', 'commit-sha'))
             self.assertEqual(adapter.changed_paths('checkout', 'base-sha', 'commit-sha'), ['work.txt'])
-        self.assertEqual([c.args[1:] for c in calls.call_args_list], [
+        self.assertEqual(calls, [
             ('rev-parse', '--verify', 'main^{commit}'),
             ('merge-base', '--is-ancestor', 'base-sha', 'commit-sha'),
             ('diff', '--name-only', '--no-renames', '-z', 'base-sha...commit-sha')])

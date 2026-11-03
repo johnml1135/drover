@@ -53,6 +53,25 @@ def answer_spawns(case, run):
     case.addCleanup(patcher.stop)
 
 
+def git_answers(reply):
+    """A patch sending every git spawn to `reply(repo, *args, timeout=)`, below git_client and placement.git alike,
+    so a test reads one behaviour whichever route its caller takes. It answers as `answering` says, and a raised
+    `subprocess.TimeoutExpired` is a timeout. The argv must hold `git -C <repo>`, alone or inside a WSL command."""
+    def run(argv, **options):
+        at = next((i for i in range(len(argv) - 2) if argv[i:i + 2] == ['git', '-C']), None)
+        if at is None:
+            raise AssertionError(f'not a git argv: {argv!r}')
+        return reply(argv[at + 2], *argv[at + 3:], timeout=options['timeout'])
+    return mock.patch.object(process, 'subprocess', answering(run))
+
+
+def git_spawns(case, reply):
+    """`git_answers` until the test ends."""
+    patcher = git_answers(reply)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
 class FakeCommands:
     """Ordered, strict subprocess.run boundary shared by pwsh, Python and Git tests.
 

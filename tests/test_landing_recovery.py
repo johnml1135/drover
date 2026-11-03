@@ -1,6 +1,7 @@
 """Landing recovery policy, with in-memory ledger and no external processes."""
 import json
 import sqlite3
+import subprocess
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -11,7 +12,7 @@ from drover.port import DirectPort
 from drover import ci, landing, landing_control, resources
 from drover.ledger import db, ops
 from drover.ledger.waiting import Waiting, BASE, cause_key
-from tests.fakeci import resources_go
+from tests.fakeci import git_answers, resources_go
 
 SHA = 'a' * 40
 INFRA = dict(status='failed', outcome='infrastructure-failed', passed=False, sha='b' * 40,
@@ -29,11 +30,13 @@ class RecoveryTests(unittest.TestCase):
         self.stack = self.enterContext(ExitStack())
         for obj, name, value in (
             (landing, 'sync_main', None), (landing, '_control_guard', 0),
-            (landing, 'git', SimpleNamespace(stdout=SHA, returncode=0)),
             (landing, 'form_batch', [self.task]),
             (landing, 'build_tip', ('b' * 40, [self.task], [])), (landing_control, 'build_tip', ('b' * 40, [self.task], [])),
         ):
             self.stack.enter_context(patch.object(obj, name, return_value=value))
+        self.git_calls = []
+        self.stack.enter_context(git_answers(lambda repo, *args, timeout: self.git_calls.append(args)
+                                             or subprocess.CompletedProcess(args, 0, SHA, '')))
         self.stack.enter_context(patch('drover.ownership.owned_by', return_value=False))
         self.stack.enter_context(patch.object(resources, 'check', side_effect=resources_go))  # landing's own retry probe
         self.clock = self.stack.enter_context(patch.object(landing.time, 'time', return_value=1000))
@@ -206,12 +209,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn('ticket', checkpoint)
 
     def test_resource_deferral_preserves_work_without_spending_recovery(self):
-        with patch.object(landing, 'git') as git:
-            git.return_value = SimpleNamespace(stdout=SHA, returncode=0)
-            result = self.run_batch(Mock(side_effect=ci.CIDeferred('host busy')))
+        result = self.run_batch(Mock(side_effect=ci.CIDeferred('host busy')))
         self.assertEqual(result['outcome'], 'queued')
         self.assertEqual((result['gates'], result['gate_s'], result['red']), (0, [], 0))
-        self.assertFalse(any(call.args[1:3] == ('worktree', 'remove') for call in git.call_args_list))
+        self.assertFalse(any(args[:2] == ('worktree', 'remove') for args in self.git_calls))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'landing_recovery:%'").fetchone()[0], 0)
 
     def designate_repair(self):

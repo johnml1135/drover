@@ -6,12 +6,11 @@ config. Git is always driven with an argv list, never a shell. Paths in the ledg
 """
 import json
 import re
-import subprocess
 import time
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, ownership, ci, placement, origin, repos, git_client, git_worktrees
+from . import config, ownership, ci, placement, origin, repos, git_client, git_worktrees, landing_batch
 from .ledger import states
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -33,15 +32,19 @@ def truthy(v):
 FETCH_TIMEOUT_S = 120
 
 
-def git(repo, *args, check=False, timeout=None, **kw):
-    """git with an argv list. A timeout is a failed command (rc 124), never a hang."""
-    try:
-        r = placement.git(repo, *args, timeout=timeout, **kw)
-    except subprocess.TimeoutExpired as error:     # error.timeout: the limit it ran under, LONG when none was named
-        r = subprocess.CompletedProcess(args, 124, "", f"git {args[0]} timed out after {error.timeout:g}s")
-    if check and r.returncode:
-        raise WorktreeRefused(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[-300:]}")
-    return r
+def refused(failed):
+    """`error=` for git_client: WorktreeRefused with the command and the tail of what git said."""
+    said = str(failed) if failed.why == "timeout" else (failed.err or failed.out).strip()[-300:]
+    return WorktreeRefused(f"git {' '.join(failed.args_[:3])}: {said}")
+
+
+def _out(repo, *args, **kw):         # must succeed; LONG, as an untimed call (section 5.1)
+    return git_client.out(repo, *args, timeout_s=git_client.LONG, error=refused, **kw)
+
+
+def _ask(repo, *args, no=()):        # stdout when git answers yes, else None
+    reply = git_client.ask(repo, *args, timeout_s=git_client.LONG, no=no)
+    return reply.out if reply.answer is git_client.Answer.YES else None
 
 
 def join_cfg(base, name):
@@ -68,16 +71,11 @@ class Repository:
         return placement.prepare_worktree(path)
 
     def changed_paths(self, repo, base, tip="HEAD"):
-        return [p for p in git(repo, "diff", "--name-only", "--no-renames", "-z",
-                               f"{base}...{tip}", check=True).stdout.split("\0") if p]
+        return [p for p in _out(repo, "diff", "--name-only", "--no-renames", "-z", f"{base}...{tip}").split("\0") if p]
 
     def fork_point(self, repo, ref, tip):
         """Where `tip`'s history meets `ref`; None when Git cannot say."""
-        try:
-            result = git(repo, "merge-base", ref, tip)
-        except Exception:
-            return None
-        return (result.stdout.strip() or None) if result.returncode == 0 else None
+        return (_ask(repo, "merge-base", ref, tip) or "").strip() or None
 
     def changed_docs_only(self, repo, base, tip, globs):
         return ci.changed_docs_only(repo, base, tip, globs)
@@ -86,21 +84,21 @@ class Repository:
         return (Path(path) / ".git").exists()
 
     def head(self, path):
-        return git(path, "rev-parse", "HEAD", check=True).stdout.strip()
+        return _out(path, "rev-parse", "HEAD").strip()
 
     def resolve(self, path, ref):
-        return git(path, "rev-parse", "--verify", f"{ref}^{{commit}}", check=True).stdout.strip()
+        return _out(path, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
 
     def ancestor(self, path, base, tip):
-        return git(path, "merge-base", "--is-ancestor", base, tip).returncode == 0
+        return _ask(path, "merge-base", "--is-ancestor", base, tip, no=(1,)) is not None
 
     def branch(self, path):
-        return git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        return (_ask(path, "rev-parse", "--abbrev-ref", "HEAD") or "").strip()
 
     def status(self, path):
         """Short status including untracked files, or None when Git cannot report it."""
-        result = git(path, "status", "--short", "--untracked-files=all", timeout=10)
-        return None if result.returncode else result.stdout.strip()
+        reply = git_client.ask(path, "status", "--short", "--untracked-files=all", timeout_s=10, no=())
+        return reply.out.strip() if reply.answer is git_client.Answer.YES else None
 
     def inventory(self, repo, side=None):
         try:
@@ -121,11 +119,11 @@ class Repository:
         ownership.tag(path, name, OWNER_PREFIX + tid, time.time() + 86400)
 
     def sync(self, repo, remote, default):
-        return origin.sync(repo, remote, default, run=git, timeout=FETCH_TIMEOUT_S)
+        return origin.sync(repo, remote, default, run=origin.git, timeout=FETCH_TIMEOUT_S)     # git= in Task 25
 
     def start_ref(self, repo, branch, base, remote):
         for ref in (f"refs/heads/{branch}", f"refs/remotes/{remote}/{branch}"):
-            if git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0:
+            if _ask(repo, "rev-parse", "--verify", "--quiet", ref, no=(1,)) is not None:
                 return ref
         return base
 
@@ -134,33 +132,34 @@ class Repository:
             tail = [str(dest), branch]
         else:
             tail = ["-b", branch, str(dest), start_ref]
-        placement.add_worktree(repo, dest, *tail, run=git, error=WorktreeRefused)
+        # Untimed and check-free, as add_worktree's other caller passes it, until Task 25 puts LONG inside.
+        placement.add_worktree(repo, dest, *tail, run=landing_batch.git, error=WorktreeRefused)
 
     def remove(self, repo, path):
         placement.unlock_worktree(repo, path)
-        git(repo, "worktree", "remove", str(path), check=True, side="wsl")
+        _out(repo, "worktree", "remove", str(path), side="wsl")
 
     def changes(self, repo):
-        changed = git(repo, "diff", "--name-only", "--no-renames", "-z", "HEAD", check=True).stdout
-        untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z", check=True).stdout
+        changed = _out(repo, "diff", "--name-only", "--no-renames", "-z", "HEAD")
+        untracked = _out(repo, "ls-files", "--others", "--exclude-standard", "-z")
         return sorted(set(p for p in (changed + untracked).split("\0") if p))
 
     def trailers(self, repo):
-        text = git(repo, "log", "-1", "--format=%(trailers:key=Drover-Task,valueonly)%x00"
-                   "%(trailers:key=Drover-Run,valueonly)", check=True).stdout
+        text = _out(repo, "log", "-1", "--format=%(trailers:key=Drover-Task,valueonly)%x00"
+                    "%(trailers:key=Drover-Run,valueonly)")
         return [s.strip() for s in text.split("\0")]
 
     def commit(self, repo, message):
-        git(repo, "add", "-A", check=True)
-        git(repo, "commit", "-m", message, check=True)
-        return git(repo, "rev-parse", "HEAD", check=True).stdout.strip()
+        _out(repo, "add", "-A")
+        _out(repo, "commit", "-m", message)
+        return _out(repo, "rev-parse", "HEAD").strip()
 
     def diff_lines(self, repo, base, sha):
-        rows = git(repo, "diff", "--numstat", "--no-renames", f"{base}...{sha}").stdout.splitlines()
+        rows = (_ask(repo, "diff", "--numstat", "--no-renames", f"{base}...{sha}") or "").splitlines()
         return sum(int(n) for row in rows for n in row.split("\t")[:2] if n.isdigit())
 
     def diff_text(self, repo, base, sha):
-        return git(repo, "diff", "--no-renames", f"{base}...{sha}").stdout
+        return _ask(repo, "diff", "--no-renames", f"{base}...{sha}") or ""
 
 
 class Pipeline:
@@ -344,7 +343,7 @@ class Pipeline:
                 reuse_cfg = placement.config_path(path, repos.repo_path(prog))
                 try:
                     self.repository.tag(path, repos.repo_name(prog), tid)
-                except (ValueError, OSError, subprocess.SubprocessError) as e:
+                except (ValueError, OSError) as e:
                     raise WorktreeRefused(f"could not record ownership of {path}: {e}") from e
                 if reuse_cfg != t.get("worktree") or branch != t.get("branch"):
                     self._persist(tid, branch, reuse_cfg)
@@ -455,7 +454,7 @@ class Pipeline:
                 self._add(repo, dest, branch, start_ref, remote)
             try:
                 self.repository.tag(dest, repos.repo_name(prog), tid)
-            except (ValueError, OSError, subprocess.SubprocessError) as e:
+            except (ValueError, OSError) as e:
                 raise WorktreeRefused(f"created {dest} but could not record ownership: {e}") from e
             self._persist(tid, branch, dest_cfg)
         except Exception as e:
