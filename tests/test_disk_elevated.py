@@ -78,13 +78,14 @@ class ElevatedProcesses(unittest.TestCase):
         proof, _, _ = self.proof('taskhostw.exe', r'C:\Windows\System32\taskhostw.exe')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
-            request = dict(_processes=proof, now=1000, apply=False, drive=dict(level='hold', path=directory))
+            request = dict(now=1000, apply=False, drive=dict(level='hold', path=directory))
+            evidence = SimpleNamespace(processes=lambda: proof)      # the stage's first-pass proof
             machine = dict(repo=str(path / 'repo'), name='fixture')
             entry = dict(worktree=str(path), locked='windows')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
                     patch.object(placement, 'cleanup_contains', return_value=True), \
                     patch.object(disk_worktrees, 'safe_path', return_value=False):
-                row = disk_worktrees.inspect(request, machine, entry)
+                row = disk_worktrees.inspect(request, machine, entry, evidence=evidence)
             self.assertEqual(row['reason_code'], 'protected')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
                     patch.object(placement, 'cleanup_contains', return_value=True), \
@@ -92,8 +93,8 @@ class ElevatedProcesses(unittest.TestCase):
                     patch.object(disk_worktrees, 'head_at', return_value='head'), \
                     patch.object(disk_worktrees, 'outputs_at', return_value=['bin']), \
                     patch('drover.ownership.read', return_value=None):
-                evidence = disk_paths.output_evidence(request, machine, entry)
-            self.assertEqual(evidence, (path, 'head', None, ['bin']))
+                found = disk_paths.output_evidence(request, machine, entry, evidence=evidence)
+            self.assertEqual(found, (path, 'head', None, ['bin']))
 
     def test_prior_factory_lists_migrate_but_owner_edits_survive(self):
         current = list(config_defaults.PROCESS_IGNORE)

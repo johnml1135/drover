@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from drover import config, git_worktrees, placement
 from drover.disk_stage import StageClock, StageRequest, StageRun, read_rows
-from drover.git_worktrees import Listing, Listings, Proof
+from drover.git_worktrees import Listing, Proof
 from tests.gitfix import clean_parent
 
 DAY = 86400
@@ -32,8 +32,10 @@ def agreeing_proof():
 
 
 def stage_request(request):
-    """`request` as `disk_side.serve` hands it to a stage, for a test that calls the stage itself."""
-    return dict(request, _listings=Listings([machine['repo'] for machine in request['repos']]))
+    """(the dict a stage's helpers read, the stage's evidence), as `stage_run(request)` makes them, for a test that
+    calls a removal itself: `remove(view, selected, clock=..., evidence=evidence)`."""
+    run = stage_run(request)
+    return run.request.decide_view(), run.evidence
 
 
 def stage_run(request, *, clock=time.monotonic, listings=None):

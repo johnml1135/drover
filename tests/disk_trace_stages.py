@@ -108,6 +108,7 @@ TEMP = dict(
     temp_grows=mid(2, temp_grows),
     temp_root_becomes_a_link=mid(2, temp_root_becomes_a_link),
     temp_root_partial=on(2, budget_for_root),
+    temp_deadline_at_the_start=on(2, lambda s: temp(s, 'old'), timeout=0),
     temp_root_on_another_drive=on(2, lambda s: s.elsewhere.add(temp(s, 'old').parent)),
     temp_root_is_a_link=on(2, lambda s: s.links.add(temp(s, 'old').parent)),
     temp_process_out_of_scope=on(2, lambda s: process_reports(s, lambda s: temp(s, 'old'), out_of_scope=2)),
@@ -188,6 +189,7 @@ CACHES = dict(
     cache_command_other_side=on(3, lambda s: cache_command(s, side=s.other_side)),
     cache_command_other_drive=on(3, lambda s: cache_command(s) or s.elsewhere.add(s.root / 'tool')),
     cache_by_age=on(3, cache_old_and_new),
+    cache_deadline_at_the_start=on(3, lambda s: cache_folder(s, 'old'), timeout=0),
     cache_by_declared_age=on(3, lambda s: cache_folder(s, 'old', age=2 * DAY, max_age_days=1)),
     cache_warn_level=on(3, cache_at_level, level='warn'),
     cache_critical_level=on(3, cache_at_level, level='critical'),
@@ -480,10 +482,19 @@ def report_listing_refused(s):
     s.refuse('worktree list', 'fatal: listing failed', s.common().parent)
 
 
+def report_deadline_between_worktrees(s):
+    """The clock runs out at the main checkout's status read: `a`, and the repo after this one, are named."""
+    s.repo('beta')
+    s.worktree('a')
+    s.each_run = lambda: s.git.after.update(status=lambda: jump_clock(s))
+
+
 REPORTS = dict(
     report_rows=on(6, report_rows),
     report_status_fails=on(6, report_status_fails),
     report_root_is_a_link=on(6, lambda s: s.file(s.report_root / 'item') and s.links.add(s.report_root)),
     report_repo_error=on(6, report_listing_refused),
+    report_deadline_at_the_start=on(6, report_rows, timeout=0),
+    report_deadline_between_worktrees=on(6, report_deadline_between_worktrees),
 )
 STAGE_SCENES = {**TEMP, **CACHES, 'settled_past_the_line': mid(4, settled_past_the_line), **OUTPUTS, **BUDGETS, **REPORTS}

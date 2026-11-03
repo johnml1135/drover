@@ -170,7 +170,8 @@ class DefaultBranchPolicy(DiskCase):
         selected = dict(path=str(self.wt), repo=str(self.repo), head='old-head',
                         reason_code='settled', action='candidate', ignored=[str(self.src)])
         with patch.object(disk_worktrees, 'inspect', return_value=selected.copy()):
-            answer = disk_worktrees.remove(stage_request(self.request), selected, clock=StageClock(1800))
+            request, evidence = stage_request(self.request)
+            answer = disk_worktrees.remove(request, selected, clock=StageClock(1800), evidence=evidence)
         self.assertEqual(answer['reason_code'], 'ignored_content')
         self.assertTrue(self.src.exists())
 

@@ -6,12 +6,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_registrations, disk_worktrees, git_client, placement
+from drover import disk_registrations, disk_worktrees, git_client, git_worktrees, placement
+from drover.disk_stage import StageClock
 from tests.disk_fixture import answer, listing_answers, stage_run, staged
 
 TIMEOUT = ValueError('git rev-parse failed: timeout')      # what a git timeout gives the disk callers, through `_out`
 SPAWN_TIMEOUT = subprocess.TimeoutExpired(['git'], 60)    # the spawn's own, below git_client
 MACHINE = dict(name='alpha', repo='/repo')
+CLOCK = StageClock(1800)
+
+
+def at(*times):
+    """A clock reading 0 at the stage's start, then each of `times` in turn, holding the last."""
+    readings = [0.0, *times]
+    return lambda: readings.pop(0) if len(readings) > 1 else readings[0]
 
 
 def request(apply=False):
@@ -26,7 +34,7 @@ class FolderTimeouts(unittest.TestCase):
     def test_judge_timeout_keeps_that_folder_and_judges_the_next(self):
         outcomes = [TIMEOUT, ('repair', 'b2', 'ok', None)]
         with patch.object(disk_registrations, 'judge', side_effect=outcomes):
-            rows = disk_registrations.report(request(), MACHINE, [], found('one', 'two'), None)
+            rows = disk_registrations.report(request(), MACHINE, [], found('one', 'two'), None, evidence=None, clock=CLOCK)
         self.assertEqual([r['reason_code'] for r in rows], ['lost_registration_unproven', 'lost_registration'])
         self.assertEqual([r['action'] for r in rows], ['keep', 'report'])
 
@@ -44,7 +52,7 @@ class FolderTimeouts(unittest.TestCase):
     def test_reregister_timeout_is_a_failed_row_not_an_exception(self):
         with patch.object(disk_registrations, 'judge', return_value=('repair', 'b', 'ok', None)), \
                 patch.object(disk_registrations, 'reregister', side_effect=TIMEOUT):
-            rows = disk_registrations.report(request(apply=True), MACHINE, [], found('one'), None)
+            rows = disk_registrations.report(request(apply=True), MACHINE, [], found('one'), None, evidence=None, clock=CLOCK)
         self.assertEqual((rows[0]['action'], rows[0]['reason_code']), ('keep', 'lost_registration_failed'))
 
 
@@ -63,7 +71,8 @@ class UnknownCandidate(unittest.TestCase):
             disk_registrations.candidate('/repo', 'T1', 'hx/T1')
         self.assertEqual(self.asked, ['refs/heads/hx/T1'])
         with git_answers(self.git):
-            [row] = disk_registrations.report(request(), MACHINE, [], {'/nowhere/hx/T1': (Path('/nowhere/admin-T1'), 'hx/T1')}, None)
+            [row] = disk_registrations.report(request(), MACHINE, [], {'/nowhere/hx/T1': (Path('/nowhere/admin-T1'), 'hx/T1')}, None,
+                                              evidence=None, clock=CLOCK)
         self.assertEqual((row['action'], row['reason_code'], row['branch']), ('keep', 'lost_registration_unproven', None))
         self.assertEqual(row['detail'], 'could not be matched: git rev-parse failed: timeout')
 
@@ -87,7 +96,8 @@ class ReregisterFailure(unittest.TestCase):
             raise kwargs['error'](git_client.GitFailed(('worktree', 'add'), 'timeout', None, '', ''))     # add_worktree's error=
         with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(git_client, 'mutate', return_value=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
             with self.assertRaisesRegex(ValueError, '^git worktree failed: timeout$'):
-                disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b', store)
+                disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b', store,
+                                              evidence=None, clock=CLOCK)
         return records, git
 
     def test_failure_removes_the_temporary_worktree_and_journals_failed(self):
@@ -103,6 +113,48 @@ class ReregisterFailure(unittest.TestCase):
         records, git = self.run_reregister(git_client.GitDone(False, '', '', None, 'timeout'))     # mutate raises nothing
         self.assertEqual(git.call_count, 1)
         self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
+
+
+class ReregisterClock(unittest.TestCase):
+    """The carry from slice 1: a repair starts only while the stage can still finish it, and its verifying listing,
+    inside the planned window, takes the stage's patience rather than the 400 s listing timeout."""
+    def orphan(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, tmp, True)
+        orphan = tmp / 'w' / 'orphan'
+        orphan.mkdir(parents=True)
+        (orphan / '.git').write_text('gitdir: x', encoding='utf-8')
+        return tmp, orphan
+
+    def test_past_the_line_the_repair_never_starts(self):
+        tmp, orphan = self.orphan()
+        records = []
+        with patch.object(placement, 'add_worktree') as add, self.assertRaisesRegex(ValueError, 'deadline'):
+            disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
+                                          SimpleNamespace(append=records.append), evidence=None,
+                                          clock=StageClock(100, clock=at(80)))
+        self.assertEqual((records, add.called, (orphan / '.git').read_text(encoding='utf-8')), ([], False, 'gitdir: x'))
+
+    def test_the_verifying_listing_takes_patience(self):
+        tmp, orphan = self.orphan()
+        (tmp / 'admin').mkdir()
+        (tmp / 'admin' / 'index').write_text('', encoding='utf-8')
+        records, told, asked = [], [], []
+
+        def add(repo, place, *args, **kwargs):
+            Path(place).mkdir(parents=True)
+            (Path(place) / '.git').write_text('gitdir: new', encoding='utf-8')
+
+        def listing(repo, *, timeout_s):
+            asked.append(timeout_s)
+            return git_worktrees.Listing(repo, (dict(worktree=str(orphan)),))
+        evidence = SimpleNamespace(repaired=lambda repo, path: told.append((repo, path)))
+        with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(disk_registrations, '_out', return_value=''),                 patch.object(disk_registrations, 'gitdir_at', return_value=str(tmp / 'admin')),                 patch.object(git_worktrees, 'listing', side_effect=listing):
+            disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
+                                          SimpleNamespace(append=records.append), evidence=evidence,
+                                          clock=StageClock(1800, clock=at(1400)))
+        self.assertEqual(asked, [40])       # patience(400) 40 s before the line, not 400 s
+        self.assertEqual(([r['phase'] for r in records], told), (['planned', 'completed'], [('/repo', orphan)]))
 
 
 class UnknownLostFolders(unittest.TestCase):

@@ -69,7 +69,11 @@
     "drover.disk_budget.deadline",
     "drover.disk_budget._clock",
     "drover.disk_budget.DEADLINE_SHARE",
-    "drover.disk_paths.deadline_row"
+    "drover.disk_paths.deadline_row",
+    "drover.disk_side._bridge",
+    "drover.disk_side._trim",
+    "drover.disk_paths.stage_dict",
+    "drover.disk_paths.processes"
   ],
   "removed_receipt_fields": [
     "infra"

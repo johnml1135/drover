@@ -78,8 +78,10 @@ class StageRequest:
         return StageRequest.from_wire(value)
 
     def decide_view(self) -> dict:
-        """The plain dict `decide` and `evaluate` read, so `dict(view, approved_path=None)` stays as it is."""
-        return dict(self.to_wire(), approved_path=self.approved_path)
+        """The plain dict `decide`, `evaluate` and the stages read, so `dict(view, approved_path=None)` stays as it is.
+        The wire's `_inventory_id` and `_worker_id` are fields here, not keys."""
+        return dict({key: item for key, item in self.to_wire().items() if not key.startswith('_')},
+                    approved_path=self.approved_path)
 
 
 class StageClock:
@@ -143,8 +145,8 @@ def within(path, root):
     return parts[:len(parent)] == parent
 
 
-def item(path, request, reason, **extra):
-    """A kept row for `path`. `request` is unused."""
+def item(path, reason, **extra):
+    """A kept row for `path`."""
     return dict(path=str(path), action='keep', reason_code=reason, owner=None,
                 files=0, age_s=0, bytes=0, **extra)
 

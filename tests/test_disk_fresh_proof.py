@@ -3,10 +3,10 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from drover import disk_cleanup, disk_state, git_worktrees
+from drover import disk_cleanup, disk_state, disk_worktrees, git_worktrees
 from drover.git_worktrees import Listings
 from tests.disk_fixture import DAY, empty_result
-from tests.disk_trace import Scene, lost_registration, missing
+from tests.disk_trace import Scene, lost_registration, missing, quarantine_unlisted_registered
 from tests.disk_trace_scene import Failed, quick_state
 from tests.disk_trace_stages import budget, output
 
@@ -163,8 +163,12 @@ class FreshProof(unittest.TestCase):
         """Section 7.3 step 1 at stage 4: the stage listing lost the target's row, so the removal keeps it."""
         scene = self.scene()
         tree = scene.worktree('w')
-        scene.midstage = lambda request: request['_listings'].removed(scene.machines[0]['repo'], tree)
-        with patch.object(git_worktrees, 'prove', side_effect=AssertionError('proved a target with no row')):
+        real = disk_worktrees.remove
+
+        def dropped(request, selected, **options):      # the scene wraps whatever `remove` is when it serves
+            options['evidence'].took(scene.machines[0]['repo'], tree)
+            return real(request, selected, **options)
+        with patch.object(disk_worktrees, 'remove', dropped),                 patch.object(git_worktrees, 'prove', side_effect=AssertionError('proved a target with no row')):
             trace = scene.record(apply=True)
         self.assert_kept(trace, 'settled')
         self.assertEqual([(error['path'], error['action'], error['error']) for error in trace['errors']],
@@ -197,6 +201,14 @@ class FreshProof(unittest.TestCase):
             scene.record(apply=True)
             self.assertEqual(row_at(scene.record(apply=True, now=scene.now + 3 * DAY))['action'], 'removed')
         self.assertIs(proved.call_args.kwargs['pointer'], False)
+
+    def test_a_stray_registered_between_listings_resets_its_quarantine(self):
+        """Spec S5: the stage's listing missed it and the proof at removal sees it; the removal keeps, with today's
+        `snapshot changed` error, and the stray's three days start again rather than standing elapsed."""
+        scene = self.scene()
+        answers = quarantine_unlisted_registered(scene)
+        self.assertEqual([error['error'] for error in answers['elapsed']['errors']], ['snapshot changed'])
+        self.assertEqual(disk_state.read(scene.state).get('quarantine', {}), {})
 
     def test_reregister_keeps_its_one_real_listing_and_tells_listings(self):
         scene = self.scene()

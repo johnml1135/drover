@@ -1,8 +1,8 @@
 import itertools
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, disk_temp, placement
+from drover import config, placement
+from drover.disk_stage import StageClock
 from tests.disk_fixture import DiskCase
 
 
@@ -52,10 +52,9 @@ class Budget(DiskCase):
         self.cfg['disk_cleanup']['temp_root_budget_s'] = budget
         if apply:
             self.approve_report()  # the receipt covers the configured scope, budget included
-        ticks = itertools.count()
-        clock = SimpleNamespace(monotonic=lambda: float(next(ticks)))
-        with patch.object(disk_temp, 'time', clock):
-            return self.run_cleanup(apply=apply)
+        ticks = itertools.count()      # every stage's clock ticks a second at each reading
+        self.stage_clock = lambda timeout_s, **options: StageClock(timeout_s, clock=lambda: float(next(ticks)), **options)
+        return self.run_cleanup(apply=apply)
 
     def test_exceeded_budget_records_partial_and_stops_scanning(self):
         self.entries(40)

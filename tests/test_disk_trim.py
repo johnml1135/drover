@@ -1,7 +1,7 @@
 import subprocess
 import sys
 from unittest.mock import patch
-from tests.disk_fixture import DiskCase, GIB, empty_result
+from tests.disk_fixture import DiskCase, GIB, empty_result, staged
 from tests.fakeci import FakeCommands, process_options
 
 
@@ -58,7 +58,7 @@ class Trim(DiskCase):
         fake = FakeCommands(self.root / 'fake')
         fake.expect(argv, output='cleaned', **process_options(120, cwd=str(self.temp_root)))
         with fake.patch(process):
-            result = caches(request)
+            result = staged(caches, request)
         self.assertEqual(result['errors'], [])
         self.assertEqual([(row['action'], row['returncode'], row['output']) for row in result['items']],
                          [('executed', 0, 'cleaned')])
@@ -71,9 +71,12 @@ class Trim(DiskCase):
         fake.expect(argv, error=subprocess.TimeoutExpired(argv, 120), **process_options(120))
         fake.expect(argv, error=FileNotFoundError(2, 'No such file or directory'), **process_options(120))
         request = dict(stage=1, apply=True)
+        vhdx = dict(path='C:/wsl/ext4.vhdx', action='report', reason_code='wsl_vhdx', bytes=1)
         with fake.patch(process), patch.object(placement, 'trim_argv', return_value=argv), \
-                patch.object(placement, 'cleanup_vhdx_report', return_value=[]):
-            failed, timed_out, missing = (disk_side._trim(request)['errors'] for _ in range(3))
+                patch.object(placement, 'cleanup_vhdx_report', return_value=[vhdx]):
+            answers = [staged(disk_side.trim, request) for _ in range(3)]
+        failed, timed_out, missing = (answer['errors'] for answer in answers)
+        self.assertEqual([answer['items'] for answer in answers], [[vhdx]] * 3)     # the report crosses on the run
         self.assertEqual(failed, [dict(reason_code='trim_unavailable', output='fstrim: not permitted')])
         for errors in (timed_out, missing):
             self.assertEqual([error['reason_code'] for error in errors], ['trim_unavailable'])

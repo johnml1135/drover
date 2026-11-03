@@ -6,7 +6,7 @@ from . import placement, process
 from .disk_budget import purge
 from .disk_evidence import StageEvidence
 from .disk_inventory import LIMIT, root_of
-from .disk_paths import caches, outputs, report, stage_dict
+from .disk_paths import caches, outputs, report
 from .disk_stage import StageClock, StageRequest, StageRun
 from .disk_temp import temporary
 from .disk_worktrees import settled
@@ -39,17 +39,18 @@ def _nothing(run):
     return {}
 
 
-def _trim(request):
+def trim(run) -> None:
     """Stage 1: the VHDX report, and a trim when applied."""
     argv = placement.trim_argv()
-    result = dict(items=placement.cleanup_vhdx_report(), errors=[], reclaimed_bytes=0)
-    if request['apply'] and argv:
+    for row in placement.cleanup_vhdx_report():
+        run.add(row)
+    run.checkpoint()        # the report crosses before the trim's 120 s
+    if run.request.apply and argv:
         done = process.run(process.Command(argv, 120))
         if done.kind != 'exited':
-            result['errors'].append(dict(reason_code='trim_unavailable', error=done.detail))
+            run.error(dict(reason_code='trim_unavailable', error=done.detail))
         elif done.code:
-            result['errors'].append(dict(reason_code='trim_unavailable', output=done.stderr[-2000:]))
-    return result
+            run.error(dict(reason_code='trim_unavailable', output=done.stderr[-2000:]))
 
 
 def _outputs(run):
@@ -57,24 +58,4 @@ def _outputs(run):
     return purge(run) if run.request.budget else outputs(run)
 
 
-def _bridge(run, stage_fn):
-    """Temporary, until Task 35: today's request dict built from `run`, today's stage on it, and its rows added. The
-    dict holds the evidence's own listings and diagnostics, so a fresh proof taken at removal still reports its
-    unreadable processes."""
-    answer = stage_fn(stage_dict(run, proven=run.request.stage in PROVEN))
-    for row in answer['items']:
-        run.add(row)
-    for row in answer['errors']:
-        run.error(row)
-    run.reclaimed(answer['reclaimed_bytes'])
-    run.checkpoint()
-
-
-STAGES = {
-    1: lambda run: _bridge(run, _trim),
-    2: lambda run: _bridge(run, temporary),
-    3: lambda run: _bridge(run, caches),
-    4: settled,
-    5: _outputs,
-    6: lambda run: _bridge(run, report),
-}
+STAGES = {1: trim, 2: temporary, 3: caches, 4: settled, 5: _outputs, 6: report}

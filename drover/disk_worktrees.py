@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 from . import git_client, git_worktrees, ownership, placement, repos
-from .disk_paths import stage_dict, worktree_roots, facts, processes, safe_path, disposable_match, repository_tree
+from .disk_paths import worktree_roots, facts, safe_path, disposable_match, repository_tree
 from .disk_stage import item, within
 
 
@@ -35,9 +35,9 @@ def lock_at(repo, path, reason):
     git_client.mutate(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout_s=git_client.NORMAL)
 
 
-def discard_at(repo, path, listings):
+def discard_at(repo, path, evidence):
     _out(repo, 'worktree', 'remove', '--force', '--', path)
-    listings.removed(repo, path)
+    evidence.took(repo, path)
 
 
 def rescue_at(repo, ref, head):
@@ -151,10 +151,11 @@ def merged(machine, head):
     return tree.answer is yes and tree.out.splitlines()[0] == _out(repo, 'rev-parse', base + '^{tree}').strip()
 
 
-def inspect(request, machine, entry):
+def inspect(request, machine, entry, *, evidence, fresh=False):
+    """One listed worktree judged. `evidence` is the stage's; a removal's last look takes a `fresh` process proof."""
     from .disk_cleanup import decide
     path = Path(placement.native(entry['worktree']))
-    row = item(path, request, 'unsettled', repo=machine['repo'], name=machine['name'],
+    row = item(path, 'unsettled', repo=machine['repo'], name=machine['name'],
                head=entry.get('HEAD'), branch=entry.get('branch'), side_lock=entry.get('locked'))
     checks = {}
     observed = dict(row=row, checks=checks)
@@ -169,7 +170,7 @@ def inspect(request, machine, entry):
     checks['main'] = placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo'])
     if checks['main']:
         return decision()
-    proof = request.get('_processes') or processes(request)
+    proof = evidence.fresh_processes() if fresh else evidence.processes()
     checks.update(busy=task_facts(request, path, None)[0] or proof.busy(str(path)),
                   process_reason=getattr(proof, 'reason', None))
     if checks['busy']:
@@ -192,7 +193,7 @@ def inspect(request, machine, entry):
         return decision()
     head = head_at(path)
     row.update(head=head, gitdir=gitdir_at(path))
-    row.update(facts(path, request['now'], request=request))
+    row.update(facts(path, request['now'], request=request, evidence=evidence))
     lease = bool(tag and tag['v'] == 2 and tag['repo'] == machine['name'] and tag['lease_until'] > request['now'])
     # A task closed without landing may still hold undecided work: three quiet days first; the branch always stays.
     if terminal and needs_idle_gate(request, tag) and row['age_s'] < CLOSED_IDLE_S:
@@ -204,11 +205,11 @@ def inspect(request, machine, entry):
 
 class WorktreeEvidence:
     """Real evidence. apply always enters remove's independent fresh validation."""
-    def __init__(self, machine, entry, store=None, *, clock):
-        self.machine, self.entry, self.store, self.clock = machine, entry, store, clock
+    def __init__(self, machine, entry, store=None, *, clock, evidence):
+        self.machine, self.entry, self.store, self.clock, self.evidence = machine, entry, store, clock, evidence
 
     def observe(self, request):
-        row = inspect(request, self.machine, self.entry)
+        row = inspect(request, self.machine, self.entry, evidence=self.evidence)
         observed = quarantine_observation(request, self.machine, row)
         approved = request.get('approved_path')
         observed['approved_match'] = not approved or placement.cleanup_parts(row['path']) == placement.cleanup_parts(approved)
@@ -217,7 +218,7 @@ class WorktreeEvidence:
     def apply(self, request, decision, expected_identity):
         if registration_identity(decision) != expected_identity:
             raise ValueError('selected identity changed')
-        return remove(request, decision, store=self.store, clock=self.clock)
+        return remove(request, decision, store=self.store, clock=self.clock, evidence=self.evidence)
 
 
 def settled(run, *, runtime=None) -> None:
@@ -225,13 +226,13 @@ def settled(run, *, runtime=None) -> None:
     the clock's line it stops with the one `settled_deadline` row, an item and not an error: unreached worktrees stay,
     and every removal is re-proven. An approved removal's clock is exempt, so it is never cut off."""
     from .disk_cleanup import CleanupRuntime, CleanupState, evaluate
-    request = stage_dict(run)
+    request = run.request.decide_view()
     repos = request['repos']
     for number, machine in enumerate(repos):
         if run.clock.late():
             return run.stop('settled_deadline', machine, [], repos[number:])
         try:
-            listed = request['_listings'].of(machine['repo']).rows
+            listed = run.evidence.listed(machine['repo']).rows
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             run.error(dict(repo=machine['repo'], error=str(error)))
             continue
@@ -245,7 +246,7 @@ def settled(run, *, runtime=None) -> None:
             try:
                 store = runtime.state if runtime and runtime.state is not None else None
                 evidence = runtime.evidence if runtime and runtime.evidence is not None else \
-                    WorktreeEvidence(machine, entry, store, clock=run.clock)
+                    WorktreeEvidence(machine, entry, store, clock=run.clock, evidence=run.evidence)
                 rt = CleanupRuntime(lambda: request.get('now', 0), None, None, None,
                                     evidence=evidence, state=store if store is not None else CleanupState(request.get('state_dir')))
                 answer = evaluate(dict(request, now=request.get('now', 0)), rt)
@@ -255,13 +256,13 @@ def settled(run, *, runtime=None) -> None:
                     run.error(row)
                 run.reclaimed(answer['reclaimed_bytes'])
             except (OSError, ValueError, subprocess.SubprocessError) as error:
-                row = item(entry['worktree'], request, 'unavailable', error=str(error))
+                row = item(entry['worktree'], 'unavailable', error=str(error))
                 if request['apply']:
                     quarantine(request, machine, row)
                 if not request.get('approved_path') or placement.cleanup_parts(row['path']) == placement.cleanup_parts(request['approved_path']):
                     run.add(row)
         if not request.get('approved_path'):
-            loose = unlisted(request, machine, listed, skip=found, clock=run.clock) if found is not None else []
+            loose = unlisted(request, machine, listed, skip=found, clock=run.clock, evidence=run.evidence) if found is not None else []
             for row in loose:
                 run.add(row)
                 if row.get('error') and row.get('unlisted'):
@@ -279,7 +280,7 @@ def registrations(request, machine, listed, runtime, run):
             run.add(row)
         found = disk_registrations.lost(machine, listed)
         store = runtime.state if runtime and runtime.state is not None else CleanupState(request.get('state_dir'))
-        for row in disk_registrations.report(request, machine, listed, found, store):
+        for row in disk_registrations.report(request, machine, listed, found, store, evidence=run.evidence, clock=run.clock):
             run.add(row)
         return found
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -292,9 +293,10 @@ def ignored_outside(path, ignored, declarations):
             not disposable_match(Path(name).relative_to(path), declarations)]
 
 
-def remove(request: dict, selected: dict, *, store=None, clock) -> dict:
+def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dict:
     """Revalidate all evidence, then journal before unlocking or deleting by path. No journal `planned` is written
-    unless `clock` can still finish a removal; otherwise the row is kept as `removal_deadline`."""
+    unless `clock` can still finish a removal; otherwise the row is kept as `removal_deadline`. `evidence` is the
+    stage's, holding the listing this removal is compared with."""
     import uuid
     from .disk_cleanup import CleanupState
     store = store if store is not None else CleanupState(request.get('state_dir'))
@@ -303,9 +305,9 @@ def remove(request: dict, selected: dict, *, store=None, clock) -> dict:
     path = Path(row['path'])
     record, unlocked = None, False
     try:
-        entry = request['_listings'].of(machine['repo']).row(path)
+        entry = evidence.row(machine['repo'], path)
         if row.get('unlisted'):
-            if entry is not None or snapshot(machine, path, request=request) != row['head']:
+            if entry is not None or snapshot(machine, path, evidence=evidence) != row['head']:
                 raise ValueError('snapshot changed')
             fingerprint = identity(path) + repr((row.get('head'), row.get('tag'), row.get('branch'),
                                                placement.cleanup_parts(row['gitdir']) if row.get('gitdir') else None, row.get('side_lock')))
@@ -315,7 +317,7 @@ def remove(request: dict, selected: dict, *, store=None, clock) -> dict:
         else:
             if entry is None:
                 raise ValueError('registration changed')
-            current = inspect({k: v for k, v in request.items() if k != '_processes'}, machine, entry)
+            current = inspect(request, machine, entry, evidence=evidence, fresh=True)
             if row['reason_code'] == 'quarantine_elapsed' and current['reason_code'] == 'orphan':
                 fingerprint = identity(path) + repr((current.get('head'), current.get('tag'), current.get('branch'),
                                                    placement.cleanup_parts(current['gitdir']) if current.get('gitdir') else None, current.get('side_lock')))
@@ -323,11 +325,13 @@ def remove(request: dict, selected: dict, *, store=None, clock) -> dict:
                     current.update(action='candidate', reason_code='quarantine_elapsed')
         if request.get('approved_path') and placement.cleanup_parts(request['approved_path']) == placement.cleanup_parts(path) and current['reason_code'] in ('unsettled', 'orphan'):
             current['action'] = 'candidate'
-        proof = git_worktrees.prove(request['_listings'], machine['repo'], str(path), timeout_s=git_worktrees.PROOF_TIMEOUT_S,
+        proof = git_worktrees.prove(evidence.listings, machine['repo'], str(path), timeout_s=git_worktrees.PROOF_TIMEOUT_S,
                                     pointer=not row.get('unlisted') and current['reason_code'] != 'missing')
         refusal = next(iter(proof.refused), None)
         if refusal and refusal.why == 'changed' and row.get('unlisted'):
-            raise ValueError('snapshot changed')    # registered since the listing, as a row at `entry` would say
+            # Registered since the listing, as a row at `entry` would say: its three days start again (spec S5).
+            quarantine(request, machine, dict(current, action='keep', reason_code='identity_changed'))
+            raise ValueError('snapshot changed')
         if refusal or (path.exists() and ownership.read(str(path)) != current.get('tag')):
             current.update(action='keep', reason_code='registration_unknown' if refusal and refusal.why == 'unknown' else 'identity_changed',
                            detail=refusal.detail if refusal else 'tag')
@@ -375,7 +379,7 @@ def remove(request: dict, selected: dict, *, store=None, clock) -> dict:
             import shutil
             shutil.rmtree(path)
         else:
-            discard_at(machine['repo'], path, request['_listings'])
+            discard_at(machine['repo'], path, evidence)
         row.update(action='removed', manifest=record['id'])
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -427,12 +431,12 @@ def quarantine(request, machine, row, *, store=None):
     return answer['decisions'][0]
 
 
-def snapshot(machine, path, request=None):
-    """Prove an unlisted directory equals this repo's HEAD, using a disposable index."""
+def snapshot(machine, path, *, evidence):
+    """Prove an unlisted directory equals this repo's HEAD, using a disposable index and a fresh process proof."""
     import tempfile
     if not safe_path(path) or any(p.name == '.git' for p in path.rglob('*')):
         raise ValueError('independent or broken git metadata')
-    if processes({} if request is None else request).busy(str(path)):
+    if evidence.fresh_processes().busy(str(path)):
         raise ValueError('snapshot busy')
     head = _out(machine['repo'], 'rev-parse', '--verify', 'HEAD^{commit}').strip()
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:
@@ -450,7 +454,7 @@ def unlisted_live(request, path):
     return task_facts(request, path, tag)[0] or bool(tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
 
 
-def unlisted(request, machine, listed, skip=(), *, clock):
+def unlisted(request, machine, listed, skip=(), *, clock, evidence):
     out = []
     registered = {str(Path(placement.native(e['worktree']))) for e in listed}
     roots = [r for r in worktree_roots(machine, this_side=True)
@@ -458,7 +462,7 @@ def unlisted(request, machine, listed, skip=(), *, clock):
     for path in (p for root in roots for p in root.iterdir()):
         if str(path) in registered or any(k == str(path) or k.startswith(str(path) + os.sep) for k in skip) or not placement.cleanup_contains(request['drive']['path'], str(path)):
             continue
-        row = item(path, request, 'unknown_folder', repo=machine['repo'], name=machine['name'])
+        row = item(path, 'unknown_folder', repo=machine['repo'], name=machine['name'])
         try:
             if not path.is_dir():
                 raise ValueError('not a checkout directory')
@@ -469,12 +473,12 @@ def unlisted(request, machine, listed, skip=(), *, clock):
                 quarantine(request, machine, row)
                 out.append(row)
                 continue
-            head = snapshot(machine, path, request=request)
+            head = snapshot(machine, path, evidence=evidence)
             row.update(head=head, branch=None, side_lock=None, unlisted=True, ignored=[],
-                       tag=None, reason_code='orphan', **facts(path, request['now'], request=request))
+                       tag=None, reason_code='orphan', **facts(path, request['now'], request=request, evidence=evidence))
             row = quarantine(request, machine, row)
             if request['apply'] and row['action'] == 'candidate':
-                row = remove(request, row, clock=clock)
+                row = remove(request, row, clock=clock, evidence=evidence)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             row.update(action='keep', reason_code='unavailable', error=str(error))
             quarantine(request, machine, row)

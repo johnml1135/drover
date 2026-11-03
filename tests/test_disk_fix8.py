@@ -252,9 +252,9 @@ class SafetyDecisions(DiskCase):
         with patch.object(placement, 'cleanup_side', return_value='windows') as _placement_patch_10, patch('drover.placement_process.cleanup_side', _placement_patch_10), \
                 patch.object(placement, 'worktree_side', return_value='windows') as _placement_patch_11, patch('drover.placement_paths.worktree_side', _placement_patch_11), \
                 patch.object(placement, 'cleanup_contains', return_value=True):
-            self.assertEqual(inspect(request, machine, entry)['reason_code'], 'main_checkout')
+            self.assertEqual(inspect(request, machine, entry, evidence=None)['reason_code'], 'main_checkout')
             with self.assertRaisesRegex(ValueError, 'not an eligible'):
-                output_evidence(request, machine, entry)
+                output_evidence(request, machine, entry, evidence=None)
 
     def test_nested_registrations_and_approved_selection_normalize_spelling(self):
         from drover import disk_worktrees
@@ -274,11 +274,11 @@ class SafetyDecisions(DiskCase):
         # Reach the inspect seam, then deliberately refuse removal. This proves
         # canonical selection without touching any filesystem or Git metadata.
         machine = dict(repo=r'H:\REPO')
-        request = stage_request(dict(repos=[machine], now=self.now))
+        request, evidence = stage_request(dict(repos=[machine], now=self.now))
         selected = dict(path=r'H:\tree', repo='/mnt/h/repo', reason_code='unsettled')
         with listing_answers([dict(worktree=r'\\?\H:\TREE')]), agreeing_proof(), \
                 patch.object(disk_worktrees, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
-            result = disk_worktrees.remove(request, selected, clock=StageClock(1800))
+            result = disk_worktrees.remove(request, selected, clock=StageClock(1800), evidence=evidence)
         self.assertTrue(check.called)
         self.assertEqual(result['reason_code'], 'revalidation_changed')
 

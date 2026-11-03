@@ -30,6 +30,12 @@ class StageEvidence:
     def inventory(self) -> Inventory:
         return self._inventory
 
+    @property
+    def listings(self) -> git_worktrees.Listings:
+        """The stage's listings, which a removal's `git_worktrees.prove` reads until slice 6a's `fresh_registrations`
+        takes that proof in here."""
+        return self._listings
+
     def listed(self, repo: str) -> git_worktrees.Listing:
         """The first pass's listing of `repo`; its failure raised."""
         return self._listings.of(repo)
@@ -53,11 +59,16 @@ class StageEvidence:
     def processes(self):
         """The first pass's process proof: one snapshot per stage run."""
         if self._proof is None:
-            request = self._request
-            self._proof = self._noted(self._query(
-                paths=request.policy, state_dir=request.state_dir, inventory_id=request.inventory_id,
-                stage=request.stage, drive=request.drive, budget=bool(request.budget)))
+            self._proof = self.fresh_processes()
         return self._proof
+
+    def fresh_processes(self):
+        """A process proof taken now, always a new snapshot, its diagnostics joining `process_rows`. Slice 6a gives it
+        its own type."""
+        request = self._request
+        return self._noted(self._query(
+            paths=request.policy, state_dir=request.state_dir, inventory_id=request.inventory_id,
+            stage=request.stage, drive=request.drive, budget=bool(request.budget)))
 
     def _noted(self, proof):
         _, unreadable, failure = placement.proof_diagnostics(proof)

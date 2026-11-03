@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 from drover.durable import (NO_WAIT, ORDINARY, RELEASE, ROUTINE, TERMINAL, Wait, move, remove, rmdir, write_bytes,
                             write_json, write_text)
 from drover import disk_registrations, durable, launch_handle, placement, runner_supervise
+from drover.disk_stage import StageClock
 from tests.disk_trace_scene import quick_state
 from tests.fakeci import git_answers
 
@@ -446,7 +447,8 @@ class Sites(Base):
                 patch.object(placement, 'cleanup_side', return_value='wsl'), patch.object(durable.os, 'replace', refused), \
                 patch.object(durable, 'move', wraps=durable.move) as moved, self.assertRaises(PermissionError):
             disk_registrations.reregister(dict(now=0, state_dir=str(self.dir / 'state')), dict(name='a', repo='/repo'), orphan,
-                                          None, 'b', SimpleNamespace(append=records.append))
+                                          None, 'b', SimpleNamespace(append=records.append), evidence=None,
+                                          clock=StageClock(1800))
         moved.assert_called_once()
         self.assertEqual(git, [('worktree', 'remove')])     # the unmoved holder goes; nothing else touches git
         self.assertEqual((refused.calls, self.clock.slept), (1, []))

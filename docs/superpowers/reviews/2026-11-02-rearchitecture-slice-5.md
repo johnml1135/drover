@@ -8,6 +8,11 @@ Changed decision trace rows, cumulative, by `python -m tests.disk_trace --compar
 |---|---|---|---|---|
 | 34 | `settled_past_the_line.applied` (new scene) | row | report_added | `<TMP>/repos/alpha`, keep, `main_checkout` |
 | 34 | `settled_past_the_line.applied` (new scene) | row | report_added | `<TMP>/worktrees/alpha.worktrees/w`, keep, `removal_deadline` |
+| 35 | `temp_deadline_at_the_start.dry` and `.applied` (new scene) | row | report_added | `<TMP>`, report, `temp_deadline`, count 0 |
+| 35 | `cache_deadline_at_the_start.dry` and `.applied` (new scene) | row | report_added | `<TMP>`, report, `cache_deadline`, count 0 |
+| 35 | `report_deadline_at_the_start.dry` and `.applied` (new scene) | row | report_added | `<TMP>/repos/alpha`, report, `report_deadline`, count 1 |
+| 35 | `report_deadline_between_worktrees.dry` and `.applied` (new scene) | row | report_added | `<TMP>/repos/alpha`, keep, `worktree_inventory` |
+| 35 | `report_deadline_between_worktrees.dry` and `.applied` (new scene) | row | report_added | `<TMP>/repos/alpha`, report, `report_deadline`, count 2 |
 
 No other row moved, and no row reads `towards_deletion`.
 
@@ -64,3 +69,16 @@ Mutants a pre-merge gate should run (none run here, by the memory rule): `>=` to
 - **HOLDING.** `removal_deadline` joins `HOLDING` in `tests/disk_trace_compare.py` in this commit, as the HOLDING ruling requires, with the new stage-4 scene `settled_past_the_line`. In that scene the line passes as the settled worktree's removal starts. Before this task that worktree was removed; now it is kept with no journal row.
 - **Why so few trace rows moved.** The trace's clock reads 0 unless a scene jumps it, so starting the clock earlier changes nothing there. The jumping scenes (`output_deadline_*`, `budget_deadline_mid_purge`) stop at the same checks as before.
 - **Seams.** R6 rows fall: `disk_budget.purge` (now imports `disposable_rows` at load) and `disk_paths.outputs` are deleted; `disk_paths.disposable_rows` and `disk_worktrees.settled` drop `disk_budget`, each to 1.
+
+## Task 35: stages 1, 2, 3 and 6 on the run; the bridge goes
+
+- **Stages.** `trim(run)` (stage 1, in `disk_side`), `temporary(run)`, `caches(run)` and `report(run)` take the `StageRun`, so `STAGES` holds every stage directly and `disk_side._bridge`, `disk_side._trim`, `disk_paths.stage_dict` and `disk_paths.processes` are gone and listed in `qualified_names`.
+- **Lines.** Stages 2, 3 and 6 stop at the stage clock's line with one row, `temp_deadline`, `cache_deadline` or `report_deadline`, through `run.stop`. Stage 2 checks before each temp root and each entry, and stops after a root when its scan budget ran out because the stage's own line passed; `within` gives each root its budget under the stage clock. Stage 3 checks before each declared entry and each folder-cache candidate. Stage 6 checks before each repo, each listed worktree, each unlisted folder and each report-root entry, and names the worktrees and repos it did not reach. Each new reason joins `HOLDING`, with a scene: `*_deadline_at_the_start` for all three (worker timeout 0) and `report_deadline_between_worktrees`.
+- **Request.** No stage helper reads an underscore key. `_temp_facts`, `_temp_children` and `_temp_deadline` are locals of `temporary`. `_inventory`, `_processes`, `_process_diagnostics`, `_process_query_failures` and `_listings` are read through `run.evidence`. `decide_view()` no longer carries the wire's `_inventory_id` and `_worker_id`, which are fields. `decide` receives `decide_view()` and nothing added to it.
+- **Evidence.** `StageEvidence` gains `fresh_processes()`, a new snapshot whose diagnostics join `process_rows`, and a `listings` property. Every removal's `git_worktrees.prove` reads `listings` until slice 6a's `fresh_registrations` takes that proof inside. With those two, nothing reaches the evidence's privates. Helpers take `evidence=`: `inspect` (with `fresh=` for a removal's last look), `remove`, `snapshot`, `unlisted`, `WorktreeEvidence`, `output_evidence`, `facts`, `disk_registrations.report` and `reregister`. `discard_at` tells `evidence.took`.
+- **Rows built before `add`.** `report` builds each worktree's rows first. `worktree_inventory` carries its `status_error`, `merged_live_task` its `task_id` and `repo`, and an incomplete `budget_usage` row is never added. A read that fails part-way still lets the rows built before it cross, as they did when appended. `test_disk_stage_runs` pins both.
+- **`item`** loses its unused `request` at every caller.
+- **Carries from slice 1.** `reregister` starts only when `clock.can_mutate()`, before its journal `planned`, and its verifying listing takes `clock.patience(LISTING_TIMEOUT_S)`, not 400 s. A stray registered between the stage's listing and its removal resets its quarantine before raising `snapshot changed` (spec S5), so its three days start again. The trace's `quarantine_unlisted_registered` rows are unchanged; `test_disk_fresh_proof` reads the state.
+- **Seams.** R6 falls: `disk_paths` imports `ownership` at load. `report` goes from 3 to 1 (disk_worktrees), and `output_evidence` from 2 to 1.
+- **Not changed:** `disk_inventory`, which is listed in the brief but needed nothing.
+

@@ -35,7 +35,7 @@ class OutputEligibility(DiskCase):
                     patch.object(placement, 'cleanup_contains', return_value=flags.get('contains', True)), \
                     patch.object(placement, 'physical_disk_path', return_value=None):
                 with self.assertRaisesRegex(ValueError, condition):
-                    disk_paths.output_evidence(request, {**machine, **repo_change}, {**entry, **entry_change})
+                    disk_paths.output_evidence(request, {**machine, **repo_change}, {**entry, **entry_change}, evidence=None)
 
     def test_worker_receipt_records_request_and_execution_context(self):
         request = dict(_worker_id='trace', state_dir=str(self.state), stage=5, side='wsl',

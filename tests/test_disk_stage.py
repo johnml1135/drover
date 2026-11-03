@@ -188,6 +188,7 @@ class Request(unittest.TestCase):
         self.assertIsNone(view['approved_path'])
         self.assertEqual((view['now'], view['apply'], view['repos']), (1000.0, False, wire()['repos']))
         self.assertEqual(dict(view, approved_path=None)['stage'], 2)
+        self.assertEqual([key for key in view if key.startswith('_')], [])     # the wire's two are fields, not view keys
         approved = StageRequest.from_wire(wire(stage=4, approved_path='H:\\t 1')).decide_view()
         self.assertEqual(approved['approved_path'], 'H:\\t 1')
         view['repos'][0]['repo'] = 'changed'

@@ -3,28 +3,16 @@ import subprocess
 from functools import partial
 from pathlib import Path
 
-from . import git_client, git_worktrees, placement, process
-from .disk_stage import item, result, within
+from . import git_client, git_worktrees, ownership, placement, process
+from .disk_stage import item, within
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
 
 
-def processes(request):
-    """A stage's process proof. The request gathers each proof's diagnostics, which `cleanup_processes` returns."""
-    proof = placement.cleanup_processes(
-        paths=request.get('paths'), state_dir=request.get('state_dir'), inventory_id=request.get('_inventory_id'),
-        stage=request.get('stage'), drive=request.get('drive'), budget=bool(request.get('budget')))
-    _, unreadable, failure = placement.proof_diagnostics(proof)
-    request.setdefault('_process_diagnostics', {}).update(((r['pid'], r['name']), r) for r in unreadable)
-    if failure:
-        request.setdefault('_process_query_failures', []).append(failure)
-    return proof
-
-
-def facts(path, now, *, ignore_activity=(), request=None):
-    """Strict safety facts. Only report-only requests may reuse an inventory."""
+def facts(path, now, *, ignore_activity=(), request=None, evidence=None):
+    """Strict safety facts. Only report-only requests may reuse the stage's inventory, `evidence.inventory`."""
     from .disk_inventory import Inventory
-    inventory = request.get('_inventory') if request and not request['apply'] and not ignore_activity else None
+    inventory = evidence.inventory if evidence is not None and request and not request['apply'] and not ignore_activity else None
     row = (inventory or Inventory(now, ignore_activity=ignore_activity)).measure(path, strict=True)
     return {key: row[key] for key in ('files', 'bytes', 'age_s')}
 
@@ -144,41 +132,46 @@ def protected_path(path, request):
         repository_tree(path)
 
 
-def caches(request):
-    """Literal machine argv, cwd and inherited environment, with bounded execution."""
-    out = result()
+def caches(run) -> None:
+    """Stage 3 on `run`: literal machine argv, cwd and inherited environment, with bounded execution. Past the clock's
+    line it stops with the one `cache_deadline` row before the next entry or removal starts."""
+    request = run.request.decide_view()
     for entry in request['paths'].get('caches', []):
+        if run.clock.late():
+            return run.stop('cache_deadline', None, [], [])
         if 'path' in entry:
-            folder_cache(request, entry, out)
+            if folder_cache(run, request, entry):
+                return
             continue
-        row = item(entry['cwd'], request, 'declared_cache')
+        row = item(entry['cwd'], 'declared_cache')
         row.update(argv=entry['argv'], action='candidate')
         if request['apply']:
             done = process.run(process.Command(entry['argv'], 120, cwd=entry['cwd']))
             if done.kind != 'exited':
-                out['errors'].append(dict(row, error=done.detail))
+                run.error(dict(row, error=done.detail))
             else:
                 row.update(action='executed', returncode=done.code, output=(done.stdout + done.stderr)[-4000:])
                 if done.code:
-                    out['errors'].append(dict(row))
-        out['items'].append(row)
-    return out
+                    run.error(dict(row))
+        run.add(row)
+        run.checkpoint()
 
 
-def folder_cache(request, entry, out):
+def folder_cache(run, request, entry):
+    """One declared cache folder, its old leaves removed on apply; True when the clock's line stopped the stage."""
     root = Path(entry['path']).absolute()
     if protected_path(root, request):
-        out['items'].append(item(root, request, 'protected'))
-        return
+        run.add(item(root, 'protected'))
+        return False
     if not root.is_dir() or not safe_path(root):
-        return
+        return False
     aggressive = request.get('mode') != 'daily' and request['drive'].get('level') in ('warn', 'queue', 'hold', 'critical')
     try:
         candidates = []
         def leaves(parent):
             for path in parent.iterdir():
                 if protected_path(path, request):
-                    out['items'].append(item(path, request, 'protected'))
+                    run.add(item(path, 'protected'))
                 elif path.is_dir():
                     yield from leaves(path)
                 elif path.is_file():
@@ -189,14 +182,17 @@ def folder_cache(request, entry, out):
             if aggressive or request['now'] - activity > entry.get('max_age_days', 30) * 86400:
                 candidates.append((activity, str(path), path, info))
         for activity, _, path, info in sorted(candidates):
+            if run.clock.late():
+                run.stop('cache_deadline', None, [], [])
+                return True
             if aggressive and request['apply']:
                 free = placement.cleanup_free(root)
                 if type(free) not in (int, float) or not __import__('math').isfinite(free) or free < 0 or free >= request['drive']['warn_gb']:
                     break
-            row = item(path, request, 'folder_cache')
+            row = item(path, 'folder_cache')
             row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
             if request['apply']:
-                proof = processes(request)
+                proof = run.evidence.fresh_processes()
                 if proof.busy(str(path)):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
                 elif protected_path(path, request):
@@ -204,10 +200,13 @@ def folder_cache(request, entry, out):
                 elif path.stat() == info and placement.cleanup_contains(request['drive']['path'], str(path)):
                     path.unlink()
                     row['action'] = 'removed'
-                    out['reclaimed_bytes'] += info.st_size
-            out['items'].append(row)
+                    run.reclaimed(info.st_size)
+            run.add(row)
+            if request['apply']:
+                run.checkpoint()        # between removals: this one is done or never started
     except (OSError, ValueError) as error:
-        out['errors'].append(dict(path=str(root), error=str(error)))
+        run.error(dict(path=str(root), error=str(error)))
+    return False
 
 
 def disposable_match(relative, declarations):
@@ -224,8 +223,9 @@ def disposable_match(relative, declarations):
                for pattern in declarations for end in range(1, len(parts) + 1))
 
 
-def output_evidence(request, machine, entry, *, touched=(), fresh=False):
-    from . import ownership
+def output_evidence(request, machine, entry, *, evidence, touched=(), fresh=False):
+    """A worktree's (path, head, tag, declarations) when its outputs may be judged. `evidence` is the stage's: a first
+    look takes its first-pass process proof, and a removal's last look a `fresh` one."""
     from .disk_worktrees import head_at, outputs_at
     path = Path(placement.native(entry['worktree']))
     def reject(condition, detail):
@@ -244,7 +244,7 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
                f'host={placement.physical_disk_path(entry["worktree"])!r}, '
                f'drive={request["drive"]["path"]!r}, '
                f'drive_host={placement.physical_disk_path(request["drive"]["path"])!r}')
-    if (processes(request) if fresh else request.get('_processes') or processes(request)).busy(str(path)):
+    if (evidence.fresh_processes() if fresh else evidence.processes()).busy(str(path)):
         raise ValueError('process using worktree')
     # This worker cannot see Windows processes; a budget carries what the coordinator found them naming inside WSL.
     if any(within(named, path) for named in (request.get('budget') or {}).get('windows_paths') or ()):
@@ -252,7 +252,7 @@ def output_evidence(request, machine, entry, *, touched=(), fresh=False):
     # Disposable paths only: whole-worktree removal keeps its own three-day settlement (disk_cleanup_decisions).
     # A drive in trouble waives the idle rule; a budget purge, which is about WSL and not that drive, never does.
     limit = request.get('paths', {}).get('worktree_output_idle_s', OUTPUT_IDLE_S)
-    if (request.get('budget') or request['drive'].get('level') not in ('hold', 'critical')) and facts(path, request['now'], ignore_activity=touched, request=request)['age_s'] < limit:
+    if (request.get('budget') or request['drive'].get('level') not in ('hold', 'critical')) and facts(path, request['now'], ignore_activity=touched, request=request, evidence=evidence)['age_s'] < limit:
         raise ValueError(f'worktree idle less than {limit:g} seconds')
     head = head_at(path)
     return path, head, ownership.read(str(path)), outputs_at(machine, path)
@@ -276,27 +276,17 @@ def prune_emptied(target, removed, touched):
             pass
 
 
-def stage_dict(run, *, proven=True):
-    """Temporary, until Task 35: the dict today's stage helpers read, `decide_view()` with the evidence's inventory,
-    listings, diagnostics and, when `proven`, first-pass proof, so a fresh proof at removal reports into `process_rows`."""
-    evidence = run.evidence
-    request = dict(run.request.decide_view(), scope_errors=run.scope_errors, _inventory=evidence.inventory,
-                   _listings=evidence._listings, _process_diagnostics=evidence._diagnostics,
-                   _process_query_failures=evidence._failures)
-    return dict(request, _processes=evidence.processes()) if proven else request
-
-
 def remove_output(request, run, machine, entry, evidence, touched, target, measured, row):
     """The one removal of declared outputs: `target` is proven again now, as one unit, immediately before its paths
     (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count on `run` as each path goes."""
     from .disk_worktrees import registration_identity, tracked_at, overlaps_worktrees, status
     path = evidence[0]
     try:
-        current = request['_listings'].of(machine['repo']).row(entry['worktree'])
+        current = run.evidence.row(machine['repo'], entry['worktree'])
         current_dirty, current_ignored = status(path)
         if registration_identity(current or {}) != registration_identity(entry):
             raise ValueError('disposable registration changed')
-        fresh_evidence = output_evidence(request, machine, current, touched=touched, fresh=True)
+        fresh_evidence = output_evidence(request, machine, current, evidence=run.evidence, touched=touched, fresh=True)
         tracked = {str(path / name) for name in tracked_at(path, target.relative_to(path))}
         if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
                 fresh_evidence[1:] != evidence[1:] or \
@@ -304,7 +294,7 @@ def remove_output(request, run, machine, entry, evidence, touched, target, measu
                 tracked & set(measured) or (tracked and str(target) in measured) or \
                 any(facts(Path(name), request['now']) != known for name, known in measured.items()):
             raise ValueError('disposable evidence changed')
-        proof = git_worktrees.prove(request['_listings'], machine['repo'], str(path), pointer=True, timeout_s=git_worktrees.PROOF_TIMEOUT_S)
+        proof = git_worktrees.prove(run.evidence.listings, machine['repo'], str(path), pointer=True, timeout_s=git_worktrees.PROOF_TIMEOUT_S)
         if proof.refused:
             first = proof.refused[0]
             return row.update(action='keep', reason_code='registration_unknown' if first.why == 'unknown' else 'output_evidence_unavailable',
@@ -350,19 +340,19 @@ def disposable_rows(run):
     adds it once decided, after remove(), the one revalidated removal, if it calls that. Whatever is not eligible is
     added as kept, never yielded. Past the clock's line it stops between units with the one `output_deadline` row."""
     from .disk_worktrees import tracked_at, overlaps_worktrees, status
-    request = stage_dict(run)
+    request, stage = run.request.decide_view(), run.evidence
     budget = bool(request.get('budget'))
     for number, machine in enumerate(request['repos']):
         try:
-            listed = request['_listings'].of(machine['repo']).rows
+            listed = stage.listed(machine['repo']).rows
             for position, entry in enumerate(listed):
                 run.checkpoint()        # between units: the last worktree's removals are done or never started
                 if run.clock.late():
                     return run.stop('output_deadline', machine, listed[position:], request['repos'][number + 1:])
                 try:
-                    evidence = output_evidence(request, machine, entry)
+                    evidence = output_evidence(request, machine, entry, evidence=stage)
                     path, head, tag, declarations = evidence
-                    idle = dict(idle_s=facts(path, request['now'], request=request)['age_s']) if budget else {}
+                    idle = dict(idle_s=facts(path, request['now'], request=request, evidence=stage)['age_s']) if budget else {}
                     expand = request['apply'] or budget
                     dirty, ignored = status(path, expand=expand)
                     if not expand and declarations and any(
@@ -374,21 +364,21 @@ def disposable_rows(run):
                     units = output_units(dirty + ignored, path, tracked, declarations, budget)
                     for count, (target, names) in enumerate(units.items(), 1):
                         def row_for(where):
-                            return item(where, request, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
+                            return item(where, 'declared_disposable', repo=machine['repo'], root=str(path), **idle)
                         row, measured = row_for(target), {}
                         try:
                             if not placement.cleanup_contains(request['drive']['path'], str(target)):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, request):
                                 row['reason_code'] = 'live_owner'
-                            elif overlaps_worktrees(request, target, path, reach=request['_listings'].reach()):    # a failed repo raises: each unit stays
+                            elif overlaps_worktrees(request, target, path, reach=stage.every_registered()):    # a failed repo raises: each unit stays
                                 row['reason_code'] = 'protected'
                             else:
                                 proven = set()
                                 for name in names:
                                     leaf = Path(name)
-                                    if safe_path(leaf, proven) and not (repository_tree(leaf, boundary=path, proven=proven) if request['apply'] else request['_inventory'].contains_repository(leaf)):
-                                        measured[name] = facts(leaf, request['now'], request=request)
+                                    if safe_path(leaf, proven) and not (repository_tree(leaf, boundary=path, proven=proven) if request['apply'] else stage.inventory.contains_repository(leaf)):
+                                        measured[name] = facts(leaf, request['now'], request=request, evidence=stage)
                                     elif len(names) > 1:
                                         run.add(dict(row_for(leaf), reason_code='protected'))
                                 if measured:
@@ -407,9 +397,9 @@ def disposable_rows(run):
                         if count < len(units) and run.clock.late():
                             return run.stop('output_deadline', machine, listed[position:], request['repos'][number + 1:])
                 except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
-                    run.add(item(entry['worktree'], request, 'output_evidence_unavailable', repo=machine['repo'], error=str(error)))
+                    run.add(item(entry['worktree'], 'output_evidence_unavailable', repo=machine['repo'], error=str(error)))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
-            run.add(item(machine['repo'], request, 'repository_unavailable', error=str(error)))
+            run.add(item(machine['repo'], 'repository_unavailable', error=str(error)))
             run.error(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
 
 
@@ -424,66 +414,79 @@ def outputs(run) -> None:
             run.checkpoint()
 
 
-def report(request: dict) -> dict:
-    """One bounded summary per worktree/folder; this stage never mutates."""
-    from . import ownership
-    from .disk_inventory import Inventory
+def report(run) -> None:
+    """Stage 6 on `run`: one bounded summary per worktree/folder, each row whole before it is added; this stage never
+    mutates. Past the clock's line it stops with the one `report_deadline` row, naming what it did not reach."""
     from .disk_worktrees import status, task_facts, merged, head_at
-    inventory = request.get('_inventory') or Inventory(request['now'])
-    out = result()
+    request, evidence = run.request.decide_view(), run.evidence
+    inventory = evidence.inventory
     budgeted = set()
-    def record(path, reason, owner=None):
-        row = item(path, request, reason)
-        row.update(inventory.measure(path), owner=owner)
-        out['items'].append(row)
+    def measured(path, reason, owner=None, **extra):
+        row = item(path, reason)
+        row.update(inventory.measure(path), owner=owner, **extra)
         return row
-    for machine in request['repos']:
+    repos = request['repos']
+    for number, machine in enumerate(repos):
+        if run.clock.late():
+            return run.stop('report_deadline', machine, [], repos[number:])
         try:
-            listed = request['_listings'].of(machine['repo']).rows
-            for entry in listed:
+            listed = evidence.listed(machine['repo']).rows
+            for position, entry in enumerate(listed):
+                if run.clock.late():
+                    return run.stop('report_deadline', machine, listed[position:], repos[number + 1:])
                 path = Path(placement.native(entry['worktree']))
                 if not placement.cleanup_contains(request['drive']['path'], entry['worktree']):
                     continue
                 tag = ownership.read(str(path)) if path.exists() else None
                 owner = tag['owner'] if tag else None
-                worktree_row = record(path, 'worktree_inventory', owner)
-                if tag and tag['owner'].startswith('drover:') and task_facts(request, path, tag)[0] and \
-                        placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side() and \
-                        merged(machine, head_at(path)):
-                    record(path, 'merged_live_task', owner).update(task_id=tag['owner'][len('drover:'):], repo=machine['name'])
-                if machine.get('budget_gb') and placement.cleanup_path(path) not in budgeted and safe_path(path) and \
-                        placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side():
-                    row = record(path, 'budget_usage', owner)
-                    if not row.get('incomplete'):
-                        row.update(identity=placement.cleanup_path(path), repo=machine['name'], action='report')
-                        budgeted.add(row['identity'])
-                    else:
-                        out['items'].pop()  # Partial inventories cannot establish budget usage.
-                if placement.worktree_side(entry['worktree'], entry.get('locked')) != placement.cleanup_side():
-                    continue
-                try:
-                    dirty, ignored = status(path, expand=False)
-                    if dirty or ignored:
-                        row = item(path, request, 'untracked_or_ignored')
-                        row.update(inventory.summarize(dirty + ignored), owner=owner)
-                        out['items'].append(row)
-                except (OSError, ValueError, subprocess.SubprocessError) as error:
-                    worktree_row['status_error'] = str(error)
+                this_side = placement.worktree_side(entry['worktree'], entry.get('locked')) == placement.cleanup_side()
+                rows = []
+                try:        # a later read that fails still lets the rows built before it cross, as today
+                    worktree_row = measured(path, 'worktree_inventory', owner)
+                    rows.append(worktree_row)
+                    if tag and tag['owner'].startswith('drover:') and task_facts(request, path, tag)[0] and this_side and \
+                            merged(machine, head_at(path)):
+                        rows.append(measured(path, 'merged_live_task', owner, task_id=tag['owner'][len('drover:'):],
+                                             repo=machine['name']))
+                    if machine.get('budget_gb') and placement.cleanup_path(path) not in budgeted and safe_path(path) and this_side:
+                        row = measured(path, 'budget_usage', owner)
+                        if not row.get('incomplete'):       # Partial inventories cannot establish budget usage.
+                            row.update(identity=placement.cleanup_path(path), repo=machine['name'], action='report')
+                            budgeted.add(row['identity'])
+                            rows.append(row)
+                    if this_side:
+                        try:
+                            dirty, ignored = status(path, expand=False)
+                            if dirty or ignored:
+                                row = item(path, 'untracked_or_ignored')
+                                row.update(inventory.summarize(dirty + ignored), owner=owner)
+                                rows.append(row)
+                        except (OSError, ValueError, subprocess.SubprocessError) as error:
+                            worktree_row['status_error'] = str(error)
+                finally:
+                    for row in rows:
+                        run.add(row)
+                run.checkpoint()
             registered = {str(Path(placement.native(e['worktree']))) for e in listed}
             for root in worktree_roots(machine, this_side=True):
                 if root.is_dir() and safe_path(root):
                     for path in root.iterdir():
+                        if run.clock.late():
+                            return run.stop('report_deadline', machine, [], repos[number + 1:])
                         if str(path) not in registered and placement.cleanup_contains(request['drive']['path'], str(path)):
-                            record(path, 'unlisted_folder')
+                            run.add(measured(path, 'unlisted_folder'))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
-            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+            run.error(dict(repo=machine['repo'], error=str(error)))
+        run.checkpoint()
     for root_text in request['paths'].get('report_roots', []):
         root = Path(root_text)
         if not root.is_dir() or not safe_path(root):
             continue
         try:
             for path in root.iterdir():
-                record(path, 'declared_report')
+                if run.clock.late():
+                    return run.stop('report_deadline', None, [], [])
+                run.add(measured(path, 'declared_report'))
         except OSError as error:
-            out['errors'].append(dict(path=str(root), error=str(error)))
-    return out
+            run.error(dict(path=str(root), error=str(error)))
+        run.checkpoint()

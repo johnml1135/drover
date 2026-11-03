@@ -61,7 +61,7 @@ def protect(request, machine):
         raise ValueError(f'git config failed: {expiry.why}')
     current = expiry.out.strip()
     if current != 'never':
-        row = item(repo, request, 'prune_expiry_unset', repo=repo, name=machine['name'], value=current or None)
+        row = item(repo, 'prune_expiry_unset', repo=repo, name=machine['name'], value=current or None)
         row.update(action='report')
         if apply:
             try:
@@ -78,7 +78,7 @@ def protect(request, machine):
         side = owning_side(admin, raw)
         if side == placement.cleanup_side() and not path.exists():
             continue
-        row = item(path, request, 'unlocked_worktree', repo=repo, name=machine['name'], lock=side)
+        row = item(path, 'unlocked_worktree', repo=repo, name=machine['name'], lock=side)
         row.update(action='report')
         if apply:
             try:
@@ -221,12 +221,13 @@ def lost(machine, listed):
     return found
 
 
-def report(request, machine, listed, found, store):
-    """Decide each lost directory; on apply, register the proven ones. Dry runs only describe."""
+def report(request, machine, listed, found, store, *, evidence, clock):
+    """Decide each lost directory; on apply, register the proven ones. Dry runs only describe. `evidence` and `clock`
+    are the stage's, which a repair tells and keeps to."""
     rows = []
     for text, (target, rel) in found.items():
         path = Path(text)
-        row = item(path, request, 'lost_registration', repo=machine['repo'], name=machine['name'])
+        row = item(path, 'lost_registration', repo=machine['repo'], name=machine['name'])
         try:
             if target.exists():
                 verdict, branch, why, maybe = 'repair', None, 'interrupted registration; pointers are rewritten', None
@@ -241,7 +242,7 @@ def report(request, machine, listed, found, store):
             row.update(action='report')
         else:
             try:
-                reregister(request, machine, path, target, branch, store)
+                reregister(request, machine, path, target, branch, store, evidence=evidence, clock=clock)
                 row.update(action='reregistered')
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 row.update(action='keep', reason_code='lost_registration_failed', error=str(error))
@@ -249,10 +250,13 @@ def report(request, machine, listed, found, store):
     return rows
 
 
-def reregister(request, machine, path, target, branch, store):
+def reregister(request, machine, path, target, branch, store, *, evidence, clock):
     """Add the branch's registration under a temporary parent (so the admin directory is named after the directory),
     move its `.git` file over the orphan's, repair both pointers, and rebuild a missing index. The old `.git` file is
-    kept under the state directory first and never overwritten."""
+    kept under the state directory first and never overwritten. Nothing starts unless `clock` can still finish it, and
+    the verifying listing inside the journalled window takes the clock's patience."""
+    if not clock.can_mutate():
+        raise ValueError('repair deadline: past the stage line, the repair did not start')
     repo = machine['repo']
     record = dict(v=1, kind='registration_repair', id=uuid.uuid4().hex, ts=request['now'], phase='planned',
                   path=str(path), repo=repo, branch=branch, side=placement.cleanup_side())
@@ -276,9 +280,9 @@ def reregister(request, machine, path, target, branch, store):
         admin = Path(placement.native(gitdir_at(path)))
         if not (admin / 'index').exists():
             _out(path, 'reset', '-q')
-        if git_worktrees.listing(repo, timeout_s=git_worktrees.LISTING_TIMEOUT_S).row(path) is None:
+        if git_worktrees.listing(repo, timeout_s=clock.patience(git_worktrees.LISTING_TIMEOUT_S)).row(path) is None:
             raise ValueError('registration did not take')
-        request['_listings'].repaired(repo, path)
+        evidence.repaired(repo, path)
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         try:

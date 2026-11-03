@@ -146,11 +146,11 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
             if value is not None:
                 values[name] = value
             return values.get(name)
-        def snapshot(machine, path, request=None):
+        def snapshot(machine, path, *, evidence):
             path = Path(path)
             if any(p.name == '.git' for p in path.rglob('*')):
                 raise ValueError('independent or broken git metadata')
-            if disk_paths.processes({} if request is None else request).busy(str(path)):
+            if evidence.fresh_processes().busy(str(path)):
                 raise ValueError('snapshot busy')
             repo = repository(machine['repo'])
             expected = repo.tree(repo.repo)['tracked']
@@ -179,7 +179,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
                         if relative is None or n == str(relative).replace('\\', '/') or n.startswith(str(relative).rstrip('/') + '/')]),
                     (disk_worktrees, 'unlock_at', lambda repo, p: repository(repo).lock(p, None)),
                     (disk_worktrees, 'lock_at', lambda repo, p, reason: repository(repo).lock(p, reason)),
-                    (disk_worktrees, 'discard_at', lambda repo, p, listings: (repository(repo).discard(p), listings.removed(repo, p))),
+                    (disk_worktrees, 'discard_at', lambda repo, p, evidence: (repository(repo).discard(p), evidence.took(repo, p))),
                     (disk_worktrees, 'rescue_at', lambda repo, ref, head: None),
                     (disk_worktrees, 'registrations', lambda *args: {}),    # process-free; real git is tested in test_disk_registrations
                     (disk_worktrees, 'snapshot', snapshot),
