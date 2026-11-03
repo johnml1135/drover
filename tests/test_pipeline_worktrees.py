@@ -257,7 +257,12 @@ class Worktrees(PolicyBase):
                                                                          "default": "windows"}, gate={"platform": "wsl"})
         ext4 = Path(self.tmp.name) / "ext4"
         tid = self.task(goal="Port it. platform: linux")
-        with patch.object(self.pipe, "worktree", spy), patch.object(repos, "wsl_worktrees_root", return_value=str(ext4)):
+        from types import SimpleNamespace
+        from drover import dispatch_hold, git_client
+        asked = []      # the conflict hold's git: unknown, so nothing is held and no process starts
+        hold_git = SimpleNamespace(ask=lambda repo, *args, **kw: asked.append(args[0]) or git_client.GitReply(
+            git_client.Answer.UNKNOWN, '', '', None, 'unavailable'), NORMAL=git_client.NORMAL, Answer=git_client.Answer)
+        with patch.object(self.pipe, "worktree", spy), patch.object(repos, "wsl_worktrees_root", return_value=str(ext4)),                 patch.object(dispatch_hold, "git_client", hold_git), self.assertNoLogs("drover.dispatch_hold", level="ERROR"):
             self.pipe._repos = {"p": both}
             self.d.tick()
             self.assertEqual(seen, ["wsl"])
@@ -268,6 +273,7 @@ class Worktrees(PolicyBase):
                                                run={"env": {}, "platforms": ["windows"], "default": "windows"})}
             self.d.tick()
         self.assertEqual(seen, [])                # refused before any worktree is made
+        self.assertIn("for-each-ref", asked)
         self.assertEqual(self.states(win_only)[-1][0], "needs-owner")
         self.assertFalse((ext4 / "p.worktrees" / f"drover-{win_only}").exists())
 
