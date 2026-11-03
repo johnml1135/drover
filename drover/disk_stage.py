@@ -259,11 +259,45 @@ class StageAnswer:
 _KINDS = ('row', 'error', 'more', 'reclaimed', 'end')
 
 
+def _number(value) -> bool:
+    return type(value) in (int, float)
+
+
+def _grouped(row) -> bool:
+    """A row `read_rows` groups or samples: it indexes these keys and sums these numbers."""
+    return (isinstance(row, dict) and all(isinstance(row.get(key), str) for key in ('path', 'reason_code', 'action'))
+            and all(_number(row[key]) for key in ('files', 'bytes', 'age_s') if key in row))
+
+
+def _shaped(kind: str, line: dict) -> bool:
+    value = line[kind]
+    if kind == 'row':
+        return isinstance(value, dict) and ('root' not in line or isinstance(line['root'], str) and _grouped(value))
+    if kind == 'error':
+        return isinstance(value, dict)
+    if kind == 'reclaimed':
+        return type(value) is int
+    if kind == 'more':
+        return (isinstance(value, dict) and type(value.get('count')) is int
+                and all(isinstance(value.get(key), str) for key in ('reason_code', 'root', 'action'))
+                and all(_number(value.get(key)) for key in ('files', 'bytes', 'age_s'))
+                and isinstance(value.get('sample'), list) and all(_grouped(row) for row in value['sample']))
+    return (isinstance(value, dict) and type(value.get('partial', False)) is bool
+            and all(type(value[key]) is int for key in ('reclaimed_bytes', 'peak_intermediate_bytes') if key in value)
+            and isinstance(value.get('budget'), (dict, type(None))))
+
+
 def _parse(raw: bytes) -> tuple[str, dict]:
-    line = json.loads(raw)
+    """One complete line, or a plain ValueError: `cleanup_call` reads that as a worker failure, and lets a UnicodeError
+    or any other type through (disk_runtime.py:115). The wire is ASCII, as `_line` writes it."""
+    try:
+        text = raw.decode('ascii')
+        line = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError('not a stage line: not ASCII JSON') from None
     kinds = [kind for kind in _KINDS if kind in line] if isinstance(line, dict) else []
-    if not kinds or line.get('v') != 1 or len(kinds) > 1:
-        raise ValueError('not a stage line: ' + raw[:200].decode('ascii', 'replace'))
+    if len(kinds) != 1 or type(line.get('v')) is not int or line['v'] != 1 or not _shaped(kinds[0], line):
+        raise ValueError('not a stage line: ' + text[:200])
     return kinds[0], line
 
 

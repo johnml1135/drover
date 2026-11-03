@@ -257,6 +257,34 @@ class Run(unittest.TestCase):
             with self.assertRaises(ValueError, msg=output):
                 read_rows(output)
 
+    def refused(self, *outputs):
+        """Each complete line raises plain ValueError, never KeyError, AttributeError or a UnicodeError, so
+        `cleanup_call` reads it as an ordinary worker failure (disk_runtime.py:115 lets UnicodeError through)."""
+        for output in outputs:
+            with self.assertRaises(Exception, msg=output) as caught:
+                read_rows(b'{"v":1,"row":{"path":"/a","action":"keep","reason_code":"x"}}\n' + output + b'\n')
+            self.assertIs(type(caught.exception), ValueError, output)
+
+    def test_an_end_that_is_not_an_object_is_malformed(self):
+        self.refused(b'{"v":1,"end":5}', b'{"v":1,"end":{"reclaimed_bytes":"7"}}', b'{"v":1,"end":{"partial":1}}',
+                     b'{"v":1,"end":{"peak_intermediate_bytes":null}}', b'{"v":1,"end":{"budget":[]}}')
+
+    def test_a_more_tally_missing_its_keys_is_malformed(self):
+        self.refused(b'{"v":1,"more":{}}', b'{"v":1,"more":[]}', b'{"v":1,"reclaimed":"5"}',
+                     b'{"v":1,"reclaimed":true}',
+                     b'{"v":1,"more":{"reason_code":"x","root":"r","action":"keep","count":1,"files":0,"bytes":0,'
+                     b'"age_s":0,"sample":{}}}')
+
+    def test_a_grouped_row_missing_its_keys_is_malformed(self):
+        self.refused(b'{"v":1,"row":{"path":"a"},"root":"r"}', b'{"v":1,"row":{"path":"a","action":"keep",'
+                     b'"reason_code":"x"},"root":5}', b'{"v":1,"row":[]}', b'{"v":1,"error":"no"}')
+
+    def test_v_must_be_the_integer_one_not_true(self):
+        self.refused(b'{"v":true,"row":{}}', b'{"v":1.0,"row":{}}')
+
+    def test_a_complete_line_that_is_not_ascii_is_malformed_not_a_unicode_error(self):
+        self.refused(b'\x80', b'{"v":1,"error":{"path":"\xc3\xbc"}}')
+
     def test_nothing_at_all_is_not_complete(self):
         answer = read_rows(b'')
         self.assertEqual((answer.items, answer.errors, answer.reclaimed_bytes, answer.complete, answer.partial),
