@@ -212,11 +212,19 @@ class Scanning(Base):
             self.rl.scan(False)
 
     def test_wsl_running_reads_utf16_list(self):
+        from drover import placement_exec, process, resources
+        from tests.fakeci import FakeCommands, process_options
         out = "Ubuntu\r\nDebian\r\n".encode("utf-16-le")
-        run = lambda *a, **k: SimpleNamespace(stdout=out, stderr=b"", returncode=0)
-        self.assertTrue(__import__("drover.resources", fromlist=["wsl_running"]).wsl_running("ubuntu", run))
-        self.assertFalse(__import__("drover.resources", fromlist=["wsl_running"]).wsl_running("Other", run))
-        self.assertFalse(__import__("drover.resources", fromlist=["wsl_running"]).wsl_running("Ubuntu", lambda *a, **k: SimpleNamespace(stdout=b"", stderr=b"", returncode=1)))
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeCommands(root)
+            listing = ["wsl.exe", "-l", "--running", "-q"]
+            fake.expect(listing, output=out, **process_options(20))
+            fake.expect(listing, output=out, **process_options(20))
+            fake.expect(listing, returncode=1, **process_options(20))
+            with fake.patch(process), patch.object(placement_exec, "_settings", lambda: {}):
+                self.assertTrue(resources.wsl_running("ubuntu"))
+                self.assertFalse(resources.wsl_running("Other"))
+                self.assertFalse(resources.wsl_running("Ubuntu"))
 
 
 
