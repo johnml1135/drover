@@ -9,10 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from drover.port import DirectPort
-from drover import ci, landing, landing_control, resources
+from drover import ci, landing, landing_control, origin, resources
 from drover.ledger import db, ops
 from drover.ledger.waiting import Waiting, BASE, cause_key
 from tests.fakeci import git_answers, resources_go
+from tests.test_origin_sync import FakeGit, NEW, OLD, REPO, listing, world
 
 SHA = 'a' * 40
 INFRA = dict(status='failed', outcome='infrastructure-failed', passed=False, sha='b' * 40,
@@ -401,3 +402,57 @@ class ControlledGitTests(unittest.TestCase):
             with self.assertRaises(AdmissionHeld):
                 landing_control.ControlledGit('conn', 7).mutate('repo', 'merge', '--ff-only', SHA, timeout_s=1)
         self.assertEqual(ran, [])                                   # a held control epoch runs nothing
+
+
+class LocalFastForwardTests(unittest.TestCase):
+    """landing_control.local_fast_forward over origin's real fast_forward, with git faked as test_origin_sync fakes it:
+    main moved, a dirty checkout, and a main with no checkout. test_landing_repository keeps the real-git smoke test."""
+    def setUp(self):
+        from drover import git_client
+        self.conn = sqlite3.connect(':memory:', isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        db.migrate(self.conn)
+        self.addCleanup(self.conn.close)
+        self.guarded = []
+        self.stack = self.enterContext(ExitStack())
+        for obj, name, value in ((ci, 'problems', []), (ci, 'validate_receipt', []), (ci, 'head', NEW)):
+            self.stack.enter_context(patch.object(obj, name, return_value=value))
+        self.stack.enter_context(patch.object(landing_control, '_control_guard', side_effect=self.guard))
+        self.git = None
+        for verb in ('ask', 'out', 'mutate'):
+            self.stack.enter_context(patch.object(git_client, verb, lambda *a, _verb=verb, **kw: getattr(self.git, _verb)(*a, **kw)))
+
+    def guard(self, conn, epoch=None):
+        self.guarded.append(epoch)
+        return 7
+
+    def land(self, changes=None):
+        self.git = FakeGit(world({('rev-parse', 'refs/heads/main'): (0, OLD + '\n'), **(changes or {})}))
+        return landing_control.local_fast_forward(self.conn, REPO, '/work/batch', 'main', NEW, dict(sha=NEW),
+                                                  required_platforms=['wsl'])
+
+    def assert_unlocked(self):
+        self.assertIsNone(self.conn.execute('SELECT * FROM landing_lock').fetchone())
+
+    def test_moved_main_refuses_to_regate_and_changes_nothing(self):
+        for name, changes in (('checkout rewound during the listing', {('rev-parse', 'HEAD'): (0, 'c' * 40 + '\n')}),
+                              ('main is no ancestor of the tip', {('merge-base', '--is-ancestor', OLD, NEW): (1, '')})):
+            with self.subTest(name):
+                with self.assertRaisesRegex(ci.CIError, '^local main moved; rebase and regate$'):
+                    self.land(changes)
+                self.assertEqual(self.git.mutations(), [])
+                self.assert_unlocked()
+
+    def test_dirty_main_checkout_holds_landing_for_the_owner(self):
+        for status in (' M base.txt\n', '?? owner.txt\n'):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(origin.DirtyCheckout, 'main checkout dirty'):
+                    self.land({('status',): (0, status)})
+                self.assertEqual(self.git.mutations(), [])
+                self.assert_unlocked()
+
+    def test_main_with_no_checkout_moves_by_compare_and_swap_and_leaves_head_alone(self):
+        self.land({('worktree', 'list'): (0, listing((REPO, OLD, None)))})
+        self.assertEqual(self.git.mutations(), [(REPO, ('update-ref', 'refs/heads/main', NEW, OLD))])
+        self.assertFalse([args for _, _, args, _ in self.git.calls if args[0] in ('status', 'merge', 'symbolic-ref')])
+        self.assert_unlocked()

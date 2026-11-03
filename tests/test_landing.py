@@ -401,20 +401,22 @@ class RunTests(MemoryLandingCase):
         self.assertEqual(self.r.remote, self.r.tracking)
 
     def test_base_red_blames_nobody_holds_landing_and_alerts_owner(self):
-        self.r.remote = self.r.tracking = self.r.owner_commit({'poison.txt': 'BAD'})
-        a, b = self.task('a', {'a.txt': 'a'}), self.task('b', {'b.txt': 'b'})
-        res = self.land(size=2)
-        self.assertEqual((res['outcome'], res['dropped'], res['landed']), ('base-red', {}, []))
-        self.assertEqual((self.status(a), self.status(b)), ('reviewed', 'reviewed'))
+        before = self.r.remote = self.r.tracking = self.r.owner_commit({'poison.txt': 'BAD'})
+        a, b, gated = self.task('a', {'a.txt': 'a'}), self.task('b', {'b.txt': 'b'}), []
+        self.gate = lambda checkout, commit, tasks, gate=self.gate: gated.append(commit) or gate(checkout, commit, tasks)
+        res = self.land(size=2)                                     # gates the failing batch, then the base itself
+        self.assertEqual((res['outcome'], res['dropped'], res['landed'], res['base_sha'], res['gates'], gated[-1]),
+                         ('base-red', {}, [], before, 2, before))
+        self.assertEqual((self.status(a), self.status(b), self.r.remote, self.r.tracking), ('reviewed', 'reviewed', before, before))
         qs = ops.open_questions(self.conn)
-        self.assertEqual(len(qs), 1)
-        self.assertIn('red', qs[0]['title'])
-        self.assertEqual(self.r.remote, self.r.tracking)
+        self.assertEqual(['red' in q['title'] for q in qs], [True])
         again = self.land(size=2)                                   # held: no more gating at all
-        self.assertEqual((again['outcome'], again['gates']), ('held', 0))
+        self.assertEqual((again['outcome'], again['gates'], len(gated)), ('held', 0, 2))
         ops.answer_question(self.conn, qs[0]['id'], choice=landing.RETRY)
-        self.assertEqual(self.land(size=2)['outcome'], 'base-red')   # base still red: gated once more, held again
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
+        retry = self.land(size=2)                                   # base still red: gated once more, held again
+        self.assertEqual((retry['outcome'], retry['landed'], retry['gates'], gated[-1]), ('base-red', [], 2, before))
+        self.assertEqual((self.status(a), self.status(b), self.r.remote, len(ops.open_questions(self.conn))),
+                         ('reviewed', 'reviewed', before, 1))
 
     def test_base_status_is_cached_per_sha(self):
         a, b = self.task('a', {'a.txt': 'BAD'}), self.task('b', {'b.txt': 'BAD'})

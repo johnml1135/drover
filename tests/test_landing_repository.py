@@ -77,90 +77,6 @@ class WorktreeTests(LandingCase):
 
 @integration
 class RepositoryLandingTests(LandingCase):
-    def test_advances_main_in_each_checkout_location(self):
-        # First land through main's original checkout.
-        tid = self.task('first', {'base.txt': 'landed content'})
-        first = self.land(push=False)
-        self.assertEqual(first['landed'], [tid])
-        self.assertEqual(self.r.git('rev-parse', 'HEAD'), first['tip'])
-        self.assertEqual(self.r.git('status', '--porcelain'), '')
-        self.assertEqual((self.r.repo / 'base.txt').read_text(), 'landed content')
-
-        # Then main lives in a different checkout with spaces in its path.
-        self.r.git('checkout', '-q', '--detach')
-        checkout = self.r.root / 'main checkout with spaces'
-        self.r.git('worktree', 'add', '-q', str(checkout), 'main')
-        tid = self.task('second', {'base.txt': 'second content'}, base='main')
-        second = self.land(push=False)
-        self.assertEqual(second['landed'], [tid])
-        self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=checkout), second['tip'])
-        self.assertEqual(self.r.git('status', '--porcelain', cwd=checkout), '')
-        self.assertEqual((checkout / 'base.txt').read_text(), 'second content')
-        self.assertEqual((self.r.repo / 'base.txt').read_text(), 'landed content')
-
-        # Finally main has no checkout: use CAS and leave detached HEAD alone.
-        self.r.git('worktree', 'remove', '--force', str(checkout))
-        tid = self.task('third', {'base.txt': 'third content'}, base='main')
-        old = self.r.git('rev-parse', 'main')
-        with patch.object(git_client, 'mutate', wraps=git_client.mutate) as run:
-            third = self.land(push=False)
-        self.assertEqual(third['landed'], [tid])
-        self.assertTrue(any(c.args[1:] == ('update-ref', 'refs/heads/main', third['tip'], old)
-                            for c in run.call_args_list))
-        self.assertEqual(self.r.git('rev-parse', 'main'), third['tip'])
-        self.assertEqual(self.r.git('rev-parse', 'HEAD'), first['tip'])
-        self.assertEqual(self.r.git('status', '--porcelain'), '')
-        self.assertEqual((self.r.repo / 'base.txt').read_text(), 'landed content')
-
-    def test_moved_and_dirty_main_preserve_owner_state(self):
-        self.r.commit('local.txt')
-        self.task('feature', {'feature.txt': 'finished'})
-        tasks = landing.form_batch(self.conn, self.r.repo, 'main')
-        old = self.r.git('rev-parse', 'main')
-        tip, tasks, _ = landing.build_tip(self.r.repo, self.work, old, tasks)
-        receipt = self.gate(self.work, tip, tasks)
-        real = git_client.out
-        moved = self.r.git('rev-parse', 'main^')
-
-        def run(repo, *args, **kw):
-            if args[:2] == ('worktree', 'list'):
-                self.r.git('reset', '--hard', moved)
-            return real(repo, *args, **kw)
-
-        with patch.object(git_client, 'out', side_effect=run):
-            with self.assertRaisesRegex(ci.CIError, 'local main moved; rebase and regate'):
-                landing.local_fast_forward(self.conn, self.r.repo, self.work, 'main', tip, receipt)
-        self.assertEqual(self.r.git('rev-parse', 'main'), moved)
-        self.assertEqual(self.r.git('status', '--porcelain'), '')
-        self.assertIsNone(self.conn.execute('SELECT * FROM landing_lock').fetchone())
-
-        # Edit the owner checkout after the isolated gate succeeds, so the
-        # final advance must recheck it and preserve both files and index.
-        tid = self.task('dirty-feature', {'base.txt': 'task change\n'}, base='main')
-        path = self.r.repo / 'base.txt'
-        real_gate = self.gate
-
-        def owner_edits_during_gate(*args):
-            receipt = real_gate(*args)
-            self.assertEqual(receipt['status'], 'passed')
-            path.write_text('owner work\n')
-            return receipt
-
-        self.gate = owner_edits_during_gate
-        before = self.r.git('rev-parse', 'main')
-        remote_before = self.r.remote_head()
-        index = (self.r.repo / '.git' / 'index').read_bytes()
-        res = self.land(push=False)
-        self.assertEqual(res['outcome'], 'refused')
-        self.assertEqual(res['gates'], 1)
-        self.assertIn(tid, res['batch'])
-        self.assertIn('main checkout dirty', res['error'])
-        self.assertEqual(self.r.git('rev-parse', 'main'), before)
-        self.assertEqual(self.r.remote_head(), remote_before)
-        self.assertEqual(path.read_text(), 'owner work\n')
-        self.assertEqual((self.r.repo / '.git' / 'index').read_bytes(), index)
-        self.assertEqual(self.status(tid), 'reviewed')
-
     def test_replay_pins_reviewed_head_and_reuses_checkpoint(self):
         a = self.task('a', {'a.txt': 'a'})
         (t,) = landing.form_batch(self.conn, self.r.repo, 'origin/main', 1)
@@ -245,11 +161,21 @@ class RealRunnerLandingTests(LandingCase):
         return ci.CI(runs, poll_s=0.05, resource_check=resources_go)
 
     def test_green_and_red_receipts_drive_landing(self):
+        # Main lives in a checkout whose path has spaces: landing advances it there, through real git.
+        # Moved main, a dirty checkout and a main with no checkout are LocalFastForwardTests in test_landing_recovery.
+        self.r.git('checkout', '-q', '--detach')
+        checkout = self.r.root / 'main checkout with spaces'
+        self.r.git('worktree', 'add', '-q', str(checkout), 'main')
+        detached = self.r.git('rev-parse', 'HEAD')
         ids = [self.task(n, {f'{n}.txt': n}) for n in 'abc']
         result = self.land()
         self.assertEqual((result['outcome'], result['gates']), ('landed', 1))
         self.assertEqual(sorted(result['landed']), sorted(ids))
         self.assertEqual(self.r.remote_head(), result['tip'])
+        self.assertEqual(self.r.git('rev-parse', 'HEAD', cwd=checkout), result['tip'])
+        self.assertEqual(self.r.git('status', '--porcelain', cwd=checkout), '')
+        self.assertTrue(all((checkout / f'{n}.txt').read_text() == n for n in 'abc'))
+        self.assertEqual(self.r.git('rev-parse', 'HEAD'), detached)
         for tid in ids:
             self.assertEqual(self.status(tid), 'landed')
         bad = self.task('bad', {'bad.txt': 'BAD'})
@@ -257,33 +183,3 @@ class RealRunnerLandingTests(LandingCase):
         self.assertEqual((result['outcome'], result['dropped']), ('red', {bad: 'single'}))
         self.assertEqual(self.status(bad), 'ready')
         self.assertEqual(self.r.remote_head(), self.r.git('rev-parse', 'origin/main'))
-
-    def test_base_red_blames_nobody_holds_landing_and_alerts_owner(self):
-        self.r.commit('poison.txt', 'BAD')
-        self.r.git('push', '-q', 'origin', 'HEAD:main')
-        self.r.git('fetch', '-q', 'origin')
-        before = self.r.remote_head()
-        a, b = (self.task(n, {f'{n}.txt': n}) for n in 'ab')
-        res = self.land(size=2)
-        self.assertEqual((res['outcome'], res['dropped'], res['landed']), ('base-red', {}, []))
-        self.assertEqual(res['base_sha'], before)
-        self.assertEqual(res['gates'], 2)  # Failing batch and the base itself.
-        self.assertEqual([self.status(t) for t in (a, b)], ['reviewed'] * 2)
-        questions = ops.open_questions(self.conn)
-        self.assertEqual(len(questions), 1)
-        self.assertIn('red', questions[0]['title'])
-        self.assertEqual(self.r.remote_head(), before)
-        # A held queue starts no runner; explicit retry rechecks the red base.
-        with patch.object(self.ci, 'run', wraps=self.ci.run) as run:
-            held = self.land(size=2)
-            self.assertEqual((held['outcome'], held['gates']), ('held', 0))
-            run.assert_not_called()
-            ops.answer_question(self.conn, questions[0]['id'], choice=landing.RETRY)
-            retry = self.land(size=2)
-            self.assertEqual((retry['outcome'], retry['dropped'], retry['landed']), ('base-red', {}, []))
-            self.assertEqual(retry['gates'], 2)
-            self.assertEqual(run.call_count, 2)
-            self.assertEqual(run.call_args.args[2], before)
-        self.assertEqual([self.status(t) for t in (a, b)], ['reviewed'] * 2)
-        self.assertEqual(len(ops.open_questions(self.conn)), 1)
-        self.assertEqual(self.r.remote_head(), before)

@@ -29,7 +29,9 @@ INTEGRATION_TARGET = 20
 # 209: the six real-git scope checks of test_scope_base are one subtest-based test; a real-git scope check is the only
 # coverage of that path.
 # 208: test_runner_detach's NO_WINDOW check went with placement's copy of the flag; test_process pins process's.
-INTEGRATION_CEILING = 208
+# 205: test_landing_repository's moved, dirty and no-checkout main checks run over faked git (LocalFastForwardTests in
+# test_landing_recovery); the spaces-in-path checkout is checked in the real-runner landing test; base-red is a memory test.
+INTEGRATION_CEILING = 205
 
 # Files over MAX_LINES, pinned at their current line counts (wc -l). Shrink-only: never add a file.
 OVER = {
