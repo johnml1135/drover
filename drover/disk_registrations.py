@@ -18,6 +18,7 @@ from .disk_inventory import safe_path, worktree_roots
 from .disk_stage import item
 from .disk_evidence import _out
 
+OTHER_DRIVE = "suggestion on its own drive's pass"   # in place of a suggestion for a folder off the stage's drive
 THRESHOLD = 10   # percent of the branch's tracked files that may differ from the directory
 WIN = re.compile(r'^[A-Za-z]:[\\/]')
 MNT = re.compile(r'^/mnt/[a-zA-Z](/|$)')
@@ -222,11 +223,13 @@ def suggest(repo, path, *, history=None):
     return None
 
 
-def judge(machine, path, listed, rel=None, *, history=None):
+def judge(machine, path, listed, rel=None, *, history=None, own_drive=True):
     """('repair', branch, why) for a proven match, ('unproven', branch, why) otherwise; a suggestion rides in why."""
     repo = machine['repo']
     branch = candidate(repo, path.name, rel)
     if branch is None:
+        if not own_drive:       # report-only, and read on the folder's own drive's pass
+            return 'unproven', None, f'no branch named like {rel or path.name}; {OTHER_DRIVE}', None
         if history is not None and history.late():     # report-only, so past the line it is left out, not waited for
             return 'unproven', None, f'no branch named like {rel or path.name}; no suggestion looked for past the stage line', None
         maybe = suggest(repo, path, history=history)
@@ -303,7 +306,8 @@ def lost(machine, listed):
 def report(request, machine, listed, found, store, *, evidence, clock):
     """Decide each lost directory; on apply, register the proven ones. Dry runs only describe. `evidence` and `clock`
     are the stage's, which a repair tells and keeps to. The repo's history is read once, for every folder's suggestion,
-    with the clock's long patience: it stands in for up to ten reads per folder."""
+    with the clock's long patience: it stands in for up to ten reads per folder. A folder off the stage's drive is listed
+    and matched for repair as ever but gets no suggestion: its own drive's pass makes it, once."""
     rows = []
     history = History(machine['repo'], timeout_s=lambda: clock.patience(git_client.LONG) if clock else git_client.LONG,
                       late=lambda: bool(clock and clock.late()))
@@ -314,7 +318,8 @@ def report(request, machine, listed, found, store, *, evidence, clock):
             if target.exists():
                 verdict, branch, why, maybe = 'repair', None, 'interrupted registration; pointers are rewritten', None
             else:
-                verdict, branch, why, maybe = judge(machine, path, listed, rel, history=history)
+                verdict, branch, why, maybe = judge(machine, path, listed, rel, history=history,
+                                                      own_drive=placement.cleanup_contains(request['drive']['path'], text))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             verdict, branch, why, maybe = 'unproven', None, f'could not be matched: {error}', None
         row.update(branch=branch, detail=why, suggestion=maybe)

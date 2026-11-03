@@ -22,8 +22,8 @@ def at(*times):
     return lambda: readings.pop(0) if len(readings) > 1 else readings[0]
 
 
-def request(apply=False):
-    return dict(apply=apply, now=0, state_dir='state')
+def request(apply=False, drive='/'):
+    return dict(apply=apply, now=0, state_dir='state', drive=dict(path=drive))
 
 
 def found(*names):
@@ -250,13 +250,18 @@ class Suggestions(unittest.TestCase):
         raise AssertionError(f'unexpected git {args!r}')
 
     def report(self, clock=CLOCK):
-        from tests.fakeci import git_answers
         folders = [self.folder('f1', ('a.txt', 'only-one\n')),
                    self.folder('f2', ('b.txt', 'everywhere\n'), ('c.txt', 'only-two\n')),
                    self.folder('f3', ('z.txt', 'uncommitted\n'))]
         lost = {str(p): (self.tmp / 'gone' / p.name, p.name) for p in folders}
-        with git_answers(self.git):
-            rows = disk_registrations.report(request(), MACHINE, [], lost, None, evidence=None, clock=clock)
+        return self.reported(lost, self.tmp, clock)
+
+    def reported(self, lost, drive, clock=CLOCK):
+        """Report `lost` as the stage of `drive` sees them; a folder is on a drive by path prefix."""
+        from tests.fakeci import git_answers
+        with git_answers(self.git), patch.object(placement, 'cleanup_contains', lambda root, path: str(path).startswith(str(root))),                 patch.object(disk_registrations, 'newest_files', wraps=disk_registrations.newest_files) as walk:
+            rows = disk_registrations.report(request(drive=str(drive)), MACHINE, [], lost, None, evidence=None, clock=clock)
+        self.walked = walk.call_count
         return {Path(r['path']).name: r for r in rows}
 
     def verbs(self, *verb):
@@ -300,6 +305,40 @@ class Suggestions(unittest.TestCase):
                          {('keep', 'lost_registration_unproven', None)})
         self.assertTrue(all('past the stage line' in r['detail'] for r in rows.values()))
         self.assertEqual(self.verbs('log') + self.verbs('hash-object'), [])
+
+    # A lost folder off the stage's drive still lists, keeps and repairs; only its report-only suggestion waits for its
+    # own drive's pass, so each folder pays the history read and the walk once, not once per drive.
+    TEXT = "suggestion on its own drive's pass"
+
+    def on(self, drive, *names):
+        folders = [self.folder(n, (n + '.txt', 'only-one\n')) for n in names]
+        return self.reported({str(p): (self.tmp / 'gone' / p.name, p.name) for p in folders}, drive)
+
+    def test_a_folder_off_the_stage_drive_gets_no_history_lookup_and_the_fixed_text(self):
+        rows = self.on(self.tmp / 'elsewhere', 'f1')
+        self.assertEqual((rows['f1']['action'], rows['f1']['reason_code'], rows['f1'].get('suggestion')),
+                         ('keep', 'lost_registration_unproven', None))
+        self.assertIn(self.TEXT, rows['f1']['detail'])
+        self.assertEqual(self.walked, 0)
+        self.assertEqual(self.verbs('log') + self.verbs('hash-object') + self.verbs('rev-list') + self.verbs('for-each-ref'), [])
+
+    def test_a_folder_on_the_stage_drive_still_gets_its_suggestion(self):
+        rows = self.on(self.tmp, 'f1')
+        self.assertEqual(rows['f1'].get('suggestion'), 'work/one')
+        self.assertNotIn(self.TEXT, rows['f1']['detail'])
+        self.assertEqual(len(self.verbs('log')), 1)
+
+    def test_the_other_drives_folder_is_still_matched_for_repair(self):
+        with patch.object(disk_registrations, 'candidate', return_value='b1'),                 patch.object(disk_registrations, 'differing', return_value=(0, 10)):
+            rows = self.on(self.tmp / 'elsewhere', 'f1')
+        self.assertEqual((rows['f1']['action'], rows['f1']['branch']), ('report', 'b1'))
+        self.assertNotIn(self.TEXT, rows['f1']['detail'])
+
+    def test_a_blob_only_deleted_by_a_commit_is_suggested_as_per_file_git_would(self):
+        deleted = [(C3, [(A, ZERO)])] + LOG[1:]        # work/one's tip holds f1's blob only as the old side of a deletion
+        with patch.dict(globals(), LOG=deleted):
+            rows = self.report()
+        self.assertEqual(rows['f1'].get('suggestion'), 'work/one')
 
 
 class NewestFiles(unittest.TestCase):
