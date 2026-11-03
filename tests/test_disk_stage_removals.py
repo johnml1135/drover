@@ -56,12 +56,13 @@ class Removals(unittest.TestCase):
                                  (reason, 'report', '/repo', left, ['/repo'] if stage == 4 else []))
 
     def remove(self, clock, **changes):
-        store, events = MemoryCleanupState(), []
+        store, events, self.discarded = MemoryCleanupState(), [], []
         request, evidence = stage_request(dict(repos=[MACHINE], apply=True, now=1.0, drive=dict(path='/'), state_dir=None))
         with listing_answers([dict(worktree=GONE)]), agreeing_proof(), \
                 patch.object(disk_worktrees, 'inspect', return_value=gone_row(**changes)), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
-                patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a: events.append('discard')):
+                patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a, **k: (events.append('discard'),
+                                                                                         self.discarded.append(k))):
             row = disk_worktrees.remove(request, gone_row(**changes), store=store, clock=clock, evidence=evidence)
         return row, [r['phase'] for r in store.journal], events
 
@@ -71,6 +72,16 @@ class Removals(unittest.TestCase):
         self.assertEqual((phases, events), ([], []))         # no journal row, nothing touched
         row, phases, events = self.remove(StageClock(100, clock=at(10)))
         self.assertEqual((row['action'], phases, events), ('removed', ['planned', 'completed'], ['discard']))
+
+    def test_the_removal_takes_the_mutation_cap(self):
+        asked = []
+        def step(name):
+            return lambda *a, timeout_s: asked.append((name, timeout_s))
+        with patch.object(disk_worktrees, 'rescue_at', side_effect=step('rescue')), \
+                patch.object(disk_worktrees, 'unlock_at', side_effect=step('unlock')):
+            row, _, _ = self.remove(StageClock(100, clock=at(10)), branch=None, side_lock='wsl')
+        self.assertEqual(row['action'], 'removed')
+        self.assertEqual((asked, self.discarded), ([('rescue', 4), ('unlock', 4)], [dict(timeout_s=4)]))     # 6.1:643
 
     def test_exempt_approved_removal_is_never_cut_off(self):
         row, phases, _ = self.remove(StageClock(100, clock=at(LATE), exempt=True))
@@ -102,7 +113,7 @@ class Removals(unittest.TestCase):
                 patch.object(disk_worktrees, 'registrations', return_value={}), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
-                patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a: events.append('discard')):
+                patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a, **k: events.append('discard')):
             disk_worktrees.settled(run, runtime=SimpleNamespace(state=store, evidence=None))
         self.assertEqual(events.count('planned'), 2)
         for start in (i for i, event in enumerate(events) if event == 'planned'):

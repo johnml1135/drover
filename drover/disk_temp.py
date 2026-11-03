@@ -18,7 +18,9 @@ def temp_facts(path, request, *, budget, cached, children):
     roots = [Path(request['state_dir']).absolute()]
     roots += [Path(placement.native(repo['repo'])).absolute() for repo in request['repos'] if repo.get('repo')]
     roots += [root.absolute() for repo in request['repos'] for root in worktree_roots(repo)]
-    if not safe_path(path) or live_tree(path, request) or             any(within(path, root) or within(root, path) for root in roots) or             any(repository_root(parent) for parent in path.parents):
+    if not safe_path(path) or live_tree(path, request) or \
+            any(within(path, root) or within(root, path) for root in roots) or \
+            any(repository_root(parent) for parent in path.parents):
         raise ValueError('protected subtree')
     declared = {Path(p).absolute() for p in request['paths'].get('temp_roots', [])}
     def visit(current):
@@ -40,7 +42,8 @@ def temp_facts(path, request, *, budget, cached, children):
     def scan(current):
         if budget.late():
             raise TempBudgetExceeded('temp root scan budget exceeded')
-        if placement.cleanup_link(current) or current.name.casefold() in ('.git', '.venv') or                 not placement.cleanup_contains(request['drive']['path'], str(current)) or repository_root(current):
+        if placement.cleanup_link(current) or current.name.casefold() in ('.git', '.venv') or \
+                not placement.cleanup_contains(request['drive']['path'], str(current)) or repository_root(current):
             raise ValueError('protected descendant')
         info = current.stat()
         files, size, newest = 0, 0, info.st_mtime

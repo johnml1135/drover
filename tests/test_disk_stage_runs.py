@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_inventory, disk_worktrees, placement
+from drover import disk_inventory, disk_worktrees, placement, process
 from drover.disk_paths import caches, report
 from drover.disk_temp import temporary
 from tests.disk_fixture import DAY, listing_answers, staged
@@ -84,12 +84,46 @@ class Lines(unittest.TestCase):
         self.assert_stopped(answer, 'cache_deadline')
         self.assertEqual([row['reason_code'] for row in answer['items']], ['cache_deadline'])
         self.assertEqual(sorted(p.name for p in first.parent.iterdir()), ['a', 'b'])
-        # The line passes as the first removal starts: that one goes, the next is never started.
+        # The line passes while the first removal is proven: it stays, as stage 2's would, and the next never starts.
         with self.proof(jump_at=1):
             answer = staged(caches, request, clock=lambda: self.clock[0])
         self.assert_stopped(answer, 'cache_deadline')
-        self.assertEqual([row['action'] for row in answer['items'] if row['reason_code'] == 'folder_cache'], ['removed'])
-        self.assertEqual(len(list(first.parent.iterdir())), 1)
+        self.assertEqual([(row['action'], row['reason_code']) for row in answer['items'] if row['action'] != 'report'],
+                         [('keep', 'removal_deadline')])
+        self.assertEqual(sorted(p.name for p in first.parent.iterdir()), ['a', 'b'])
+
+    def test_stage_3_runs_no_declared_command_past_the_line(self):
+        command = dict(argv=['never-run'], cwd=str(self.root), placement=placement.cleanup_side())
+        with patch.object(process, 'run', side_effect=AssertionError('ran past the line')):
+            answer = staged(caches, self.request(3, caches=[command]), clock=at(LATE))
+        self.assert_stopped(answer, 'cache_deadline')
+        self.assertEqual([row['reason_code'] for row in answer['items']], ['cache_deadline'])
+
+    def test_stage_2_checks_the_line_before_each_entry(self):
+        stale = self.old('tmp/a')
+        with self.proof():      # past the line after the root's check, before its first entry's
+            answer = staged(temporary, self.request(2, temp_roots=[str(stale.parent)]), clock=self.after(2))
+        self.assert_stopped(answer, 'temp_deadline')
+        self.assertEqual([row['reason_code'] for row in answer['items']], ['temp_root_elapsed', 'temp_deadline'])
+
+    def after(self, count):
+        """A clock reading 0 for the stage's start and `count` more readings, then LATE."""
+        readings = iter(range(count + 1))
+        return lambda: 0.0 if next(readings, None) is not None else LATE
+
+    def test_stage_6_checks_the_line_before_each_unlisted_folder_and_report(self):
+        machine = dict(name='alpha', repo=str(self.root / 'repo'), worktrees=str(self.root / 'trees'))
+        self.old('trees/stray/f', 'reports/a')
+        def listed(repo):
+            self.clock[0] = LATE        # past the line once the repo is listed
+            return []
+        with listing_answers(listed):
+            answer = staged(report, self.request(6, apply=False, repos=[machine]), clock=lambda: self.clock[0])
+        self.assertEqual([(row['reason_code'], row['path'], row.get('repos')) for row in answer['items']],
+                         [('report_deadline', machine['repo'], [])])        # stopped in its repo, none left after it
+        answer = staged(report, self.request(6, apply=False, report_roots=[str(self.root / 'reports')]), clock=at(LATE))
+        self.assert_stopped(answer, 'report_deadline')
+        self.assertEqual([row['reason_code'] for row in answer['items']], ['report_deadline'])
 
     def test_stage_6_stops_at_the_line_with_report_deadline(self):
         self.old('reports/a')

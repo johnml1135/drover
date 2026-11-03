@@ -134,11 +134,6 @@ class StageClock:
         return inner
 
 
-def result():
-    """An empty stage answer."""
-    return dict(items=[], errors=[], reclaimed_bytes=0)
-
-
 def within(path, root):
     """Whether `path` is `root` or under it, compared as cleanup paths; a path test, unlike `StageClock.within`."""
     parts, parent = placement_paths.cleanup_parts(path), placement_paths.cleanup_parts(root)

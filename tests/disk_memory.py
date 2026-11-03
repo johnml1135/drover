@@ -177,10 +177,10 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
                     (disk_worktrees, 'gitdir_at', lambda p: str(repository(p).repo / '.git' / Path(p).name)),
                     (disk_worktrees, 'tracked_at', lambda p, relative=None: [n for n in repository(p).tree(p)['tracked']
                         if relative is None or n == str(relative).replace('\\', '/') or n.startswith(str(relative).rstrip('/') + '/')]),
-                    (disk_worktrees, 'unlock_at', lambda repo, p: repository(repo).lock(p, None)),
-                    (disk_worktrees, 'lock_at', lambda repo, p, reason: repository(repo).lock(p, reason)),
-                    (disk_worktrees, 'discard_at', lambda repo, p, evidence: (repository(repo).discard(p), evidence.took(repo, p))),
-                    (disk_worktrees, 'rescue_at', lambda repo, ref, head: None),
+                    (disk_worktrees, 'unlock_at', lambda repo, p, *, timeout_s: repository(repo).lock(p, None)),
+                    (disk_worktrees, 'lock_at', lambda repo, p, reason, *, timeout_s: repository(repo).lock(p, reason)),
+                    (disk_worktrees, 'discard_at', lambda repo, p, evidence, *, timeout_s: (repository(repo).discard(p), evidence.took(repo, p))),
+                    (disk_worktrees, 'rescue_at', lambda repo, ref, head, *, timeout_s: None),
                     (disk_worktrees, 'registrations', lambda *args: {}),    # process-free; real git is tested in test_disk_registrations
                     (disk_worktrees, 'snapshot', snapshot),
                     (placement, 'worktree_metadata', metadata),

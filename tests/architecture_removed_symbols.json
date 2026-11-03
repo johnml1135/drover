@@ -73,7 +73,8 @@
     "drover.disk_side._bridge",
     "drover.disk_side._trim",
     "drover.disk_paths.stage_dict",
-    "drover.disk_paths.processes"
+    "drover.disk_paths.processes",
+    "drover.disk_stage.result"
   ],
   "removed_receipt_fields": [
     "infra"

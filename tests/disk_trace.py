@@ -366,7 +366,7 @@ SCENES = dict(
     settled_deadline_at_a_worktree=settled_deadline_at_a_worktree,
     approved_removal=approved_removal,
     approved_dirty=lambda s: dict(approved=s.worktree('w', extra=['scratch.txt'])),
-    approved_past_the_deadline=lambda s: dict(approved=s.worktree('w', owner=None), timeout=0),
+    approved_past_the_deadline=lambda s: setattr(s, 'midstage', lambda r: setattr(s, 'clock', 1e9)) or dict(approved=s.worktree('w', owner=None)),
     **STAGE_SCENES,
 )
 

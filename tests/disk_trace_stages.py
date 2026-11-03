@@ -189,7 +189,7 @@ CACHES = dict(
     cache_command_other_side=on(3, lambda s: cache_command(s, side=s.other_side)),
     cache_command_other_drive=on(3, lambda s: cache_command(s) or s.elsewhere.add(s.root / 'tool')),
     cache_by_age=on(3, cache_old_and_new),
-    cache_deadline_at_the_start=on(3, lambda s: cache_folder(s, 'old'), timeout=0),
+    cache_deadline_at_the_start=on(3, lambda s: cache_command(s) or cache_folder(s, 'old'), timeout=0),   # command first
     cache_by_declared_age=on(3, lambda s: cache_folder(s, 'old', age=2 * DAY, max_age_days=1)),
     cache_warn_level=on(3, cache_at_level, level='warn'),
     cache_critical_level=on(3, cache_at_level, level='critical'),

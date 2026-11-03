@@ -8,8 +8,9 @@ from .disk_paths import worktree_roots, facts, safe_path, disposable_match, repo
 from .disk_stage import item, within
 
 
-def _out(repo, *args, env=None):     # any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end
-    return git_client.out(str(repo), *map(str, args), timeout_s=git_client.NORMAL, env=env,
+# Any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end.
+def _out(repo, *args, env=None, timeout_s=git_client.NORMAL):
+    return git_client.out(str(repo), *map(str, args), timeout_s=timeout_s, env=env,
                           error=lambda f: ValueError(str(f) if f.why == 'timeout' else f.err.strip() or 'git command failed'))
 
 
@@ -26,22 +27,22 @@ def tracked_at(path, relative=None):
     return [name for name in _out(path, *args).split('\0') if name]
 
 
-def unlock_at(repo, path):
-    _out(repo, 'worktree', 'unlock', '--', path)
+def unlock_at(repo, path, *, timeout_s):
+    _out(repo, 'worktree', 'unlock', '--', path, timeout_s=timeout_s)
 
 
-def lock_at(repo, path, reason):
+def lock_at(repo, path, reason, *, timeout_s):
     # Recovery is best effort, like the original unchecked Git command: a mutate raises nothing, a timeout included.
-    git_client.mutate(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout_s=git_client.NORMAL)
+    git_client.mutate(repo, 'worktree', 'lock', '--reason', reason, '--', str(path), timeout_s=timeout_s)
 
 
-def discard_at(repo, path, evidence):
-    _out(repo, 'worktree', 'remove', '--force', '--', path)
+def discard_at(repo, path, evidence, *, timeout_s):
+    _out(repo, 'worktree', 'remove', '--force', '--', path, timeout_s=timeout_s)
     evidence.took(repo, path)
 
 
-def rescue_at(repo, ref, head):
-    _out(repo, 'update-ref', ref, head, '')
+def rescue_at(repo, ref, head, *, timeout_s):     # the update is a mutating step, its check a read
+    _out(repo, 'update-ref', ref, head, '', timeout_s=timeout_s)
     if _out(repo, 'rev-parse', ref).strip() != head:
         raise ValueError('rescue ref verification failed')
 
@@ -303,7 +304,7 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
     row = dict(selected)
     machine = next(m for m in request['repos'] if placement.cleanup_parts(m['repo']) == placement.cleanup_parts(row['repo']))
     path = Path(row['path'])
-    record, unlocked = None, False
+    record, unlocked, cap = None, False, clock.mutation_cap()     # each git mutation's timeout (section 6.1)
     try:
         entry = evidence.row(machine['repo'], path)
         if row.get('unlisted'):
@@ -364,7 +365,7 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
                       lock_argv=None)      # restore_argv locks at creation
         store.append(record)
         if rescue:
-            rescue_at(machine['repo'], rescue, row['head'])
+            rescue_at(machine['repo'], rescue, row['head'], timeout_s=cap)
         if not safe_path(path) or not placement.cleanup_contains(request['drive']['path'], str(path)):
             raise ValueError('worktree path became linked or protected')
         if row.get('unlisted') and unlisted_live(request, path):
@@ -373,19 +374,19 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
             store.append(dict(record, phase='failed'))
             return row
         if row.get('side_lock'):
-            unlock_at(machine['repo'], path)
+            unlock_at(machine['repo'], path, timeout_s=cap)
             unlocked = True
         if row.get('unlisted'):
             import shutil
             shutil.rmtree(path)
         else:
-            discard_at(machine['repo'], path, evidence)
+            discard_at(machine['repo'], path, evidence, timeout_s=cap)
         row.update(action='removed', manifest=record['id'])
         store.append(dict(record, phase='completed'))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         if unlocked:
             # On removal failure, restore only the marker we just proved and unlocked.
-            lock_at(machine['repo'], path, row['side_lock'])
+            lock_at(machine['repo'], path, row['side_lock'], timeout_s=cap)
         row.update(action='keep' if row['action'] != 'removed' else 'removed', error=str(error))
         if record:
             try:

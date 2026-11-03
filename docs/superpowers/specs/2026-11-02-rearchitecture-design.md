@@ -200,7 +200,7 @@ flowchart TD
 - `git_client` imports only `process`, `placement_git`, `placement_paths`.
 - `git_worktrees` imports only `placement_paths` and `git_client`, for the listing, the common directory and the tip. Until slice 4 that second import is `placement`, as a temporary row in R5. If it would need a row in `architecture_import_allowlist.json`, `disk_worktrees` passes the git call in instead, as no slice adds a row.
 - `disk_authority` imports no `process` or `git_client`, and mutates no path under cleanup. Its one write is quarantine state, through `CleanupState`.
-- `disk_stage` imports only `placement_paths`, and holds `item`, `result` and `within`. If the file route of section 6.1 is taken, `durable` is added then.
+- `disk_stage` imports only `placement_paths`, and holds `item` and `within` (`result` went with the bridge, Task 35). If the file route of section 6.1 is taken, `durable` is added then.
 - `disk_inventory` imports no `disk_*` module but `disk_state`, and holds `worktree_roots`, `safe_path`, `repository_root` and `repository_config`, so `disk_evidence` and `disk_authority` can import them at load. None of the four calls anything above it: `safe_path` needs only `placement.cleanup_link`, and `repository_config` only git.
 - No sibling import inside a function in the `disk_*` modules listed above: the shrink-only count, which slice 0 fixes from today's code, goes to 3 for this cluster at the end of slice 6, each a load cycle stated in section 13. Today's other deferred imports go, because the layering above needs none of them.
 
@@ -927,7 +927,7 @@ These keep their names and the stage they run. They stop deciding and stop expor
 | `disk_authority.py` | new | about 450 | Rules, with `decide`, `inspect`, quarantine |
 | `disk_evidence.py` | new | about 280 | One stage run's evidence, `identity`, `snapshot`, `registration_identity` |
 | `disk_removal.py` | new | about 280 | Journalled removal |
-| `disk_stage.py` | new | about 250 | Request, clock, rows, row groups, `item`, `result`, `within` |
+| `disk_stage.py` | new | about 250 | Request, clock, rows, row groups, `item`, `within`. `result` went with the bridge (Task 35): every stage answers on its run |
 | `disk_inventory.py` | 183 | about 240 | `worktree_roots`, `safe_path`, `repository_root` and `repository_config` join it, because it has no `disk_*` import above it but `disk_state` |
 | `disk_cleanup_decisions.py` | 135 | about 30 | `CleanupRuntime`, `evaluate`; the rest moved |
 

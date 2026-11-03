@@ -146,6 +146,9 @@ def caches(run) -> None:
         row = item(entry['cwd'], 'declared_cache')
         row.update(argv=entry['argv'], action='candidate')
         if request['apply']:
+            if not run.clock.can_mutate():      # it would not end in time: it never starts, and the stage stops
+                run.add(dict(row, action='keep', reason_code='removal_deadline'))
+                return run.stop('cache_deadline', None, [], [])
             done = process.run(process.Command(entry['argv'], 120, cwd=entry['cwd']))
             if done.kind != 'exited':
                 run.error(dict(row, error=done.detail))
@@ -193,6 +196,9 @@ def folder_cache(run, request, entry):
             row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
             if request['apply']:
                 proof = run.evidence.fresh_processes()
+                if not run.clock.can_mutate():      # the line passed while it was proven: it stays, as in stage 2
+                    run.add(dict(row, action='keep', reason_code='removal_deadline'))
+                    return run.stop('cache_deadline', None, [], []) or True
                 if proof.busy(str(path)):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
                 elif protected_path(path, request):

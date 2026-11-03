@@ -168,7 +168,8 @@ class FreshProof(unittest.TestCase):
         def dropped(request, selected, **options):      # the scene wraps whatever `remove` is when it serves
             options['evidence'].took(scene.machines[0]['repo'], tree)
             return real(request, selected, **options)
-        with patch.object(disk_worktrees, 'remove', dropped),                 patch.object(git_worktrees, 'prove', side_effect=AssertionError('proved a target with no row')):
+        with patch.object(disk_worktrees, 'remove', dropped), \
+                patch.object(git_worktrees, 'prove', side_effect=AssertionError('proved a target with no row')):
             trace = scene.record(apply=True)
         self.assert_kept(trace, 'settled')
         self.assertEqual([(error['path'], error['action'], error['error']) for error in trace['errors']],

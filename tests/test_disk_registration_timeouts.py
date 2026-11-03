@@ -79,7 +79,7 @@ class UnknownCandidate(unittest.TestCase):
 
 class ReregisterFailure(unittest.TestCase):
     """reregister's own handler: remove the temporary worktree, and always journal `failed`."""
-    def run_reregister(self, removal):
+    def run_reregister(self, removal, clock=CLOCK):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(__import__('shutil').rmtree, tmp, True)
         orphan = tmp / 'orphan'
@@ -94,10 +94,12 @@ class ReregisterFailure(unittest.TestCase):
             self.added.append(kwargs)
             Path(place).mkdir(parents=True)
             raise kwargs['error'](git_client.GitFailed(('worktree', 'add'), 'timeout', None, '', ''))     # add_worktree's error=
-        with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(git_client, 'mutate', return_value=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
+        with patch.object(placement, 'add_worktree', side_effect=add), \
+                patch.object(git_client, 'mutate', return_value=removal) as git, \
+                patch.object(placement, 'cleanup_side', return_value='wsl'):
             with self.assertRaisesRegex(ValueError, '^git worktree failed: timeout$'):
                 disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b', store,
-                                              evidence=None, clock=CLOCK)
+                                              evidence=None, clock=clock)
         return records, git
 
     def test_failure_removes_the_temporary_worktree_and_journals_failed(self):
@@ -105,9 +107,10 @@ class ReregisterFailure(unittest.TestCase):
         self.assertEqual(git.call_count, 1)
         self.assertEqual([r['phase'] for r in records], ['planned', 'failed'])
 
-    def test_the_repair_adds_its_worktree_within_a_stage_change_limit(self):
-        self.run_reregister(git_client.GitDone(True, '', '', 0, None))
-        self.assertEqual([kw.get('timeout_s') for kw in self.added], [git_client.NORMAL])     # section 6.1: 60 s
+    def test_the_repair_adds_and_removes_its_worktree_within_the_mutation_cap(self):
+        _, git = self.run_reregister(git_client.GitDone(True, '', '', 0, None), clock=StageClock(100))
+        self.assertEqual([kw.get('timeout_s') for kw in self.added], [4])     # section 6.1:643: the cap, not 60 s
+        self.assertEqual(git.call_args.kwargs['timeout_s'], 4)
 
     def test_second_timeout_in_the_removal_still_journals_failed(self):
         records, git = self.run_reregister(git_client.GitDone(False, '', '', None, 'timeout'))     # mutate raises nothing
@@ -149,12 +152,38 @@ class ReregisterClock(unittest.TestCase):
             asked.append(timeout_s)
             return git_worktrees.Listing(repo, (dict(worktree=str(orphan)),))
         evidence = SimpleNamespace(repaired=lambda repo, path: told.append((repo, path)))
-        with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(disk_registrations, '_out', return_value=''),                 patch.object(disk_registrations, 'gitdir_at', return_value=str(tmp / 'admin')),                 patch.object(git_worktrees, 'listing', side_effect=listing):
+        with patch.object(placement, 'add_worktree', side_effect=add), \
+                patch.object(disk_registrations, '_out', return_value=''), \
+                patch.object(disk_registrations, 'gitdir_at', return_value=str(tmp / 'admin')), \
+                patch.object(git_worktrees, 'listing', side_effect=listing):
             disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
                                           SimpleNamespace(append=records.append), evidence=evidence,
                                           clock=StageClock(1800, clock=at(1400)))
         self.assertEqual(asked, [40])       # patience(400) 40 s before the line, not 400 s
         self.assertEqual(([r['phase'] for r in records], told), (['planned', 'completed'], [('/repo', orphan)]))
+
+    def test_the_repair_steps_take_the_mutation_cap(self):
+        tmp, orphan = self.orphan()
+        (tmp / 'admin').mkdir()     # no index, so the reset runs
+        asked = []
+
+        def add(repo, place, *args, timeout_s, **kwargs):
+            asked.append(('add', timeout_s))
+            Path(place).mkdir(parents=True)
+            (Path(place) / '.git').write_text('gitdir: new', encoding='utf-8')
+
+        def out(where, *args, timeout_s=None, **_):
+            asked.append((args[1] if args[0] == 'worktree' else args[0], timeout_s))
+            return ''
+        with patch.object(placement, 'add_worktree', side_effect=add), \
+                patch.object(disk_registrations, '_out', side_effect=out), \
+                patch.object(disk_registrations, 'gitdir_at', return_value=str(tmp / 'admin')), \
+                patch.object(git_worktrees, 'listing', return_value=git_worktrees.Listing('/repo', (dict(worktree=str(orphan)),))):
+            disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
+                                          SimpleNamespace(append=lambda record: None),
+                                          evidence=SimpleNamespace(repaired=lambda repo, path: None),
+                                          clock=StageClock(100, clock=at(10)))
+        self.assertEqual(asked, [('add', 4), ('repair', 4), ('reset', 4)])     # section 6.1:643: each mutating step's cap
 
 
 class UnknownLostFolders(unittest.TestCase):

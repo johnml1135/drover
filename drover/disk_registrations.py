@@ -253,11 +253,12 @@ def report(request, machine, listed, found, store, *, evidence, clock):
 def reregister(request, machine, path, target, branch, store, *, evidence, clock):
     """Add the branch's registration under a temporary parent (so the admin directory is named after the directory),
     move its `.git` file over the orphan's, repair both pointers, and rebuild a missing index. The old `.git` file is
-    kept under the state directory first and never overwritten. Nothing starts unless `clock` can still finish it, and
-    the verifying listing inside the journalled window takes the clock's patience."""
+    kept under the state directory first and never overwritten. Nothing starts unless `clock` can still finish it;
+    inside the journalled window each mutating step takes the clock's mutation cap and the verifying listing its
+    patience (section 6.1)."""
     if not clock.can_mutate():
         raise ValueError('repair deadline: past the stage line, the repair did not start')
-    repo = machine['repo']
+    repo, cap = machine['repo'], clock.mutation_cap()
     record = dict(v=1, kind='registration_repair', id=uuid.uuid4().hex, ts=request['now'], phase='planned',
                   path=str(path), repo=repo, branch=branch, side=placement.cleanup_side())
     backups = Path(request['state_dir']) / 'disk' / 'registration-backup'
@@ -273,13 +274,13 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
         if branch is not None:
             holder.mkdir()
             placement.add_worktree(repo, str(place), '--no-checkout', '--', str(place), branch, error=ValueError,
-                                   timeout_s=git_client.NORMAL)     # a stage change: section 6.1's 60 s
+                                   timeout_s=cap)
             durable.move(place / '.git', path / '.git', wait=durable.NO_WAIT)
             moved = True
-        _out(repo, 'worktree', 'repair', str(path))
+        _out(repo, 'worktree', 'repair', str(path), timeout_s=cap)
         admin = Path(placement.native(gitdir_at(path)))
         if not (admin / 'index').exists():
-            _out(path, 'reset', '-q')
+            _out(path, 'reset', '-q', timeout_s=cap)
         if git_worktrees.listing(repo, timeout_s=clock.patience(git_worktrees.LISTING_TIMEOUT_S)).row(path) is None:
             raise ValueError('registration did not take')
         evidence.repaired(repo, path)
@@ -287,7 +288,7 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         try:
             if not moved and place.exists():
-                git_client.mutate(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout_s=git_client.NORMAL)
+                git_client.mutate(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout_s=cap)
         finally:
             store.append(dict(record, phase='failed'))
         raise

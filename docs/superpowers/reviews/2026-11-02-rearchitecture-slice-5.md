@@ -82,3 +82,15 @@ Mutants a pre-merge gate should run (none run here, by the memory rule): `>=` to
 - **Seams.** R6 falls: `disk_paths` imports `ownership` at load. `report` goes from 3 to 1 (disk_worktrees), and `output_evidence` from 2 to 1.
 - **Not changed:** `disk_inventory`, which is listed in the brief but needed nothing.
 
+
+### Task 35, fix round 1
+
+- **Every removal and declared cache command starts only on `run.clock.can_mutate()`.** In stage 3, `folder_cache` checks it again after a file's fresh proof, and a declared command checks it before it starts. If the check fails, the row is kept as `removal_deadline` and the stage stops with `cache_deadline`. Stage 2 already worked this way: its last look runs under the root's budget.
+- **Mutating steps take `clock.mutation_cap()` as their timeout (spec 6.1:643).**
+  - In `disk_worktrees.remove`: `update-ref`, `worktree unlock`, `worktree remove --force` and the recovery `worktree lock`.
+  - In `reregister`: `worktree add`, `worktree repair`, `reset` and `worktree remove -f -f`.
+  - Reads keep their timeouts: `rev-parse` and `gitdir_at` at `NORMAL`, and the verifying listing at `patience()`.
+- **Two scenes restated; no trace row moved.** The trace compare against 1a30f79 is empty.
+  - `cache_deadline_at_the_start` now declares a command before its folder, so the per-entry check is the only gate in front of the command.
+  - `approved_past_the_deadline` now jumps the clock past the line, and past the worker timeout, as its removal starts. It used to run with a worker timeout of 0, which gives a mutation cap of 0, and `process` refuses a timeout of 0. That would have moved the scene towards keeping with the error "a command needs a positive, finite timeout, not 0.0". A worker timeout of 0 is not valid config (`config_validation`: finite and positive), and the scene exists to show that an approved removal past the line still removes, so I restated it rather than record the move.
+- **`disk_stage.result()` is deleted.** It is listed in `qualified_names`, and spec 7.4's row and section 4's `disk_stage` sentence are amended.
