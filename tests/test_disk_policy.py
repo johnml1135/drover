@@ -2,12 +2,16 @@
 import contextlib
 import io
 import os
+import subprocess
+import tempfile
 import tomllib
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from drover import config, repos
-from tests.gitfix import Repo, clean_parent
+from tests.fakeci import git_spawns
+from tests.gitfix import clean_parent
 
 PROCESS_IGNORE = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSessionHelper.exe',
                   'Wacom_TouchUser.exe', 'Taskmgr.exe', 'SecurityHealthSystray.exe', 'sihost.exe',
@@ -17,10 +21,45 @@ PROCESS_IGNORE = ['ctfmon.exe', 'TabTip.exe', 'TextInputHost.exe', 'DefenderSess
                   'systemd', '(sd-pam)']
 
 
+class Commits:
+    """A checkout whose commits hold one `.drover/config.toml` each, answering the three reads `repos.load` makes.
+    Git is setup here, not the point: test_repos reads committed config through real git."""
+    ENTRY = '.drover/config.toml'
+
+    def __init__(self, root):
+        self.root, self.repo = root, root / 'repo'
+        self.repo.mkdir()
+        self.texts, self.head = {}, None
+
+    def commit(self, name, text):
+        if name != self.ENTRY:
+            raise AssertionError(f'only {self.ENTRY} is committed here, not {name}')
+        (self.repo / name).parent.mkdir(exist_ok=True)
+        (self.repo / name).write_text(text, encoding='utf-8')     # the checkout holds it, as after a commit
+        self.head = f'{len(self.texts) + 1:040x}'
+        self.texts[self.head] = text
+        return self.head
+
+    def __call__(self, repo, *args, timeout):
+        def done(code=0, out='', err=''):
+            return subprocess.CompletedProcess(args, code, out, err)
+        if args[:2] == ('rev-parse', '--verify'):
+            revision = args[2].removesuffix('^{commit}')
+            sha = self.head if revision in ('HEAD', 'refs/heads/main') else revision     # main is checked out
+            return done(0, sha + '\n') if sha in self.texts else done(128, err='fatal: Needed a single revision\n')
+        if args[0] == 'ls-tree' and args[2:] == ('--', self.ENTRY):
+            return done(0, f'100644 blob {args[1]}\t{self.ENTRY}\n' if args[1] in self.texts else '')
+        if args[0] == 'show' and args[1].endswith(':' + self.ENTRY):
+            return done(0, self.texts[args[1].partition(':')[0]])
+        raise AssertionError(f'unexpected git {args!r}')
+
+
 class Policy(unittest.TestCase):
     def setUp(self):
-        self.fix = Repo()
-        self.addCleanup(self.fix.cleanup)
+        temporary = tempfile.TemporaryDirectory(prefix='disk-policy-', dir=clean_parent())
+        self.addCleanup(temporary.cleanup)
+        self.fix = Commits(Path(temporary.name))
+        git_spawns(self, self.fix)
         self.addCleanup(config.reset)
         env = patch.dict(os.environ, {'DROVER_HOME': str(self.fix.root / 'state')})
         env.start()
