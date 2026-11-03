@@ -93,6 +93,7 @@ class SyncTests(unittest.TestCase):
     def test_sync_advances_checked_out_main_through_its_checkout(self):
         git, sha = sync()
         self.assertEqual(sha, NEW)
+        self.assertEqual(git.calls[-1], ('mutate', REPO, ('merge', '--ff-only', '--no-autostash', NEW), LONG))
         self.assertEqual(git.mutations(), [
             (REPO, ('fetch', 'origin', 'main', '--refmap=+refs/heads/main:refs/remotes/origin/main')),
             (REPO, ('merge', '--ff-only', '--no-autostash', NEW))])
@@ -130,6 +131,7 @@ class SyncTests(unittest.TestCase):
         git, sha = sync({('worktree', 'list'): (0, listing((REPO, OLD, None)))})
         self.assertEqual(sha, NEW)
         self.assertEqual(git.mutations()[1:], [(REPO, ('update-ref', 'refs/heads/main', NEW, OLD))])
+        self.assertEqual(git.calls[-1][3], LONG)                  # section 5.1: the compare-and-swap had no timeout
         self.assertFalse([args for _, _, args, _ in git.calls if args[0] in ('status', 'merge')])
 
     def test_divergence_refuses_without_moving_main(self):

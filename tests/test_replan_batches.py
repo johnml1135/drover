@@ -116,10 +116,11 @@ class CherryPick(unittest.TestCase):
         work = Path(root.name) / 'batch'
         work.mkdir()
         (work / '.git').write_text('gitdir: ../repo/.git/worktrees/batch\n', encoding='utf-8')     # relative: no repair
-        self.calls = []
+        self.calls, self.timeouts = [], set()
 
         def reply(repo, *args, timeout):
             self.calls.append(args)
+            self.timeouts.add(timeout)
             if args[0] == 'cherry-pick' and args[1] != '--abort':
                 return pick()
             out = {'rev-parse': self.BEFORE, 'merge-base': self.FORK, 'rev-list': self.COMMIT}.get(args[0], '')
@@ -141,6 +142,15 @@ class CherryPick(unittest.TestCase):
         with self.assertRaisesRegex(ci.CIError, 'cherry-pick'):
             self.replay(stuck)       # raised, so no conflict list names t1
         self.assertEqual(self.after_pick(), [])     # no abort, and no reset over a lock the timed-out pick may hold
+        self.assertEqual(self.timeouts, {600.0})    # section 5.1: the replay's reads and the pick had no timeout: LONG
+
+    def test_formation_reads_run_at_long(self):
+        from drover import landing_batch
+        from tests.fakeci import git_spawns
+        timeouts = []
+        git_spawns(self, lambda repo, *args, timeout: timeouts.append(timeout) or subprocess.CompletedProcess(args, 0, 'x\n', ''))
+        self.assertEqual((landing_batch.branch_head('/repo', 'feat'), landing_batch.task_files('/repo', 'main', 'feat')), ('x', ['x']))
+        self.assertEqual(timeouts, [600.0, 600.0])
 
     def test_cherry_pick_conflict_is_still_a_conflict(self):
         tip, applied, conflicts = self.replay(lambda: subprocess.CompletedProcess([], 1, '', 'CONFLICT (content)'))

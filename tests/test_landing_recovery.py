@@ -13,7 +13,7 @@ from drover import ci, landing, landing_control, origin, resources
 from drover.ledger import db, ops
 from drover.ledger.waiting import Waiting, BASE, cause_key
 from tests.fakeci import git_answers, resources_go
-from tests.test_origin_sync import FakeGit, NEW, OLD, REPO, listing, world
+from tests.test_origin_sync import LONG, FakeGit, NEW, OLD, REPO, listing, world
 
 SHA = 'a' * 40
 INFRA = dict(status='failed', outcome='infrastructure-failed', passed=False, sha='b' * 40,
@@ -450,6 +450,14 @@ class LocalFastForwardTests(unittest.TestCase):
                     self.land({('status',): (0, status)})
                 self.assertEqual(self.git.mutations(), [])
                 self.assert_unlocked()
+
+    def test_every_git_call_of_a_landing_runs_at_long(self):
+        for name, changes in (('checkout', {}), ('no checkout', {('worktree', 'list'): (0, listing((REPO, OLD, None)))})):
+            with self.subTest(name):
+                self.land(changes)      # section 5.1: landing_batch's reads, the ancestry check and origin's change had none
+                self.assertEqual({(args[0], timeout) for _, _, args, timeout in self.git.calls},
+                                 {(word, LONG) for word in ('rev-parse', 'merge-base', 'worktree')} |
+                                 ({('status', LONG), ('symbolic-ref', LONG), ('merge', LONG)} if not changes else {('update-ref', LONG)}))
 
     def test_main_with_no_checkout_moves_by_compare_and_swap_and_leaves_head_alone(self):
         self.land({('worktree', 'list'): (0, listing((REPO, OLD, None)))})

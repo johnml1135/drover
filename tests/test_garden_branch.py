@@ -58,7 +58,16 @@ class TestDeleteBranch(Base):
 
     def test_unmerged_is_rescued_then_deleted(self):
         tip = self.r.branch("feat/x", {"x.txt": "x\n"})
-        res = self.run_del("feat/x")
+        real, seen = process.run, []
+        with mock.patch.object(process, "run", lambda command: seen.append(command) or real(command)):
+            res = self.run_del("feat/x")
+        # Section 5.1: cleanup's git had no timeout, so every command runs at LONG, and every one but the worktree
+        # listing (git_worktrees' own) scans without optional locks, the ref changes included.
+        git = [c for c in seen if "git" in c.argv]
+        self.assertEqual({c.timeout_s for c in git}, {git_client.LONG})
+        self.assertIn("update-ref", {a for c in git for a in c.argv})
+        self.assertEqual([c.argv[c.argv.index("-C") + 2:][:2] for c in git if (c.env or {}).get("GIT_OPTIONAL_LOCKS") != "0"],
+                         [("worktree", "list")])
         self.assertTrue(res["ok"], res)
         self.assertFalse(self.exists("feat/x"))
         self.assertTrue(res["rescue_ref"].startswith("refs/drover-rescue/feat/x-"))
