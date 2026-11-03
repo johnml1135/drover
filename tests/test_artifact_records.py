@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from drover import durable, launch, runner
+from tests.fakeci import answer_spawns
 from tests.test_launch_runner import FakeRunner, spec
 
 
@@ -60,7 +61,8 @@ class ArtifactRecords(unittest.TestCase):
     def test_artifact_recovery(self):
         self.assertIs(launch.parse_action_record, runner.parse_action_record)
         fake = FakeRunner(self.runs, state="exited")
-        launcher = launch.RunnerLauncher(runs_dir=self.runs, run=fake, windows=False, autostart=False)
+        answer_spawns(self, fake)
+        launcher = launch.RunnerLauncher(runs_dir=self.runs, windows=False, autostart=False)
         original = launcher.launch(spec())
         durable.write_json(original.dir / runner.RECORD_FILE, DONE, sync=False)
         status = original.status()
@@ -68,7 +70,7 @@ class ArtifactRecords(unittest.TestCase):
         self.assertEqual(status["state"], "exited")
         # New launcher instances stand in for dispatcher restarts; adoption reads saved files only.
         for _ in range(2):
-            restarted = launch.RunnerLauncher(runs_dir=self.runs, run=fake, windows=False)
+            restarted = launch.RunnerLauncher(runs_dir=self.runs, windows=False)
             handle = restarted.adopt(spec(adopted=True))
             self.addCleanup(handle.cancel)
             result = handle.wait(5)

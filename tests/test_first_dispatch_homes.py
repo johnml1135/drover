@@ -8,7 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import config, directors, dispatcher, launch
+from drover import config, directors, dispatcher, launch, process
+from tests.fakeci import FakeCommands, answer_spawns, process_options, refuse_real_spawns
 from tests.test_dispatcher import Base
 
 
@@ -32,27 +33,28 @@ class SeatHomes(unittest.TestCase):
         def run(argv, **kw):
             calls.append(argv)
             return SimpleNamespace(returncode=0, stdout='/home/debian/.codex\n' if argv[-1].startswith('~') else '1\n')
-        self.assertEqual(seat_paths.validate(cfg, windows=True, run=run), {})
+        answer_spawns(self, run)
+        self.assertEqual(seat_paths.validate(cfg, windows=True), {})
         self.assertEqual([c[:3] for c in calls], [['wsl.exe', '-d', 'Debian']] * 2)
         self.assertEqual(calls[-1][-1], '/home/debian/.codex')
         self.assertEqual(cfg['seats'][0]['config_dir'], '~/.codex')
 
     def test_wsl_home_comes_from_wsl_not_windows(self):
-        from drover import seat_paths
-        calls = []
-        def run(argv, **kw):
-            calls.append(argv)
-            return SimpleNamespace(returncode=0, stdout='/srv/wsl-account/.codex\n')
+        from drover import placement, seat_paths
         seat = {'placement': 'wsl'}
         real = os.path.expanduser
         def windows_home(path):
             self.assertFalse(str(path).startswith('~'), 'Windows home must not be used')
             return real(path)                 # the hold check reads the state directory, which is no seat home
-        with patch('os.path.expanduser', side_effect=windows_home):
-            home = seat_paths.resolve('~/.codex', seat, {'wsl_distro': 'Ubuntu'}, windows=True, run=run)
+        argv = placement.WSL(placement.distro('Ubuntu')).command(
+            ['python3', '-c', 'import os,sys; print(os.path.expanduser(sys.argv[1]))', '~/.codex'])
+        self.assertIn('Ubuntu', argv)
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeCommands(root)
+            fake.expect(argv, output='/srv/wsl-account/.codex\n', **process_options(10))
+            with patch('os.path.expanduser', side_effect=windows_home), refuse_real_spawns(), fake.patch(process):
+                home = seat_paths.resolve('~/.codex', seat, {'wsl_distro': 'Ubuntu'}, windows=True)
         self.assertEqual(home, '/srv/wsl-account/.codex')
-        self.assertIn('Ubuntu', calls[0])
-        self.assertEqual(calls[0][-1], '~/.codex')
 
     def test_missing_home_health_identifies_seat_and_platform(self):
         from drover import seat_paths
@@ -62,7 +64,8 @@ class SeatHomes(unittest.TestCase):
         def run(argv, **kw):
             calls.append(argv)
             return SimpleNamespace(returncode=0, stdout='0\n')
-        errors = seat_paths.validate(cfg, windows=True, run=run)
+        answer_spawns(self, run)
+        errors = seat_paths.validate(cfg, windows=True)
         self.assertIn('owner', errors)
         self.assertIn('wsl', errors['owner'])
         self.assertIn('/srv/missing', errors['owner'])
@@ -74,8 +77,25 @@ class SeatHomes(unittest.TestCase):
             cfg = config.validate({'seats': [{'name': 'owner', 'backend': 'claude', 'director': True,
                                               'placement': 'wsl', 'config_dir': tmp}]})
             self.assertEqual(seat_paths.validate(cfg, windows=False), {})
-            errors = seat_paths.validate(cfg, windows=True, run=lambda *a, **k: SimpleNamespace(returncode=1, stdout=''))
+            answer_spawns(self, lambda *a, **k: SimpleNamespace(returncode=1, stdout=''))
+            errors = seat_paths.validate(cfg, windows=True)
             self.assertIn('owner', errors)
+
+    def test_a_home_probe_that_did_not_end_raises_and_a_missing_wsl_is_missing(self):
+        """A missing wsl.exe stays a FileNotFoundError, which the dispatcher reads as missing; any other run that did
+        not end, a timeout with output that would parse included, is an OSError."""
+        from drover import seat_paths
+        seat, paths = {'placement': 'wsl'}, {'wsl_distro': 'Ubuntu'}
+        for error, raised in ((FileNotFoundError(2, 'No such file or directory'), FileNotFoundError),
+                              (PermissionError(13, 'Permission denied'), OSError),
+                              (subprocess.TimeoutExpired('wsl.exe', 10, output=b'/home/u/.codex\n'), OSError)):
+            with self.subTest(type(error).__name__):
+                def run(argv, error=error, **kw):
+                    raise error
+                answer_spawns(self, run)
+                with self.assertRaises(raised) as caught:
+                    seat_paths.resolve('~/.codex', seat, paths, windows=True)
+                self.assertEqual(isinstance(caught.exception, FileNotFoundError), raised is FileNotFoundError)
 
 
 class SeatHomeConsumers(Base):
@@ -100,7 +120,8 @@ class SeatHomeConsumers(Base):
         def run(argv, **kw):
             calls.append(argv)
             return SimpleNamespace(returncode=0, stdout='/home/debian/home\n')
-        launcher = launch.RunnerLauncher(runs_dir=self.tmp.name, distro='Ubuntu', windows=True, run=run)
+        answer_spawns(self, run)
+        launcher = launch.RunnerLauncher(runs_dir=self.tmp.name, distro='Ubuntu', windows=True)
         def command(spec, *args):
             specs.append(spec)
             raise RuntimeError('captured before detach')
@@ -138,7 +159,8 @@ class SeatHomeConsumers(Base):
         def run(argv, **kw):
             calls.append(argv)
             return SimpleNamespace(returncode=0, stdout=json.dumps(raw))
-        poller = usage.Poller(self.conn, run=run, now=lambda: now, windows=True)
+        answer_spawns(self, run)
+        poller = usage.Poller(self.conn, now=lambda: now, windows=True)
         seats = [self.cfg['seats'][1], {**self.cfg['seats'][1], 'name': 'spare', 'codex_home': '~/.codex-spare'}]
         for seat in seats:
             self.assertEqual(poller.refresh(seat)['remaining_pct'], 88)

@@ -1,12 +1,14 @@
 """Install independent user schedules, with report receipts gating applied mode."""
 import copy
 from pathlib import Path
-import subprocess
 
-from . import config, disk_preflight, disk_schedule_steps, disk_state, durable, placement
+from . import config, disk_preflight, disk_schedule_steps, disk_state, durable, placement, process
+from .placement_exec import locale_text
+
+LONG = 600.0    # git_client.LONG from Task 22; installation had no timeout
 
 
-def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None) -> dict:
+def install(cfg: dict | None = None, *, apply=False, dry_run=False) -> dict:
     from .disk_cleanup import scope_key
     cfg = config.get() if cfg is None else cfg
     cfg = copy.deepcopy(cfg)
@@ -40,8 +42,10 @@ def install(cfg: dict | None = None, *, apply=False, dry_run=False, runner=None)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(body, encoding='utf-8')
         for argv in plan['argv']:
-            done = (runner or subprocess.run)(argv, capture_output=True, text=True, shell=False)
-            if done.returncode:
-                raise RuntimeError(f'schedule installation failed: {done.stderr}')
+            done = process.run(process.Command(argv, LONG))
+            if done.kind == 'unavailable':     # a missing schtasks or crontab raised its OSError before
+                raise OSError(done.detail)
+            if not done.ok:                     # a timeout leaves a partial schedule: failed, and no receipt
+                raise RuntimeError(f'schedule installation failed: {done.detail or locale_text(done.err, "replace")}')
         disk_state.update(state_dir, lambda state: state.update(automation=dict(apply=bool(apply))))
     return plan

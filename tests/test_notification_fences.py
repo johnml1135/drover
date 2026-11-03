@@ -8,7 +8,7 @@ from drover.launch import AdmissionHeld
 from drover.launch import RunnerLauncher
 from drover.notifications import Notifications
 from drover.ledger import ops
-from tests.fakeci import resources_go
+from tests.fakeci import answer_spawns, resources_go
 from tests.test_dispatcher import Base, res, DONE
 from tests.test_landing import LandingCase
 from tests.test_replans import PlannerDispatchCase
@@ -334,7 +334,9 @@ class PlannerFences(PlannerDispatchCase):
 class RunnerBoundary(unittest.TestCase):
     def test_final_detach_boundary_rechecks_control_after_command_preparation(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as runs:
-            runner = RunnerLauncher(runs_dir=runs, run=Mock())
+            spawn = Mock()
+            answer_spawns(self, spawn)
+            runner = RunnerLauncher(runs_dir=runs)
             spec = dict(run_id=1, nonce='a' * 32, backend='local', model='gate', argv=['controlled-fixture'],
                         placement='windows', cwd=runs, user_prompt='', write=False)
             def refuse():
@@ -343,4 +345,4 @@ class RunnerBoundary(unittest.TestCase):
             with patch.object(runner, 'command', return_value=(['controlled-fixture'], {})):
                 with self.assertRaises(AdmissionHeld):
                     runner.launch(spec)
-            runner.run.assert_not_called()
+            spawn.assert_not_called()

@@ -52,7 +52,8 @@ class Launching(Case):
         """A Herdr with an empty shell ready for a tab. The agent appears when the launch goes out, if it `boots`."""
         fake = self.fake = Stage(screens={PANE: PROMPT})
         fake.processes = LONE_SHELL
-        self.herdr = Herdr('herdr', run=fake, retry_s=0)
+        fake.serve(self)
+        self.herdr = Herdr('herdr', retry_s=0)
         idle = screen or (IDLE if kind == 'codex' else CLAUDE_IDLE)
         self.foreground = running('wsl.exe' if placement == 'wsl' else 'claude.exe')
 

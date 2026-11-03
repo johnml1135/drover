@@ -29,3 +29,32 @@ Section 5.1's "Other drover" sites now run through `process`: task_context:131, 
   - Restated: test_stats' `HubClient` (three tests, which patched the global `subprocess.run`), test_wizard_detection's two tool-probe tests (which patched `wizard_detect._run`), and test_worker_continuation's `test_repository_rules_read_on_owning_placement` (which patched `task_context.subprocess`).
   - No module left `tests.IMPURE`. test_decide_devices is pure on Windows, but on WSL `TestEnsureCPU.test_cli_reports_create_failure` still spawns.
 - **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.
+
+## Task 18: test-only run parameters
+
+The injected `run=`/`runner=` parameters are gone from compaction, compaction_vhd, herdr_client, launch, pane_files, resources, usage, wsl_cache_reclaim, seat_paths and disk_schedule. Every one of those spawns now runs through `process.run(process.Command(...))`, and tests fake them at `process.subprocess`. `disk_schedule_steps` quotes with `process.list2cmdline`. `disk_schedule.install` had no timeout before; it now takes `LONG = 600.0`.
+
+- **R1.** Eleven rows are gone: compaction, compaction_vhd, disk_schedule, disk_schedule_steps, herdr_client, launch, pane_files, resources, seat_paths, usage and wsl_cache_reclaim. None of them imports `subprocess` now.
+- **Decoding:**
+  - Strict UTF-8 is kept where the site named an encoding: usage, seat_paths and the `pane_files` WSL write. Each decode stays inside the handling it had before (usage's failed-reading catch, seat_paths' `validate` catch, which is now `(OSError, ValueError)`).
+  - Sites that decoded by locale keep `placement_exec.locale_text`: compaction_vhd stderr and disk_schedule stderr. They now use `replace`, following Task 14's table.
+  - herdr_client decodes UTF-8 with `replace` and turns CRLF into LF, as text mode did.
+  - launch reads `Result.stdout`.
+- **Outcomes, site by site:**
+  - compaction `_wsl`: a run that did not end raises `OSError(detail)`, where `TimeoutExpired` or `FileNotFoundError` was raised before. `holder_dead` and `_attempt` catch `OSError`, so they behave as before.
+  - compaction_vhd `_pwsh` gives `label: detail` for a run that did not end. Otherwise it gives the last 300 characters of stderr.
+  - disk_schedule.install: `unavailable` raises `OSError(detail)`. A timeout or a non-zero exit raises `RuntimeError('schedule installation failed: ...')`.
+  - herdr_client: a timeout while starting is `start_unconfirmed`, and otherwise `down (timed out)`. `unavailable` is `down (... did not start: <strerror>)`.
+  - launch detach: a missing executable is still `LaunchError(missing=True)`, and the "No such file / cannot find" test is shared as `_missing`. Any other run that did not end is `runner start failed: <detail>`. `_wsl_runners` raises `ScanError` for a run that did not end, and `json.loads` stays inside its `ValueError` catch.
+  - pane_files.write_private: a run that is not `ok`, or an empty WSL path, raises `OSError`.
+  - resources.read_wsl_ram_gb parses only an ended run. `WslOffline` and other `OSError` are still `None`.
+  - usage: `_ended` raises `OSError` for a run that did not end. The probe's catch no longer names `SubprocessError`.
+  - wsl_cache_reclaim: `_ended` raises `OSError`, which `reclaim` catches as before.
+  - seat_paths: `unavailable` with a missing-file message raises `FileNotFoundError`, so dispatch still pauses for a missing WSL. Anything else that did not end raises `OSError`.
+- **Tests:**
+  - New: `test_compaction.Offline.test_compaction_shutdown_literal_runs_in_the_offline_phase` and `test_disk_schedule.test_schedule_install_times_out_at_600_seconds_and_reports_failed`.
+  - New guards for runs that did not end, in test_resources, test_usage and test_first_dispatch_homes.
+  - Each restated test is a `FakeCommands.patch(process)` test that refuses real spawns, in herdr_client, usage, wsl_cache_reclaim, launch_runner_handle, pane_launch_files, resources and first_dispatch_homes.
+  - Everything that passed `run=` now uses `tests.fakeci.answer_spawns`/`answering`, which adapts an old-style fake to `process.subprocess`. `FakeHerdr.serve(case)` does the same for the herdr fake.
+  - The ceilings are unchanged, and `tests.IMPURE` is unchanged.
+- **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.

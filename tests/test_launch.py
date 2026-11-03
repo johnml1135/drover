@@ -5,9 +5,11 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+import subprocess
+from unittest.mock import Mock, patch
 
-from drover import launch
+from drover import launch, process
+from tests.fakeci import answering
 
 
 def codex_settings(spec):
@@ -117,10 +119,9 @@ class ClaudeWorkerAccessTests(unittest.TestCase):
 
     def test_windows_claude_write_worker_reaches_runner_with_private_scratch(self):
         with tempfile.TemporaryDirectory() as temp:
-            with patch.object(launch.subprocess, "run") as run:
-                run.return_value.returncode = 0
-                run.return_value.stdout = '{"runner_pid":1234}'
-                launcher = launch.RunnerLauncher(runs_dir=temp, run=run, windows=True,
+            run = Mock(return_value=subprocess.CompletedProcess([], 0, b'{"runner_pid":1234}', b''))
+            with patch.object(process, "subprocess", answering(run)):
+                launcher = launch.RunnerLauncher(runs_dir=temp, windows=True,
                                                  which=lambda name: r"R:\bin\claude.exe")
                 handle = launcher.launch(claude_spec(placement="windows", cwd=r"R:\work", read_dirs=[], run_id=7))
                 self.addCleanup(handle.cancel)

@@ -14,6 +14,7 @@ import os
 import subprocess
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from drover import ci, durable, process, runner
@@ -26,6 +27,30 @@ def process_options(timeout, *, cwd=None, env=None, input=None) -> dict:
     """
     stdin = {'stdin': subprocess.DEVNULL} if input is None else {'input': input}
     return dict(capture_output=True, timeout=timeout, cwd=cwd, env=env, shell=False, **stdin, **process.NO_WINDOW)
+
+
+def refuse_real_spawns():
+    """A real process start fails the test, through whichever reference to `subprocess` reached it."""
+    return mock.patch.object(subprocess, 'Popen', side_effect=AssertionError('real process'))
+
+
+def answering(run):
+    """`process.subprocess` for a fake in the shape of an old `run=` argument: each spawn goes to `run(argv,
+    **options)` with process's options, and text it answers reaches the caller as UTF-8 bytes, as a child writes it.
+    An exception it raises is raised from the spawn, so `TimeoutExpired` and `OSError` read as they would for real."""
+    def spawn(argv, **options):
+        done = run(argv, **options)
+        out, err = (value.encode('utf-8') if isinstance(value, str) else value or b''
+                    for value in (done.stdout, getattr(done, 'stderr', None)))
+        return subprocess.CompletedProcess(argv, done.returncode, out, err)
+    return SimpleNamespace(run=spawn, DEVNULL=subprocess.DEVNULL, TimeoutExpired=subprocess.TimeoutExpired)
+
+
+def answer_spawns(case, run):
+    """Every `process` spawn in `case` goes to `run`, as `answering` says, until the test ends."""
+    patcher = mock.patch.object(process, 'subprocess', answering(run))
+    patcher.start()
+    case.addCleanup(patcher.stop)
 
 
 class FakeCommands:

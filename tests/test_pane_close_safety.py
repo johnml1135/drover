@@ -6,6 +6,7 @@ from unittest import mock
 
 from drover import pane_close, placement_proof
 from drover.ledger import ops_panes
+from tests.fakeci import answer_spawns
 from tests.pane_close_fixtures import CLAUDE_READY, NOW, REPO, Fleet, PaneCloseBase, agent, snapshot
 
 CODEX_QUEUED = ('Work summary.\n\nQueued follow-up inputs\n  ↳ please also fix the login bug\n'
@@ -170,7 +171,7 @@ class LateClose(PaneCloseBase):
                 raise subprocess.TimeoutExpired(argv, 1)
             return Fleet.__call__(fake, argv, **kwargs)
 
-        herdr.run = run
+        answer_spawns(self, run)
         return herdr
 
     def test_a_close_that_times_out_is_settled_once_on_the_next_tick(self):
@@ -206,7 +207,7 @@ class LateClose(PaneCloseBase):
         self.tick(herdr, 0)
         self.tick(herdr, 60, apply=True)
         self.fake.closed = True
-        herdr.run = self.fake
+        self.fake.serve(self)
         herdr.clock = lambda: 1e9
         self.assertEqual(self.tick(herdr, 61, apply=True)[0]['verdict'], 'keep')
         self.assertEqual(self.events('pane-closed') + self.events('pane-close-failed'), [])

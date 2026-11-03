@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -21,11 +20,10 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from . import compaction_hold
+from . import compaction_hold, process
 from . import config, seat_paths, task_access
 from . import runner
 from .runner import ScanError
-from .placement import NO_WINDOW
 from .launch_usage import (HANDOFF_MAX, PROVIDER_ERROR, PROVIDER_STATUS, PROGRESS_EVENTS,
                            provider_error_of, Usage, _one_line, summarise, rotation_handoff)
 from .launch_handle import (TAIL_LINES, TAIL_FLUSH_EVERY, POLL_S, MAX_LINE, START_TIMEOUT_S,
@@ -284,6 +282,11 @@ def _fresh_run_dir(d):
             raise LaunchError(f"cannot clear {d / name}: {e}") from e
 
 
+def _missing(why):
+    """Whether a spawn failed because the executable is not there, by the words Windows and POSIX use for it."""
+    return "No such file" in why or "cannot find" in why.lower()
+
+
 def _last_json(text):
     for line in reversed((text or "").strip().splitlines()):
         try:
@@ -300,13 +303,12 @@ class RunnerLauncher(Launcher):
     placement runs it through wsl.exe --exec with --cd to the drover directory so `python3 -m drover.runner`
     imports. The brief is the file in.txt (the runner opens it as the worker's stdin)."""
 
-    def __init__(self, runs_dir=None, distro=None, drover_dir=None, python=None, run=subprocess.run,
-                 which=shutil.which, ceilings=None, windows=sys.platform == "win32", wsl_bins=None,
+    def __init__(self, runs_dir=None, distro=None, drover_dir=None, python=None, which=shutil.which, ceilings=None, windows=sys.platform == "win32", wsl_bins=None,
                  on_complete=None, **handle_kw):
         self.windows = windows
         self.wsl_bins = wsl_bins or {}      # {'claude': '/abs/claude', 'codex': ...} or a callable returning it (ledger settings)
         self.runs_dir = str(runs_dir or config.state_path("runs"))
-        self._distro, self.run, self.which = distro, run, which
+        self._distro, self.which = distro, which
         self.drover_dir = str(drover_dir or Path(__file__).resolve().parents[1])
         self.python, self.handle_kw = python or sys.executable, handle_kw
         self.on_complete = on_complete
@@ -380,7 +382,7 @@ class RunnerLauncher(Launcher):
         return [self.python, "-m", "drover.runner", *self.runner_args(spec, d, argv, cwd)], env
 
     def launch(self, spec):
-        spec = seat_paths.resolve_spec(spec, seat_env(spec), self.distro, windows=self.windows, run=self.run)
+        spec = seat_paths.resolve_spec(spec, seat_env(spec), self.distro, windows=self.windows)
         rid = spec["run_id"]
         spec.setdefault("nonce", uuid.uuid4().hex)           # the dispatcher normally picks and records it first
         d = runner.run_dir(self.runs_dir, rid)
@@ -402,16 +404,15 @@ class RunnerLauncher(Launcher):
         if spec.get('_admission_check'):
             spec['_admission_check']()
         info, err = None, None
-        try:
-            r = self.run(cmd, capture_output=True, text=True, timeout=DETACH_TIMEOUT_S, env=env, stdin=subprocess.DEVNULL,
-                         cwd=self.drover_dir if env else None, **placement_mod.NO_WINDOW)
+        r = process.run(process.Command(cmd, DETACH_TIMEOUT_S, cwd=self.drover_dir if env else None, env=env))
+        if r.kind == 'unavailable' and _missing(r.detail):
+            raise LaunchError(f"cannot start {r.detail}", missing=True)
+        if r.kind != 'exited':            # a timeout or a refused spawn: the runner may still come up
+            err = f"runner start failed: {r.detail}"
+        else:
             info = _last_json(r.stdout)
-            if info is None or r.returncode not in (0, 1):
-                err = f"runner start failed (rc {r.returncode}): {(r.stderr or r.stdout or '')[-300:].strip()}"
-        except FileNotFoundError as e:
-            raise LaunchError(f"cannot start {cmd[0]}: {e}", missing=True) from e
-        except (OSError, subprocess.SubprocessError) as e:
-            err = f"runner start failed: {e!r}"
+            if info is None or r.code not in (0, 1):
+                err = f"runner start failed (rc {r.code}): {(r.stderr or r.stdout)[-300:].strip()}"
         st = runner.read_status(self.runs_dir, rid)
         started = bool(st and (st.get("state") != "starting" or st.get("runner_pid")))
         definite = bool(info and info.get("error") and "still starting" not in info["error"])
@@ -419,8 +420,7 @@ class RunnerLauncher(Launcher):
             err, started = err or f"{info['error']}: {self._log_tail(d)}", False
         if st and str(st.get("reason") or "").startswith("spawn-failed"):
             raise LaunchError(f"cannot start worker: {st['reason']}"[:300],
-                              missing=st.get("missing_executable",
-                                             "No such file" in st["reason"] or "cannot find" in st["reason"].lower()))
+                              missing=st.get("missing_executable", _missing(st["reason"])))
         if err and not started:
             raise LaunchError(err[:300], cancel_requested=self.cancel(rid, spec["nonce"]))
         pid = (info or {}).get("runner_pid") or (st or {}).get("runner_pid")
@@ -476,11 +476,13 @@ class RunnerLauncher(Launcher):
             raise ScanError('WSL is held for the overnight compaction')
         cmd, env = placement_mod.ci_runner_command(["find", "--json"], self.drover_dir, self.distro,
                                                     windows=self.windows)
+        r = process.run(process.Command(cmd, SCAN_TIMEOUT_S, env=env))
+        if r.kind != 'exited':
+            raise ScanError(f"cannot list WSL runners: {r.detail}")
         try:
-            r = self.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, env=env, **placement_mod.NO_WINDOW)
             rows = json.loads(r.stdout)
-        except (OSError, subprocess.SubprocessError, ValueError) as e:
+        except ValueError as e:
             raise ScanError(f"cannot list WSL runners: {e!r}") from e
-        if r.returncode != 0 or not isinstance(rows, list):
-            raise ScanError(f"WSL runner find exited {r.returncode}")
+        if r.code != 0 or not isinstance(rows, list):
+            raise ScanError(f"WSL runner find exited {r.code}")
         return [row["run_id"] for row in rows if isinstance(row, dict) and type(row.get("run_id")) in (int, str)]

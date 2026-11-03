@@ -8,13 +8,12 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import tomllib
 from pathlib import Path
 
 from . import config, pane_status_hook, placement, process
 from .launch import _reject_permission_bypass
-from .placement_exec import NO_WINDOW, wsl_control
+from .placement_exec import wsl_control
 
 NATIVE_COMPACT = 350_000
 WSL_TIMEOUT_S = 15
@@ -24,16 +23,16 @@ WSL_PRIVATE = ('umask 077; mkdir -p "$HOME/.drover/panes" && set -C && f="$HOME/
 GATEWAY = "$(ip route show default | awk '{print $3; exit}')"
 
 
-def _write_windows(path, text, run):
+def _write_windows(path, text):
     """Nothing secret is on disk until the ACL holds, and O_EXCL never writes through a file already there."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     try:
-        done = run(['icacls', str(path), '/inheritance:r', '/grant:r', f'{getpass.getuser()}:F'], capture_output=True,
-                   timeout=WSL_TIMEOUT_S, **NO_WINDOW)
-        if done.returncode:
-            raise OSError('icacls refused the private file')
+        grant = ['icacls', str(path), '/inheritance:r', '/grant:r', f'{getpass.getuser()}:F']
+        done = process.run(process.Command(grant, WSL_TIMEOUT_S))
+        if not done.ok:         # a run that did not end is a refusal too, and the file goes
+            raise OSError(done.detail or 'icacls refused the private file')
         with open(path, 'w', encoding='utf-8', newline='\n') as out:
             out.write(text)
     except BaseException:
@@ -42,19 +41,22 @@ def _write_windows(path, text, run):
     return str(path)
 
 
-def _write_wsl(name, text, run):
+def _write_wsl(name, text):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
         raise ValueError('bad private file name')
     argv = wsl_control(['-d', placement.distro(), '--exec', 'bash', '-c', WSL_PRIVATE, 'bash', name])
-    done = run(argv, input=text, capture_output=True, encoding='utf-8', timeout=WSL_TIMEOUT_S, **NO_WINDOW)
-    if done.returncode or not (done.stdout or '').strip():
+    done = process.run(process.Command(argv, WSL_TIMEOUT_S, stdin=text))     # a str goes as UTF-8, as before
+    if not done.ok:
+        raise OSError(done.detail or 'the private file was not written in WSL')
+    written = done.out.decode('utf-8').strip()      # strict, as encoding='utf-8' read it
+    if not written:
         raise OSError('the private file was not written in WSL')
-    return done.stdout.strip()
+    return written
 
 
-def write_private(path, text, *, placement, run=subprocess.run) -> str:
+def write_private(path, text, *, placement) -> str:
     """The path the agent reads. `path` is the file on Windows; for WSL only its name is used, under ~/.drover/panes."""
-    return _write_wsl(Path(path).name, text, run) if placement == 'wsl' else _write_windows(path, text, run)
+    return _write_wsl(Path(path).name, text) if placement == 'wsl' else _write_windows(path, text)
 
 
 def _wsl_read(args):

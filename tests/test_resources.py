@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from drover import resources, disk, config, process
-from tests.fakeci import FakeCommands, process_options
+from tests.fakeci import FakeCommands, answering, process_options, refuse_real_spawns
 
 
 def wsl(**over):
@@ -421,20 +421,27 @@ class RamWhereWorkRuns(unittest.TestCase):
         self.assertEqual(self.check(1.4, None, 'wsl')['verdict'], 'hold')
 
     def test_wsl_ram_read_uses_the_exec_helper_with_a_short_timeout(self):
-        seen = {}
-        def run(argv, **kw):
-            seen.update(kw, argv=argv)
-            return mock.Mock(stdout='MemTotal: 33554432 kB\nMemAvailable: 26214400 kB\n', returncode=0)
-        with mock.patch.object(resources, 'wsl_running', return_value=True):
-            gb = resources.read_wsl_ram_gb('Ubuntu', run=run)
-        self.assertAlmostEqual(gb, 25.0)
-        self.assertLessEqual(seen['timeout'], 10)
-        self.assertIn('/proc/meminfo', seen['argv'])
+        self.assertLessEqual(resources.WSL_READ_TIMEOUT_S, 10)
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeCommands(root)
+            fake.expect(placement.WSL('Ubuntu').command(['cat', '/proc/meminfo']),
+                        output='MemTotal: 33554432 kB\nMemAvailable: 26214400 kB\n',
+                        **process_options(resources.WSL_READ_TIMEOUT_S))
+            with mock.patch.object(resources, 'wsl_running', return_value=True), refuse_real_spawns(), \
+                    fake.patch(process):
+                self.assertAlmostEqual(resources.read_wsl_ram_gb('Ubuntu'), 25.0)
 
     def test_wsl_ram_read_is_unknown_when_down_or_slow(self):
         with mock.patch.object(resources, 'wsl_running', return_value=False):
             self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu'))
-        def slow(argv, **kw):
-            raise __import__('subprocess').TimeoutExpired(argv, 5)
+        def slow(argv, **kw):        # partial output that would parse: a timed-out read is still unknown
+            raise subprocess.TimeoutExpired(argv, 5, output=b'MemAvailable: 26214400 kB\n')
+
+        def missing(argv, **kw):
+            raise FileNotFoundError(2, 'No such file or directory')
         with mock.patch.object(resources, 'wsl_running', return_value=True):
-            self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu', run=slow))
+            for run in (slow, missing):
+                with self.subTest(run.__name__), mock.patch.object(process, 'subprocess', answering(run)):
+                    self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu'))
+            with mock.patch.object(resources.placement, 'WSL', side_effect=OSError('WSL is down for compaction')),                     mock.patch.object(process, 'subprocess', answering(missing)):
+                self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu'))

@@ -24,7 +24,8 @@ from tests.test_dispatcher import Base as DispatcherBase
 
 class Hub(DispatcherBase):
     def wired(self, fake):
-        herdr = Herdr('herdr', run=fake, retry_s=0)
+        fake.serve(self)
+        herdr = Herdr('herdr', retry_s=0)
         panes = PaneService(self.port, herdr, cfg=config.get())
         runtime = DirectorRuntime(self.port, PaneDirectorAdapter(panes))
         observed = Observations(self.conn, self.d.now, lambda backend: {'remaining_pct': 90.0}, lambda backend: True)

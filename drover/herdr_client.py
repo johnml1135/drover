@@ -10,10 +10,10 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import time
+from types import SimpleNamespace
 
-from . import config, placement_exec
+from . import config, process
 
 ALLOWED = {
     'agent': ('get', 'list', 'read', 'prompt', 'send-keys', 'start', 'rename'),
@@ -55,6 +55,11 @@ def _code(value):
     return value if isinstance(value, str) and re.fullmatch(r'[a-z][a-z0-9_]*', value) else 'other'
 
 
+def _text(data):
+    """Herdr's output as text mode read it: UTF-8 with `replace`, newlines made LF."""
+    return data.decode('utf-8', 'replace').replace('\r\n', '\n').replace('\r', '\n')
+
+
 def _parsed(text):
     try:
         return json.loads(text or '')
@@ -63,14 +68,12 @@ def _parsed(text):
 
 
 class Herdr:
-    def __init__(self, binary, socket='', *, enabled=True, timeout_s=10.0, retry_s=60.0, run=subprocess.run,
-                 clock=time.monotonic):
+    def __init__(self, binary, socket='', *, enabled=True, timeout_s=10.0, retry_s=60.0, clock=time.monotonic):
         self.binary = binary
         self.socket = socket
         self.enabled = enabled
         self.timeout_s = timeout_s
         self.retry_s = retry_s
-        self.run = run
         self.clock = clock
         self._retry_at = float('-inf')
 
@@ -113,15 +116,14 @@ class Herdr:
         env = dict(os.environ)
         if self.socket:
             env['HERDR_SOCKET_PATH'] = self.socket
-        try:
-            return self.run([self.binary, *argv], stdin=subprocess.DEVNULL, capture_output=True, encoding='utf-8',
-                            errors='replace', timeout=timeout, env=env, **placement_exec.NO_WINDOW)
-        except subprocess.TimeoutExpired:   # the exception quotes the whole command, so it is not chained
+        done = process.run(process.Command([self.binary, *argv], timeout, env=env))
+        if done.kind == 'timed_out':    # its detail never quotes the command
             if starting:    # the agent may be up: reads stay open, and this must not read as "nothing happened"
-                raise HerdrRefused('start_unconfirmed', f'herdr agent start outlived {timeout}s') from None
-            raise self._down(f'herdr {argv[0]} {argv[1]} timed out after {timeout}s') from None
-        except OSError as exc:
-            raise self._down(f'herdr {argv[0]} {argv[1]} did not start: {exc.strerror or type(exc).__name__}') from None
+                raise HerdrRefused('start_unconfirmed', f'herdr agent start outlived {timeout}s')
+            raise self._down(f'herdr {argv[0]} {argv[1]} timed out after {timeout}s')
+        if done.kind == 'unavailable':  # the detail is the binary, then why it did not start
+            raise self._down(f'herdr {argv[0]} {argv[1]} did not start: {done.detail.removeprefix(self.binary + ": ")}')
+        return SimpleNamespace(returncode=done.code, stdout=_text(done.out), stderr=_text(done.err))
 
     def _raise_any_error(self, argv, done):
         label = f'herdr {argv[0]} {argv[1]}'

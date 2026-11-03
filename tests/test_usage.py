@@ -14,7 +14,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.dispatch_fixture import make_dispatcher
-from drover import config, config_paths, usage
+from tests.fakeci import FakeCommands, answer_spawns, answering, process_options, refuse_real_spawns
+from drover import config, config_paths, process, usage
 from drover.ledger import connect
 
 NOW = datetime(2026, 10, 17, 16, tzinfo=timezone.utc).timestamp()
@@ -48,46 +49,55 @@ class Readings(unittest.TestCase):
         self.assertGreater(usage.next_reset('Oct 17, 1am', 'America/New_York', NOW), NOW)
 
     def test_injectable_command_cache_and_failure_alert(self):
-        calls = []
-        def run(argv, **kw):
-            calls.append((argv, kw))
-            return subprocess.CompletedProcess(argv, 0, json.dumps({'result': TEXT}), '')
-        poller = usage.Poller(self.conn, run=run, now=lambda: NOW)
+        poller = usage.Poller(self.conn, now=lambda: NOW)
         seat = {**self.seat, 'config_dir': str(Path(self.tmp.name) / 'acme-seat')}
-        poller.refresh(seat)
-        poller.refresh(seat)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], ['claude', '-p', '/usage', '--output-format', 'json'])
-        self.assertEqual(calls[0][1]['timeout'], 30)
-        self.assertEqual(calls[0][1]['env']['CLAUDE_CONFIG_DIR'], seat['config_dir'])
+        fake = FakeCommands(Path(self.tmp.name) / 'commands')
+        fake.expect(['claude', '-p', '/usage', '--output-format', 'json'], output=json.dumps({'result': TEXT}),
+                    **process_options(30, env={**os.environ, 'CLAUDE_CONFIG_DIR': seat['config_dir']}))
+        with refuse_real_spawns(), fake.patch(process):
+            poller.refresh(seat)
+            poller.refresh(seat)            # cached: one command
         self.assertEqual(len(usage.readings(self.conn)), 2)
-        bad = usage.Poller(self.conn, run=lambda *a, **k: subprocess.CompletedProcess([], 0, '{"result":"changed"}'),
-                           now=lambda: NOW + 61)
-        bad.refresh(seat)
+        bad = usage.Poller(self.conn, now=lambda: NOW + 61)
+        with patch.object(process, 'subprocess',
+                          answering(lambda *a, **k: subprocess.CompletedProcess([], 0, '{"result":"changed"}'))):
+            bad.refresh(seat)
         self.assertEqual(usage.readings(self.conn)[-1]['raw_text'], 'changed')
         self.assertFalse(usage.readings(self.conn)[-1]['ok'])
         self.assertTrue(self.conn.execute("SELECT 1 FROM task_events WHERE kind='usage.alert'").fetchone())
         self.assertFalse(usage.headroom(self.conn, seat['name'], NOW + 61))
 
+    def test_a_probe_that_did_not_end_is_a_failed_reading_with_no_raw_text(self):
+        partial = json.dumps({'result': TEXT}).encode('utf-8')     # would parse: only an ended run is read
+        for error in (subprocess.TimeoutExpired('claude', 30, output=partial),
+                      FileNotFoundError(2, 'No such file or directory'), None):
+            with self.subTest(error=type(error).__name__):
+                def run(argv, error=error, **kw):
+                    if error is None:       # strict UTF-8, as before: undecodable output fails the reading
+                        return subprocess.CompletedProcess(argv, 0, partial + b'\xff', b'')
+                    raise error
+                answer_spawns(self, run)
+                usage.Poller(self.conn, now=lambda: NOW).refresh(self.seat)
+                row = usage.readings(self.conn)[-1]
+                self.assertEqual(row['raw_text'], '')
+                self.assertFalse(row['ok'])
+
     def test_command_output_decodes_utf8_even_with_a_legacy_default(self):
         encoded = json.dumps({'result': TEXT}, ensure_ascii=False).encode('utf-8')
         for windows in (False, True):
             with self.subTest(windows=windows):
-                def run(argv, **kw):
-                    # Model Windows' legacy default while executing only a canned byte writer.
-                    kw.setdefault('encoding', 'cp1252')
-                    return subprocess.run([sys.executable, '-c',
-                                           'import sys; sys.stdout.buffer.write(bytes.fromhex(sys.argv[1]))',
-                                           encoded.hex()], **kw)
+                # The bytes a child writes; the probe decodes them as UTF-8 whatever the locale's code page.
+                answer_spawns(self, lambda argv, **kw: subprocess.CompletedProcess(argv, 0, encoded, b''))
                 seat = {**self.seat, 'placement': 'wsl' if windows else 'windows'}
-                poller = usage.Poller(self.conn, run=run, now=lambda: NOW, windows=windows)
+                poller = usage.Poller(self.conn, now=lambda: NOW, windows=windows)
                 self.assertEqual((poller.refresh(seat) or {}).get('remaining_pct'), 7)
                 self.assertEqual(usage.readings(self.conn)[-1]['raw_text'], TEXT)
 
     def test_poll_only_active_seats_every_five_minutes(self):
         calls = []
-        poller = usage.Poller(self.conn, run=lambda *a, **k: calls.append(a) or
-                             subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT})), now=lambda: NOW)
+        answer_spawns(self, lambda *a, **k: calls.append(a) or
+                      subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT})))
+        poller = usage.Poller(self.conn, now=lambda: NOW)
         poller.poll([self.seat], {})
         self.assertEqual(calls, [])
         poller.poll([self.seat], {self.seat['name']: 1})
@@ -185,7 +195,7 @@ class DispatcherSeats(unittest.TestCase):
         def run(*a, **k):
             calls.append(clock[0])
             return subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
-        d.usage_poller.run = run
+        answer_spawns(self, run)
         return conn, d, launcher, clock, calls
 
     def test_default_windows_account_is_used_by_probes_and_cross_placement_workers(self):
@@ -199,7 +209,7 @@ class DispatcherSeats(unittest.TestCase):
                 def run(argv, **kw):
                     probes.append(kw['env'].get('CLAUDE_CONFIG_DIR'))
                     return subprocess.CompletedProcess(argv, 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
-                d.usage_poller.run = run
+                answer_spawns(self, run)
                 tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], goal=f'platform: {platform}', scope_files=['fixture-203'])['id']
                 ops.approve(conn, tid)
                 windows_os = SimpleNamespace(name='nt', path=ntpath, environ=os.environ)
@@ -280,7 +290,7 @@ class DispatcherSeats(unittest.TestCase):
             {'name': 'acme-seat', 'backend': 'claude', 'director': True, 'reserve_pct': 25}])
         tid = ops.create_task(conn, 'Build acme-lib', 'acme-lib', read_access=[], scope_files=['fixture-277'])['id']
         ops.approve(conn, tid)
-        d.usage_poller.run = lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT}))
+        answer_spawns(self, lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT})))
         self.assertEqual(d.tick()['launched'], [])
         self.assertEqual(ops.get_task(conn, tid)['status'], 'ready')
         self.assertEqual(launcher.specs, [])
@@ -302,7 +312,7 @@ class DispatcherSeats(unittest.TestCase):
             d = make_dispatcher(DirectPort(conn), launcher=launcher,
                                 resources=lambda **k: {'verdict': 'go', 'slots': 1},
                                 now=lambda: NOW)
-            d.usage_poller.run = lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT.replace('93%', '20%')}))
+            answer_spawns(self, lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({'result': TEXT.replace('93%', '20%')})))
             result = d.tick()
             self.assertEqual(result['launched'], [tid])
             spec = launcher.specs[0]
@@ -360,8 +370,8 @@ class ObservationEdges(unittest.TestCase):
     def test_nonobject_claude_envelopes_record_raw_failure_and_alert(self):
         for raw in ('null', '[]', '"changed"', '42', '{"result": null}'):
             with self.subTest(raw=raw):
-                poller = usage.Poller(self.conn, now=lambda: NOW,
-                                      run=lambda *a, **k: subprocess.CompletedProcess([], 0, raw))
+                answer_spawns(self, lambda *a, **k: subprocess.CompletedProcess([], 0, raw))
+                poller = usage.Poller(self.conn, now=lambda: NOW)
                 self.assertIsNone(poller.refresh(self.seat))
                 row = usage.readings(self.conn)[-1]
                 self.assertEqual(row['raw_text'], raw)
@@ -383,7 +393,8 @@ class ObservationEdges(unittest.TestCase):
                     code = argv[argv.index('-c') + 1]
                     return subprocess.run([sys.executable, '-c', code, *argv[-2:]], **kw)
                 with patch('drover.placement.to_wsl_path', side_effect=lambda p: p) as _placement_patch_2, patch('drover.placement_exec.to_wsl_path', _placement_patch_2), patch('drover.placement_git.to_wsl_path', _placement_patch_2), patch('drover.placement_host.to_wsl_path', _placement_patch_2), patch('drover.placement_paths.to_wsl_path', _placement_patch_2):
-                    poller = usage.Poller(self.conn, run=run, now=lambda: NOW, windows=windows)
+                    answer_spawns(self, run)
+                    poller = usage.Poller(self.conn, now=lambda: NOW, windows=windows)
                     self.assertIsNone(poller.refresh(seat))
                 row = usage.readings(self.conn)[-1]
                 self.assertEqual(row['raw_text'], raw)
@@ -401,7 +412,7 @@ class ObservationEdges(unittest.TestCase):
         def run(argv, **kw):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, json.dumps({'result': TEXT}))
-        d.usage_poller.run = run
+        answer_spawns(self, run)
         seat = {**self.seat, 'placement': 'wsl', 'config_dir': '~/.acme-seat'}
         self.assertIsNotNone(d.usage_poller.refresh(seat))
         argv = calls[0]
@@ -424,7 +435,8 @@ class ObservationEdges(unittest.TestCase):
 
     def test_manual_fallback_survives_a_failed_probe_until_reset(self):
         usage.manual(self.conn, self.seat['name'], 'seven_day', 30, str(NOW + 3600), now=NOW - 400)
-        poller = usage.Poller(self.conn, run=lambda *a, **k: subprocess.CompletedProcess([], 1, ''), now=lambda: NOW)
+        answer_spawns(self, lambda *a, **k: subprocess.CompletedProcess([], 1, ''))
+        poller = usage.Poller(self.conn, now=lambda: NOW)
         self.assertEqual(poller.refresh(self.seat)['remaining_pct'], 70)
         self.assertIsNone(usage.headroom(self.conn, self.seat['name'], NOW + 3601))
 
@@ -475,7 +487,8 @@ class ObservationEdges(unittest.TestCase):
             calls.append((argv, kw))
             return subprocess.CompletedProcess(argv, 0, json.dumps(raw))
         seat = {**self.seat, 'backend': 'codex', 'name': 'acme-codex', 'placement': 'wsl', 'codex_home': '~/.codex'}
-        poller = usage.Poller(self.conn, run=run, now=lambda: NOW, windows=True)
+        answer_spawns(self, run)
+        poller = usage.Poller(self.conn, now=lambda: NOW, windows=True)
         self.assertEqual(poller.refresh(seat)['remaining_pct'], 90)
         self.assertEqual(calls[0][0][-1], '~/.codex')
         self.assertIn('wsl.exe', calls[0][0])

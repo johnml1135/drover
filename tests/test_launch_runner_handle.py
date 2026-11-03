@@ -12,9 +12,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import launch, runner
+from drover import launch, process, runner
 from drover.runner import ScanError
 
+from tests.fakeci import FakeCommands, process_options, refuse_real_spawns
 from tests.test_launch_runner import Base, DONE, TASK, WT, NONCE, spec, assistant, wait_for, FakeRunner
 
 
@@ -103,7 +104,7 @@ class Handle(Base):
 
     def test_run_that_never_leaves_starting_is_stopped_and_errored(self):
         now = [1000.0]
-        self.rl.run = FakeRunner(self.runs, state="starting", rc=1,
+        self.fake = FakeRunner(self.runs, state="starting", rc=1,
                                  info={"runner_pid": None, "error": "runner still starting after 5s"})
         h = launch.RunnerHandle(spec(), self.runs, None, clock=lambda: now[0], poll_s=0.02, start_timeout_s=60, autostart=False)
         self.rl.launch(spec())                      # writes status.json in `starting`
@@ -165,24 +166,23 @@ class Handle(Base):
 class Scanning(Base):
     def test_scan_rejects_non_numeric_ids_and_accepts_mixed_numeric_ids(self):
         rows = [{"run_id": rid} for rid in ("5", 7, "acme-app", "", None, True, 8.5)]
-        self.rl.run = lambda *a, **k: SimpleNamespace(
+        self.fake = lambda *a, **k: SimpleNamespace(
             stdout=json.dumps(rows + [{"run_id": "6"}, {"run_id": 9}]), stderr="", returncode=0)
         with patch.object(runner, "find_runners", return_value=rows):
             self.assertEqual(self.rl.scan(True), {5: "windows", 7: "windows", 6: "wsl", 9: "wsl"})
 
     def test_windows_only_unless_wsl_is_wanted(self):
-        calls = []
-        orig = runner.find_runners
-        runner.find_runners = lambda: [{"pid": 1, "run_id": "5"}]
-        self.addCleanup(setattr, runner, "find_runners", orig)
-        self.rl.run = lambda *a, **k: calls.append(a) or SimpleNamespace(stdout="[]", stderr="", returncode=0)
-        self.assertEqual(self.rl.scan(False), {5: "windows"})
-        self.assertEqual(calls, [])
-        self.rl.run = lambda cmd, **k: calls.append(cmd) or SimpleNamespace(
-            stdout=json.dumps([{"pid": 2, "run_id": "6"}]), stderr="", returncode=0)
-        self.assertEqual(self.rl.scan(True), {5: "windows", 6: "wsl"})
-        self.assertEqual(calls[0][:5], ["wsl.exe", "-d", "Dist", "--cd", "/mnt/r/repos/drover"])
-        self.assertEqual(calls[0][-4:], ["-m", "drover.runner", "find", "--json"])
+        launcher = launch.RunnerLauncher(runs_dir=self.runs, distro="Dist", drover_dir=r"R:\repos\drover", windows=True)
+        cmd, env = placement_mod.ci_runner_command(["find", "--json"], launcher.drover_dir, "Dist", windows=True)
+        self.assertEqual(cmd[:5], ["wsl.exe", "-d", "Dist", "--cd", "/mnt/r/repos/drover"])
+        self.assertEqual(cmd[-4:], ["-m", "drover.runner", "find", "--json"])
+        fake = FakeCommands(Path(self.tmp.name) / "commands")
+        with patch.object(runner, "find_runners", return_value=[{"pid": 1, "run_id": "5"}]), refuse_real_spawns(), \
+                fake.patch(process):
+            self.assertEqual(launcher.scan(False), {5: "windows"})
+            fake.expect(cmd, output=json.dumps([{"pid": 2, "run_id": "6"}]),
+                        **process_options(launch.SCAN_TIMEOUT_S, env=env))
+            self.assertEqual(launcher.scan(True), {5: "windows", 6: "wsl"})
 
     def test_any_wsl_failure_is_a_scan_error(self):
         orig = runner.find_runners
@@ -191,13 +191,13 @@ class Scanning(Base):
         for res in (SimpleNamespace(stdout="", stderr="unknown", returncode=3),
                     SimpleNamespace(stdout="not json", stderr="", returncode=0),
                     SimpleNamespace(stdout='{"a": 1}', stderr="", returncode=0)):
-            self.rl.run = lambda *a, _r=res, **k: _r
+            self.fake = lambda *a, _r=res, **k: _r
             with self.assertRaises(ScanError):
                 self.rl.scan(True)
 
         def boom(*a, **k):
             raise subprocess.TimeoutExpired("wsl", 1)
-        self.rl.run = boom
+        self.fake = boom
         with self.assertRaises(ScanError):
             self.rl.scan(True)
 

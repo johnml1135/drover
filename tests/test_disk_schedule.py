@@ -1,6 +1,6 @@
 """Schedule generation is inspected without invoking any operating-system installer."""
 import copy
-from drover import disk_runtime, disk_schedule, disk_schedule_steps
+from drover import disk_runtime, disk_schedule, disk_schedule_steps, disk_state, process
 import json
 import os
 import subprocess
@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
+from tests.fakeci import FakeCommands, answer_spawns, process_options, refuse_real_spawns
 from tests.test_durable import refused_site
 
 
@@ -63,15 +64,27 @@ class Windows(DiskCase):
         self.assertEqual(self.cfg['disk_cleanup']['cooldown_s'], 7200)
         self.assertIn('wsl_stop_gb', self.cfg['disk_cleanup'])
         self.run_cleanup(apply=False, real=False)
-        commands = []
-
-        def runner(argv, **kwargs):
-            commands.append(list(argv))
-            return subprocess.CompletedProcess(argv, 0, '', '')
+        fake = FakeCommands(self.root / 'commands')
         steps = dict(files={}, argv=[['schtasks.exe', '/Create']])
-        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=steps):
-            disk_schedule.install(self.cfg, apply=True, runner=runner)
-        self.assertEqual(commands, steps['argv'])
+        fake.expect(['schtasks.exe', '/Create'], **process_options(600.0))
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=steps), refuse_real_spawns(), \
+                fake.patch(process):
+            disk_schedule.install(self.cfg, apply=True)
+        self.assertEqual([argv for argv, _ in fake.calls], steps['argv'])
+
+    def test_schedule_install_times_out_at_600_seconds_and_reports_failed(self):
+        """Installation had no timeout; it takes 600 s, and a timed-out step leaves a partial schedule, reported as
+        failed and never recorded as installed."""
+        fake = FakeCommands(self.root / 'commands')
+        steps = dict(files={}, argv=[['schtasks.exe', '/Create', '/TN', 'DroverDiskTracker'],
+                                     ['schtasks.exe', '/Create', '/TN', 'DroverDiskCleanup']])
+        fake.expect(steps['argv'][0], **process_options(600.0))
+        fake.expect(steps['argv'][1], error=subprocess.TimeoutExpired('schtasks.exe', 600.0, b'', b'half'),
+                    **process_options(600.0))
+        with patch.object(disk_schedule_steps, 'schedule_plan', return_value=steps), refuse_real_spawns(), \
+                fake.patch(process), self.assertRaisesRegex(RuntimeError, 'failed: timed out after 600.0 s'):
+            disk_schedule.install(self.cfg)
+        self.assertNotIn('automation', disk_state.read(self.state))
 
     def test_install_dry_run_and_first_live_report_receipt(self):
         from drover import disk_schedule, disk_cleanup, placement
@@ -79,27 +92,28 @@ class Windows(DiskCase):
         def runner(argv, **kwargs):
             commands.append(list(argv))
             return subprocess.CompletedProcess(argv, 0, '', '')
+        answer_spawns(self, runner)
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
             before = set(self.root.rglob('*'))
-            plan = disk_schedule.install(self.cfg, dry_run=True, runner=runner)
+            plan = disk_schedule.install(self.cfg, dry_run=True)
             self.assertTrue(plan['argv'])
             self.assertEqual(commands, [])
             self.assertEqual(set(self.root.rglob('*')), before)
             with self.assertRaises((ValueError, RuntimeError)):
-                disk_schedule.install(self.cfg, apply=True, runner=runner)
+                disk_schedule.install(self.cfg, apply=True)
             self.assertEqual(commands, [])
             candidate = self.temp_root / 'inspect before apply.txt'
             candidate.write_text('keep')
             report = disk_cleanup.run(self.cfg, mode='on-demand', apply=False, runtime=self.runtime())
             self.assertFalse(report['applied'])
             self.assertEqual(candidate.read_text(), 'keep')
-            disk_schedule.install(self.cfg, apply=True, runner=runner)
+            disk_schedule.install(self.cfg, apply=True)
             self.assertEqual(len(commands), 2)
             changed = copy.deepcopy(self.cfg)
             changed['disk_cleanup']['temp_roots'].append(str(self.root / 'new scope'))
             with self.assertRaises((ValueError, RuntimeError)):
-                disk_schedule.install(changed, apply=True, runner=runner)
+                disk_schedule.install(changed, apply=True)
             self.assertEqual(len(commands), 2, 'receipt must match the exact configured scope')
 
     def test_install_seeds_missing_policy_and_persists_automation(self):
@@ -109,14 +123,14 @@ class Windows(DiskCase):
         target.write_text(config.dumps(raw))
         seeded = dict(temp_roots=[str(self.temp_root)], report_roots=[], caches=[
             dict(path=str(self.root / 'detected cache'), placement='windows', max_age_days=30)])
-        runner = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', '')
+        answer_spawns(self, lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                 patch.object(placement, 'detected_cleanup_policy', return_value=seeded):
             before = target.read_bytes()
-            plan = disk_schedule.install(self.cfg, dry_run=True, runner=runner)
+            plan = disk_schedule.install(self.cfg, dry_run=True)
             self.assertEqual(target.read_bytes(), before)
             self.assertEqual(plan['disk_cleanup'], seeded)
-            disk_schedule.install(self.cfg, runner=runner)
+            disk_schedule.install(self.cfg)
         self.assertEqual(config._read(target)['disk_cleanup'], seeded)
         self.assertEqual(disk_state.read(self.state)['automation']['apply'], False)
 
@@ -130,9 +144,10 @@ class Windows(DiskCase):
 
         def never(argv, **kw):
             raise AssertionError(f'the refused write comes first, and nothing spawns: {argv}')
+        answer_spawns(self, never)
 
         with patch.object(placement, 'detected_cleanup_policy', return_value=seeded):
-            steps, offered, elapsed = refused_site(lambda: disk_schedule.install(self.cfg, runner=never), 'config.toml')
+            steps, offered, elapsed = refused_site(lambda: disk_schedule.install(self.cfg), 'config.toml')
         self.assertEqual(steps[-2:], ['fsync', 'chmod'])
         self.assertEqual(offered, config.dumps(dict(raw, disk_cleanup=seeded)).replace('\n', os.linesep).encode())
         self.assertAlmostEqual(elapsed, durable.ORDINARY.seconds, delta=durable.ORDINARY.step_s * 1.5)

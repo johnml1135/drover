@@ -9,7 +9,7 @@ from unittest import mock
 from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_runtime, disk_state, durable, ledger
 from drover import placement
 from drover import placement_git, placement_host, process, resources
-from tests.fakeci import FakeCommands, process_options
+from tests.fakeci import FakeCommands, answering, process_options
 from drover.ledger import disk_notices
 from drover.port import DirectPort
 from tests.disk_fixture import DiskCase
@@ -18,8 +18,9 @@ from tests.test_durable import Clock as RetryClock, Flaky, on_clock
 
 
 class Vhd(unittest.TestCase):
-    def compact(self, fake):
-        return compaction_vhd.compact(VHDX, run=fake, sleep=lambda seconds: None, size=lambda path: 7.0)
+    def compact(self, fake, vhdx=VHDX, sleep=lambda seconds: None, size=lambda path: 7.0):
+        with mock.patch.object(process, 'subprocess', answering(fake)):
+            return compaction_vhd.compact(vhdx, sleep=sleep, size=size)
 
     def vhd_calls(self, fake):
         return [call for call in fake.calls if '-VHD ' in call]
@@ -46,13 +47,13 @@ class Vhd(unittest.TestCase):
 
     def test_the_path_is_quoted(self):
         fake = FakeRun()
-        compaction_vhd.compact("H:\\o'brien\\ext4.vhdx", run=fake, sleep=lambda s: None, size=lambda p: None)
+        self.compact(fake, "H:\\o'brien\\ext4.vhdx", size=lambda p: None)
         self.assertTrue(fake.seen("'H:\\o''brien\\ext4.vhdx'"))
 
     def test_a_held_file_is_waited_for_then_fails_safely(self):
         fake = FakeRun(**{'IO.File': done('', 1)})
         waits = []
-        answer = compaction_vhd.compact(VHDX, run=fake, sleep=waits.append, size=lambda p: None)
+        answer = self.compact(fake, sleep=waits.append, size=lambda p: None)
         self.assertEqual(answer['status'], 'failed')
         self.assertEqual(sum(waits), compaction_vhd.RELEASE_WAIT_S)
         self.assertFalse(fake.seen('Mount-VHD'))

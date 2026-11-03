@@ -1,4 +1,5 @@
-"""A stand-in for the herdr binary, passed to `Herdr` as `run`, so no test reaches a real server.
+"""A stand-in for the herdr binary at `process`, so no test reaches a real server: `serve(case)` makes it the
+`process.subprocess` every spawn reaches for the rest of the test, and any command but `herdr` fails the test.
 
 Pane ids key `agents`, `panes` and `screens`. A screen is text, or a list read one entry at a time with the last one
 repeating, for a screen that changes between reads. All three stay mutable during a test. `calls` holds every argv
@@ -9,11 +10,16 @@ forgets every name, as a restarted server does, and pane ids survive.
 """
 import json
 import subprocess
+from unittest import mock
+
+from drover import process
 
 _NOT_FOUND = 'pane_not_found'
 
 
 class FakeHerdr:
+    DEVNULL, TimeoutExpired = subprocess.DEVNULL, subprocess.TimeoutExpired
+
     def __init__(self, agents=None, screens=None, panes=None):
         self.agents = dict(agents or {})
         self.screens = dict(screens or {})
@@ -30,13 +36,28 @@ class FakeHerdr:
         for agent in self.agents.values():
             agent['name'] = None
 
+    def serve(self, case):
+        """Answer every `process` spawn until `case` ends."""
+        patcher = mock.patch.object(process, 'subprocess', self)
+        patcher.start()
+        case.addCleanup(patcher.stop)
+        return self
+
+    def run(self, argv, **kwargs):
+        """A spawn as `process` makes it, answered by calling this fake, so a subclass's `__call__` sees it too."""
+        return self(argv, **kwargs)
+
     def __call__(self, argv, **kwargs):
+        """Output goes back as the UTF-8 bytes the binary writes."""
+        if argv[0] != 'herdr':
+            raise AssertionError(f'not a herdr command: {argv!r}')
         self.calls.append(list(argv[1:]))
         self.kwargs.append(kwargs)
         if self.hang is True or self.hang and tuple(argv[1:3]) in self.hang:
             raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
         code, out, err = self._answer(list(argv[1:]))
-        return subprocess.CompletedProcess(argv, code, _pipe(out, kwargs), _pipe(err, kwargs))
+        return subprocess.CompletedProcess(argv, code, _bytes(out), _bytes(err))
+
 
     def _answer(self, args):
         pair = tuple(args[:2])
@@ -122,7 +143,5 @@ def _error(code):
     return 1, '', json.dumps({'error': {'code': code, 'message': code.replace('_', ' ')}})
 
 
-def _pipe(text, kwargs):
-    """What the caller reads from the pipe: UTF-8 bytes, decoded as the caller asked. Unasked is strict ASCII."""
-    data = text if isinstance(text, bytes) else text.encode('utf-8')
-    return data.decode(kwargs.get('encoding') or 'ascii', kwargs.get('errors') or 'strict')
+def _bytes(text):
+    return text if isinstance(text, bytes) else text.encode('utf-8')

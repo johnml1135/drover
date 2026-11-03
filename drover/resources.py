@@ -18,7 +18,6 @@ import logging
 import math
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -217,17 +216,16 @@ def parse_meminfo_available_gb(text):
     return None
 
 
-def read_wsl_ram_gb(distro, run=subprocess.run):
+def read_wsl_ram_gb(distro):
     """Available RAM inside WSL (where its workers run), seen from Windows; None when WSL is down or slow.
     Never starts the distro."""
     if not wsl_running(distro):
         return None
-    try:
-        out = run(placement.WSL(distro).command(['cat', '/proc/meminfo']), text=True, capture_output=True,
-                  timeout=WSL_READ_TIMEOUT_S, **placement.NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
+    try:        # WslOffline (an OSError) is raised at build under the compaction hold
+        done = process.run(process.Command(placement.WSL(distro).command(['cat', '/proc/meminfo']), WSL_READ_TIMEOUT_S))
+    except OSError:
         return None
-    return parse_meminfo_available_gb(out.stdout)
+    return parse_meminfo_available_gb(done.stdout) if done.kind == 'exited' else None
 
 
 def seat_sides(config=None):

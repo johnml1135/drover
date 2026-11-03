@@ -80,7 +80,8 @@ class Case(Base):
             {PANE: screen}, {PANE: {'pane_id': PANE, 'terminal_id': 't1', 'focused': False,
                                     'scroll': {'offset_from_bottom': 0}, **(pane or {})}})
         self.fake.processes = running('wsl.exe' if placement == 'wsl' else 'claude.exe')
-        self.herdr = Herdr('herdr', run=self.fake, retry_s=0)
+        self.fake.serve(self)
+        self.herdr = Herdr('herdr', retry_s=0)
         return self.fake
 
     def reset(self):

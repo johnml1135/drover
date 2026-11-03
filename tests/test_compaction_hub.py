@@ -62,16 +62,18 @@ class Polling(Hubbed):
         from hub.services import Services
         from hub.watchdog import Watchdog
         run = mock.Mock(side_effect=AssertionError('run called'))
-        with mock.patch.object(process.subprocess, 'run', run):
-            self.assertIsNone(placement.wsl_free_gb('U', True, ttl=0))
-            self.assertIsNone(placement.wsl_used_gb('U', True, ttl=0))
-            self.assertFalse(placement.wsl_running('U'))
+        patcher = mock.patch.object(process.subprocess, 'run', run)       # every spawn in this test
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertIsNone(placement.wsl_free_gb('U', True, ttl=0))
+        self.assertIsNone(placement.wsl_used_gb('U', True, ttl=0))
+        self.assertFalse(placement.wsl_running('U'))
         self.assertEqual(resources.read_wsl('U', True, True), (False, None))
-        self.assertIsNone(resources.read_wsl_ram_gb('U', run=run))
+        self.assertIsNone(resources.read_wsl_ram_gb('U'))
         self.assertIsNone(placement.wsl_zoneinfo_path('Etc/UTC'))
         cfg = config.get()
         self.assertIsNone(disk._wsl_used({**cfg, 'trackers': [dict(kind='disk', wsl_combined=True), *cfg['trackers']]}))
-        launcher = RunnerLauncher(runs_dir=self.state, run=run, windows=True, distro='U')
+        launcher = RunnerLauncher(runs_dir=self.state, windows=True, distro='U')
         self.assertFalse(launcher.wsl_up())
         with mock.patch.object(runner, 'find_runners', return_value=[]), self.assertRaises(ScanError):
             launcher.scan(True)
@@ -91,7 +93,7 @@ class Polling(Hubbed):
         services.check_wsl()
         self.assertFalse(services.wsl_up())
         self.assertEqual(services.discover_tools(), {})
-        poller = usage.Poller(self.conn, run=run, windows=True, launcher=launcher)
+        poller = usage.Poller(self.conn, windows=True, launcher=launcher)
         seat = dict(name='w', backend='codex', placement='wsl', binary='codex', config_dir='')
         with mock.patch.object(usage, 'headroom', return_value='kept'):
             self.assertEqual(poller.refresh(seat, 0), 'kept')

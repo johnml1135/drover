@@ -5,9 +5,10 @@ import sys
 from unittest import mock
 import unittest
 
-from drover import compaction, compaction_hold, disk, disk_cleanup, disk_state, placement
+from drover import compaction, compaction_hold, compaction_vhd, disk, disk_cleanup, disk_state, placement, process
 from drover import runner
 from tests.compaction_fixture import Job, NOW, VHDX, Vhdx, done
+from tests.fakeci import FakeCommands, process_options, refuse_real_spawns
 
 
 class Order(Job):
@@ -43,7 +44,7 @@ class Order(Job):
             def release(self, record):
                 order.append('release')
                 super().release(record)
-        job = Recording(self.cfg, run=self.fake, clock=self.clock, sleep=self.clock.sleep)
+        job = Recording(self.cfg, clock=self.clock, sleep=self.clock.sleep)
         job.vhdx = lambda: VHDX
         panes = []
         with mock.patch.object(compaction, 'pane_stop', panes.append):
@@ -74,6 +75,25 @@ class Order(Job):
         self.run_job()
         self.assertEqual(self.fake.seen('--shutdown'), ['wsl.exe --shutdown'])
         self.assertEqual(self.fake.seen('--exec true'), ['wsl.exe -d Disk Test Distro --exec true'])
+
+
+class Offline(Job):
+    def test_compaction_shutdown_literal_runs_in_the_offline_phase(self):
+        """compaction.py:138 and :159 and compaction_vhd.py:48 run after the hold goes offline. The hold is checked
+        when a WSL command is built, never when one runs, so these literal argvs still run through process."""
+        record = compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth='b')
+        compaction_hold.save(self.state, {**record, 'phase': 'offline'})
+        with self.assertRaises(OSError):
+            placement.wsl_control(['--shutdown'])
+        fake = FakeCommands(self.root / 'commands')
+        fake.expect(['wsl.exe', '--shutdown'], **process_options(120))
+        fake.expect(['wsl.exe', '-l', '--running', '-q'], **process_options(20))
+        fake.expect(['wsl.exe', '-d', 'Disk Test Distro', '--exec', 'true'], **process_options(120))
+        job = self.runtime()
+        with refuse_real_spawns(), fake.patch(process):
+            job.shutdown()
+            self.assertIsNone(compaction_vhd._running())
+            job.restart()
 
 
 class Kill(Job):
@@ -197,14 +217,14 @@ class Failure(Job):
 
 class Waiting(Job):
     def test_the_job_waits_for_the_hub_within_a_deadline(self):
-        job = compaction.Runtime(self.cfg, run=self.fake, clock=self.clock, sleep=self.clock.sleep)
+        job = compaction.Runtime(self.cfg, clock=self.clock, sleep=self.clock.sleep)
         record = compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth='b')
         answer = job.wait_for_hub(record)
         self.assertFalse(answer['drained'])
         self.assertEqual(self.clock(), NOW + compaction.DRAIN_WAIT_S)
 
     def test_a_drained_answer_from_another_hold_is_ignored(self):
-        job = compaction.Runtime(self.cfg, run=self.fake, clock=self.clock, sleep=self.clock.sleep)
+        job = compaction.Runtime(self.cfg, clock=self.clock, sleep=self.clock.sleep)
         record = compaction_hold.claim(self.state, at=NOW, pid=os.getpid(), birth='b')
         compaction_hold.save_drain(self.state, dict(id='old', stopped=[], killed=[], requeued=[], drained=True))
         self.assertFalse(job.wait_for_hub(record)['drained'])
@@ -284,7 +304,7 @@ class CleanupLock(Job):
             def wait_for_hub(self, record):
                 started.append(record['since'])
                 return dict(stopped=[], killed=[], requeued=[], drained=True)
-        job = Watching(self.cfg, run=self.fake, clock=self.clock, sleep=sleep)
+        job = Watching(self.cfg, clock=self.clock, sleep=sleep)
         job.vhdx = lambda: VHDX
         self.assertEqual(compaction.run(self.cfg, runtime=job)['status'], 'compacted')
         self.assertEqual(started, [NOW + 600])                      # the hub's grace was not spent waiting for the lock

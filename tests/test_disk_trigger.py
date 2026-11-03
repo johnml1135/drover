@@ -6,6 +6,7 @@ import subprocess
 from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
+from tests.fakeci import answer_spawns
 from drover import disk_runtime
 
 
@@ -24,8 +25,8 @@ class Trigger(DiskCase):
         context.start()
         self.addCleanup(context.stop)
         self.approve_report()
-        disk_schedule.install(self.cfg, apply=True,
-                              runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+        answer_spawns(self, lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+        disk_schedule.install(self.cfg, apply=True)
 
     def tick(self, enqueue):
         from drover import disk

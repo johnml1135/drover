@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import durable, launch, runner
+from tests.fakeci import answer_spawns
 from drover.runner import ScanError
 
 DONE = '{"status": "done", "sha": "abc1234", "blocker": null, "note": "ok"}'
@@ -68,8 +69,9 @@ class Base(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.runs = Path(self.tmp.name) / "runs"
         self.fake = FakeRunner(self.runs)
+        answer_spawns(self, lambda cmd, **kw: self.fake(cmd, **kw))     # whatever self.fake is when it runs
         self.rl = launch.RunnerLauncher(runs_dir=self.runs, distro="Dist", drover_dir=r"R:\repos\drover",
-                                        python=r"C:\py\python.exe", run=self.fake, which=lambda n: r"C:\bin\claude.exe", windows=True,
+                                        python=r"C:\py\python.exe", which=lambda n: r"C:\bin\claude.exe", windows=True,
                                         poll_s=0.02)
 
     def start(self, **kw):
@@ -217,7 +219,7 @@ class Commands(Base):
         for i, fake in enumerate((FakeRunner(self.runs, state="starting", rc=1,
                                              info={"error": "runner exited before starting the worker"}),)):
             rid = 40 + i
-            self.rl.run = fake
+            self.fake = fake
             with self.assertRaises(launch.LaunchError) as c:
                 self.rl.launch(spec(run_id=rid))
             self.assertTrue(c.exception.cancel_requested)
@@ -227,7 +229,7 @@ class Commands(Base):
     def test_detach_timeout_before_status_exists_still_cancels_by_nonce(self):
         def boom(*a, **k):
             raise subprocess.TimeoutExpired("x", 1)
-        self.rl.run = boom
+        self.fake = boom
         with self.assertRaises(launch.LaunchError) as c:
             self.rl.launch(spec(run_id=50))
         self.assertTrue(c.exception.cancel_requested)         # the launch nonce is known: stop even before status.json
@@ -243,7 +245,7 @@ class Commands(Base):
             st["runner_pid"] = None
             durable.write_json(self.dir(51) / runner.STATUS_FILE, st, sync=False)
             raise subprocess.TimeoutExpired("x", 1)
-        self.rl.run = slow
+        self.fake = slow
         with self.assertRaises(launch.LaunchError) as c:
             self.rl.launch(spec(run_id=51))
         self.assertTrue(c.exception.cancel_requested)
@@ -251,19 +253,19 @@ class Commands(Base):
 
     def test_missing_python_is_missing(self):
         def boom(*a, **k):
-            raise FileNotFoundError("python")
-        self.rl.run = boom
+            raise FileNotFoundError(2, "No such file or directory")
+        self.fake = boom
         with self.assertRaises(launch.LaunchError) as c:
             self.rl.launch(spec())
         self.assertTrue(c.exception.missing)
 
     def test_runner_that_died_before_starting_is_a_launch_error(self):
-        self.rl.run = FakeRunner(self.runs, state="starting", rc=1, info={"error": "runner exited before starting the worker"})
+        self.fake = FakeRunner(self.runs, state="starting", rc=1, info={"error": "runner exited before starting the worker"})
         with self.assertRaises(launch.LaunchError):
             self.rl.launch(spec())
 
     def test_spawn_failure_in_status_is_a_launch_error_and_missing_when_no_such_file(self):
-        self.rl.run = FakeRunner(self.runs, state="exited", reason="spawn-failed: [Errno 2] No such file or directory: 'claude'")
+        self.fake = FakeRunner(self.runs, state="exited", reason="spawn-failed: [Errno 2] No such file or directory: 'claude'")
         with self.assertRaises(launch.LaunchError) as c:
             self.rl.launch(spec())
         self.assertTrue(c.exception.missing)
@@ -293,7 +295,7 @@ class Commands(Base):
         self.assertTrue(caught.exception.missing)
 
     def test_still_starting_after_detach_wait_still_gets_a_handle(self):
-        self.rl.run = FakeRunner(self.runs, state="starting", rc=1,
+        self.fake = FakeRunner(self.runs, state="starting", rc=1,
                                  info={"runner_pid": None, "error": "runner still starting after 5s"})
         self.assertIsNotNone(self.start())
 

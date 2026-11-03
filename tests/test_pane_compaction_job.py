@@ -48,7 +48,7 @@ class Night(Job):
         self.assertLess(compaction.PANE_STOP_WAIT_S + compaction.DRAIN_WAIT_S + compaction.PANE_RESUME_WAIT_S, compaction_hold.MAX_AGE_S)
 
     def test_the_wait_returns_a_settled_answer_at_once_and_a_last_word_at_the_deadline(self):
-        job = compaction.Runtime(self.cfg, run=self.fake, clock=self.clock, sleep=self.clock.sleep)
+        job = compaction.Runtime(self.cfg, clock=self.clock, sleep=self.clock.sleep)
         record = job.claim(NOW)
         compaction_hold.save_panes(self.state, dict(id=record['id'], phase='stop', settled=False, agents=[]))
         answer = job.wait_for_panes('stop', compaction.PANE_STOP_WAIT_S)
@@ -131,7 +131,7 @@ class Night(Job):
         self.assertEqual(self.waits, [('stop', compaction.PANE_STOP_WAIT_S, 'draining'), ('resume', compaction.PANE_RESUME_WAIT_S, 'resuming')])
 
     def test_a_failed_restart_skips_the_resume_and_flags_every_row(self):
-        self.fake.answers['--exec true'] = compaction.subprocess.SubprocessError('no WSL')
+        self.fake.answers['--exec true'] = OSError('no WSL')
         answer = self.run_job()
         self.assertEqual([phase for phase, *_ in self.waits], ['stop'])
         self.assertEqual(answer['status'], 'failed')

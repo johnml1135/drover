@@ -101,7 +101,8 @@ class PaneCloseBase(Base):
         screens = {p: CLAUDE_READY for p in agents} if screens is None else screens
         fake = Fleet(agents, screens, {p: {'pane_id': p} for p in agents}, info=self.pids, **kwargs)
         self.fake = fake
-        return Herdr('herdr', run=fake, clock=lambda: 0.0)
+        fake.serve(self)
+        return Herdr('herdr', clock=lambda: 0.0)
 
     def tick(self, herdr, minutes, **kwargs):
         kwargs.setdefault('run', self.git)

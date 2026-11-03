@@ -12,12 +12,10 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 
-from . import compaction_hold, compaction_vhd, config, disk, disk_state, placement
-from .placement_exec import NO_WINDOW
+from . import compaction_hold, compaction_vhd, config, disk, disk_state, placement, process
 
 DRAIN_WAIT_S = 7 * 60           # the hub's 5 minute grace, its kill and two dispatcher ticks
 DRAIN_POLL_S = 5
@@ -47,10 +45,10 @@ def pane_resume(runtime):
 
 
 class Runtime:
-    """Everything the job does to the machine, all of it through `run`."""
+    """Everything the job does to the machine, every command through `process`."""
 
-    def __init__(self, cfg, *, run=subprocess.run, clock=time.time, sleep=time.sleep):
-        self.cfg, self.run_command, self.clock, self.sleep = cfg, run, clock, sleep
+    def __init__(self, cfg, *, clock=time.time, sleep=time.sleep):
+        self.cfg, self.clock, self.sleep = cfg, clock, sleep
         self.state_dir = config.state_dir(cfg)
         self.distro = disk.tracker_distro(cfg)
 
@@ -115,15 +113,19 @@ class Runtime:
             self.sleep(DRAIN_POLL_S)
 
     def _wsl(self, argv, timeout):
-        return self.run_command(argv, capture_output=True, text=True, timeout=timeout, **NO_WINDOW)
+        """The ended run; a run that did not end raises `OSError`, as a failed spawn or a timeout raised before."""
+        done = process.run(process.Command(argv, timeout))
+        if done.kind != 'exited':
+            raise OSError(done.detail)
+        return done
 
     def kill(self):
         """Kill every agent or runner process left in WSL, including ones Drover does not know about. Returns PIDs."""
         root = ['-d', self.distro, '-u', 'root', '--']
         done = self._wsl(placement.wsl_control([*root, 'ps', '-eo', 'pid=,args=']), 60)
-        if done.returncode:
-            raise RuntimeError(f'the WSL process list failed (exit {done.returncode})')
-        rows = [line.split(None, 1) for line in str(done.stdout).splitlines() if line.strip()]
+        if done.code:
+            raise RuntimeError(f'the WSL process list failed (exit {done.code})')
+        rows = [line.split(None, 1) for line in done.stdout.splitlines() if line.strip()]
         pids = [int(row[0]) for row in rows if len(row) == 2 and row[0].isdigit() and AGENT_PROCESS.search(row[1])]
         if pids:
             self._wsl(placement.wsl_control([*root, 'kill', '-9', *map(str, pids)]), 60)
@@ -131,16 +133,16 @@ class Runtime:
 
     def trim(self):
         done = self._wsl(placement.trim_argv(), 1800)
-        if done.returncode:
-            raise RuntimeError(f'fstrim failed (exit {done.returncode})')
+        if done.code:
+            raise RuntimeError(f'fstrim failed (exit {done.code})')
 
     def shutdown(self):
-        done = self._wsl(['wsl.exe', '--shutdown'], 120)
-        if done.returncode:
-            raise RuntimeError(f'wsl --shutdown failed (exit {done.returncode})')
+        done = self._wsl(['wsl.exe', '--shutdown'], 120)      # literal: the hold is offline from this step
+        if done.code:
+            raise RuntimeError(f'wsl --shutdown failed (exit {done.code})')
 
     def compact(self, vhdx):
-        answer = compaction_vhd.compact(vhdx, run=self.run_command, sleep=self.sleep,
+        answer = compaction_vhd.compact(vhdx, sleep=self.sleep,
                                         before_mount=lambda: compaction_hold.note_mount(self.state_dir, vhdx))
         if answer['dismounted']:
             compaction_hold.clear_mount(self.state_dir)
@@ -150,15 +152,15 @@ class Runtime:
         """A crash can leave the disk attached, and only an elevated process can detach it."""
         vhdx = compaction_hold.mounted(self.state_dir)
         if vhdx:
-            failed = compaction_vhd.dismount(vhdx, run=self.run_command)
+            failed = compaction_vhd.dismount(vhdx)
             if failed:
                 raise RuntimeError(f'the disk left mounted by an earlier run would not dismount: {failed}')
             compaction_hold.clear_mount(self.state_dir)
 
     def restart(self):
-        done = self._wsl(['wsl.exe', '-d', self.distro, '--exec', 'true'], 120)
-        if done.returncode:
-            raise RuntimeError(f'WSL did not restart (exit {done.returncode})')
+        done = self._wsl(['wsl.exe', '-d', self.distro, '--exec', 'true'], 120)      # literal, as is --shutdown
+        if done.code:
+            raise RuntimeError(f'WSL did not restart (exit {done.code})')
 
 
 def holder_dead(record):
@@ -168,7 +170,7 @@ def holder_dead(record):
         return False
     try:
         seen = placement.cleanup_identity(pid).get('birth')
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         return False
     return seen == 'absent' or bool(seen and record.get('birth') and seen != record['birth'])
 
@@ -225,7 +227,7 @@ def _attempt(result, action):
     """Run a step whose failure must not stop the job."""
     try:
         return action()
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, RuntimeError) as error:
         result['errors'].append(str(error))
 
 

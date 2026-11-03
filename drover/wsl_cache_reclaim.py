@@ -3,10 +3,9 @@
 Called from resources.tick after the verdict is computed, so admission is never told memory it does not yet have.
 It never starts WSL, never touches a process and never raises: every failure is one warning and a skip."""
 import logging
-import subprocess
 import time
 
-from . import placement
+from . import placement, process
 from .placement_host import wsl_running
 
 log = logging.getLogger(__name__)
@@ -33,21 +32,30 @@ def parse_meminfo_cache_gb(text):
     return (kb['Cached'] + kb.get('Buffers', 0) + kb.get('SReclaimable', 0) - kb.get('Shmem', 0)) * KB / GB
 
 
+def _ended(args, timeout):
+    """The ended run of a WSL command. One that did not end raises `OSError`, which `reclaim` logs and skips, as it
+    did a timeout or a failed spawn."""
+    done = process.run(process.Command(placement.wsl_control(args), timeout))
+    if done.kind != 'exited':
+        raise OSError(done.detail)
+    return done
+
+
 def _low_level(ram_t, facts):
     level = facts.get('ram_queue_below_gb')
     return max(ram_t.get('hold_gb', 0.0), level if level is not None else 0.0)
 
 
-def reclaim(config, facts, run=subprocess.run, clock=time.monotonic, running=wsl_running, state=_STATE):
+def reclaim(config, facts, clock=time.monotonic, running=wsl_running, state=_STATE):
     """True when a drop was issued and succeeded. Any problem is logged and skipped."""
     try:
-        return _reclaim(config, facts, run, clock, running, state)
+        return _reclaim(config, facts, clock, running, state)
     except Exception as e:   # includes WslOffline from the compaction hold
         log.warning('WSL cache reclaim skipped: %s', e)
         return False
 
 
-def _reclaim(config, facts, run, clock, running, state):
+def _reclaim(config, facts, clock, running, state):
     trackers = config.get('trackers', [])
     ram_t = next((t for t in trackers if t.get('kind') == 'ram' and t.get('enabled', True)), None)
     if ram_t is None or not ram_t.get('wsl_cache_reclaim', True) or facts.get('platform') != 'windows':
@@ -62,16 +70,13 @@ def _reclaim(config, facts, run, clock, running, state):
     distro = placement.distro((wsl_t or {}).get('distro') or None)
     if not running(distro):
         return False
-    out = run(placement.wsl_control(['-d', distro, '--exec', 'cat', '/proc/meminfo']), text=True,
-              capture_output=True, timeout=READ_TIMEOUT_S, **placement.NO_WINDOW)
-    cache = parse_meminfo_cache_gb(out.stdout)
+    cache = parse_meminfo_cache_gb(_ended(['-d', distro, '--exec', 'cat', '/proc/meminfo'], READ_TIMEOUT_S).stdout)
     if cache is None or cache < ram_t.get('wsl_cache_min_gb', 8.0):
         return False
     state['last'] = clock()   # before the attempt, so a failure or timeout is not retried inside the interval
-    r = run(placement.wsl_control(['-d', distro, '-u', 'root', '--exec', 'sh', '-c', DROP_SCRIPT]),
-            capture_output=True, timeout=DROP_TIMEOUT_S, **placement.NO_WINDOW)
-    if r.returncode != 0:
-        log.warning('WSL cache drop failed with exit %s', r.returncode)
+    r = _ended(['-d', distro, '-u', 'root', '--exec', 'sh', '-c', DROP_SCRIPT], DROP_TIMEOUT_S)
+    if r.code != 0:
+        log.warning('WSL cache drop failed with exit %s', r.code)
         return False
     log.info('dropped %.1f GB of WSL page cache; Windows had %.1f GB available', cache, gb)
     return True

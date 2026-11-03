@@ -1,4 +1,4 @@
-"""The overnight compaction's fake runner, clock and job."""
+"""The overnight compaction's fake commands, clock and job. Every command reaches the fake at `process`."""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,6 +6,7 @@ from unittest import mock
 
 from drover import compaction, compaction_hold, disk, disk_state
 from tests.disk_fixture import DiskCase
+from tests.fakeci import answer_spawns
 
 
 NOW = 2_000_000_000.0
@@ -82,9 +83,10 @@ class Job(DiskCase):
         patcher = mock.patch.object(compaction_hold, 'clock', self.clock)
         patcher.start()
         self.addCleanup(patcher.stop)
+        answer_spawns(self, lambda argv, **options: self.fake(argv, **options))   # whatever self.fake is then
 
     def runtime(self, cls=compaction.Runtime):
-        job = cls(self.cfg, run=self.fake, clock=self.clock, sleep=self.clock.sleep)
+        job = cls(self.cfg, clock=self.clock, sleep=self.clock.sleep)
         job.vhdx = lambda: VHDX
         job.wait_for_hub = lambda record: dict(self.ack)
         return job

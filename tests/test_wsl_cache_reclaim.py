@@ -1,9 +1,11 @@
 import subprocess
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from drover import config_defaults, resources, wsl_cache_reclaim as rc
+from drover import config_defaults, process, resources, wsl_cache_reclaim as rc
+from tests.fakeci import FakeCommands, answering, process_options, refuse_real_spawns
 
 KB_PER_GB = 1024 * 1024
 
@@ -30,10 +32,15 @@ class Fakes:
     def drops(self):
         return [c for c, _ in self.calls if 'drop_caches' in ' '.join(c)]
 
+    def spawns(self):
+        """`process.subprocess` answering through `self.run`, whatever it is when the command runs."""
+        return mock.patch.object(process, 'subprocess', answering(lambda cmd, **kw: self.run(cmd, **kw)))
+
     def go(self, ram=2.8, running=True, cfg=None, platform='windows', queue_below=6.5):
         facts = {'platform': platform, 'ram_available_gb': ram, 'ram_queue_below_gb': queue_below}
-        return rc.reclaim(cfg or globals()['cfg'](), facts, run=self.run,
-                          clock=lambda: self.now, running=lambda d: running, state=self.state)
+        with self.spawns():
+            return rc.reclaim(cfg or globals()['cfg'](), facts, clock=lambda: self.now, running=lambda d: running,
+                              state=self.state)
 
 
 def cfg(**over):
@@ -49,16 +56,17 @@ class Reclaim(unittest.TestCase):
         self.assertEqual(len(f.drops()), 1)
 
     def test_exact_wsl_arguments(self):
-        f = Fakes()
-        f.go()
-        cmd = f.drops()[0]
-        self.assertEqual(cmd[0], 'wsl.exe')
-        self.assertEqual(cmd[1:6], ['-d', 'Ubuntu', '-u', 'root', '--exec'])
-        self.assertEqual(cmd[6:], ['sh', '-c', 'sync; echo 1 > /proc/sys/vm/drop_caches'])
-        self.assertNotIn('3', ' '.join(cmd).replace('drop_caches', ''))
-        self.assertNotIn('--shutdown', cmd)
-        for _, kw in f.calls:
-            self.assertLessEqual(kw['timeout'], 15)
+        drop = ['wsl.exe', '-d', 'Ubuntu', '-u', 'root', '--exec', 'sh', '-c', 'sync; echo 1 > /proc/sys/vm/drop_caches']
+        self.assertNotIn('3', ' '.join(drop).replace('drop_caches', ''))
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeCommands(root)
+            fake.expect(['wsl.exe', '-d', 'Ubuntu', '--exec', 'cat', '/proc/meminfo'], output=meminfo(),
+                        **process_options(rc.READ_TIMEOUT_S))
+            fake.expect(drop, **process_options(rc.DROP_TIMEOUT_S))
+            with refuse_real_spawns(), fake.patch(process):
+                self.assertTrue(rc.reclaim(cfg(), {'platform': 'windows', 'ram_available_gb': 2.8},
+                                           clock=lambda: 0, running=lambda d: True, state={}))
+        self.assertLessEqual(max(rc.READ_TIMEOUT_S, rc.DROP_TIMEOUT_S), 15)
 
     def test_not_when_ram_is_fine(self):
         f = Fakes()
@@ -72,7 +80,8 @@ class Reclaim(unittest.TestCase):
     def test_hold_level_without_queue_fact(self):
         f = Fakes()
         facts = {'platform': 'windows', 'ram_available_gb': 3.0}
-        self.assertTrue(rc.reclaim(cfg(), facts, run=f.run, clock=lambda: 0, running=lambda d: True, state={}))
+        with f.spawns():
+            self.assertTrue(rc.reclaim(cfg(), facts, clock=lambda: 0, running=lambda d: True, state={}))
 
     def test_not_when_cache_under_minimum(self):
         f = Fakes(meminfo(cached_gb=10, shmem_gb=3))   # 7 GB reclaimable

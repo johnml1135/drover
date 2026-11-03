@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from drover import pane_files, pane_launch, process
-from tests.fakeci import FakeCommands, process_options
+from tests.fakeci import FakeCommands, answering, process_options, refuse_real_spawns
 from tests.pane_launch_support import SECRET, SEATS
 
 CONFIG = '[projects."/mnt/h/repos/drover"]\ntrust_level = "trusted"\n[projects."/mnt/h/repos/other"]\ntrust_level = "untrusted"\n'
@@ -30,7 +30,8 @@ class WindowsFile(unittest.TestCase):
         return subprocess.CompletedProcess(argv, 0, '', '')
 
     def write(self, run):
-        return pane_files.write_private(self.path, SECRET, placement='windows', run=run)
+        with mock.patch.object(process, 'subprocess', answering(run)):
+            return pane_files.write_private(self.path, SECRET, placement='windows')
 
     def test_windows_credential_file_has_a_private_acl(self):
         with mock.patch('getpass.getuser', return_value='me'):
@@ -67,14 +68,21 @@ class WslFile(unittest.TestCase):
             self.calls.append((argv, kw))
             return subprocess.CompletedProcess(argv, code, out, '')
         with mock.patch.object(pane_files, 'wsl_control', lambda args: ['wsl.exe', *args]), \
-                mock.patch.object(pane_files.placement, 'distro', lambda: 'Ubuntu'):
-            return pane_files.write_private(Path('D:/state') / name, SECRET, placement='wsl', run=run)
+                mock.patch.object(pane_files.placement, 'distro', lambda: 'Ubuntu'),                 mock.patch.object(process, 'subprocess', answering(run)):
+            return pane_files.write_private(Path('D:/state') / name, SECRET, placement='wsl')
 
     def test_wsl_credential_file_is_private_on_ext4(self):
-        self.assertEqual(self.write(), '/home/x/.drover/panes/run-7.credential')
-        argv, kw = self.calls[0]
-        self.assertEqual(kw['input'], SECRET)
-        self.assertEqual(argv[:5], ['wsl.exe', '-d', 'Ubuntu', '--exec', 'bash'])
+        """The secret goes on stdin, as UTF-8, through process."""
+        argv = ['wsl.exe', '-d', 'Ubuntu', '--exec', 'bash', '-c', pane_files.WSL_PRIVATE, 'bash', 'run-7.credential']
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeCommands(root)
+            fake.expect(argv, output='/home/x/.drover/panes/run-7.credential\n',
+                        **process_options(pane_files.WSL_TIMEOUT_S, input=SECRET.encode('utf-8')))
+            with mock.patch.object(pane_files, 'wsl_control', lambda args: ['wsl.exe', *args]), \
+                    mock.patch.object(pane_files.placement, 'distro', lambda: 'Ubuntu'), refuse_real_spawns(), \
+                    fake.patch(process):
+                self.assertEqual(pane_files.write_private(Path('D:/state') / 'run-7.credential', SECRET, placement='wsl'),
+                                 '/home/x/.drover/panes/run-7.credential')
         script = argv[6]
         self.assertTrue(script.startswith('umask 077;'), script)
         self.assertIn('set -C', script)        # noclobber: never through an existing file

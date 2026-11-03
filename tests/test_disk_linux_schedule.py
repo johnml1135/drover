@@ -5,6 +5,7 @@ import subprocess
 from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
+from tests.fakeci import answer_spawns
 
 
 class Linux(DiskCase):
@@ -15,6 +16,7 @@ class Linux(DiskCase):
         def runner(argv, **kwargs):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, '', '')
+        answer_spawns(self, runner)
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(xdg), 'WSL_INTEROP': '', 'WSL_DISTRO_NAME': ''}), \
                 patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1):
             plan = disk_schedule_steps.schedule_plan(self.cfg)
@@ -31,10 +33,10 @@ class Linux(DiskCase):
             self.assertTrue(any('03:00' in value for value in timers))
             self.assertIn(['systemctl', '--user', 'daemon-reload'], plan['argv'])
             self.assertTrue(any(argv[:4] == ['systemctl', '--user', 'enable', '--now'] for argv in plan['argv']))
-            disk_schedule.install(self.cfg, dry_run=True, runner=runner)
+            disk_schedule.install(self.cfg, dry_run=True)
             self.assertFalse(xdg.exists())
             self.assertEqual(calls, [])
-            disk_schedule.install(self.cfg, runner=runner)
+            disk_schedule.install(self.cfg)
             self.assertEqual(calls, plan['argv'])
             for path, body in plan['files'].items():
                 self.assertEqual(__import__('pathlib').Path(path).read_text(), body)
@@ -52,8 +54,8 @@ class Linux(DiskCase):
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
             report = disk_cleanup.run(self.cfg, runtime=CleanupRuntime(rt.now, rt.read, call, rt.toast))
             self.assertFalse(report['errors'])
-            disk_schedule.install(self.cfg, apply=True,
-                runner=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+            answer_spawns(self, lambda argv, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+            disk_schedule.install(self.cfg, apply=True)
 
     def test_wsl_install_requires_native_windows_reader(self):
         from drover import placement

@@ -1,10 +1,9 @@
 """Generate the per-platform schedule files (Task Scheduler XML or systemd units); the platform fork lives here, not in the standalone disk modules."""
 import os
 from pathlib import Path
-import subprocess
 import sys
 
-from . import config, placement
+from . import config, placement, process
 
 
 def schedule_plan(cfg: dict, *, apply: bool = False) -> dict:
@@ -61,7 +60,7 @@ def schedule_plan(cfg: dict, *, apply: bool = False) -> dict:
                 node(settings, key, value)
             action = node(node(task, 'Actions', Context='CurrentUser'), 'Exec')
             node(action, 'Command', argv[0])
-            node(action, 'Arguments', subprocess.list2cmdline(argv[1:]))
+            node(action, 'Arguments', process.list2cmdline(argv[1:]))
             node(action, 'WorkingDirectory', root)
             path = str(Path(state) / 'disk' / (name + '.xml'))
             files[path] = ET.tostring(task, encoding='unicode', xml_declaration=True)

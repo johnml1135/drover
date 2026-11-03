@@ -4,6 +4,7 @@ import time
 from drover import dispatcher, launch, repos
 from drover.ledger import ops
 
+from tests.fakeci import answer_spawns
 from tests.test_dispatcher import Base, DONE, FakeLauncher, SPEC, res
 
 
@@ -47,9 +48,10 @@ class LaunchErrors(Base):
 
     def test_real_launcher_wraps_popen_errors(self):
         def boom(*a, **k):
-            raise FileNotFoundError("nope")
+            raise FileNotFoundError(2, "No such file or directory")
+        answer_spawns(self, boom)
         with self.assertRaises(launch.LaunchError) as c:
-            launch.RunnerLauncher(runs_dir=self.tmp.name, run=boom).launch(SPEC)
+            launch.RunnerLauncher(runs_dir=self.tmp.name).launch(SPEC)
         self.assertTrue(c.exception.missing)
 
 

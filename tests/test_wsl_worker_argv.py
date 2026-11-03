@@ -15,7 +15,7 @@ class WslWorkerCommand(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.launcher = launch.RunnerLauncher(runs_dir=self.root, run=lambda *a, **k: None, windows=True, distro='U')
+        self.launcher = launch.RunnerLauncher(runs_dir=self.root, windows=True, distro='U')
         self.spec = dict(run_id='r1', nonce='a' * 32, placement='wsl', cwd='/home/x/work', backend='claude')
 
     def test_a_long_prompt_stays_off_the_wsl_command_line(self):

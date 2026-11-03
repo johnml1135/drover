@@ -5,14 +5,13 @@ import json
 import math
 import os
 import re
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import compaction_hold
+from . import compaction_hold, process
 from . import config
 from .ledger import ops, tx
 
@@ -243,10 +242,23 @@ def order(conn, seats=None, now=None, director=False, seat_load=None, threshold=
     return sorted(result, key=lambda r: (not r['eligible'], not r['urgent'], r['priority'], r['seat']))
 
 
+def _ended(argv, env=None):
+    """The probe's ended run; one that did not end raises `OSError`, a failed probe, as its exception was before."""
+    done = process.run(process.Command(argv, 30, env=env))
+    if done.kind != 'exited':
+        raise OSError(done.detail)
+    return done
+
+
+def _text(data):
+    """A probe's output as encoding='utf-8' read it: strict, newlines made LF."""
+    return data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+
+
 class Poller:
-    def __init__(self, conn, run=subprocess.run, now=time.time, windows=None, launcher=None):
+    def __init__(self, conn, now=time.time, windows=None, launcher=None):
         from .launch import RunnerLauncher
-        self.conn, self.run, self.now = conn, run, now
+        self.conn, self.now = conn, now
         self.windows = os.name == 'nt' if windows is None else windows
         launcher = launcher or RunnerLauncher(windows=self.windows)
         self.wsl_exe = getattr(launcher, 'wsl_exe', lambda argv: argv)
@@ -278,9 +290,9 @@ class Poller:
                             "sys.exit(subprocess.call(json.loads(sys.argv[2])))")
                     argv = placement.WSL(placement.distro(self.distro)).command(['python3', '-c', code,
                             json.dumps(account), json.dumps(argv)])
-                proc = self.run(argv, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30, **placement.NO_WINDOW)
-                raw = proc.stdout or ''
-                if proc.returncode:
+                proc = _ended(argv, env)
+                raw = _text(proc.out)
+                if proc.code:
                     raise ValueError('usage command failed')
                 payload = json.loads(raw)
                 if not isinstance(payload, dict) or not isinstance(payload.get('result'), str):
@@ -296,10 +308,10 @@ class Poller:
                     # Expand ~ inside the effective distro, alongside the rollout reader.
                     argv = placement.WSL(placement.distro(self.distro)).command(['python3', '-c', code,
                             placement.to_wsl_path(str(Path(__file__).resolve().parents[1])), placement.to_wsl_path(home)])
-                    proc = self.run(argv, capture_output=True, text=True, encoding='utf-8', timeout=30)
-                    if proc.returncode:
+                    proc = _ended(argv)
+                    if proc.code:
                         raise ValueError('rollout reader failed')
-                    raw = json.loads(proc.stdout)
+                    raw = json.loads(_text(proc.out))
                 else:
                     raw = read_codex_raw(config.native(home))
                 rows = parse_codex(raw)
@@ -310,7 +322,7 @@ class Poller:
                 rows += [{'window': w, 'used_pct': None, 'resets_at': None}
                          for w in HOURS if w not in present and w not in manual_windows]
             store(self.conn, name, rows, raw, now, ok=True)
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        except (OSError, ValueError, KeyError, TypeError):     # UnicodeDecodeError is a ValueError
             store(self.conn, name, [], raw, now, ok=False)
         return headroom(self.conn, name, now)
 
