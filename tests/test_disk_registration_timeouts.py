@@ -45,6 +45,26 @@ class FolderTimeouts(unittest.TestCase):
         self.assertEqual((rows[0]['action'], rows[0]['reason_code']), ('keep', 'lost_registration_failed'))
 
 
+class UnknownCandidate(unittest.TestCase):
+    """An unknown on the preferred branch name is not "no such branch": the next spelling must not be tried."""
+    def git(self, repo, *args, timeout):
+        self.asked.append(args[-1])
+        if args[-1] == 'refs/heads/hx/T1':
+            raise TIMEOUT
+        return subprocess.CompletedProcess(args, 0, 'c' * 40 + '\n', '')
+
+    def test_a_timed_out_preferred_name_raises_and_the_row_is_unproven(self):
+        from tests.fakeci import git_answers
+        self.asked = []
+        with git_answers(self.git), self.assertRaisesRegex(ValueError, '^git rev-parse failed: timeout$'):
+            disk_registrations.candidate('/repo', 'T1', 'hx/T1')
+        self.assertEqual(self.asked, ['refs/heads/hx/T1'])
+        with git_answers(self.git):
+            [row] = disk_registrations.report(request(), MACHINE, [], {'/nowhere/hx/T1': (Path('/nowhere/admin-T1'), 'hx/T1')}, None)
+        self.assertEqual((row['action'], row['reason_code'], row['branch']), ('keep', 'lost_registration_unproven', None))
+        self.assertEqual(row['detail'], 'could not be matched: git rev-parse failed: timeout')
+
+
 class ReregisterFailure(unittest.TestCase):
     """reregister's own handler: remove the temporary worktree, and always journal `failed`."""
     def run_reregister(self, removal):
