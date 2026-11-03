@@ -137,6 +137,39 @@ class IgnoreTopUp(unittest.TestCase):
             self.assertIn('.gitignore', record)
             self.assertNotIn('manual-claude', record)
 
+    def old_repo(self, d, ignore_bytes):
+        state = decisions.initialize(d)
+        (state / '.gitignore').write_bytes(ignore_bytes)
+        decisions._git(state, 'add', '--all', '--', '.')
+        decisions._git(state, 'commit', '-m', 'A repo from before the top-up')
+        return state
+
+    def test_a_non_utf8_ignore_file_keeps_its_bytes_and_gains_the_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = b'# caf\xe9\n' + decisions.IGNORE.replace('*.tmp\n', '').encode()
+            state = self.old_repo(d, old)
+            decisions.sync(state)
+            self.assertEqual((state / '.gitignore').read_bytes().replace(b'\r\n', b'\n'), old + b'*.tmp\n')
+            decisions.record(state, 'Worker cap', 'Keep memory free', 'cap = 2', 'owner')
+            self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), '3')
+            self.assertEqual(decisions._git(state, 'status', '--porcelain'), '')
+
+    def test_an_unreadable_ignore_file_is_a_warning_and_the_record_still_commits(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = self.old_repo(d, decisions.IGNORE.replace('*.tmp\n', '').encode())
+            real = Path.read_text
+
+            def refused(path, *args, **kwargs):
+                if path.name == '.gitignore':
+                    raise PermissionError(13, 'refused', str(path))
+                return real(path, *args, **kwargs)
+
+            with patch.object(Path, 'read_text', refused), self.assertLogs('drover.decisions', 'WARNING') as logs:
+                decisions.record(state, 'Worker cap', 'Keep memory free', 'cap = 2', 'owner')
+            self.assertIn(str(state / '.gitignore'), '\n'.join(logs.output))
+            self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), '2')
+            self.assertNotIn('*.tmp', (state / '.gitignore').read_text().splitlines())
+
 
 class HistoryIntegration(unittest.TestCase):
     def test_effective_config_disables_push_and_owner_sync_records_a_reason(self):

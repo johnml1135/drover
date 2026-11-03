@@ -1,6 +1,7 @@
 """Private, versioned configuration decisions and best-effort remote sync."""
 import datetime
 import json
+import logging
 import re
 import subprocess
 import tomllib
@@ -29,14 +30,14 @@ def _git(state, *args):
     return result.stdout.strip()
 
 
-def _top_up_ignore(state):
+def _top_up_ignore(state, errors='strict'):
     """Add what `IGNORE` lacks and keep every other line. A file that lacks nothing is not written, so it stays clean."""
     ignore = state / '.gitignore'
-    old = ignore.read_text(encoding='utf-8') if ignore.exists() else ''
+    old = ignore.read_text(encoding='utf-8', errors=errors) if ignore.exists() else ''
     missing = [line for line in IGNORE.splitlines() if line not in old.splitlines()]
     if missing:
         ignore.write_text(old + ('\n' if old and not old.endswith('\n') else '') + '\n'.join(missing) + '\n',
-                          encoding='utf-8')
+                          encoding='utf-8', errors=errors)
 
 
 def initialize(state_dir):
@@ -73,7 +74,10 @@ def sync(state_dir, settings=None, reason=None, *, write_record=True):
 def _sync(state, settings=None, reason=None, *, write_record=True):
     if not (state / '.git').exists():
         raise DecisionError('state directory is not a git repo; run drover init to enable decision history')
-    _top_up_ignore(state)       # only the wizard initializes, so a repo from before a new line gets it here
+    try:        # only the wizard initializes, so a repo from before a new line gets it here; git reads what it can
+        _top_up_ignore(state, errors='surrogateescape')
+    except OSError as exc:
+        logging.getLogger(__name__).warning('%s was not topped up: %s', state / '.gitignore', exc)
     if write_record:
         pending = _git(state, 'status', '--porcelain')
         if pending:
@@ -141,7 +145,6 @@ def _record(state, title, reason, changes, author, *, sync_settings=None, commit
     if commit and (state / '.git').exists():
         result = _sync(state, settings=sync_settings, write_record=False)
         if result.get('warning'):
-            import logging
             logging.getLogger(__name__).warning(result['warning'])
     return path
 
