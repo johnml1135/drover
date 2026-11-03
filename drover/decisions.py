@@ -9,7 +9,7 @@ from pathlib import Path
 from .lock import FileLock
 from .placement import NO_WINDOW
 
-IGNORE = 'ledger.db*\nruns/\nrescue/\nlogs/\nhub-token\n*.log\n.decisions.lock\n'
+IGNORE = 'ledger.db*\nruns/\nrescue/\nlogs/\nhub-token\n*.log\n*.tmp\n.decisions.lock\n'
 AUTHORS = ('owner', 'tuner', 'wizard', 'dispatcher')
 
 
@@ -29,16 +29,21 @@ def _git(state, *args):
     return result.stdout.strip()
 
 
-def initialize(state_dir):
-    """Initialize only this directory, excluding runtime data from its private git repo."""
-    state = Path(state_dir)
-    state.mkdir(parents=True, exist_ok=True)
+def _top_up_ignore(state):
+    """Add what `IGNORE` lacks and keep every other line. A file that lacks nothing is not written, so it stays clean."""
     ignore = state / '.gitignore'
     old = ignore.read_text(encoding='utf-8') if ignore.exists() else ''
     missing = [line for line in IGNORE.splitlines() if line not in old.splitlines()]
     if missing:
         ignore.write_text(old + ('\n' if old and not old.endswith('\n') else '') + '\n'.join(missing) + '\n',
                           encoding='utf-8')
+
+
+def initialize(state_dir):
+    """Initialize only this directory, excluding runtime data from its private git repo."""
+    state = Path(state_dir)
+    state.mkdir(parents=True, exist_ok=True)
+    _top_up_ignore(state)
     if not (state / '.git').exists():
         _git(state, 'init')
     return state
@@ -68,6 +73,7 @@ def sync(state_dir, settings=None, reason=None, *, write_record=True):
 def _sync(state, settings=None, reason=None, *, write_record=True):
     if not (state / '.git').exists():
         raise DecisionError('state directory is not a git repo; run drover init to enable decision history')
+    _top_up_ignore(state)       # only the wizard initializes, so a repo from before a new line gets it here
     if write_record:
         pending = _git(state, 'status', '--porcelain')
         if pending:

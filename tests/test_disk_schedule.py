@@ -127,8 +127,12 @@ class Windows(DiskCase):
         target.write_text(config.dumps(raw))
         before = target.read_bytes()
         seeded = dict(temp_roots=[str(self.temp_root)], report_roots=[], caches=[])
+
+        def never(argv, **kw):
+            raise AssertionError(f'the refused write comes first, and nothing spawns: {argv}')
+
         with patch.object(placement, 'detected_cleanup_policy', return_value=seeded):
-            steps, offered, elapsed = refused_site(lambda: disk_schedule.install(self.cfg, runner=None), 'config.toml')
+            steps, offered, elapsed = refused_site(lambda: disk_schedule.install(self.cfg, runner=never), 'config.toml')
         self.assertEqual(steps[-2:], ['fsync', 'chmod'])
         self.assertEqual(offered, config.dumps(dict(raw, disk_cleanup=seeded)).replace('\n', os.linesep).encode())
         self.assertAlmostEqual(elapsed, durable.ORDINARY.seconds, delta=durable.ORDINARY.step_s * 1.5)

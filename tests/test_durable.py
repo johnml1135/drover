@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from drover.durable import (NO_WAIT, ORDINARY, RELEASE, ROUTINE, TERMINAL, Wait, move, publish, remove, rmdir, write_bytes,
+from drover.durable import (NO_WAIT, ORDINARY, RELEASE, ROUTINE, TERMINAL, Wait, move, remove, rmdir, write_bytes,
                             write_json, write_text)
 from drover import disk_registrations, durable, launch_handle, placement, runner_supervise
 from tests.disk_trace_scene import quick_state
@@ -167,10 +167,9 @@ class Retry(Base):
 
     def test_a_write_that_lands_reads_no_clock(self):
         clock = MagicMock()
-        spare, moved = self.spare_temp(), self.dir / "moved"
+        moved = self.dir / "moved"
         with patch.object(durable, "time", clock):
             write_json(self.target, {}, sync=False)
-            publish(spare, self.target)
             move(self.target, moved)
             remove(moved)
             remove(moved)
@@ -370,29 +369,7 @@ class RunFiles(Base):
         self.assertIn("NaN", self.target.read_text())
 
 
-class Publish(Base):
-    def test_publish_removes_temp_on_failure_and_syncs_directory_when_asked(self):
-        spare = self.spare_temp()
-        with patch.object(durable.os, "replace", Flaky(blocked=lambda: True)), self.assertRaises(PermissionError):
-            publish(spare, self.target, wait=NO_WAIT)
-        self.assertEqual((spare.exists(), self.target.exists()), (False, False))
-
-        spare, calls = self.spare_temp(), []
-        fake_os = dict(open=lambda path, flags: calls.append(("open", path)) or 7, close=lambda fd: calls.append(("close", fd)),
-                       fsync=lambda fd: calls.append(("fsync", fd)))
-        patches = [patch.object(durable.os, name, value) for name, value in fake_os.items()]
-        with patch.object(durable, "POSIX", True), patches[0], patches[1], patches[2]:
-            publish(spare, self.target, sync_dir=True)
-        self.assertEqual(calls, [("open", self.dir), ("fsync", 7), ("close", 7)])
-        self.assertEqual(self.target.read_text(), "new")
-
-    def test_publish_makes_no_directory_sync_unless_asked_or_on_windows(self):
-        with patch.object(durable.os, "fsync") as fsync, patch.object(durable, "POSIX", True):
-            publish(self.spare_temp(), self.target)
-        with patch.object(durable.os, "fsync") as windows, patch.object(durable, "POSIX", False):
-            publish(self.spare_temp(), self.target, sync_dir=True)
-        self.assertEqual((fsync.call_count, windows.call_count), (0, 0))
-
+class Move(Base):
     def test_move_does_no_temp_handling_and_no_wait_is_one_attempt(self):
         source = self.spare_temp()
         flaky = Flaky(blocked=lambda: True)

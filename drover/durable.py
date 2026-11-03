@@ -56,10 +56,10 @@ def _land(path, content, mode, sync, wait, private, **text):
                 os.fsync(stream.fileno())
         if POSIX and not private:
             os.chmod(temporary, 0o666 & ~_UMASK)    # mkstemp's 0600 is the temp's, not the published file's
+        _outlast(lambda: os.replace(temporary, path), wait)
     except BaseException:
         _discard(temporary)
         raise
-    publish(temporary, path, wait=wait)
 
 
 def write_bytes(path, data: bytes, *, sync: bool, wait: Wait = ORDINARY, private: bool = False) -> None:
@@ -73,21 +73,6 @@ def write_text(path, text: str, *, sync: bool, wait: Wait = ORDINARY, newline: s
 def write_json(path, value, *, sync: bool, wait: Wait = ORDINARY, indent: int | None = 1, allow_nan: bool = True,
                private: bool = False) -> None:
     write_text(path, json.dumps(value, indent=indent, allow_nan=allow_nan), sync=sync, wait=wait, private=private)
-
-
-def publish(temporary, path, *, wait: Wait = ORDINARY, sync_dir: bool = False) -> None:
-    """Replace `path` with an already written temp file; removes the temp on failure."""
-    try:
-        _outlast(lambda: os.replace(temporary, path), wait)
-        if sync_dir and POSIX:      # Windows has no stdlib directory flush
-            folder = os.open(Path(path).parent, os.O_RDONLY)
-            try:
-                os.fsync(folder)
-            finally:
-                os.close(folder)
-    except BaseException:
-        _discard(temporary)
-        raise
 
 
 def move(source, target, *, wait: Wait = NO_WAIT) -> None:

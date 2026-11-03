@@ -47,7 +47,7 @@ def __getattr__(name):   # MODEL_IDS and RUNS_DEFAULT stay importable; they foll
 DETACH_TIMEOUT_S = 40
 SCAN_TIMEOUT_S = 90
 FRESH_FILES = (runner.OUT_FILE, runner.RECORD_FILE, runner.STATUS_FILE, runner.STOP_FILE, runner.RUNNER_LOG,
-               TAIL_FILE, "tail.tmp")
+               TAIL_FILE)
 parse_action_record = runner.parse_action_record
 
 

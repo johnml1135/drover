@@ -112,6 +112,32 @@ class Records(unittest.TestCase):
                 self.assertTrue(json.loads(out.getvalue())['committed'])
 
 
+class IgnoreTopUp(unittest.TestCase):
+    def test_sync_tops_up_an_existing_gitignore_once_and_a_stray_temp_stays_out(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = decisions.initialize(d)
+            ignore = state / '.gitignore'
+            ignore.write_text('private/\n' + ignore.read_text().replace('*.tmp\n', '').rstrip('\n'))
+            decisions._git(state, 'add', '--all', '--', '.')
+            decisions._git(state, 'commit', '-m', 'A repo from before the top-up')
+            stray = state / 'allowance' / 'manual-claude.json.abc123.tmp'
+            stray.parent.mkdir()
+            stray.write_text('half a write')
+
+            first, second = decisions.sync(state), decisions.sync(state)
+
+            self.assertEqual((first['committed'], second['committed']), (True, False))
+            lines = ignore.read_text().splitlines()
+            self.assertEqual((lines.count('*.tmp'), lines[0], lines.count('hub-token')), (1, 'private/', 1))
+            self.assertEqual(decisions._git(state, 'rev-list', '--count', 'HEAD'), '2')
+            self.assertEqual(decisions._git(state, 'status', '--porcelain'), '')
+            self.assertNotIn('.tmp', decisions._git(state, 'ls-files'))
+            self.assertTrue(stray.exists())
+            record = next((state / 'decisions').glob('*.md')).read_text()
+            self.assertIn('.gitignore', record)
+            self.assertNotIn('manual-claude', record)
+
+
 class HistoryIntegration(unittest.TestCase):
     def test_effective_config_disables_push_and_owner_sync_records_a_reason(self):
         with tempfile.TemporaryDirectory() as d:
