@@ -4,7 +4,8 @@ import time
 from pathlib import Path
 
 from . import placement
-from .disk_paths import live_tree, repository_root, safe_path, worktree_roots
+from .disk_inventory import repository_root, safe_path, worktree_roots
+from .disk_paths import live_tree
 from .disk_stage import item, within
 
 

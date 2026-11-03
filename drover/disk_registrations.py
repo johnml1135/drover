@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 from . import durable, git_client, git_worktrees, placement
-from .disk_paths import safe_path, worktree_roots
+from .disk_inventory import safe_path, worktree_roots
 from .disk_stage import item
 from .disk_worktrees import _out, gitdir_at
 

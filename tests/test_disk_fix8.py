@@ -294,7 +294,8 @@ class SafetyDecisions(DiskCase):
             self.assertEqual((listed.call_count, git.call_count), (1, calls))     # one listing; an unlock for ours only
 
     def test_repository_boundary_accepts_symlink_alias_but_raw_link_is_still_unsafe(self):
-        from drover.disk_paths import repository_tree, safe_path
+        from drover.disk_inventory import safe_path
+        from drover.disk_paths import repository_tree
         real = self.root / 'real'
         real.mkdir()
         alias = self.root / 'alias'

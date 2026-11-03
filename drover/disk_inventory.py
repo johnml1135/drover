@@ -2,11 +2,11 @@
 import hashlib
 import heapq
 import json
+import os
 import stat
 from pathlib import Path
 
-from . import disk_state, placement
-from .disk_paths import worktree_roots
+from . import disk_state, git_client, placement
 
 LIMIT = 20
 CACHE_LIMIT_BYTES = 4 * 1024 * 1024
@@ -67,7 +67,6 @@ class Inventory:
             info = path.stat()
             row['newest'] = 0 if placement.cleanup_parts(path) in self.ignore_activity else info.st_mtime
             if stat.S_ISDIR(info.st_mode):
-                from .disk_paths import repository_root
                 row['repository'] = path.name.casefold() in ('.git', '.venv') or repository_root(path)
                 for child in path.iterdir():
                     part = self._scan(child)
@@ -172,3 +171,68 @@ def bound_report(report):
         if len(json.dumps(report).encode('utf-8')) < 4_500_000:
             break
         trim(report, cap)
+
+
+def safe_path(path, proven=None):
+    """All ancestors must be concrete; protected names override broad declarations. `proven`, a set kept only for one
+    validation pass, spares a folder's many paths from proving the same ancestors again."""
+    path = Path(path).absolute()
+    if any(part.casefold() in ('.git', '.venv') for part in path.parts):
+        return False
+    checked = []
+    for parent in (path, *path.parents):
+        if proven is not None and parent in proven:
+            break
+        try:
+            if placement.cleanup_link(parent):
+                return False
+        except FileNotFoundError:
+            continue
+        checked.append(parent)
+    if proven is not None:
+        proven.update(parent for parent in checked if parent != path)
+    return True
+
+
+def repository_root(candidate):
+    marker = candidate / '.git'
+    if candidate.name == '.git':
+        return True
+    try:
+        marker.lstat()
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    # Even partial administrative layouts may contain unpublished objects.
+    if any((candidate / name).exists() for name in ('HEAD', 'objects', 'refs')):
+        return True
+    return repository_config(candidate) if (candidate / 'config').exists() else False
+
+
+def repository_config(candidate):
+    """Git's config/administrative evidence, separate from path safety policy."""
+    cfg = candidate / 'config'
+    try:      # anything but a clean YES, a timeout or no git included, is evidence: retain
+        ask = lambda *args: git_client.ask(candidate, *args, env=dict(os.environ, GIT_DIR=str(candidate)),
+                                           timeout_s=git_client.NORMAL, no=())
+        bare = ask('rev-parse', '--is-bare-repository')
+        if bare.answer is git_client.Answer.YES and bare.out.strip() in ('true', 'false'):
+            return True
+        parsed = ask('config', '--file', str(cfg), '--list')     # git owns its config grammar (BOM, quoting, comments, casing)
+        if parsed.answer is not git_client.Answer.YES or parsed.err:
+            return True
+        keys = [line.partition('=')[0].casefold() for line in parsed.out.splitlines()]
+        return any(key == 'core.bare' or key.startswith(('include.', 'includeif.')) for key in keys)
+    except Exception:   # 3M1: any failure, unavailable Git included, is no certain parse: retain
+        return True
+
+
+def worktree_roots(machine, *, this_side=False):
+    """A repo's worktree roots: the Windows root and the WSL ext4 root (ADR 0007). `this_side` keeps only the roots
+    this process can open; each side inventories and removes only what it owns."""
+    roots = [machine['worktrees']] if machine.get('worktrees') else []   # per-path side checks stay with the callers
+    from . import repos
+    wsl = repos.worktree_root(machine, 'wsl') if machine.get('name') else None   # derived: never a machine fact
+    if wsl and not (this_side and placement.cleanup_side() != 'wsl'):
+        roots.append(wsl)
+    return [Path(placement.native(r)) for r in roots]

@@ -117,8 +117,8 @@ class ProcessFreeDiskCase(DiskCase):
         from tests.tiers import MARKER
         if getattr(getattr(self, self._testMethodName), MARKER, False):
             return
-        from drover import disk_paths
-        for context in (patch.object(disk_paths, 'repository_config', return_value=True),
+        from drover import disk_inventory
+        for context in (patch.object(disk_inventory, 'repository_config', return_value=True),
                         patch('subprocess.Popen', side_effect=AssertionError('cleanup policy started a process')),
                         patch('time.sleep', side_effect=AssertionError('cleanup policy slept'))):
             context.start()

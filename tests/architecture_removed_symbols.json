@@ -74,7 +74,11 @@
     "drover.disk_side._trim",
     "drover.disk_paths.stage_dict",
     "drover.disk_paths.processes",
-    "drover.disk_stage.result"
+    "drover.disk_stage.result",
+    "drover.disk_paths.worktree_roots",
+    "drover.disk_paths.safe_path",
+    "drover.disk_paths.repository_root",
+    "drover.disk_paths.repository_config"
   ],
   "removed_receipt_fields": [
     "infra"

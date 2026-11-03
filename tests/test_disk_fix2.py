@@ -305,7 +305,7 @@ _p.subprocess.run = _bounded_cache_run
 class RepositoryConfigContract(DiskCase):
     @integration
     def test_git_config_grammar_protects_repository_evidence(self):
-        from drover.disk_paths import repository_root
+        from drover.disk_inventory import repository_root
         for index, text in enumerate(('[core]\n bare = true\n',
                 '[core] # section comment\n bare = true\n',
                 '\ufeff[CoRe]\n BaRe = true\n', '[include]\n path = elsewhere\n',

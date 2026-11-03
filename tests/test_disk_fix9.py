@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_paths, disk_state, disk_worktrees, placement
+from drover import disk_inventory, disk_paths, disk_state, disk_worktrees, placement
 from drover.disk_stage import StageClock
 from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
 from tests.fakeci import git_answers
@@ -193,4 +193,4 @@ class RepositoryConfig(unittest.TestCase):
                     return subprocess.CompletedProcess(args, 128, '', 'fatal: not a git repository\n')
                 return subprocess.CompletedProcess(args, 0, 'user.name=someone\ncolor.ui=auto\n', warning)
             with self.subTest(warning=warning), git_answers(git):
-                self.assertIs(disk_paths.repository_config(Path('/admin')), expected)
+                self.assertIs(disk_inventory.repository_config(Path('/admin')), expected)

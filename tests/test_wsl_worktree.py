@@ -189,16 +189,16 @@ class UnknownIsNotMissing(unittest.TestCase):
 class CleanupCoversBothRoots(unittest.TestCase):
     def test_both_roots_are_listed_and_protected_and_only_this_sides_are_scanned(self):
         from pathlib import Path
-        from drover import disk_paths
+        from drover import disk_inventory
         machine = {"name": "a", "worktrees": "H:\\repos\\a.worktrees"}
-        self.assertEqual(len(disk_paths.worktree_roots(machine)), 2)
+        self.assertEqual(len(disk_inventory.worktree_roots(machine)), 2)
         with patch.object(placement, "IS_WINDOWS", False) as _placement_patch_4, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_4), patch('drover.placement_git.IS_WINDOWS', _placement_patch_4), patch('drover.placement_host.IS_WINDOWS', _placement_patch_4), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_4), patch('drover.placement_process.IS_WINDOWS', _placement_patch_4), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_4), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_4), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_4), \
                 patch.object(repos, "wsl_worktrees_root", return_value="/home/dev/work"):
-            mine = disk_paths.worktree_roots(machine, this_side=True)
+            mine = disk_inventory.worktree_roots(machine, this_side=True)
         self.assertEqual(mine[-1], Path("/home/dev/work/a.worktrees"))         # WSL scans ext4 as well
         with patch.object(placement, "IS_WINDOWS", True) as _placement_patch_5, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_5), patch('drover.placement_git.IS_WINDOWS', _placement_patch_5), patch('drover.placement_host.IS_WINDOWS', _placement_patch_5), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_5), patch('drover.placement_process.IS_WINDOWS', _placement_patch_5), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_5), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_5), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_5):
-            self.assertEqual(disk_paths.worktree_roots({"name": "a"}, this_side=True), [])    # Windows leaves ext4 to WSL
-        self.assertEqual(disk_paths.worktree_roots({"worktrees": "H:\\x"}), [Path(placement.native("H:\\x"))])
+            self.assertEqual(disk_inventory.worktree_roots({"name": "a"}, this_side=True), [])    # Windows leaves ext4 to WSL
+        self.assertEqual(disk_inventory.worktree_roots({"worktrees": "H:\\x"}), [Path(placement.native("H:\\x"))])
 
 
 from tests.test_disk_worktrees import WorktreeCase

@@ -4,7 +4,8 @@ from pathlib import Path
 import subprocess
 
 from . import git_client, git_worktrees, ownership, placement, repos
-from .disk_paths import worktree_roots, facts, safe_path, disposable_match, repository_tree
+from .disk_inventory import safe_path, worktree_roots
+from .disk_paths import facts, disposable_match, repository_tree
 from .disk_stage import item, within
 
 

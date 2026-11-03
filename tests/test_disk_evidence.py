@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import git_worktrees, placement_paths
+from drover import disk_inventory, git_client, git_worktrees, placement_paths
 from drover.disk_evidence import StageEvidence
 from drover.disk_inventory import Inventory
 from drover.disk_stage import StageClock, StageRequest
@@ -119,6 +119,29 @@ class Inventories(unittest.TestCase):
         self.assertEqual(evidence.inventory.now, 100.0)
         with self.assertRaises(AttributeError):
             evidence.inventory = Inventory(0)
+
+
+class PathFacts(unittest.TestCase):
+    def test_path_facts_live_in_disk_inventory(self):
+        for name in ('repository_config', 'repository_root', 'safe_path', 'worktree_roots'):
+            self.assertEqual(getattr(disk_inventory, name).__module__, 'drover.disk_inventory')
+
+    def test_repository_config_answers_true_on_any_git_failure(self):
+        """3M1: anything but a clean answer is evidence, so the folder is retained; the question has the fixed NORMAL cap."""
+        from pathlib import Path
+        asked = []
+        unknown = git_client.GitReply(git_client.Answer.UNKNOWN, '', '', None, 'timeout')
+        no_git = git_client.GitReply(git_client.Answer.UNKNOWN, '', '', None, 'unavailable')
+        for name, reply in (('timeout', unknown), ('no git', no_git), ('os error', OSError('gone')),
+                            ('value error', ValueError('bad'))):
+            def ask(repo, *args, timeout_s, **_):
+                asked.append(timeout_s)
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
+            with self.subTest(name), patch.object(git_client, 'ask', ask):
+                self.assertIs(disk_inventory.repository_config(Path('/admin')), True)
+        self.assertEqual(set(asked), {git_client.NORMAL})
 
 
 if __name__ == '__main__':
