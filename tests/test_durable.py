@@ -50,6 +50,29 @@ def on_clock(clock):
     return patch.object(durable, "time", SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep))
 
 
+REAL_OPEN = os.open
+
+
+@contextlib.contextmanager
+def temp_modes(name=None, events=None):
+    """Note `temp <mode>` as each temp for `name` (any, when None) is created, and fail any chmod: a temp is made at
+    its final mode, so the umask decides it with no second round trip on 9p."""
+    events = [] if events is None else events
+
+    def opened(path, flags, mode=0o777, *args, **kw):
+        base = os.path.basename(os.fspath(path))
+        if base.endswith('.tmp') and (name is None or base.startswith(name + '.')):
+            events.append(f'temp {mode:o}')
+        return REAL_OPEN(path, flags, mode, *args, **kw)
+
+    def chmod(path, *args, **kw):
+        events.append('chmod')
+        raise AssertionError(f'chmod of {path}')
+
+    with patch.object(durable.os, 'open', opened), patch.object(durable.os, 'chmod', chmod):
+        yield events
+
+
 def refused_site(write, name):
     """`write`, against a reader that never lets `name` go: its steps before the first replace, the bytes it offered, its wait."""
     clock, events, offered = Clock(), [], []
@@ -61,11 +84,7 @@ def refused_site(write, name):
         offered.append(Path(source).read_bytes())
         raise PermissionError(13, 'refused', str(target))
 
-    def chmod(path, mode):
-        if Path(path).name.startswith(name + '.'):
-            events.append('chmod')
-
-    with on_clock(clock), patch.object(durable, 'POSIX', True), patch.object(durable.os, 'chmod', chmod), \
+    with on_clock(clock), temp_modes(name, events), \
             patch.object(durable.os, 'fsync', lambda fd: events.append('fsync')), \
             patch.object(durable.os, 'replace', replace), contextlib.suppress(PermissionError):
         write()
@@ -212,39 +231,55 @@ class Writes(Base):
         def noted(temporary, path):
             names.append(Path(temporary).name)
             return REAL_REPLACE(temporary, path)
-        real = tempfile.mkstemp
-        with patch.object(durable.tempfile, "mkstemp", side_effect=real) as mkstemp, patch.object(durable.os, "replace", noted):
+        created = []
+
+        def opened(path, flags, mode=0o777):
+            created.append((Path(path).parent, flags & (os.O_CREAT | os.O_EXCL)))
+            return REAL_OPEN(path, flags, mode)
+        with patch.object(durable.os, "open", opened), patch.object(durable.os, "replace", noted):
             write_bytes(self.target, b"a", sync=False)
             write_bytes(str(self.target), b"b", sync=False)
-        for call in mkstemp.call_args_list:
-            self.assertEqual(call.kwargs, dict(dir=self.dir, prefix="status.json.", suffix=".tmp"))
+        self.assertEqual(created, [(self.dir, os.O_CREAT | os.O_EXCL)] * 2)     # never an existing file
+        self.assertTrue(all(name.startswith("status.json.") and name.endswith(".tmp") for name in names), names)
         self.assertEqual(len(set(names)), 2)
 
-    def test_posix_temp_takes_umask_default_not_0600(self):
-        seen = []
+    def test_a_name_already_taken_is_passed_over(self):
+        taken = []
 
-        def chmod(path, mode):
-            seen.append((Path(path).suffix, Path(path).exists(), self.target.exists(), mode))
-        with patch.object(durable, "POSIX", True), patch.object(durable, "_UMASK", 0o027), patch.object(durable.os, "chmod", chmod):
-            write_text(self.target, "x", sync=False)
-        self.assertEqual(seen, [(".tmp", True, False, 0o640)])      # set before the file is published
-        with patch.object(durable, "POSIX", False), patch.object(durable.os, "chmod", chmod):
-            write_text(self.target, "x", sync=False)
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(os.umask(durable._UMASK), durable._UMASK)  # the reading is true and left the process's umask alone
+        def opened(path, flags, mode=0o777):
+            if not taken:
+                taken.append(path)
+                raise FileExistsError(17, "exists", path)
+            return REAL_OPEN(path, flags, mode)
+        with patch.object(durable.os, "open", opened):
+            write_bytes(self.target, b"a", sync=False)
+        self.assertEqual((self.target.read_bytes(), self.temps()), (b"a", []))
+
+    def test_temp_is_created_at_its_final_mode_and_never_chmodded(self):
+        """The umask applies at creation, so 0o666 gives today's mode with no chmod: one 9p round trip less a write."""
+        for write, content in ((write_bytes, b"x"), (write_text, "x"), (write_json, {})):
+            with temp_modes() as events:
+                write(self.target, content, sync=False)
+            self.assertEqual(events, ["temp 666"])
 
     def test_private_keeps_the_temps_0600(self):
         for write, content in ((write_bytes, b"x"), (write_text, "x"), (write_json, {})):
-            with patch.object(durable, "POSIX", True), patch.object(durable.os, "chmod") as chmod:
+            with temp_modes() as events:
                 write(self.target, content, sync=False, private=True)
-            chmod.assert_not_called()
+            self.assertEqual(events, ["temp 600"])
             self.assertIs(inspect.signature(write).parameters["private"].default, False)
             self.assertIs(inspect.signature(write).parameters["private"].kind, inspect.Parameter.KEYWORD_ONLY)
 
     @unittest.skipUnless(os.name == "posix", "POSIX file modes")
     def test_posix_file_has_the_default_mode(self):
+        mask = os.umask(0o027)
+        try:
+            write_text(self.target, "x", sync=False)
+            self.assertEqual(self.target.stat().st_mode & 0o777, 0o640)
+        finally:
+            os.umask(mask)
         write_text(self.target, "x", sync=False)
-        self.assertEqual(self.target.stat().st_mode & 0o777, 0o666 & ~durable._UMASK)
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o666 & ~mask)
 
     @unittest.skipUnless(os.name == "posix", "POSIX file modes")
     def test_posix_private_file_is_0600(self):
@@ -386,7 +421,7 @@ class Sites(Base):
         tail = launch_handle.Tail(self.dir / 'tail.log')
         tail.add('one\n')
         done, offered, elapsed = refused_site(tail.flush, 'tail.log')
-        self.assertEqual((done, offered), (['chmod'], f'one{os.linesep}'.encode()))
+        self.assertEqual((done, offered), (['temp 666'], f'one{os.linesep}'.encode()))
         self.assertAlmostEqual(elapsed, ROUTINE.seconds, delta=ROUTINE.step_s * 1.5)
         self.assertIn('refused', tail.error)
         self.assertEqual(self.temps(), [])

@@ -14,7 +14,7 @@ from drover.ledger import disk_notices
 from drover.port import DirectPort
 from tests.disk_fixture import DiskCase
 from tests.compaction_fixture import Clock, FakeRun, NOW, ROOT, VHDX, Vhdx, done
-from tests.test_durable import Clock as RetryClock, Flaky, on_clock
+from tests.test_durable import Clock as RetryClock, Flaky, on_clock, temp_modes
 
 
 class Vhd(unittest.TestCase):
@@ -106,9 +106,9 @@ class Hold(DiskCase):
         self.assertEqual(save.call_count, 1)        # the wait is durable's, and only durable's
         self.assertAlmostEqual(clock.now - 1000.0, durable.ORDINARY.seconds, delta=durable.ORDINARY.step_s * 1.5)
         self.assertEqual(compaction_hold.read(self.state), record)
-        with mock.patch.object(durable, 'POSIX', True), mock.patch.object(durable.os, 'chmod') as chmod:
+        with temp_modes() as made:
             compaction_hold.save(self.state, dict(record, step='landed'))
-        chmod.assert_not_called()
+        self.assertEqual(made, ['temp 600'])
 
     def test_a_hold_removal_outlasts_a_reader_for_the_release_wait(self):
         compaction_hold.note_mount(self.state, 'x.vhdx')

@@ -12,6 +12,8 @@
   ],
   "qualified_names": [
     "drover.durable.publish",
+    "drover.durable._UMASK",
+    "drover.placement_sweep.marked",
     "drover.runner_common.write_json_atomic",
     "drover.compaction_hold._retried",
     "drover.disk_state._outlast_readers",

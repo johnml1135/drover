@@ -1,19 +1,17 @@
 """Publish, move and remove files so that a brief Windows reader cannot lose the write, with the wait stated by the caller.
 
 Stdlib only: `compaction_hold`, the WSL cleanup worker and the runner all import it. `durable` makes no directory.
-`private` keeps mkstemp's 0600 on POSIX, for a site that published it before `durable`; the default is the umask's mode.
+A temp is created at its final mode, so the umask decides it and no chmod follows: 0o666 by default, and 0o600 when
+`private`, for a site that published mkstemp's 0600 before `durable`.
 """
 import contextlib
 import json
 import os
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-POSIX = os.name == 'posix'
-_UMASK = os.umask(0)        # read once at load: setting it back per write would race every thread that creates a file
-os.umask(_UMASK)
+_CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | (os.O_BINARY if os.name == 'nt' else os.O_NOFOLLOW)   # as mkstemp
 
 
 @dataclass(frozen=True)
@@ -45,17 +43,25 @@ def _discard(temporary):
         remove(temporary, wait=ROUTINE)
 
 
+def _temp(path, private):
+    """A new file beside `path`, never an existing one, made at the published file's mode."""
+    while True:
+        temporary = os.path.join(path.parent, f'{path.name}.{os.urandom(6).hex()}.tmp')
+        try:
+            return os.open(temporary, _CREATE, 0o600 if private else 0o666), temporary
+        except FileExistsError:
+            continue
+
+
 def _land(path, content, mode, sync, wait, private, **text):
     path = Path(path)
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+    descriptor, temporary = _temp(path, private)
     try:
         with os.fdopen(descriptor, mode, **text) as stream:
             stream.write(content)
             if sync:
                 stream.flush()
                 os.fsync(stream.fileno())
-        if POSIX and not private:
-            os.chmod(temporary, 0o666 & ~_UMASK)    # mkstemp's 0600 is the temp's, not the published file's
         _outlast(lambda: os.replace(temporary, path), wait)
     except BaseException:
         _discard(temporary)

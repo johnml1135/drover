@@ -1,4 +1,5 @@
 """One short-lived command: a required timeout, no shell, the console flag, and one outcome that raises nothing."""
+import io
 import json
 import locale
 import subprocess
@@ -142,6 +143,104 @@ class Run(unittest.TestCase):
         argv = ['C:\\Program Files\\x.exe', 'a b', 'say "hi"', '']
         with self.fake.patch(process):
             self.assertEqual(process.list2cmdline(argv), subprocess.list2cmdline(argv))
+
+
+class Reader:
+    """A reader thread `_join` waits on: alive until joined."""
+    def __init__(self, events):
+        self.events, self.alive = events, True
+
+    def join(self, timeout=None):
+        self.events.append('join')
+        self.alive = False
+
+    def is_alive(self):
+        return self.alive
+
+
+class Child:
+    """A spawned child as `_run_tree` sees it, with in-memory pipes. `wait` with time left fails while a reader lives,
+    since on POSIX that wait polls and returns up to 50 ms after the exit."""
+    pid = 4242
+
+    def __init__(self, events=None, readers=(), stdin=None, wait_error=None):
+        self.events, self.readers, self.wait_error = events if events is not None else [], readers, wait_error
+        self.stdout, self.stderr, self.stdin, self.returncode = io.BytesIO(b'out'), io.BytesIO(b'err'), stdin, None
+        self.kill = mock.Mock()
+
+    def wait(self, timeout=None):
+        self.events.append('wait')
+        if self.wait_error:
+            raise self.wait_error
+        if timeout and any(reader.is_alive() for reader in self.readers):
+            raise AssertionError('waited on the child while a reader was alive')
+        self.returncode = 0
+        return 0
+
+
+class Payload(io.BytesIO):
+    def close(self):
+        self.sent = self.getvalue()
+        super().close()
+
+
+class Adapter(unittest.TestCase):
+    """`_run_tree`, the real `process.subprocess.run`: what reaches `Popen`, past the one fake every other test uses."""
+    def spawned(self, command, windows, child=None):
+        child = child or Child()
+        flag = {'creationflags': process.CREATE_NO_WINDOW} if windows else {}
+        with mock.patch.object(process._subprocess, 'Popen', return_value=child) as popen, \
+                mock.patch.object(process, '_contain', return_value=None), \
+                mock.patch.object(process, '_WINDOWS', windows), mock.patch.object(process, 'NO_WINDOW', flag), \
+                mock.patch.object(process.signal, 'SIGKILL', 9, create=True), \
+                mock.patch.object(process.os, 'killpg', create=True) as killpg:
+            try:
+                return run(Command(*command)), popen.call_args, child, killpg
+            except BaseException as error:
+                error.seen = (child, killpg)
+                raise
+
+    def test_popen_gets_the_console_flag_devnull_stdin_cwd_and_env(self):
+        env = {'A': 'b'}
+        for windows in (True, False):
+            with self.subTest(windows=windows):
+                result, (args, kwargs), _, _ = self.spawned((ARGV, 10, '/w', env), windows)
+                self.assertEqual((result.kind, result.code, result.out, result.err), ('exited', 0, b'out', b'err'))
+                self.assertEqual(args, (list(ARGV),))
+                self.assertIs(kwargs['stdin'], subprocess.DEVNULL)
+                self.assertEqual((kwargs['cwd'], kwargs['env'], kwargs['stdout'], kwargs['stderr']),
+                                 ('/w', env, subprocess.PIPE, subprocess.PIPE))
+                self.assertNotIn('shell', kwargs)
+                if windows:
+                    self.assertEqual(kwargs['creationflags'], process.CREATE_NO_WINDOW | process.CREATE_SUSPENDED)
+                    self.assertNotIn('start_new_session', kwargs)
+                else:
+                    self.assertIs(kwargs['start_new_session'], True)
+                    self.assertNotIn('creationflags', kwargs)
+
+    def test_a_payload_goes_on_a_pipe(self):
+        child = Child(stdin=Payload())
+        _, (_, kwargs), _, _ = self.spawned((ARGV, 10, None, None, 'é'), True, child)
+        self.assertIs(kwargs['stdin'], subprocess.PIPE)
+        self.assertEqual(child.stdin.sent, 'é'.encode('utf-8'))
+
+    def test_keyboard_interrupt_propagates_and_ends_the_child(self):
+        for windows in (True, False):
+            with self.subTest(windows=windows), self.assertRaises(KeyboardInterrupt) as raised:
+                self.spawned((ARGV, 10), windows, Child(wait_error=KeyboardInterrupt()))
+            child, killpg = raised.exception.seen
+            if windows:
+                child.kill.assert_called_once_with()
+            else:
+                killpg.assert_called_once_with(child.pid, 9)
+
+    def test_join_takes_the_readers_before_it_waits_on_the_child(self):
+        """POSIX `Popen.wait(timeout)` polls with a backoff to 50 ms; joining the readers first ends at the exit."""
+        events = []
+        readers = [Reader(events), Reader(events)]
+        child = Child(events, readers)
+        self.assertIs(process._join(child, readers, process.time.monotonic() + 10), True)
+        self.assertEqual(events, ['join', 'join', 'wait'])
 
 
 def hold(phase):

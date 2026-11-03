@@ -162,6 +162,39 @@ class MarkerSweep(unittest.TestCase):
                 patch.object(self.pp.time, 'sleep'):
             return self.pp.stop_ci_children(status)
 
+    def test_a_pass_walks_proc_once_and_reads_each_stat_once_before_any_kill(self):
+        """The marker and group reads share one walk; ownership is still decided before the first signal."""
+        import builtins
+        from pathlib import Path
+        self.task(101, f'DROVER_RUN_ID={TOKEN}\0'.encode())
+        self.task(102, b'HOME=/h\0')
+        walks, stats, at_kill = [], [], []
+        real_scandir, real_read_text, real_open = os.scandir, Path.read_text, builtins.open
+
+        def scandir(path='.'):          # Path.iterdir walks through it too
+            walks.extend([path] if not isinstance(path, int) and os.fspath(path) == os.fspath(self.proc) else [])
+            return real_scandir(path)
+
+        def noted(path):
+            if os.path.basename(os.fspath(path)) == 'stat':
+                stats.append(os.path.basename(os.path.dirname(os.fspath(path))))
+
+        def read_text(path, *args, **kw):
+            noted(path)
+            return real_read_text(path, *args, **kw)
+
+        def opened(path, *args, **kw):
+            noted(path)
+            return real_open(path, *args, **kw)
+
+        def kill(pid, sig):
+            at_kill.append((len(walks), sorted(name for name in stats if name in ('101', '102'))))  # not ancestry
+            self.gone(pid)
+        with patch.object(os, 'scandir', scandir), \
+                patch.object(Path, 'read_text', read_text), patch.object(builtins, 'open', opened):
+            self.assertIs(self.stop(dict(pid=500, run_id=TOKEN), kill=kill), True)
+        self.assertEqual(at_kill, [(1, ['101', '102'])])
+
     def test_only_this_users_live_processes_with_the_exact_marker_match(self):
         me, marker = os.getpid(), f'DROVER_RUN_ID={TOKEN}'.encode()
         self.task(me, marker + b'\0', parent=999_999)                # the sweeper itself
@@ -175,9 +208,9 @@ class MarkerSweep(unittest.TestCase):
         self.task(107, None)                                           # gone between listing and reading
         (self.proc / 'self').mkdir()
         entries = self.sweep.marks(dict(run_id=TOKEN))
-        self.assertEqual(self.sweep.marked(entries), [101])
+        self.assertEqual(self.sweep.scan(entries, None)[0], [101])
         with patch.object(os, 'getuid', return_value=os.stat(self.proc).st_uid + 1, create=True):
-            self.assertEqual(self.sweep.marked(entries), [])        # another user's processes are never read
+            self.assertEqual(self.sweep.scan(entries, None)[0], [])        # another user's processes are never read
 
     def test_a_surviving_match_leaves_the_proof_unconfirmed_and_a_killed_one_confirms(self):
         for gone, confirmed in ((False, False), (True, True)):

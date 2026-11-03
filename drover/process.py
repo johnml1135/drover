@@ -140,12 +140,13 @@ def _feed(pipe, payload):
 
 
 def _join(child, threads, deadline):
+    """Readers first: a join blocks until the pipes close at exit, where a POSIX `wait(timeout)` polls up to 50 ms."""
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
     try:
         child.wait(max(0.0, deadline - time.monotonic()))
     except _subprocess.TimeoutExpired:
         pass
-    for thread in threads:
-        thread.join(max(0.0, deadline - time.monotonic()))
     return child.returncode is not None and not any(thread.is_alive() for thread in threads)
 
 

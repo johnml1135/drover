@@ -148,7 +148,7 @@ class Windows(DiskCase):
 
         with patch.object(placement, 'detected_cleanup_policy', return_value=seeded):
             steps, offered, elapsed = refused_site(lambda: disk_schedule.install(self.cfg), 'config.toml')
-        self.assertEqual(steps[-2:], ['fsync', 'chmod'])
+        self.assertEqual(steps[-2:], ['temp 666', 'fsync'])
         self.assertEqual(offered, config.dumps(dict(raw, disk_cleanup=seeded)).replace('\n', os.linesep).encode())
         self.assertAlmostEqual(elapsed, durable.ORDINARY.seconds, delta=durable.ORDINARY.step_s * 1.5)
         self.assertEqual(target.read_bytes(), before)

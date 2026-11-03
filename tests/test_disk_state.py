@@ -8,7 +8,7 @@ from unittest.mock import patch
 from drover import disk_state, durable
 from drover.durable import ORDINARY, RELEASE
 from tests.disk_fixture import DiskCase
-from tests.test_durable import Clock, Flaky, on_clock
+from tests.test_durable import Clock, Flaky, on_clock, temp_modes
 
 
 class State(DiskCase):
@@ -91,13 +91,13 @@ except BlockingIOError:
                 clock, events = Clock(), []
                 reader = Flaky(blocked=lambda: clock.now < 1000.0 + ORDINARY.seconds - .1)
                 replace = lambda *paths: (events.append('replace'), reader(*paths))[1]
-                with on_clock(clock), patch.object(durable, 'POSIX', True), patch.object(durable.os, 'chmod') as chmod, \
+                with on_clock(clock), temp_modes() as made, \
                         patch.object(durable.os, 'fsync', lambda fd: events.append('fsync')), \
                         patch.object(durable.os, 'replace', replace):
                     write({'v': 1})
                 self.assertEqual(events[:2], ['fsync', 'replace'])
                 self.assertEqual((events.count('fsync'), target.read_text(encoding='utf-8')), (1, '{"v": 1}'))
-                chmod.assert_not_called()
+                self.assertEqual(made, ['temp 600'])
 
                 clock.now = 1000.0
                 with on_clock(clock), patch.object(durable.os, 'replace', Flaky(blocked=lambda: True)), \

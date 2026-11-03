@@ -148,18 +148,8 @@ def stop_ci_children(status):
         else:
             # A `process` child leads its own session, so what it leaves behind is outside the group: end it by marker.
             marks = sweep.marks(status)
-            marked = sweep.marked(marks) if marks else []
+            marked, members = sweep.scan(marks, status.get('pid'))     # re-read every pass: a match may have forked
             owned.update(marked)
-            members = []
-            for entry in sweep.PROC.iterdir():
-                if not entry.name.isdigit():
-                    continue
-                try:
-                    fields = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
-                    if fields[0] != 'Z' and int(fields[2]) == status.get('pid'):
-                        members.append(entry)
-                except FileNotFoundError:
-                    continue
             if members and not signalled:
                 identity = marks or (f"DROVER_RUN_ID={status['run_id']}".encode(),)    # with its nonce when known
                 members, ours = sweep.owned(members, owned, identity)

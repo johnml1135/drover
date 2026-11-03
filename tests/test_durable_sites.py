@@ -21,11 +21,11 @@ class Sites(Base):
 
         rows = (
             ('manual-claude.json', lambda: allowance.set_manual('claude', 50, state=str(self.dir), now=1.0),
-             ['chmod'], b'{"plan": "claude", "remaining_pct": 50.0, "set_at": 1.0}'),
-            ('handoff.md', lambda: handoff.write(self.dir / 'handoff.md', 'a\n'), ['chmod'], b'a\n'),
-            ('w.toml', lambda: wizard_files.write_file(self.dir, self.dir / 'w.toml', 'a\n', lambda: 0), ['chmod'], b'a\n'),
-            ('config.toml', migrate, ['fsync', 'fsync'], config.dumps(dict(a=1)).replace('\n', os.linesep).encode()),
-            ('tag.json', lambda: placement_git._native_metadata_io(self.dir, 'tag.json', 'a\n'), ['fsync'], native),
+             ['temp 666'], b'{"plan": "claude", "remaining_pct": 50.0, "set_at": 1.0}'),
+            ('handoff.md', lambda: handoff.write(self.dir / 'handoff.md', 'a\n'), ['temp 666'], b'a\n'),
+            ('w.toml', lambda: wizard_files.write_file(self.dir, self.dir / 'w.toml', 'a\n', lambda: 0), ['temp 666'], b'a\n'),
+            ('config.toml', migrate, ['fsync', 'temp 600', 'fsync'], config.dumps(dict(a=1)).replace('\n', os.linesep).encode()),
+            ('tag.json', lambda: placement_git._native_metadata_io(self.dir, 'tag.json', 'a\n'), ['temp 600', 'fsync'], native),
         )
         for name, write, steps, content in rows:
             with self.subTest(name):
