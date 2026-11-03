@@ -1,9 +1,12 @@
 """`StageRequest` and `StageClock`: what a stage is asked and how long it has. The clock is faked through `clock=`."""
 import copy
+import io
+import json
 import unittest
+from pathlib import Path
 
-from drover import placement_paths
-from drover.disk_stage import StageClock, StageRequest
+from drover import disk_inventory, disk_paths, placement_paths
+from drover.disk_stage import StageAbandoned, StageClock, StageRequest, StageRun, read_rows
 
 
 def at(*times):
@@ -188,6 +191,189 @@ class Request(unittest.TestCase):
         self.assertEqual(approved['approved_path'], 'H:\\t 1')
         view['repos'][0]['repo'] = 'changed'
         self.assertEqual(request.repos[0]['repo'], 'H:\\repos\\Pan Glöss')
+
+
+ROOTS = ('/var/reports', '/var/reports/deep')
+WHOLE = ('worktree_inventory', 'untracked_or_ignored', 'budget_usage', 'merged_live_task', 'process_out_of_scope',
+         'process_visibility_unavailable', 'temp_root_elapsed', 'wsl_vhdx', 'wsl_vhdx_unavailable')
+
+
+def root_of(row):
+    """compact's root step at 16a3623 (disk_inventory.py:118-128) over ROOTS, as disk_side will pass it in."""
+    if row.get('reason_code') in WHOLE:
+        return None
+    path = Path(row['path'])
+    return row.get('root') or str(max((Path(r) for r in ROOTS if Path(r) in (path, *path.parents)),
+                                      key=lambda r: len(r.parts), default=path.parent))
+
+
+def row(path, reason='declared_disposable', action='keep', **extra):
+    return dict(dict(path=path, action=action, reason_code=reason, owner=None, files=1, age_s=5, bytes=10), **extra)
+
+
+class Broken(io.BytesIO):
+    def write(self, data):
+        raise BrokenPipeError(32, 'Broken pipe')
+
+
+def stage_run(limit=20, out=None, **changes):
+    return StageRun(StageRequest.from_wire(wire(**changes)), StageClock(100, clock=at()), out=out or io.BytesIO(),
+                    root_of=root_of, limit=limit)
+
+
+def sent(run):
+    return run._out.getvalue()
+
+
+def lines(run):
+    return [json.loads(line) for line in sent(run).splitlines()]
+
+
+class Run(unittest.TestCase):
+    def test_a_stage_killed_mid_run_keeps_its_settled_rows(self):
+        run = stage_run()
+        for name in 'abc':
+            run.add(row('/var/reports/' + name))
+        run.checkpoint()
+        written = sent(run).splitlines(keepends=True)
+        answer = read_rows(b''.join(written[:2]) + b'{"v":1,"ro')
+        self.assertEqual((len(answer.items), answer.complete, answer.partial), (2, False, True))
+        self.assertEqual([item['path'] for item in answer.items], ['/var/reports/a', '/var/reports/b'])
+
+    def test_a_cut_inside_a_multibyte_character_is_a_partial_last_line(self):
+        whole = b'{"v":1,"row":{"path":"/var/reports/a","action":"keep","reason_code":"x"}}\n'
+        cut = '{"v":1,"row":{"path":"/var/ü'.encode('utf-8')[:-1]
+        answer = read_rows(whole + cut)
+        self.assertEqual(([item['path'] for item in answer.items], answer.complete), (['/var/reports/a'], False))
+
+    def test_a_malformed_complete_line_raises_value_error(self):
+        for output in (b'{"v":1,"row":\n', b'\xff\xfe\n', b'{"v":1,"row":{}}\n\n', b'[1]\n'):
+            with self.assertRaises(ValueError, msg=output):
+                read_rows(output)
+
+    def test_a_line_with_no_v_key_raises_value_error(self):          # the old single-object answer
+        for output in (b'{"items":[],"errors":[],"reclaimed_bytes":0}\n', b'{"v":2,"row":{}}\n', b'{"v":1}\n',
+                       b'{"v":1,"rows":[]}\n'):
+            with self.assertRaises(ValueError, msg=output):
+                read_rows(output)
+
+    def test_nothing_at_all_is_not_complete(self):
+        answer = read_rows(b'')
+        self.assertEqual((answer.items, answer.errors, answer.reclaimed_bytes, answer.complete, answer.partial),
+                         ([], [], 0, False, True))
+        self.assertEqual((answer.peak_intermediate_bytes, answer.budget), (0, None))
+
+    def test_add_is_the_only_way_in_and_checkpoint_sends_only_settled_rows(self):
+        run = stage_run()
+        self.assertFalse(hasattr(run, 'items'))
+        first = row('/var/reports/\udcff odd')                  # a non-UTF-8 name, as os.fsdecode gives it
+        run.add(first)
+        first['bytes'] = 999                                    # a row added is settled: later changes do not cross
+        self.assertEqual(sent(run), b'')
+        run.checkpoint()
+        self.assertTrue(sent(run).isascii())
+        self.assertEqual(lines(run), [dict(v=1, row=row('/var/reports/\udcff odd'), root=str(Path('/var/reports')))])
+        run.add(row('/var/reports/two', reason='temp_root_elapsed', action='report'))
+        run.error(dict(path='/x', reason_code='scope', error='no'))
+        run.checkpoint()
+        run.checkpoint()                                        # nothing new: nothing sent
+        self.assertEqual(lines(run)[1:], [{'v': 1, 'row': row('/var/reports/two', 'temp_root_elapsed', 'report')},
+                                          {'v': 1, 'error': dict(path='/x', reason_code='scope', error='no')}])
+        self.assertEqual(read_rows(sent(run)).items[1]['path'], '/var/reports/\udcff odd')
+
+    def test_add_caps_groups_at_limit_and_tallies_more(self):
+        run = stage_run(limit=2)
+        run.add(row('/var/reports/d', dirty=list('abcde'), ignored=['x'], reason='kept_dirty'))
+        for number in range(5):
+            run.add(row('/var/reports/deep/%d' % number, bytes=number))
+            run.add(row('/elsewhere/%d' % number, reason='worktree_inventory'))
+        run.checkpoint()
+        written = lines(run)
+        self.assertEqual(written[0]['row'], row('/var/reports/d', dirty=['a', 'b'], ignored=['x'], reason='kept_dirty',
+                                                dirty_count=5, ignored_count=1))
+        whole = [line for line in written if 'row' in line and line['row']['reason_code'] == 'worktree_inventory']
+        self.assertEqual(len(whole), 5)
+        grouped = [line['row']['path'] for line in written if line.get('root') == str(Path('/var/reports/deep'))]
+        self.assertEqual(grouped, ['/var/reports/deep/0', '/var/reports/deep/1'])
+        self.assertEqual([line['more'] for line in written if 'more' in line], [dict(
+            reason_code='declared_disposable', root=str(Path('/var/reports/deep')), action='keep', count=3, files=3,
+            bytes=9, age_s=5, sample=[row('/var/reports/deep/4', bytes=4), row('/var/reports/deep/3', bytes=3)])])
+
+    def test_read_rows_aggregates_by_stamped_root(self):
+        items = [row('/var/reports/deep/%02d' % n, bytes=n % 7, age_s=n) for n in range(25)]
+        items[3:3] = [row('/var/reports/w', reason='worktree_inventory', dirty=list(range(30)))]
+        items += [row('/var/reports/%d' % n, action='removed', ignored=['i'] * n) for n in range(22)]
+        items += [row('/var/reports/x', root='/own/root')]
+        items += [row('/var/reports/deep/%02d' % n, bytes=n) for n in range(25, 30)]
+        run = stage_run(limit=disk_inventory.LIMIT)
+        for number, item in enumerate(items):
+            run.add(item)
+            if number % 9 == 0:
+                run.checkpoint()                     # the `more` tally is a running total, so the last one stands
+        run.finish()
+        request = dict(paths=dict(temp_roots=list(ROOTS), report_roots=[]), repos=[])
+        today = disk_inventory.compact(items, request)
+        self.assertEqual(read_rows(sent(run)).items, today)
+        self.assertEqual([r['count'] for r in today if 'count' in r], [30, 22])
+
+    def test_a_failed_checkpoint_raises_stage_abandoned_past_every_except(self):
+        self.assertFalse(issubclass(StageAbandoned, Exception))
+        for out in (Broken(), io.BytesIO()):
+            run = stage_run(out=out)
+            if not isinstance(out, Broken):
+                out.close()                          # a closed pipe raises ValueError, not OSError
+            run.add(row('/var/reports/a'))
+            with self.assertRaises(StageAbandoned):
+                try: run.checkpoint()
+                except Exception: self.fail('held by except Exception')
+
+    def test_stop_writes_one_row_and_sets_partial_and_stopped(self):
+        run = stage_run()
+        machine, left = dict(repo='/var/reports/r1'), [dict(worktree='/w1'), dict(worktree='/w2')]
+        later = [dict(repo='/var/reports/r2')]
+        self.assertFalse(run.stopped)
+        run.stop('settled_deadline', machine, left, later)
+        run.stop('settled_deadline', machine, left, later)
+        self.assertTrue(run.stopped)
+        run.finish()
+        answer = read_rows(sent(run))
+        self.assertEqual(answer.items, [disk_paths.deadline_row({}, machine, left, later, 'settled_deadline')])
+        self.assertEqual((answer.complete, answer.partial), (True, True))
+
+    def test_stop_with_no_machine_writes_the_drive_path(self):
+        run = stage_run()
+        run.stop('output_deadline', None, [], [dict(repo='/var/reports/r2')])
+        self.assertEqual(read_rows(sent(run)).items, [dict(
+            path='H:\\', action='report', reason_code='output_deadline', owner=None, files=0, age_s=0, bytes=0,
+            count=1, worktrees=[], repos=['/var/reports/r2'])])
+
+    def test_reclaimed_uses_end_when_complete_and_last_line_otherwise(self):
+        run = stage_run()
+        run.reclaimed(100)
+        run.checkpoint()
+        run.reclaimed(50)
+        self.assertEqual(run.reclaimed_bytes, 150)
+        run.checkpoint()
+        self.assertEqual([line['reclaimed'] for line in lines(run)], [100, 150])
+        self.assertEqual(read_rows(sent(run)).reclaimed_bytes, 150)
+        partial = b'{"v":1,"reclaimed":10}\n'
+        self.assertEqual(read_rows(partial).reclaimed_bytes, 10)
+        self.assertEqual(read_rows(partial + b'{"v":1,"end":{"reclaimed_bytes":30}}\n').reclaimed_bytes, 30)
+
+    def test_end_carries_peak_and_budget(self):
+        run = stage_run()
+        run.error(dict(reason_code='stage_error'))
+        run.scope_errors.append(dict(reason_code='scope_error'))      # today's order: the stage's errors, then scope's
+        run.reclaimed(7)
+        run.finish(peak_intermediate_bytes=4096, budget=dict(status='met', used_gb=1))
+        answer = read_rows(sent(run))
+        self.assertEqual((answer.peak_intermediate_bytes, answer.budget, answer.reclaimed_bytes),
+                         (4096, dict(status='met', used_gb=1), 7))
+        self.assertEqual(answer.errors, [dict(reason_code='stage_error'), dict(reason_code='scope_error')])
+        self.assertEqual((answer.complete, answer.partial), (True, False))
+        self.assertEqual(lines(run)[-1], {'v': 1, 'end': dict(reclaimed_bytes=7, partial=False,
+                                                              peak_intermediate_bytes=4096,
+                                                              budget=dict(status='met', used_gb=1))})
 
 
 if __name__ == '__main__':

@@ -2,12 +2,15 @@
 
 `StageRequest` is the typed request; its wire keys are today's, so the worker reads what it reads now. `StageClock` is
 the one clock of a stage run: an 80% line no removal starts past, a fixed cap for each mutating step in the margin
-after it, and patience for read steps.
+after it, and patience for read steps. `StageRun` is what a stage says, one settled row per line on the worker's
+stdout, and `read_rows` reads those lines back on the coordinator's side, keeping what arrived before a kill.
 """
 import copy
+import heapq
+import json
 import time
 from dataclasses import asdict, dataclass, fields
-from typing import Callable, Mapping
+from typing import BinaryIO, Callable, Mapping
 
 from . import placement_paths
 
@@ -127,3 +130,177 @@ class StageClock:
         inner._exempt = False
         inner._line = min(self._clock() + budget_s, self._end if self._exempt else self._line)
         return inner
+
+
+class StageAbandoned(BaseException):
+    """The reader has gone, so the worker has lost its authority: the stage ends. A BaseException, so that no row's
+    `except Exception`, nor its `except OSError` (BrokenPipeError is one), reads it as a row failure."""
+
+
+def _line(**value) -> bytes:
+    # A row is whole on one line; ensure_ascii, so a non-UTF-8 name (os.fsdecode's surrogates) crosses and comes back.
+    return json.dumps(dict(v=1, **value), ensure_ascii=True, separators=(',', ':')).encode('ascii') + b'\n'
+
+
+def _largest(rows, limit):
+    return heapq.nlargest(limit, rows, key=lambda r: (r.get('bytes', 0), r['path']))
+
+
+class StageRun:
+    """What one stage says, as lines on the worker's stdout. `add` is the only way a row enters, and a row added is
+    settled; `checkpoint` sends what was settled since the last one, and runs between removal units only.
+
+    `root_of(row)` is compact's root step, passed in by `disk_side`: the root a row groups under, or None for a row
+    that always crosses whole. `limit` is `disk_inventory.LIMIT`. `add` caps as `compact` does, so `read_rows` gives
+    the rows `compact` gives, and the worker holds no more than `compact` keeps."""
+
+    def __init__(self, request: StageRequest, clock: StageClock, *, out: BinaryIO,
+                 root_of: Callable[[dict], str | None], limit: int):
+        self.request, self.clock = request, clock
+        self.evidence = None                 # set by disk_side; disk_stage does not import disk_evidence
+        self.scope_errors: list[dict] = []
+        self._out, self._root_of, self._limit = out, root_of, limit
+        self._pending: list[bytes] = []
+        self._whole: dict[tuple, int] = {}   # (reason_code, root, action) -> whole rows added
+        self._more: dict[tuple, dict] = {}   # the running tally of a group's rows past `limit`
+        self._changed: dict[tuple, None] = {}
+        self._reclaimed = self._sent_reclaimed = 0
+        self._stopped = False
+
+    @property
+    def stopped(self) -> bool:
+        """`stop` has run."""
+        return self._stopped
+
+    @property
+    def reclaimed_bytes(self) -> int:
+        """The running total of `reclaimed`."""
+        return self._reclaimed
+
+    def add(self, row: dict) -> None:
+        """The only way in: the row is settled now, so later changes to the caller's dict do not cross."""
+        row = copy.deepcopy(row)
+        for key in ('dirty', 'ignored', 'excluded'):
+            if key in row:
+                row[key + '_count'] = len(row[key])
+                row[key] = row[key][:self._limit]
+        root = self._root_of(row)
+        if root is None:
+            self._pending.append(_line(row=row))
+            return
+        group = (row['reason_code'], root, row['action'])
+        if self._whole.get(group, 0) < self._limit:
+            self._whole[group] = self._whole.get(group, 0) + 1
+            self._pending.append(_line(row=row, root=root))
+            return
+        more = self._more.setdefault(group, dict(reason_code=group[0], root=root, action=group[2], count=0, files=0,
+                                                 bytes=0, age_s=row.get('age_s', 0), sample=[]))
+        more['count'] += 1
+        more['files'] += row.get('files', 0)
+        more['bytes'] += row.get('bytes', 0)
+        more['age_s'] = min(more['age_s'], row.get('age_s', 0))
+        more['sample'] = _largest(more['sample'] + [row], self._limit)
+        self._changed[group] = None
+
+    def error(self, row: dict) -> None:
+        self._pending.append(_line(error=row))
+
+    def reclaimed(self, count: int) -> None:
+        """Bytes that actually went, added as each path goes."""
+        self._reclaimed += count
+
+    def checkpoint(self) -> None:
+        """Send everything settled since the last checkpoint. A failed write raises StageAbandoned."""
+        lines = self._pending + [_line(more=self._more[group]) for group in self._changed]
+        if self._reclaimed != self._sent_reclaimed:
+            lines.append(_line(reclaimed=self._reclaimed))
+        if not lines:
+            return
+        try:
+            self._out.write(b''.join(lines))
+            self._out.flush()
+        except (OSError, ValueError) as error:          # a closed pipe raises ValueError
+            raise StageAbandoned('the stage lost its reader: ' + str(error)) from error
+        self._pending, self._changed, self._sent_reclaimed = [], {}, self._reclaimed
+
+    def stop(self, reason: str, machine, left, later) -> None:
+        """The one deadline row: the worktrees in `left` not reached, and the repos in `later` after them. An item, not
+        an error, so they are left alone and every removal is re-proven; the run is now partial. `machine` None is a
+        stage with no repo in hand, and the row names the drive. A second call adds nothing."""
+        if self._stopped:
+            return
+        self._stopped = True
+        path = self.request.drive['path'] if machine is None else machine['repo']
+        self.add(dict(path=str(path), action='report', reason_code=reason, owner=None, files=0, age_s=0, bytes=0,
+                      count=len(left) + len(later), worktrees=[e['worktree'] for e in left],
+                      repos=[m['repo'] for m in later]))
+        self.checkpoint()
+
+    def finish(self, **extra) -> None:
+        """The scope errors, after the stage's own as today, then the `end` line, carrying `extra`."""
+        for row in self.scope_errors:
+            self.error(row)
+        self.checkpoint()
+        self._pending.append(_line(end=dict(reclaimed_bytes=self._reclaimed, partial=self._stopped, **extra)))
+        self.checkpoint()
+
+
+@dataclass(frozen=True)
+class StageAnswer:
+    items: list[dict]
+    errors: list[dict]
+    reclaimed_bytes: int
+    peak_intermediate_bytes: int
+    budget: dict | None
+    complete: bool       # an `end` line arrived; `cleanup_call` clears it on a non-zero exit
+    partial: bool        # cut off: not complete, or `end` says a deadline was reached
+
+
+_KINDS = ('row', 'error', 'more', 'reclaimed', 'end')
+
+
+def _parse(raw: bytes) -> tuple[str, dict]:
+    line = json.loads(raw)
+    kinds = [kind for kind in _KINDS if kind in line] if isinstance(line, dict) else []
+    if not kinds or line.get('v') != 1 or len(kinds) > 1:
+        raise ValueError('not a stage line: ' + raw[:200].decode('ascii', 'replace'))
+    return kinds[0], line
+
+
+def read_rows(output: bytes) -> StageAnswer:
+    """A stage's answer from its lines. A partial last line is ignored; a malformed complete line raises ValueError.
+    Rows group by their stamped root as `compact` groups them, and a group with a `more` tally crosses as one row."""
+    *lines, _partial = output.split(b'\n')
+    items, grouped, more, errors, reclaimed, end = [], {}, {}, [], 0, None
+    for raw in lines:
+        kind, line = _parse(raw)
+        value = line[kind]
+        if kind == 'row' and 'root' in line:
+            grouped.setdefault((value['reason_code'], line['root'], value['action']), []).append(value)
+        elif kind == 'row':
+            items.append(value)
+        elif kind == 'error':
+            errors.append(value)
+        elif kind == 'more':
+            more[(value['reason_code'], value['root'], value['action'])] = value     # a running total: the last stands
+        elif kind == 'reclaimed':
+            reclaimed = value
+        else:
+            end = value
+    for (reason, root, action), rows in grouped.items():
+        tally = more.get((reason, root, action))
+        if tally is None:
+            items.extend(rows)
+            continue
+        # A tally starts only once `limit` whole rows were added, so their number is the sample's size.
+        items.append(dict(path=root, root=root, action=action, reason_code=reason, count=len(rows) + tally['count'],
+                          files=sum(r.get('files', 0) for r in rows) + tally['files'],
+                          bytes=sum(r.get('bytes', 0) for r in rows) + tally['bytes'],
+                          age_s=min([r.get('age_s', 0) for r in rows] + [tally['age_s']]), owner=None,
+                          sample=_largest(rows + tally['sample'], len(rows))))
+    complete = end is not None
+    end = end or {}
+    return StageAnswer(items=items, errors=errors,
+                       reclaimed_bytes=end.get('reclaimed_bytes', 0) if complete else reclaimed,
+                       peak_intermediate_bytes=end.get('peak_intermediate_bytes', 0), budget=end.get('budget'),
+                       complete=complete, partial=not complete or bool(end.get('partial')))
