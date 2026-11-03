@@ -64,6 +64,14 @@ def lock_blocker(state_dir: Path):
 class CleanupLock:
     """Nonblocking machine-wide lock shared by native and WSL callers."""
 
+    # Seconds to keep retrying a held lock. wait_missing covers only the holder's mkdir -> owner.json window; a long
+    # run's live holder must fail fast, so wait_live is 0 here and raised for the short state lock.
+    wait_live = 0.0
+    wait_missing = 1.0
+    pause = 0.05
+    _sleep = staticmethod(time.sleep)
+    _clock = staticmethod(time.monotonic)
+
     def __init__(self, state_dir: Path):
         self.path = Path(state_dir) / 'disk-cleanup.lock'
         self.token = uuid.uuid4().hex
@@ -129,14 +137,27 @@ class CleanupLock:
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.path.mkdir()
-        except FileExistsError:
-            stale = self._owner()
-            if stale is None or not holder_dead(stale):
-                raise self._busy() from None
-            self._reclaim(stale)
-            return self
+        deadline = None
+        while True:
+            try:
+                self.path.mkdir()
+            except FileExistsError:
+                stale = self._owner()
+                if stale is not None and holder_dead(stale):
+                    self._reclaim(stale)
+                    return self
+                if stale is None:
+                    limit = max(self.wait_live, self.wait_missing)  # holder may sit between mkdir and owner.json
+                else:
+                    limit = self.wait_live
+                now = self._clock()
+                if deadline is None:
+                    deadline = now
+                if now - deadline >= limit:
+                    raise self._busy() from None
+                self._sleep(self.pause)
+                continue
+            break
         self.acquired = True
         try:
             self._write_owner()
@@ -170,6 +191,9 @@ class CleanupLock:
 
 
 class _StateLock(CleanupLock):
+    wait_live = 5.0  # held only for short reads/writes, so waiting beats failing the whole run
+    wait_missing = 5.0
+
     def __init__(self, state_dir):
         super().__init__(state_dir)
         self.path = Path(state_dir) / 'disk' / 'state.lock'

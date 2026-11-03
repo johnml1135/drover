@@ -311,3 +311,86 @@ class StaleLock(DiskCase):
         self.assertFalse(won)
         self.assertEqual(self.holder(), 'dead-token')
         self.assertIn('reclaim_guard', disk_state.lock_blocker(self.state))
+
+
+class LockWait(DiskCase):
+    """Contenders wait out the holder's mkdir -> owner.json window instead of failing at once."""
+
+    def setUp(self):
+        super().setUp()
+        self.now = 0.0
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.on_sleep:
+            self.on_sleep(len(self.sleeps))
+
+    on_sleep = None
+
+    def lock(self, cls):
+        lock = cls(self.state)
+        lock._sleep = self.sleep
+        lock._clock = lambda: self.now
+        return lock
+
+    def plant(self, cls, owner=None):
+        probe = cls(self.state)
+        probe.path.mkdir(parents=True)
+        if owner:
+            (probe.path / 'owner.json').write_text(json.dumps(owner), encoding='utf-8')
+        return probe.path
+
+    def test_state_lock_waits_for_owner_json_then_acquires(self):
+        path = self.plant(disk_state._StateLock)
+        def appear(count):
+            if count == 2:
+                path.joinpath('owner.json').write_text(json.dumps({'token': 'other'}), encoding='utf-8')
+            if count == 3:  # the short holder finishes and releases
+                path.joinpath('owner.json').unlink()
+                path.rmdir()
+        self.on_sleep = appear
+        with patch.object(disk_state, 'holder_dead', return_value=False):
+            with self.lock(disk_state._StateLock) as lock:
+                self.assertTrue(lock.acquired)
+        self.assertEqual(len(self.sleeps), 3)
+
+    def test_state_lock_live_holder_raises_busy_after_bound(self):
+        self.plant(disk_state._StateLock, {'token': 'live'})
+        with patch.object(disk_state, 'holder_dead', return_value=False):
+            with self.assertRaises(BlockingIOError):
+                self.lock(disk_state._StateLock).__enter__()
+        self.assertGreaterEqual(sum(self.sleeps), disk_state._StateLock.wait_live)
+        self.assertLess(sum(self.sleeps), disk_state._StateLock.wait_live + 1)
+        self.assertTrue(all(s > 0 for s in self.sleeps))
+
+    def test_state_lock_dead_holder_is_reclaimed_without_waiting(self):
+        path = self.plant(disk_state._StateLock, {'token': 'dead'})
+        with patch.object(disk_state, 'holder_dead', return_value=True):
+            with self.lock(disk_state._StateLock) as lock:
+                self.assertTrue(lock.acquired)
+        self.assertEqual(self.sleeps, [])
+        self.assertFalse(path.exists())
+
+    def test_cleanup_lock_live_holder_fails_fast(self):
+        self.plant(disk_state.CleanupLock, {'token': 'live'})
+        with patch.object(disk_state, 'holder_dead', return_value=False):
+            with self.assertRaises(BlockingIOError):
+                self.lock(disk_state.CleanupLock).__enter__()
+        self.assertEqual(self.sleeps, [])
+
+    def test_cleanup_lock_gives_brief_grace_to_a_missing_owner(self):
+        path = self.plant(disk_state.CleanupLock)
+        self.on_sleep = lambda n: path.joinpath('owner.json').write_text(json.dumps({'token': 'live'}), encoding='utf-8')
+        with patch.object(disk_state, 'holder_dead', return_value=False):
+            with self.assertRaises(BlockingIOError):
+                self.lock(disk_state.CleanupLock).__enter__()
+        self.assertEqual(len(self.sleeps), 1)
+
+    def test_cleanup_lock_missing_owner_forever_fails_after_grace(self):
+        self.plant(disk_state.CleanupLock)
+        with self.assertRaises(BlockingIOError):
+            self.lock(disk_state.CleanupLock).__enter__()
+        self.assertGreaterEqual(sum(self.sleeps), disk_state.CleanupLock.wait_missing)
+        self.assertLess(sum(self.sleeps), disk_state.CleanupLock.wait_missing + 1)
