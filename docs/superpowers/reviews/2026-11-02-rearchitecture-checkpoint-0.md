@@ -32,3 +32,11 @@ All three failed first; each finding below was fixed in e076aef and 0b5de66 or s
 - **Limits.** The trace test limit moved from 10 s to 20 s, and slice 0's new tests from 15 s to 25 s, for the scenes added after the review of Task 5. The trace test now takes 14.5 s in the suite and `test_seams` 3.3 s.
 - **Harness.** Four files, not one, forced by `MAX_LINES`: `tests/disk_trace.py`, `_scene`, `_compare`, `_stages`.
 - **Order.** The three reviews ran before the suite, while memory was short.
+
+## Gate closed
+
+The open items above ran afterwards against 0b5de66, in a temporary worktree on the owner's word.
+
+- `task6_mutate.py`: 84 of 97 blocked. `t_roots` and `b_reading_unchecked` crash loudly. Six pass the comparison with report rows, neutral or kept rows only. Five stay invisible, explained by reading in Task 6: `p_safe`, `r_evidence_path`, `r_measured_listed`, `r_tracked_target`, `d_safe`.
+- `task5_mutate.py`: 28 of 28 blocked. `rr_task5_own.py`: 9 of 9 blocked. Five new mutants for the guards added at this checkpoint: 5 of 5 blocked.
+- Census: all 266 baseline modules compared. Only `test_garden_branch` differs, 279 against 280 in both runs, one production-side spawn fewer, cause not found.
