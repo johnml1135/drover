@@ -226,6 +226,8 @@ class WorkerContinuationTests(Base):
         fake.expect(['owning-wsl-reader'], output='{"AGENTS.md": "WSL rules é"}'.encode('utf-8'), **scopes)
         fake.expect(['owning-wsl-reader'], returncode=1, stderr_output=b'no python3\n', **scopes)
         fake.expect(['owning-wsl-reader'], error=subprocess.TimeoutExpired(['owning-wsl-reader'], 15), **scopes)
+        fake.expect(['owning-wsl-reader'], error=FileNotFoundError(2, 'No such file'), **scopes)
+        fake.expect(['owning-wsl-reader'], output=b'{"AGENTS.md": "\xff"}', **scopes)
         with patch.object(placement, 'routes_through_wsl', return_value=True), \
                 patch.object(placement.WSL, 'command', return_value=['owning-wsl-reader']) as command, \
                 patch('subprocess.run', side_effect=AssertionError('real process')), fake.patch(process):
@@ -235,4 +237,8 @@ class WorkerContinuationTests(Base):
             with self.assertRaisesRegex(OSError, '^no python3$'):
                 task_context.repository_rules(task, '/home/worker/repo')
             with self.assertRaisesRegex(OSError, 'timed out after 15 s'):     # fails closed, as any IO error
+                task_context.repository_rules(task, '/home/worker/repo')
+            with self.assertRaisesRegex(OSError, '^owning-wsl-reader: No such file$'):
+                task_context.repository_rules(task, '/home/worker/repo')
+            with self.assertRaises(UnicodeDecodeError):      # strict UTF-8, as before
                 task_context.repository_rules(task, '/home/worker/repo')

@@ -143,8 +143,8 @@ def read_vram():
     cmd = ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
     for exe in (['nvidia-smi.exe'] if is_windows() else ['nvidia-smi', 'nvidia-smi.exe']):
         done = process.run(process.Command([exe, *cmd], 10))
-        text = locale_text(done.out) if done.kind == 'exited' else ''        # nvidia-smi writes the code page
-        try:
+        try:        # nvidia-smi writes the code page; undecodable output is a ValueError, so unknown
+            text = locale_text(done.out) if done.kind == 'exited' else ''
             used, total = (float(x) for x in text.splitlines()[0].split(','))
             return [used, total] if total > 0 else None
         except (ValueError, IndexError):

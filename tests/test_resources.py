@@ -216,12 +216,23 @@ class Commands(unittest.TestCase):
         argv = ['nvidia-smi.exe', '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits']
         # A strict UTF-8 read of a code page's 'ö' fails, and the reading is lost; by locale it is kept.
         self.fake.expect(argv, output='8192, 24576\r\nGeräte: Jösé\r\n'.encode(encoding), **process_options(10))
-        self.fake.expect(argv, error=subprocess.TimeoutExpired(argv, 10), **process_options(10))
+        partial = b'8192, 24576\r\n'      # parseable, but the run did not end: no reading
+        self.fake.expect(argv, error=subprocess.TimeoutExpired(argv, 10, output=partial), **process_options(10))
         self.fake.expect(argv, error=FileNotFoundError(2, 'not found'), **process_options(10))
+        bad = next(bytes([b]) for b in range(0x80, 0x100) if not self.decodes(bytes([b]), encoding))
+        self.fake.expect(argv, output=b'8192, 24576' + bad + b'\r\n', **process_options(10))  # undecodable: unknown
         with mock.patch.object(resources, 'is_windows', return_value=True), self.fake.patch(process):
             self.assertEqual(resources.read_vram(), [8192.0, 24576.0])
-            self.assertIsNone(resources.read_vram())
-            self.assertIsNone(resources.read_vram())
+            for _ in range(3):
+                self.assertIsNone(resources.read_vram())
+
+    @staticmethod
+    def decodes(data, encoding):
+        try:
+            data.decode(encoding)
+            return True
+        except UnicodeDecodeError:
+            return False
 
     def test_resources_244_reads_wsl_memory_through_process(self):
         argv = ['wsl.exe', '-d', 'Ubuntu', '--exec', 'cat', '/proc/meminfo']
