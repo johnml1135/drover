@@ -190,9 +190,12 @@ class Reads(Faults, Resident):
             pane_close.worktree_facts('.', broken)
 
     def test_git_failing_is_an_unreadable_checkout(self):
-        for error in (OSError(SECRET), subprocess.TimeoutExpired('git', 1), ValueError(SECRET)):
-            with self.subTest(type(error).__name__):
-                self.assertIsNone(pane_close.worktree_facts('.', mock.Mock(side_effect=error)))
+        from drover.git_client import Answer, GitReply
+        timed_out = GitReply(Answer.UNKNOWN, '', SECRET, None, 'timeout')       # what git_client.ask gives for a timeout
+        for name, run in (('OSError', mock.Mock(side_effect=OSError(SECRET))), ('timeout', mock.Mock(return_value=timed_out)),
+                          ('ValueError', mock.Mock(side_effect=ValueError(SECRET)))):
+            with self.subTest(name):
+                self.assertIsNone(pane_close.worktree_facts('.', run))
 
     def test_a_bug_in_the_trust_check_is_not_an_untrusted_repo(self):
         with mock.patch.object(placement, 'to_wsl_path', side_effect=AttributeError(SECRET)), self.assertRaises(AttributeError):

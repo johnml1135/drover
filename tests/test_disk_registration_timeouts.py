@@ -8,7 +8,8 @@ from unittest.mock import patch
 from drover import disk_registrations, disk_worktrees, git_client, placement
 from tests.disk_fixture import listing_answers, stage_request
 
-TIMEOUT = subprocess.TimeoutExpired(['git'], 60)
+TIMEOUT = ValueError('git rev-parse failed: timeout')      # what a git timeout gives the disk callers, through `_out`
+SPAWN_TIMEOUT = subprocess.TimeoutExpired(['git'], 60)    # the spawn's own, below git_client
 MACHINE = dict(name='alpha', repo='/repo')
 
 
@@ -50,7 +51,7 @@ class UnknownCandidate(unittest.TestCase):
     def git(self, repo, *args, timeout):
         self.asked.append(args[-1])
         if args[-1] == 'refs/heads/hx/T1':
-            raise TIMEOUT
+            raise SPAWN_TIMEOUT
         return subprocess.CompletedProcess(args, 0, 'c' * 40 + '\n', '')
 
     def test_a_timed_out_preferred_name_raises_and_the_row_is_unproven(self):
@@ -81,9 +82,9 @@ class ReregisterFailure(unittest.TestCase):
         def add(repo, place, *args, **kwargs):
             self.added.append(kwargs)
             Path(place).mkdir(parents=True)
-            raise TIMEOUT
+            raise kwargs['error'](git_client.GitFailed(('worktree', 'add'), 'timeout', None, '', ''))     # add_worktree's error=
         with patch.object(placement, 'add_worktree', side_effect=add),                 patch.object(git_client, 'mutate', return_value=removal) as git,                 patch.object(placement, 'cleanup_side', return_value='wsl'):
-            with self.assertRaises(subprocess.TimeoutExpired):
+            with self.assertRaisesRegex(ValueError, '^git worktree failed: timeout$'):
                 disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b', store)
         return records, git
 

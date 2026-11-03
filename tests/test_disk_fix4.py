@@ -85,7 +85,7 @@ class UncertaintyReports(WorktreeCase):
                 def status(repo, **kwargs):
                     if str(repo) == str(path):
                         if unknown == 'status-timeout':
-                            raise subprocess.TimeoutExpired(['git', 'status'], 60)
+                            raise ValueError('git status failed: timeout')      # what status's _out gives for a timeout
                         if unknown == 'status':
                             raise ValueError('repository unavailable')
                     return real_status(repo, **kwargs)
