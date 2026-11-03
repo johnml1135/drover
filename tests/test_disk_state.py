@@ -82,7 +82,7 @@ except BlockingIOError:
         self.assertAlmostEqual(clock.now - 1000.0, RELEASE.seconds, delta=RELEASE.step_s * 1.5)
 
     def test_state_write_syncs_and_waits_ordinary(self):
-        """Both writers: fsync before the replace, the ordinary wait, the compact strict encoding and mkstemp's own 0600."""
+        """Both writers: fsync before the replace, the ordinary wait, the compact strict encoding and the private 0600 mode."""
         (self.state / 'disk').mkdir(parents=True, exist_ok=True)
         writers = ((lambda value: disk_state.save_file(self.state, 'fact.json', value), self.state / 'disk' / 'fact.json'),
                    (lambda value: disk_state._write(self.state, value), self.state / 'disk' / 'state.json'))

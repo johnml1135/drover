@@ -354,3 +354,7 @@ No checkpoint has run yet.
 ## After slice 0
 
 Taken on 0b5de66 by the same `scripts/test.py -j 4 --durations 10`: `Ran 3901 tests (26 skipped) in 269 modules, wall 266.2s, 0 failed modules`. The integration tier: `Ran 209 tests (14 skipped) in 269 modules, wall 284.5s, 0 failed modules`. `test_disk_decision_trace` 14.5 s, `test_seams` 3.3 s. Available memory was short and varied, so these seconds compare loosely with the baseline. The census stopped at 199 of 269 modules for low memory, so this row has no spawn total: 197 of 198 modules match the baseline, and `test_garden_branch` read 279 against 280.
+
+## After slice 3b
+
+On ea5f404: `Ran 4092 tests (28 skipped) in 275 modules, wall 206.8s, 0 failed modules`; integration `Ran 208 tests (14 skipped) in 275 modules, wall 213.1s, 0 failed modules`. `test_disk_decision_trace` 10.7 s, `test_seams` 3.4 s, `test_git_worktrees_proof` 3.1 s, `test_disk_fresh_proof` 3.3 s under `-j 4`; the two proof modules take 2.0-2.5 s alone, ruled at 3 s. Census at 572dcb4: 3853 spawns over 275 modules against 3832 at baseline. `IMPURE_CEILING` 63, `INTEGRATION_CEILING` 208.
