@@ -1,10 +1,11 @@
 """Placement worker operations."""
 import os
-import subprocess
 import sys
 import json
 import time
 
+from . import process
+from .placement_exec import locale_text
 from .placement_paths import (
     IS_WINDOWS,
 )
@@ -163,13 +164,14 @@ $nodes.Item(0).InnerText = $n.title
 $nodes.Item(1).InnerText = $n.body
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Drover').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 '''
-    try:
-        done = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                              input=json.dumps(notice), capture_output=True, text=True, timeout=15, shell=False)
-    except subprocess.TimeoutExpired as error:
-        raise OSError('toast delivery timed out') from error
-    if done.returncode:
-        raise OSError('toast unavailable: ' + done.stderr[-1000:])
+    done = process.run(process.Command(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], 15,
+                                       stdin=json.dumps(notice)))
+    if done.kind == 'timed_out':
+        raise OSError('toast delivery timed out')
+    if done.kind == 'unavailable':
+        raise OSError(done.detail)
+    if done.code:
+        raise OSError('toast unavailable: ' + locale_text(done.err)[-1000:])
 
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x4000

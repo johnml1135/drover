@@ -14,7 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import tests
-from tests.fakeci import FakeCommands, InProcessLauncher
+from tests.fakeci import FakeCommands, InProcessLauncher, process_options
 from tests.gitfix import sh
 from tests.tiers import MARKER, enabled
 
@@ -191,27 +191,26 @@ class FakeCommandBoundaries(unittest.TestCase):
         self.fake.assert_done()
 
     def test_patch_is_local_and_production_git_checks_the_boundary(self):
-        from drover import placement_git
-        original, real_run = placement_git.subprocess, subprocess.run
+        from drover import placement_git, process
+        original, real_run = process.subprocess, subprocess.run
         argv = ['git', '-C', str(self.fake.cwd), 'rev-parse', 'HEAD']
-        options = dict(text=True, capture_output=True, encoding='utf-8', errors='replace',
-                       timeout=23, env=self.fake.env, **placement_git.NO_WINDOW)
+        options = process_options(23, env=self.fake.env)
         self.fake.expect(argv, output='abc123\n', **options)
-        with self.fake.patch(placement_git):
+        with self.fake.patch(process):
             result = placement_git.git(self.fake.cwd, 'rev-parse', 'HEAD', timeout=23, env=self.fake.env)
             self.assertEqual(result.stdout, 'abc123\n')
             self.assertIs(subprocess.run, real_run)
             with self.assertRaisesRegex(AssertionError, 'unscripted subprocess API'):
-                placement_git.subprocess.Popen(argv)
-        self.assertIs(placement_git.subprocess, original)
+                process.subprocess.Popen(argv)
+        self.assertIs(process.subprocess, original)
         with self.assertRaisesRegex(ValueError, 'consumer module'):
             with self.fake.patch(subprocess):
                 pass
         self.fake.expect(argv, **options)
         with self.assertRaisesRegex(AssertionError, 'unused command'):
-            with self.fake.patch(placement_git):
+            with self.fake.patch(process):
                 pass
-        self.assertIs(placement_git.subprocess, original)
+        self.assertIs(process.subprocess, original)
 
     def test_git_helper_uses_injected_environment_and_timeout_without_retry_sleep(self):
         env = {**self.fake.env, 'GIT_TERMINAL_PROMPT': '0', 'GCM_INTERACTIVE': 'never', 'GIT_ASKPASS': ''}
@@ -231,19 +230,17 @@ class FakeCommandBoundaries(unittest.TestCase):
         self.fake.assert_done()
 
     def test_patched_git_preserves_missing_executable_result(self):
-        from drover import placement_git
+        from drover import placement_git, process
         argv = ['git', '-C', str(self.fake.cwd), 'rev-parse', 'HEAD']
-        options = dict(text=True, capture_output=True, encoding='utf-8', errors='replace',
-                       timeout=23, env=self.fake.env, **placement_git.NO_WINDOW)
-        self.fake.expect(argv, error=FileNotFoundError('fixture git is missing'), **options)
-        with self.fake.patch(placement_git):
+        self.fake.expect(argv, error=FileNotFoundError('fixture git is missing'), **process_options(23, env=self.fake.env))
+        with self.fake.patch(process):
             result = placement_git.git(self.fake.cwd, 'rev-parse', 'HEAD', timeout=23, env=self.fake.env)
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertEqual((result.returncode, result.stdout), (127, ''))
         self.assertIn('fixture git is missing', result.stderr)
 
     def test_in_process_ci_uses_fake_pwsh_python_and_git_without_processes_or_sleeps(self):
-        from drover import ci, placement_exec, placement_git, runner
+        from drover import ci, placement_exec, process, runner
         repo, sha, base = str(self.fake.cwd), 'a' * 40, 'b' * 40
         runs = self.fake.root / 'runs'
         run_dir = runner.run_dir(runs, 'fake-gate')
@@ -255,8 +252,7 @@ class FakeCommandBoundaries(unittest.TestCase):
         plan_file = self.fake.root / 'plan.json'
         plan_file.write_text(json.dumps(plan), encoding='utf-8')
         env = {**self.fake.env, **ci.GIT_PROMPT_ENV}
-        options = dict(text=True, capture_output=True, encoding='utf-8', errors='replace',
-                       timeout=60, env=env, **placement_git.NO_WINDOW)
+        options = process_options(60, env=env)
 
         def expect_git(args, output=''):
             self.fake.expect(['git', '-C', repo, *args], output=output, **options)
@@ -278,7 +274,7 @@ class FakeCommandBoundaries(unittest.TestCase):
         with mock.patch.object(subprocess, 'Popen', side_effect=AssertionError('real process')) as starts, \
                 mock.patch.object(time, 'sleep', side_effect=AssertionError('real sleep')) as sleeps, \
                 mock.patch.dict(os.environ, self.fake.env, clear=True), \
-                self.fake.patch(placement_git, placement_exec):
+                self.fake.patch(process, placement_exec):
             handle = launcher.launch(spec)
             self.assertEqual(handle.poll()['status'], 'done')
             starts.assert_not_called()

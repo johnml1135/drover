@@ -1,9 +1,11 @@
 """WSL-side work counts free space inside the distro's VHDX on top of the host drive; Windows work does not."""
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from drover import config, config_defaults, disk, placement, placement_host, resources
+from drover import config, config_defaults, disk, placement, placement_host, process, resources
+from tests.fakeci import FakeCommands, process_options
 
 
 def cfg(**over):
@@ -103,23 +105,23 @@ class Combined(unittest.TestCase):
         self.assertTrue(self.tick(8)['pause'])        # below the floor too: every side paused
 
     def test_wsl_free_measurement(self):
-        ok = SimpleNamespace(returncode=0, stdout='   Avail\n391000000000\n')
         win = mock.patch.object(placement_host, 'IS_WINDOWS', True)
         placement._WSL_FREE.clear()
-        calls = []
-        def run(*a, **k):
-            calls.append(k['timeout'])
-            return ok
-        with win:
-            self.assertAlmostEqual(placement.wsl_free_gb('U', True, run=run), 391e9 / 1024 ** 3)
-            placement.wsl_free_gb('U', True, run=run)            # shared for a minute: no second spawn
-            self.assertEqual(calls, [5])
-            self.assertAlmostEqual(placement.wsl_free_known('U'), 391e9 / 1024 ** 3)
-            self.assertIsNone(placement.wsl_free_known('other'))   # held() never measures
-            bad = SimpleNamespace(returncode=1, stdout='')
-            self.assertIsNone(placement.wsl_free_gb('V', True, run=lambda *a, **k: bad, ttl=0))
-            self.assertIsNone(placement.wsl_free_gb('V', True, run=mock.Mock(side_effect=OSError), ttl=0))
-            self.assertIsNone(placement.wsl_free_gb('W', False, run=run, ttl=0))   # distro down: not asked
+        with win, tempfile.TemporaryDirectory() as temp:
+            fake = FakeCommands(temp)
+            df = lambda name: placement.WSL(name).command(['df', '-B1', '--output=avail', '/'])
+            fake.expect(df('U'), output='   Avail\n391000000000\n', **process_options(5))
+            fake.expect(df('V'), returncode=1, **process_options(5))
+            fake.expect(df('V'), error=OSError(5, 'denied'), **process_options(5))
+            with fake.patch(process):
+                self.assertAlmostEqual(placement.wsl_free_gb('U', True), 391e9 / 1024 ** 3)
+                placement.wsl_free_gb('U', True)            # shared for a minute: no second spawn
+                self.assertEqual(len(fake.calls), 1)
+                self.assertAlmostEqual(placement.wsl_free_known('U'), 391e9 / 1024 ** 3)
+                self.assertIsNone(placement.wsl_free_known('other'))   # held() never measures
+                self.assertIsNone(placement.wsl_free_gb('V', True, ttl=0))
+                self.assertIsNone(placement.wsl_free_gb('V', True, ttl=0))
+                self.assertIsNone(placement.wsl_free_gb('W', False, ttl=0))   # distro down: not asked
         with mock.patch.object(placement_host, 'IS_WINDOWS', False), \
                 mock.patch.object(placement_host.os, 'statvfs', create=True,
                                   return_value=SimpleNamespace(f_bavail=10, f_frsize=1024 ** 3)):

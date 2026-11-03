@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from drover import config, disk_cleanup, disk_runtime, disk_state, placement
+from drover import config, disk_cleanup, disk_runtime, disk_state, placement, process
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase, ProcessFreeDiskCase
@@ -263,12 +263,12 @@ class UserScope(ProcessFreeDiskCase):
     def test_windows_cim_owner_sid_scopes_cwd_and_preserves_exe_evidence(self):
         rows = [dict(ProcessId=123456789, Name='fixture', ExecutablePath=r'H:\candidate\tool.exe',
                      CommandLine=None, OwnerSid='other')]
-        done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=rows)), '')
+        done = subprocess.CompletedProcess([], 0, b'', b'')
         for same_user in (False, True):
             rows[0]['OwnerSid'] = 'invoker' if same_user else 'other'
-            done.stdout = json.dumps(dict(sid='invoker', processes=rows))
+            done.stdout = json.dumps(dict(sid='invoker', processes=rows)).encode()
             with self.subTest(same_user=same_user), \
-                    patch.object(subprocess, 'run', return_value=done) as query, \
+                    patch.object(process.subprocess, 'run', return_value=done) as query, \
                     patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_2, patch('drover.placement_proof._windows_cwd', _placement_patch_2):
                 proof = placement.cleanup_processes(windows=True)
             self.assertIn('OpenProcessToken', query.call_args.args[0][-1])  # one batched pass, owners from tokens

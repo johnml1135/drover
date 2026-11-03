@@ -8,7 +8,8 @@ from unittest import mock
 
 from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_runtime, disk_state, durable, ledger
 from drover import placement
-from drover import placement_git, placement_host, resources
+from drover import placement_git, placement_host, process, resources
+from tests.fakeci import FakeCommands, process_options
 from drover.ledger import disk_notices
 from drover.port import DirectPort
 from tests.disk_fixture import DiskCase
@@ -166,14 +167,16 @@ class Hold(DiskCase):
 
     def test_a_df_reading_returns_its_cached_value(self):
         self.addCleanup(placement._WSL_USED.clear)
-        with mock.patch.object(placement_host, 'IS_WINDOWS', True):
-            run = mock.Mock(return_value=done('h\n%d\n' % 1024 ** 3))
-            self.assertEqual(placement.wsl_used_gb('U', True, run=run), 1)
-            self.live()
-            run.reset_mock()
-            self.assertEqual(placement.wsl_used_gb('U', True, run=run, ttl=0), 1)
-            self.assertIsNone(placement.wsl_used_gb('Other', True, run=run, ttl=0))
-            run.assert_not_called()
+        with mock.patch.object(placement_host, 'IS_WINDOWS', True), tempfile.TemporaryDirectory() as temp:
+            fake = FakeCommands(temp)
+            fake.expect(placement.WSL('U').command(['df', '-B1', '--output=used', '/']), output='h\n%d\n' % 1024 ** 3,
+                        **process_options(5))
+            with fake.patch(process):       # the one reading; inside the window an unexpected command fails here
+                self.assertEqual(placement.wsl_used_gb('U', True), 1)
+                self.live()
+                self.assertEqual(placement.wsl_used_gb('U', True, ttl=0), 1)
+                self.assertIsNone(placement.wsl_used_gb('Other', True, ttl=0))
+            self.assertEqual(len(fake.calls), 1)
 
     def test_offline_refuses_any_wsl_command_as_an_os_error(self):
         self.live('offline')

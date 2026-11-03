@@ -1,7 +1,6 @@
 """Placement host operations."""
 import os
 import re
-import subprocess
 import time
 import shutil
 from pathlib import Path
@@ -15,12 +14,12 @@ from .placement_paths import (
     to_wsl_path,
 )
 from .placement_exec import (
-    NO_WINDOW,
     WSL,
     distro,
+    locale_text,
     wsl_control,
 )
-from . import compaction_hold
+from . import compaction_hold, process
 from .config_defaults import PROCESS_IGNORE
 
 
@@ -68,10 +67,10 @@ def _vhdx_dir():
     distro = os.environ.get('WSL_DISTRO_NAME')
     if not distro or not os.path.exists(REG):
         return None
-    try:
-        out = subprocess.run([REG, 'query', LXSS, '/s'], text=True, capture_output=True, timeout=10, **NO_WINDOW).stdout
-    except (OSError, subprocess.TimeoutExpired):
+    done = process.run(process.Command([REG, 'query', LXSS, '/s'], 10))
+    if done.kind != 'exited':
         return None
+    out = locale_text(done.out)     # reg writes the code page: a non-ASCII BasePath keeps its letters
     name = base = None
     for line in out.replace('\r', '').splitlines():
         if line.startswith('HKEY_'):
@@ -128,23 +127,23 @@ def detect_distros():
         name = os.environ.get("WSL_DISTRO_NAME")
         return [{"name": name, "state": "Running", "version": 2, "default": True}] if name else []
     try:
-        r = subprocess.run(wsl_control(["-l", "-v"]), capture_output=True, timeout=20, **NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
+        r = process.run(process.Command(wsl_control(["-l", "-v"]), 20))
+    except OSError:     # WslOffline: the compaction hold
         return []
-    return parse_distros(decode_output(r.stdout)) if r and r.returncode == 0 else []
+    return parse_distros(decode_output(r.out)) if r.ok else []
 
 
-def wsl_running(default, run=subprocess.run):
+def wsl_running(default):
     """True when the distro is up right now. `wsl -l --running` does not start anything, unlike `wsl --exec`.
     During a compaction window the answer is False and wsl.exe is not called."""
     if compaction_hold.active():
         return False
     try:
-        r = run(wsl_control(["-l", "--running", "-q"]), capture_output=True, timeout=20, **NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
+        r = process.run(process.Command(wsl_control(["-l", "--running", "-q"]), 20))
+    except OSError:     # WslOffline: the compaction hold
         return False
-    names = decode_output(r.stdout).splitlines()
-    return r.returncode == 0 and distro(default).lower() in [x.strip().lower() for x in names]
+    names = decode_output(r.out).splitlines()
+    return r.ok and distro(default).lower() in [x.strip().lower() for x in names]
 
 
 WSL_FREE_TTL_S = 60
@@ -152,7 +151,7 @@ _WSL_FREE = {}   # distro -> (monotonic time, GB or None): the one measurement e
 _WSL_USED = {}   # the same, for used space
 
 
-def _wsl_df(cache, column, distro, up, run, ttl):
+def _wsl_df(cache, column, distro, up, ttl):
     """One `df` column of the distro's root filesystem in GB, cached per distro for ttl. On Windows it is one
     `wsl.exe -d <distro> -- df` with a 5 s timeout, and only when `up` (the distro is already running, so the call
     cannot start it). None means unknown. During a compaction window it returns what is cached, however old, and
@@ -169,25 +168,24 @@ def _wsl_df(cache, column, distro, up, run, ttl):
             blocks = st.f_bavail if column == 'avail' else st.f_blocks - st.f_bfree
             value = blocks * st.f_frsize / (1024 ** 3)
         elif up:
-            out = run(WSL(distro).command(['df', '-B1', '--output=' + column, '/']), text=True,
-                      capture_output=True, timeout=5, **NO_WINDOW)
-            value = int(out.stdout.split()[-1]) / (1024 ** 3) if out.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            out = process.run(process.Command(WSL(distro).command(['df', '-B1', '--output=' + column, '/']), 5))
+            value = int(out.stdout.split()[-1]) / (1024 ** 3) if out.ok else None
+    except (OSError, ValueError, IndexError):
         value = None
     cache[distro] = (time.monotonic(), value)
     return value
 
 
-def wsl_free_gb(distro, up=True, *, run=subprocess.run, ttl=WSL_FREE_TTL_S):
+def wsl_free_gb(distro, up=True, *, ttl=WSL_FREE_TTL_S):
     """Free GB on the distro's root filesystem, measured at most once per ttl (the free space inside the VHDX is
     reusable without growing it). None means unknown, which counts as 0."""
-    return _wsl_df(_WSL_FREE, 'avail', distro, up, run, ttl)
+    return _wsl_df(_WSL_FREE, 'avail', distro, up, ttl)
 
 
-def wsl_used_gb(distro, up=True, *, run=subprocess.run, ttl=WSL_FREE_TTL_S):
+def wsl_used_gb(distro, up=True, *, ttl=WSL_FREE_TTL_S):
     """Used GB on the distro's root filesystem, measured at most once per ttl under the same rules as wsl_free_gb.
     Never starts the distro (up=False runs nothing). None means unknown, which triggers nothing."""
-    return _wsl_df(_WSL_USED, 'used', distro, up, run, ttl)
+    return _wsl_df(_WSL_USED, 'used', distro, up, ttl)
 
 
 def wsl_free_known(distro):
@@ -318,7 +316,7 @@ def cleanup_vhdx_report(*, paths=None, read=None):
         try:
             row.update((read or _vhdx_reading)(path))
             if row['sparse'] is False:
-                distro_arg = subprocess.list2cmdline([name])
+                distro_arg = process.list2cmdline([name])
                 row['owner_action'] = (
                     f'Periodically run `wsl -d {distro_arg} -u root -- fstrim -v /`; to return space, '
                     f'run `wsl --shutdown`, then run `Optimize-VHD -Path "{path}" -Mode Full` '

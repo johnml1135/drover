@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_schedule_steps, disk_state, placement
+from drover import config, disk_schedule_steps, disk_state, placement, process
 from tests.disk_fixture import DiskCase
 
 
@@ -24,7 +24,7 @@ class Recovery(unittest.TestCase):
             # Execute the exact Python composed for WSL on this test host.
             return run([sys.executable, *argv[argv.index('-c'):]], **kw)
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(placement, 'distro', return_value='Fixture') as _placement_patch_2, patch('drover.placement_exec.distro', _placement_patch_2), patch('drover.placement_git.distro', _placement_patch_2), patch('drover.placement_host.distro', _placement_patch_2), \
-                patch.object(subprocess, 'run', side_effect=execute):
+                patch.object(process.subprocess, 'run', side_effect=execute):
             self.assertTrue(placement.recover_ci_children('wsl', dict(
                 pid=123456789, runner_pid=123456789, run_id='fixture', result='RESULT_SENTINEL' * 6000), '/tmp'))
         self.assertEqual(json.loads(captured[0][0][-1]), dict(pid=123456789, runner_pid=123456789, run_id='fixture'))
@@ -135,7 +135,7 @@ class ProcessQuery(DiskCase):
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_3, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_3), patch('drover.placement_git.IS_WINDOWS', _placement_patch_3), patch('drover.placement_host.IS_WINDOWS', _placement_patch_3), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_3), patch('drover.placement_process.IS_WINDOWS', _placement_patch_3), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_3), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_3), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_3), \
                 patch.object(placement, '_windows_processes', return_value={}) as _placement_patch_4, patch('drover.placement_proof._windows_processes', _placement_patch_4), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
-                patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('cim', 300)) as query, \
+                patch.object(process.subprocess, 'run', side_effect=subprocess.TimeoutExpired('cim', 300)) as query, \
                 patch.object(placement.time, 'monotonic', side_effect=[10., 310.25, 400., 700.25]):
             first = serve(request)
             second = serve(dict(request, stage=3))
@@ -152,9 +152,9 @@ class ProcessQuery(DiskCase):
     def test_one_narrow_query_per_stage_and_drive(self):
         rows = [dict(ProcessId=123456789, ParentProcessId=42, Name='service.exe', SessionId=0,
                      ExecutablePath=r'H:\candidate\tool.exe', CommandLine='', OwnerSid=None)]
-        done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=rows)), '')
+        done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=rows)).encode(), b'')
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='fixture')
-        with patch.object(subprocess, 'run', return_value=done) as query, \
+        with patch.object(process.subprocess, 'run', return_value=done) as query, \
                 patch.object(placement, '_windows_processes', return_value={'123456789': ['service.exe', 1]}) as _placement_patch_5, patch('drover.placement_proof._windows_processes', _placement_patch_5), \
                 patch.object(placement, '_windows_cwd', return_value=None) as _placement_patch_6, patch('drover.placement_proof._windows_cwd', _placement_patch_6):
             for stage, drive in ((2, 'H:/'), (4, 'H:/'), (5, 'C:/')):
@@ -195,8 +195,8 @@ class ReviewRegressions(DiskCase):
         request = dict(paths={}, state_dir=str(self.state), _inventory_id='fixture', apply=True)
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
             ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1,
-            ExecutablePath=r'C:\tools\old.exe', CommandLine='old.exe')])), '')
-        with patch.object(subprocess, 'run', return_value=done) as query, \
+            ExecutablePath=r'C:\tools\old.exe', CommandLine='old.exe')])).encode(), b'')
+        with patch.object(process.subprocess, 'run', return_value=done) as query, \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_7, patch('drover.placement_proof._windows_cwd', _placement_patch_7), \
                 patch.object(placement, '_windows_processes', create=True,
                              side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
@@ -241,11 +241,11 @@ class ReviewRegressions(DiskCase):
                        drive=dict(path=str(self.root)), paths=self.cfg['disk_cleanup'], _inventory_id='fixture')
         done = subprocess.CompletedProcess([], 0, json.dumps(dict(sid='invoker', processes=[dict(
             ProcessId=101, Name='old.exe', OwnerSid='invoker', SessionId=1,
-            ExecutablePath=r'C:\tools\old.exe', CommandLine='old.exe')])), '')
+            ExecutablePath=r'C:\tools\old.exe', CommandLine='old.exe')])).encode(), b'')
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_9, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_9), patch('drover.placement_git.IS_WINDOWS', _placement_patch_9), patch('drover.placement_host.IS_WINDOWS', _placement_patch_9), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_9), patch('drover.placement_process.IS_WINDOWS', _placement_patch_9), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_9), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_9), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_9), \
                 patch.object(placement, 'cleanup_scope', side_effect=lambda r: dict(r, scope_errors=[])), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
-                patch.object(subprocess, 'run', return_value=done), \
+                patch.object(process.subprocess, 'run', return_value=done), \
                 patch.object(placement, '_windows_cwd', return_value=r'C:\elsewhere') as _placement_patch_10, patch('drover.placement_proof._windows_cwd', _placement_patch_10), \
                 patch.object(placement, '_windows_processes',
                              side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},

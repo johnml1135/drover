@@ -6,7 +6,6 @@ once; all callers then resolve the same ledger override above configuration.
 """
 import os
 import re
-import subprocess
 import sys
 import json
 import signal
@@ -15,6 +14,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import process
 from .placement_paths import (
     IS_WINDOWS, MNT_RE, WIN_RE, _ordinal_case, _ordinal_char, canonical, cleanup_link, cleanup_normalize,
     cleanup_parts, cleanup_path, cleanup_path_side, cleanup_side, config_path, drive, is_linux_native,
@@ -165,9 +165,10 @@ def recover_ci_children(platform, status, drover_dir, distro_name=None):
         code = ('import json,sys; from drover.placement import stop_ci_children; '
                 'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
         command = WSL(distro_name).command(['python3', '-c', code, json.dumps({key: status.get(key) for key in ('pid', 'runner_pid', 'run_id')})], cd=drover_dir)
-        result = subprocess.run(command, capture_output=True, timeout=90,
-                                stdin=subprocess.DEVNULL, **NO_WINDOW)
-        if result.returncode not in (0, 1):
+        result = process.run(process.Command(command, 90))
+        if result.kind != 'exited':
+            raise ScanError(f'cannot confirm WSL CI child termination: {result.detail}')
+        if result.code not in (0, 1):
             raise ScanError('cannot confirm WSL CI child termination')
-        return result.returncode == 0
+        return result.code == 0
     return stop_ci_children(status)

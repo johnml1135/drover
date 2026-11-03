@@ -1,6 +1,5 @@
 """Placement process operations."""
 import os
-import subprocess
 import sys
 import json
 import signal
@@ -12,9 +11,10 @@ from .placement_paths import (
     IS_WINDOWS,
     cleanup_side,
 )
+from . import process
 from .placement_exec import (
-    NO_WINDOW,
     WSL,
+    locale_text,
 )
 
 if IS_WINDOWS:
@@ -96,13 +96,14 @@ def _proc_cmdlines_windows():
     """(pid, argv, parent pid) rows from CIM. Raises ScanError when the list cannot be read."""
     script = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
               "Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId,CommandLine | ConvertTo-Json")
+    r = process.run(process.Command([_powershell(), "-NoProfile", "-Command", script], 60))
+    if r.kind != 'exited':
+        raise ScanError(f"cannot list processes: {r.detail}")
+    if r.code != 0:
+        raise ScanError(f"powershell exited {r.code}")
     try:
-        r = subprocess.run([_powershell(), "-NoProfile", "-Command", script], capture_output=True, timeout=60, **NO_WINDOW)
-        if r.returncode != 0:
-            raise ScanError(f"powershell exited {r.returncode}")
-        text = r.stdout.decode("utf-8", errors="replace").strip()
-        rows = json.loads(text)
-    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        rows = json.loads(r.stdout.strip())
+    except ValueError as e:
         raise ScanError(f"cannot list processes: {e!r}") from e
     rows = [rows] if isinstance(rows, dict) else rows
     if not isinstance(rows, list) or not rows:
@@ -131,12 +132,12 @@ def stop_ci_children(status):
             # KILL_ON_JOB_CLOSE ends all children when their runner dies. Include
             # processes without readable command lines in the confirmation scan.
             script = ('Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId | ConvertTo-Json')
-            result = subprocess.run([_powershell(), '-NoProfile', '-Command', script],
-                                    capture_output=True, text=True, timeout=60,
-                                    stdin=subprocess.DEVNULL, **NO_WINDOW)
-            if result.returncode:
+            result = process.run(process.Command([_powershell(), '-NoProfile', '-Command', script], 60))
+            if result.kind != 'exited':
+                raise ScanError(f'cannot confirm CI job closure: {result.detail}')
+            if result.code:
                 raise ScanError('cannot confirm CI job closure')
-            rows = json.loads(result.stdout)
+            rows = json.loads(locale_text(result.out))
             rows = [rows] if isinstance(rows, dict) else rows
             if not isinstance(rows, list) or not rows:
                 raise ScanError('empty process scan while confirming CI job closure')
@@ -307,11 +308,15 @@ $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name
         filters = ' OR '.join(f'ProcessId={int(pid)}' for pid in pids)
         script = script.replace('Get-CimInstance Win32_Process -Property',
                                 f"Get-CimInstance Win32_Process -Filter '{filters}' -Property")
-    out = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                         capture_output=True, text=True, timeout=timeout, errors='replace', **NO_WINDOW)
-    if out.returncode or not out.stdout.strip():
-        raise OSError('CIM query failed: ' + out.stderr.strip()[:200])
-    data = json.loads(out.stdout)
+    out = process.run(process.Command(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], timeout))
+    if out.kind == 'timed_out':
+        raise TimeoutError(out.detail)      # read below as process_query_timeout
+    if out.kind == 'unavailable':
+        raise OSError(out.detail)
+    stdout, stderr = locale_text(out.out, 'replace'), locale_text(out.err, 'replace')
+    if out.code or not stdout.strip():
+        raise OSError('CIM query failed: ' + stderr.strip()[:200])
+    data = json.loads(stdout)
     if not data.get('sid') or not isinstance(data.get('processes'), list):
         raise ValueError('CIM ownership unavailable')
     # CIM hides elevated images even when a limited-query handle can read them.
@@ -410,9 +415,9 @@ def _cleanup_cim(request, current=None):
     started = time.monotonic()
     try:
         answer = dict(rows=_cim_rows(timeout), identities=current)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         answer = dict(rows=[], error=str(error), elapsed_s=time.monotonic() - started,
-                      reason_code='process_query_timeout' if isinstance(error, subprocess.TimeoutExpired)
+                      reason_code='process_query_timeout' if isinstance(error, TimeoutError)
                       else 'process_visibility_unavailable')
     if cache:
         disk_state.save_file(request['state_dir'], cache, answer)

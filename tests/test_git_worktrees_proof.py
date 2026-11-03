@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import git_worktrees, placement_git
+from drover import git_worktrees, process
 from drover.git_worktrees import Listings, RegistrationsUnknown, parse, prove
 from drover.placement_paths import cleanup_parts
 
@@ -43,7 +43,8 @@ class Trees(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.listed, self.tips, self.failing, self.calls = {}, {}, set(), []
-        context = patch.object(placement_git, 'subprocess', SimpleNamespace(run=self.answer))
+        context = patch.object(process, 'subprocess', SimpleNamespace(run=self.answer, DEVNULL=subprocess.DEVNULL,
+                                                                      TimeoutExpired=subprocess.TimeoutExpired))
         context.__enter__()
         self.addCleanup(context.__exit__, None, None, None)
 
@@ -52,7 +53,8 @@ class Trees(unittest.TestCase):
         kind = 'list' if 'list' in argv else 'common' if '--git-common-dir' in argv else 'tip'
         self.calls.append(kind)
         output = dict(list=self.listed.get(repo), common=f'{repo}/.git\n', tip=f'{self.tips.get(argv[-1], SHA)}\n')[kind]
-        return subprocess.CompletedProcess(argv, 128 if kind in self.failing else 0, output, 'fixture stderr')
+        return subprocess.CompletedProcess(argv, 128 if kind in self.failing else 0, (output or '').encode('utf-8'),
+                                           b'fixture stderr')
 
     def write(self, path, content):
         path.parent.mkdir(parents=True, exist_ok=True)

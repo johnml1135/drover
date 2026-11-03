@@ -5,10 +5,9 @@ import sys
 import json
 import contextvars
 import threading
-import time
 from pathlib import Path
 
-from . import compaction_hold, durable
+from . import compaction_hold, durable, process
 from .placement_paths import (
     IS_WINDOWS,
     MNT_RE,
@@ -19,7 +18,6 @@ from .placement_paths import (
     to_wsl_path,
 )
 from .placement_exec import (
-    NO_WINDOW,
     WSL,
     Windows,
     distro,
@@ -103,8 +101,17 @@ def git_argv(repo, args, nt=None, distro=None, side=None):
     """The argv that runs `git -C repo *args` from this host."""
     return _git_command(repo, args, nt, distro, side)[0]
 
-def git(repo, *args, timeout=None, env=None, runner=None, side=None):
-    """subprocess result of git in `repo`; a missing wsl.exe/git is a failed command (rc 127), not an exception."""
+LONG = 600.0     # section 5.1's timeout for a git call that names none, until slice 4 gives each caller its own
+
+
+def _text(data):
+    """Git's bytes as `text=True, encoding='utf-8', errors='replace'` read them: newlines made LF."""
+    return data.decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
+
+
+def git(repo, *args, timeout=None, env=None, side=None):
+    """subprocess result of git in `repo`; a missing wsl.exe/git is a failed command (rc 127), not an exception.
+    A timeout, `LONG` when none is named, raises `subprocess.TimeoutExpired` with the output so far."""
     global git_spawns
     try:
         argv, extra = _git_command(repo, args, side=side)
@@ -115,24 +122,23 @@ def git(repo, *args, timeout=None, env=None, runner=None, side=None):
         count = request_git.get()
         if count is not None:
             count["spawns"] += 1
-        started = time.perf_counter() if timeout is not None else None
-        result = (runner or subprocess.run)(argv, text=True, capture_output=True, encoding="utf-8", errors="replace",
-                                            timeout=timeout, env=env, **NO_WINDOW)
-        # Process creation cannot always be interrupted (notably on Windows). A process
-        # that exits during startup can bypass subprocess.run's timeout check entirely.
-        if timeout is not None and time.perf_counter() - started >= timeout:
-            raise subprocess.TimeoutExpired(argv, timeout, output=result.stdout, stderr=result.stderr)
-        return result
+        limit = LONG if timeout is None else timeout
+        done = process.run(process.Command(argv, limit, env=env))
     except (FileNotFoundError, compaction_hold.WslOffline) as e:
         return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {e}")
+    if done.kind == 'unavailable':
+        return subprocess.CompletedProcess(args, 127, "", f"git unavailable: {done.detail}")
+    if done.kind == 'timed_out':
+        raise subprocess.TimeoutExpired(argv, limit, output=_text(done.out), stderr=_text(done.err))
+    return subprocess.CompletedProcess(argv, done.code, _text(done.out), _text(done.err))
 
-def reachable(path, runner=None):
+def reachable(path):
     """True when `path` is an openable git working directory from this host (a missing one is False, never an error)."""
     path = str(path)
     if not path:
         return False
     if routes_through_wsl(path):
-        return git(path, "rev-parse", "--git-dir", timeout=30, runner=runner).returncode == 0
+        return git(path, "rev-parse", "--git-dir", timeout=30).returncode == 0
     return os.path.exists(native(path))
 
 def relativize_gitdir(path):
@@ -206,11 +212,15 @@ def worktree_metadata(worktree: str, filename: str, content: str | None = None) 
         if not routes_through_wsl(worktree):
             return _native_metadata_io(native(directory), filename, content)
         argv = WSL().command(['python3', '-c', _METADATA_IO, directory, filename])
-        result = subprocess.run(argv, input=json.dumps(content), text=True, encoding='utf-8',
-                                capture_output=True, timeout=30, **NO_WINDOW)
-        if result.returncode:
-            raise OSError(result.stderr.strip() or 'worktree metadata IO failed')
-        return result.stdout or None
+        result = process.run(process.Command(argv, 30, stdin=json.dumps(content)))
+        if result.kind == 'timed_out':
+            raise subprocess.TimeoutExpired(argv, 30, output=result.out, stderr=result.err)
+        if result.kind == 'unavailable':
+            raise OSError(result.detail)
+        strict = lambda data: data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')    # undecodable: ValueError
+        if result.code:
+            raise OSError(strict(result.err).strip() or 'worktree metadata IO failed')
+        return strict(result.out) or None
     except (OSError, ValueError, subprocess.SubprocessError):
         if content is not None:
             raise

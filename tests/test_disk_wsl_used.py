@@ -1,12 +1,13 @@
 """WSL used space is read without starting WSL and triggers cleanup on its own thresholds."""
 import os
 import subprocess
+import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import patch
 
-from drover import config, disk, placement, placement_host
+from drover import config, disk, placement, placement_host, process
+from tests.fakeci import FakeCommands, process_options
 from tests.disk_fixture import DiskCase
 
 
@@ -19,30 +20,36 @@ class Reading(unittest.TestCase):
         win = mock.patch.object(placement_host, 'IS_WINDOWS', True)
         win.start()
         self.addCleanup(win.stop)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.fake = FakeCommands(temp.name)
+        patched = self.fake.patch(process)
+        patched.__enter__()
+        self.addCleanup(patched.__exit__, None, None, None)
+
+    def df(self, distro, column, **answer):
+        self.fake.expect(placement.WSL(distro).command(['df', '-B1', '--output=' + column, '/']), **answer,
+                         **process_options(5))
 
     def test_used_reads_df_used_column(self):
-        calls = []
-
-        def run(argv, **kwargs):
-            calls.append((argv, kwargs['timeout']))
-            return SimpleNamespace(returncode=0, stdout='        Used\n312000000000\n')
-        self.assertAlmostEqual(placement.wsl_used_gb('U', True, run=run), 312e9 / 1024 ** 3)
-        placement.wsl_used_gb('U', True, run=run)           # shared for a minute: no second spawn
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1], 5)
-        self.assertIn('--output=used', calls[0][0])
-        self.assertIsNone(placement.wsl_used_gb('V', True, run=lambda *a, **k: SimpleNamespace(returncode=1, stdout='')))
-        self.assertIsNone(placement.wsl_used_gb('W', True, run=mock.Mock(side_effect=OSError), ttl=0))
+        self.df('U', 'used', output='        Used\n312000000000\n')
+        self.df('V', 'used', returncode=1)
+        self.df('W', 'used', error=OSError(5, 'denied'))
+        self.assertAlmostEqual(placement.wsl_used_gb('U', True), 312e9 / 1024 ** 3)
+        placement.wsl_used_gb('U', True)           # shared for a minute: no second spawn
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertIsNone(placement.wsl_used_gb('V', True))
+        self.assertIsNone(placement.wsl_used_gb('W', True, ttl=0))
 
     def test_not_up_returns_none_and_runs_nothing(self):
-        run = mock.Mock()
-        self.assertIsNone(placement.wsl_used_gb('D', False, run=run))
-        run.assert_not_called()
+        self.assertIsNone(placement.wsl_used_gb('D', False))
+        self.assertEqual(self.fake.calls, [])
 
     def test_free_and_used_do_not_share_a_value(self):
-        run = lambda argv, **k: SimpleNamespace(returncode=0, stdout='h\n%d\n' % (1024 ** 3 * (7 if 'avail' in argv[-2] else 9)))
-        self.assertEqual(placement.wsl_free_gb('U', True, run=run), 7)
-        self.assertEqual(placement.wsl_used_gb('U', True, run=run), 9)
+        self.df('U', 'avail', output='h\n%d\n' % (1024 ** 3 * 7))
+        self.df('U', 'used', output='h\n%d\n' % (1024 ** 3 * 9))
+        self.assertEqual(placement.wsl_free_gb('U', True), 7)
+        self.assertEqual(placement.wsl_used_gb('U', True), 9)
 
 
 class Levels(unittest.TestCase):

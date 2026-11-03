@@ -95,7 +95,15 @@ class TraceGit:
     def head(self, gitdir):
         return self.text(gitdir / 'HEAD').strip()
 
-    def run(self, argv, *, env=None, **_):
+    def run(self, argv, *, env=None, **options):
+        """Text for a caller that asked for it, bytes for one that did not, as `process` does."""
+        done = self.answer(argv, env)
+        if options.get('text') or options.get('encoding'):
+            return done
+        encode = lambda value: value.encode('utf-8') if isinstance(value, str) else value
+        return subprocess.CompletedProcess(done.args, done.returncode, encode(done.stdout), encode(done.stderr))
+
+    def answer(self, argv, env):
         if argv[0] in self.scene.commands:
             return self.scene.commands[argv[0]](argv)
         if list(argv[:2]) != ['git', '-C']:

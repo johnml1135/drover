@@ -115,7 +115,7 @@ class _CleanupProcesses:
                         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                             fresh = {}
                             self.query_failure = dict(error=str(error), elapsed_s=time.monotonic() - started,
-                                reason_code='process_query_timeout' if isinstance(error, subprocess.TimeoutExpired)
+                                reason_code='process_query_timeout' if isinstance(error, TimeoutError)
                                 else 'process_visibility_unavailable')
                         rows = [row for row in rows if str(row['pid']) not in refresh]
                         try:

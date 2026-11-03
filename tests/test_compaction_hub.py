@@ -13,7 +13,7 @@ from unittest import mock
 import unittest
 
 from drover import compaction, compaction_hold, config, disk, disk_state, ledger, placement
-from drover import ci, durable, placement_exec, placement_host, resources, runner, runner_supervise, usage
+from drover import ci, durable, placement_exec, placement_host, process, resources, runner, runner_supervise, usage
 from drover.launch import RunnerLauncher
 from drover.runner import ScanError
 from tests.test_dispatcher import Base, res
@@ -62,9 +62,10 @@ class Polling(Hubbed):
         from hub.services import Services
         from hub.watchdog import Watchdog
         run = mock.Mock(side_effect=AssertionError('run called'))
-        self.assertIsNone(placement.wsl_free_gb('U', True, run=run, ttl=0))
-        self.assertIsNone(placement.wsl_used_gb('U', True, run=run, ttl=0))
-        self.assertFalse(placement.wsl_running('U', run=run))
+        with mock.patch.object(process.subprocess, 'run', run):
+            self.assertIsNone(placement.wsl_free_gb('U', True, ttl=0))
+            self.assertIsNone(placement.wsl_used_gb('U', True, ttl=0))
+            self.assertFalse(placement.wsl_running('U'))
         self.assertEqual(resources.read_wsl('U', True, True), (False, None))
         self.assertIsNone(resources.read_wsl_ram_gb('U', run=run))
         self.assertIsNone(placement.wsl_zoneinfo_path('Etc/UTC'))

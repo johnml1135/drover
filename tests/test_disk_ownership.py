@@ -17,7 +17,7 @@ NOW = 1_800_000_000.0
 
 class NativeMetadata(unittest.TestCase):
     def setUp(self):
-        from drover import placement_git as placement
+        from drover import placement_git as placement, process
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.admin = Path(self.tmp.name) / 'admin with spaces'
@@ -33,7 +33,7 @@ class NativeMetadata(unittest.TestCase):
 
         for context in (patch.object(placement, 'git', side_effect=git),
                         patch.object(placement, 'routes_through_wsl', return_value=False),
-                        patch.object(placement.subprocess, 'run', side_effect=AssertionError('native metadata spawned a process'))):
+                        patch.object(process.subprocess, 'run', side_effect=AssertionError('native metadata spawned a process'))):
             context.start()
             self.addCleanup(context.stop)
 

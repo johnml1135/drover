@@ -86,7 +86,7 @@ class CachedIdentity(DiskCase):
             rows=[dict(pid=77, name='python.exe', same_user=False, cwd=None, cmd='')],
             identities={'77': ['python.exe', None]}))
         with patch.object(placement, '_windows_processes', return_value={'77': ['python.exe', None]}) as _placement_patch_6, patch('drover.placement_proof._windows_processes', _placement_patch_6), \
-                patch.object(placement, '_cim_rows', side_effect=subprocess.TimeoutExpired('cim', 240)) as _placement_patch_7, patch('drover.placement_process._cim_rows', _placement_patch_7), patch('drover.placement_proof._cim_rows', _placement_patch_7):
+                patch.object(placement, '_cim_rows', side_effect=TimeoutError('timed out after 240 s')) as _placement_patch_7, patch('drover.placement_process._cim_rows', _placement_patch_7), patch('drover.placement_proof._cim_rows', _placement_patch_7):
             proof = placement.cleanup_processes(windows=True, request=request)
         self.assertTrue(proof.busy(r'H:\candidate'))
         self.assertEqual([p['pid'] for p in proof.unreadable], [77])

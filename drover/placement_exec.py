@@ -1,11 +1,12 @@
 """Placement exec operations."""
+import locale
 import os
 import re
 import subprocess
 import sys
 import shutil
 
-from . import compaction_hold
+from . import compaction_hold, process
 from .placement_paths import (
     IS_WINDOWS,
     is_linux_native,
@@ -39,6 +40,13 @@ CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 NO_WINDOW = {"creationflags": CREATE_NO_WINDOW} if IS_WINDOWS else {}
+
+
+def locale_text(data, errors='strict'):
+    """A command's bytes as `text=True` without an encoding reads them: by locale (UTF-8 in UTF-8 mode), with
+    newlines made LF. For Windows tools that write in the code page, so a non-ASCII path keeps its letters."""
+    encoding = 'utf-8' if sys.flags.utf8_mode else locale.getencoding()
+    return data.decode(encoding, errors).replace('\r\n', '\n').replace('\r', '\n')
 
 
 _settings = lambda: {}
@@ -151,12 +159,7 @@ def ci_command(argv, priority):
     """
     if not sys.platform.startswith('linux') or not shutil.which('systemd-run'):
         return list(argv)
-    try:
-        probe = subprocess.run(['systemd-run', '--user', '--scope', '--quiet', 'true'],
-                               capture_output=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return list(argv)
-    if probe.returncode:
+    if not process.run(process.Command(['systemd-run', '--user', '--scope', '--quiet', 'true'], 20)).ok:
         return list(argv)
     weight = {'P0': 1000, 'P1': 1000, 'P2': 100, 'P3': 30, 'P4': 10}[priority]
     scope = ['systemd-run', '--user', '--scope', '--quiet', '-p', f'CPUWeight={weight}', '-p', f'IOWeight={weight}']

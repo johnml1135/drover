@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, contract, dispatcher, ci, placement, landing, launch, pipeline, repos, runner
+from drover import config, contract, dispatcher, ci, placement, landing, launch, pipeline, process, repos, runner
 from drover.launch import RunnerLauncher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -157,14 +157,14 @@ class Worktrees(PolicyBase):
         calls = []
         def fake_wsl(argv, *a, **kw):
             calls.append(argv)
-            return subprocess.CompletedProcess(argv, 128, '', "fatal: cannot change to '/home/johnm/work/x'")
+            return subprocess.CompletedProcess(argv, 128, b'', b"fatal: cannot change to '/home/johnm/work/x'")
         tid = self.task(branch='feat')
         stale = '/home/acme/work/acme-lib.worktrees/x'
         ops.update_task(self.conn, tid, worktree=stale)
         reachable = self.repository.reachable
         def probe(path):
             return placement.reachable(path) if str(path) == stale else reachable(path)
-        with patch('subprocess.run', fake_wsl), \
+        with patch.object(process.subprocess, 'run', fake_wsl), \
                 patch.object(placement, 'routes_through_wsl', lambda p, nt=None: str(p) == stale) as _placement_patch_3, patch('drover.placement_git.routes_through_wsl', _placement_patch_3), patch('drover.placement_paths.routes_through_wsl', _placement_patch_3), \
                 patch.object(self.repository, 'reachable', side_effect=probe):
             wt = repos.native(self.pipe.worktree(self.get(tid)))

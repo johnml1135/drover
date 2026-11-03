@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_git, placement_proof
+from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_proof, process
 from tests.disk_fixture import DAY, DiskCase
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
 from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree, TraceGit,
@@ -22,7 +22,7 @@ from tests.disk_trace_stages import STAGE_SCENES
 from tests.placement_trace import normalize
 
 TRACE = Path(__file__).with_name('disk_decision_trace.json')
-PATCH_TARGETS = (placement_git, disk_paths)     # each module whose `subprocess` TraceGit replaces; Tasks 15, 16 repoint it
+PATCH_TARGETS = (process, disk_paths)           # each module whose `subprocess` TraceGit replaces; Task 16 repoints it
 REMOVAL = (disk_worktrees, 'remove')            # where a mid-stage change lands: after selection, before revalidation
 OUTPUT_REMOVAL = (disk_paths, 'remove_output')  # the same for a disposable path
 WORKTREE_SIDE, CLEANUP_LINK = placement.worktree_side, placement.cleanup_link

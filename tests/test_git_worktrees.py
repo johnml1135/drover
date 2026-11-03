@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from drover import git_worktrees, placement_git
+from drover import git_worktrees, placement_git, process
 from drover.git_worktrees import Listing, Listings, RegistrationsUnknown, listing
 from drover.placement_paths import cleanup_parts, cleanup_path, native
-from tests.fakeci import FakeCommands
+from tests.fakeci import FakeCommands, process_options
 
 LIST = ('worktree', 'list', '--porcelain', '-z')
 COMMON = ('rev-parse', '--path-format=absolute', '--git-common-dir')
@@ -21,13 +21,12 @@ class FakedGit(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.fake = FakeCommands(temporary.name)
-        context = self.fake.patch(placement_git)
+        context = self.fake.patch(process)
         context.__enter__()
         self.addCleanup(context.__exit__, None, None, None)
 
     def expect(self, repo=MAIN, args=LIST, timeout=400.0, output=PORCELAIN, **answer):
-        self.fake.expect(placement_git.git_argv(repo, args), output=output, timeout=timeout, env=None, text=True,
-                         capture_output=True, encoding='utf-8', errors='replace', **placement_git.NO_WINDOW, **answer)
+        self.fake.expect(placement_git.git_argv(repo, args), output=output, **process_options(timeout), **answer)
 
 
 class ListingOfOneRepo(FakedGit):
@@ -49,11 +48,11 @@ class ListingOfOneRepo(FakedGit):
             listing(MAIN, timeout_s=400.0)
 
     def test_timeout_is_a_failure_of_the_whole_repo(self):
-        expired = subprocess.TimeoutExpired(['git'], 400.0)
-        self.expect(error=expired)
+        self.expect(error=subprocess.TimeoutExpired(['git'], 400.0))
         with self.assertRaises(RegistrationsUnknown) as caught:
             listing(MAIN, timeout_s=400.0)
-        self.assertEqual(str(caught.exception), str(expired))
+        argv = placement_git.git_argv(MAIN, LIST)      # git's own TimeoutExpired, as the elapsed check raised it
+        self.assertEqual(str(caught.exception), str(subprocess.TimeoutExpired(argv, 400.0)))
 
     def test_a_refused_spawn_is_a_failure_of_the_whole_repo(self):
         self.expect(error=PermissionError('fixture refused'))
@@ -186,8 +185,8 @@ class OneStage(FakedGit):
         self.assertIsNone(listings.of(MAIN).row(TREE))
 
     def test_a_listing_goes_on_the_side_the_stage_asked_for(self):
-        self.fake.expect(placement_git.git_argv(r'H:\repo', LIST, side='wsl'), output=PORCELAIN, timeout=400.0, env=None,
-                         text=True, capture_output=True, encoding='utf-8', errors='replace', **placement_git.NO_WINDOW)
+        self.fake.expect(placement_git.git_argv(r'H:\repo', LIST, side='wsl'), output=PORCELAIN,
+                         **process_options(400.0))
         Listings([r'H:\repo'], side='wsl').of(r'H:\repo')
 
     def test_common_dir_asks_git_once_per_repo_on_the_evidence_timeout(self):

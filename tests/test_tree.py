@@ -8,6 +8,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
+from drover import process
 from drover.ledger import ops, states
 from hub.app import create_app
 from hub.settings import Settings
@@ -108,7 +109,7 @@ class TreeTests(unittest.TestCase):
         finally:
             self.conn.set_trace_callback(None)
         self.assertEqual(len(statements), 2)
-        with patch('drover.placement_git.subprocess.run', side_effect=AssertionError('git spawn')):
+        with patch.object(process.subprocess, 'run', side_effect=AssertionError('git spawn')):
             response = self.client.get('/tree')
         self.assertEqual(response.status_code, 200)
         self.assertIn('git;desc="0 spawns"', response.headers['server-timing'])

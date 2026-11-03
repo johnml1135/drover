@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from drover import config, config_defaults, disk_paths, disk_worktrees, placement, placement_process, placement_proof
+from drover import config, config_defaults, disk_paths, disk_worktrees, placement, placement_process, placement_proof, process
 
 
 class ElevatedProcesses(unittest.TestCase):
@@ -18,8 +18,8 @@ class ElevatedProcesses(unittest.TestCase):
             ProcessId=123456789, Name=name, ExecutablePath=None, CommandLine=cmd,
             SessionId=1, OwnerSid='owner' if same_user else None)])
         request = dict(paths={} if policy is None else dict(process_ignore=policy))
-        with patch.object(placement_process.subprocess, 'run', return_value=SimpleNamespace(
-                returncode=0, stdout=json.dumps(data))), \
+        with patch.object(process.subprocess, 'run', return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps(data).encode(), stderr=b'')), \
                 patch.object(placement_process, '_windows_image_path', return_value=exe) as query:
             proof = placement_proof.cleanup_processes(windows=True, request=request,
                 cim=lambda: [dict(row, cwd=cwd) for row in placement_process._cim_rows()])
@@ -138,8 +138,8 @@ class ImagePathQuery(unittest.TestCase):
     def test_readable_cim_executable_needs_no_fallback(self):
         data = dict(sid='owner', processes=[dict(ProcessId=123456789, Name='tool.exe',
             ExecutablePath=r'H:\worktrees\tool.exe', CommandLine=None, OwnerSid='owner')])
-        with patch.object(placement_process.subprocess, 'run', return_value=SimpleNamespace(
-                returncode=0, stdout=json.dumps(data))), \
+        with patch.object(process.subprocess, 'run', return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps(data).encode(), stderr=b'')), \
                 patch.object(placement_process, '_windows_image_path') as query:
             rows = placement_process._cim_rows()
         query.assert_not_called()

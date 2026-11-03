@@ -1,8 +1,11 @@
 """One short-lived command: a required timeout, no shell, the console flag, and one outcome that raises nothing."""
+import json
+import locale
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from drover.process import Command, run
@@ -133,6 +136,77 @@ class Run(unittest.TestCase):
         argv = ['C:\\Program Files\\x.exe', 'a b', 'say "hi"', '']
         with self.fake.patch(process):
             self.assertEqual(process.list2cmdline(argv), subprocess.list2cmdline(argv))
+
+
+class AnyText(str):
+    """An argv word that matches any text: a long script that is not the test's point."""
+    def __eq__(self, other):
+        return isinstance(other, str)
+
+    def __ne__(self, other):
+        return not isinstance(other, str)
+
+    __hash__ = str.__hash__
+
+
+class PlacementCallers(unittest.TestCase):
+    """Placement's short-lived commands reach the one fake at `process`; nothing spawns for real."""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.fake = FakeCommands(temp.name)
+        refused = mock.patch('subprocess.run', side_effect=AssertionError('real process'))
+        refused.start()
+        self.addCleanup(refused.stop)
+
+    def test_placement_exec_155_placement_git_221_placement_168_go_through_process(self):
+        from drover import placement, placement_exec, placement_git
+        wsl = SimpleNamespace(command=lambda argv, cd=None: ['wsl.exe', '--exec', *argv])
+        probe = ['systemd-run', '--user', '--scope', '--quiet', 'true']
+        self.fake.expect(probe, returncode=1, **process_options(20))
+        admin = '/repo/.git/worktrees/one'
+        content = json.dumps({'owner': 'é'})
+        self.fake.expect(['wsl.exe', '--exec', 'python3', '-c', placement_git._METADATA_IO, admin, 'tag.json'],
+                         output='written', **process_options(30, input=json.dumps(content).encode('utf-8')))
+        status = dict(pid=7, runner_pid=8, run_id='r')
+        code = ('import json,sys; from drover.placement import stop_ci_children; '
+                'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
+        self.fake.expect(['wsl.exe', '--exec', 'python3', '-c', code, json.dumps(status)], returncode=0,
+                         **process_options(90))
+        located = subprocess.CompletedProcess([], 0, f'{admin}\n/repo/.git\n', '')
+        with self.fake.patch(process), \
+                mock.patch.object(placement_git, 'git', return_value=located), \
+                mock.patch.object(placement_git, 'routes_through_wsl', return_value=True), \
+                mock.patch.object(placement_git, 'WSL', lambda: wsl), \
+                mock.patch.object(placement, 'IS_WINDOWS', True), \
+                mock.patch.object(placement, 'WSL', lambda name=None: wsl):
+            with mock.patch.object(placement_exec.sys, 'platform', 'linux'), \
+                    mock.patch.object(placement_exec.shutil, 'which', return_value='/usr/bin/systemd-run'):
+                self.assertEqual(placement_exec.ci_command(['gate'], 'P2'), ['gate'])
+            self.assertEqual(placement_git.worktree_metadata('/trees/one', 'tag.json', content), 'written')
+            self.assertIs(placement.recover_ci_children('wsl', status, '/drover'), True)
+
+    def test_reg_and_icacls_output_keep_non_ascii_paths(self):
+        from drover import placement_host, placement_process
+        encoding = 'utf-8' if sys.flags.utf8_mode else locale.getencoding()
+        base = 'C:\\Users\\Jösé\\WSL'
+        listing = (f'HKEY_CURRENT_USER\\{placement_host.LXSS}\\{{id}}\r\n'
+                   f'    DistributionName    REG_SZ    Ubuntu\r\n    BasePath    REG_SZ    {base}\r\n')
+        self.fake.expect([placement_host.REG, 'query', placement_host.LXSS, '/s'], output=listing.encode(encoding),
+                         **process_options(10))
+        exe = 'C:\\Tools\\Jösé\\tool.exe'
+        rows = dict(sid='S-1', processes=[dict(ProcessId=41, ParentProcessId=1, Name='tool.exe', ExecutablePath=exe,
+                                               CommandLine=f'"{exe}" --flag', SessionId=1, OwnerSid='S-1')])
+        self.fake.expect(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', AnyText()],
+                         output=json.dumps(rows, ensure_ascii=False).encode(encoding), **process_options(240))
+        real_exists = placement_host.os.path.exists
+        with self.fake.patch(process), mock.patch.dict(placement_host.os.environ, {'WSL_DISTRO_NAME': 'Ubuntu'}), \
+                mock.patch.object(placement_host.os.path, 'exists',
+                                  lambda path: path == placement_host.REG or real_exists(path)):
+            placement_host.os.environ.pop('DROVER_VHDX_DIR', None)
+            self.assertEqual(placement_host._vhdx_dir(), '/mnt/c/Users/Jösé/WSL')
+            (row,) = placement_process._cim_rows(240)
+        self.assertEqual((row['exe'], row['cmd']), (exe, f'{exe} "{exe}" --flag'))
 
 
 if __name__ == '__main__':

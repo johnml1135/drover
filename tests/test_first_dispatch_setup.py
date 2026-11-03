@@ -8,51 +8,59 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import allowance, brief, config, contract, dispatcher, launch, launch_usage, route
+from drover import allowance, brief, config, contract, dispatcher, launch, launch_usage, process, route
+from tests.fakeci import FakeCommands, process_options
 from tests.test_dispatcher import Base, res
 
 
 class GitTimeouts(unittest.TestCase):
+    """git reaches the one fake at `process`; `process.time` says how long the command took."""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.fake = FakeCommands(temp.name)
+
+    def git(self, args, timeout, took, **answer):
+        from drover import placement_git as placement
+        argv = ['git', '-C', 'repo', *args]
+        self.fake.expect(argv, **answer, **process_options(timeout))
+        clock = iter((100.0, 100.0 + took))
+        return argv, (patch.object(placement, '_git_command', return_value=(argv, {})), self.fake.patch(process),
+                      patch.object(process, 'time', SimpleNamespace(perf_counter=lambda: next(clock))))
+
     def test_completed_git_past_deadline_keeps_output_on_timeout(self):
         from drover import placement_git as placement
-        argv = ['git', '-C', 'repo', 'fetch', 'origin']
-        completed = subprocess.CompletedProcess(argv, 0, 'fetched', 'diagnostic')
-        with patch.object(placement, '_git_command', return_value=(argv, {})), \
-                patch.object(placement.time, 'perf_counter', side_effect=[100, 101]), \
-                self.assertRaises(subprocess.TimeoutExpired) as raised:
-            placement.git('repo', 'fetch', 'origin', timeout=0.5, runner=lambda *a, **kw: completed)
+        argv, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 1.0, output='fetched',
+                                                    stderr_output='diagnostic')
+        with located, faked, clocked, self.assertRaises(subprocess.TimeoutExpired) as raised:
+            placement.git('repo', 'fetch', 'origin', timeout=0.5)
         self.assertEqual(raised.exception.cmd, argv)
         self.assertEqual(raised.exception.timeout, 0.5)
         self.assertEqual(raised.exception.output, 'fetched')
         self.assertEqual(raised.exception.stderr, 'diagnostic')
 
     def test_pipeline_reports_late_completion_as_timeout(self):
-        from drover import pipeline, placement_git as placement
-        argv = ['git', '-C', 'repo', 'fetch', 'origin']
-        with patch.object(placement, '_git_command', return_value=(argv, {})), \
-                patch.object(placement.time, 'perf_counter', side_effect=[100, 101]):
-            result = pipeline.git('repo', 'fetch', 'origin', timeout=0.5,
-                                  runner=lambda *a, **kw: subprocess.CompletedProcess(argv, 0, '', ''))
+        from drover import pipeline
+        _, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 1.0)
+        with located, faked, clocked:
+            result = pipeline.git('repo', 'fetch', 'origin', timeout=0.5)
         self.assertEqual(result.returncode, 124)
         self.assertIn('timed out', result.stderr)
 
     def test_git_within_deadline_returns_result_and_passes_timeout(self):
         from drover import placement_git as placement
-        argv = ['git', '-C', 'repo', 'fetch', 'origin']
-        completed = subprocess.CompletedProcess(argv, 0, 'fetched', '')
-        with patch.object(placement, '_git_command', return_value=(argv, {})), \
-                patch.object(placement.time, 'perf_counter', side_effect=[100, 100.25]), \
-                patch.object(placement.subprocess, 'run', return_value=completed) as run:
-            self.assertIs(placement.git('repo', 'fetch', 'origin', timeout=0.5), completed)
-        self.assertEqual(run.call_args.kwargs['timeout'], 0.5)
+        argv, (located, faked, clocked) = self.git(['fetch', 'origin'], 0.5, 0.25, output='fetched')
+        with located, faked, clocked:
+            result = placement.git('repo', 'fetch', 'origin', timeout=0.5)
+        self.assertEqual((result.args, result.returncode, result.stdout, result.stderr), (argv, 0, 'fetched', ''))
 
-    def test_git_without_deadline_does_not_check_elapsed_time(self):
+    def test_git_without_deadline_takes_the_long_timeout(self):
         from drover import placement_git as placement
-        argv = ['git', '-C', 'repo', 'status']
-        completed = subprocess.CompletedProcess(argv, 0, '', '')
-        with patch.object(placement, '_git_command', return_value=(argv, {})), \
-                patch.object(placement.time, 'perf_counter', side_effect=AssertionError('no deadline')):
-            self.assertIs(placement.git('repo', 'status', runner=lambda *a, **kw: completed), completed)
+        self.assertEqual(placement.LONG, 600.0)
+        argv, (located, faked, clocked) = self.git(['status'], 600.0, 599.0, output='clean\r\n')
+        with located, faked, clocked:
+            result = placement.git('repo', 'status')
+        self.assertEqual((result.returncode, result.stdout), (0, 'clean\n'))     # text mode's newlines, as before
 
 
 class AllowancePaths(unittest.TestCase):

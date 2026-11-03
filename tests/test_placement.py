@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from drover import ci, placement, repos, task_access, tool_discovery
+from drover import ci, placement, process, repos, task_access, tool_discovery
 from drover.launch import RunnerLauncher
 from tests import placement_trace
 from tests.fakeci import resources_go
@@ -191,7 +191,7 @@ class NativeCleanupIdentity(unittest.TestCase):
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_8, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_8), patch('drover.placement_git.IS_WINDOWS', _placement_patch_8), patch('drover.placement_host.IS_WINDOWS', _placement_patch_8), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_8), patch('drover.placement_process.IS_WINDOWS', _placement_patch_8), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_8), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_8), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_8), \
                 patch.object(ctypes, 'WinDLL', return_value=kernel, create=True), \
                 patch.object(ctypes, 'get_last_error', return_value=error, create=True), \
-                patch.object(placement.subprocess, 'run', side_effect=AssertionError('identity spawned a process')):
+                patch.object(process.subprocess, 'run', side_effect=AssertionError('identity spawned a process')):
             value = placement.cleanup_identity(pid)
             alive = placement.cleanup_claim_alive(dict(pid=pid, side='windows', birth=str((42 << 32) | 17)))
         if handle:

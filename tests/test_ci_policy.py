@@ -15,8 +15,15 @@ from tests import test_ci
 from tests.fakeci import resources_go
 from tests.ci_fixture import Launcher
 from tests.rcw_repo import MemoryRepo, MemoryRepository
-from drover import placement
+from drover import placement, process
 PLATFORM = 'windows' if os.name == 'nt' else 'wsl'
+
+
+def probe_answers(code):
+    """`process.subprocess` answering every command, the systemd-run probe among them, with exit `code`."""
+    from types import SimpleNamespace
+    return SimpleNamespace(run=lambda argv, **kw: subprocess.CompletedProcess(argv, code, b'', b''),
+                           DEVNULL=subprocess.DEVNULL, TimeoutExpired=subprocess.TimeoutExpired)
 
 
 class PolicyCITests(unittest.TestCase):
@@ -236,7 +243,7 @@ class PolicyCITests(unittest.TestCase):
         self.launcher.wrap_command = placement.ci_command
         for priority, weight in (('P0', 1000), ('P1', 1000), ('P2', 100), ('P3', 30), ('P4', 10)):
             with self.subTest(priority=priority), patch.object(placement.shutil, 'which', return_value='systemd-run'), \
-                    patch.object(placement, 'subprocess', SimpleNamespace(run=lambda *a, **kw: SimpleNamespace(returncode=0))) as _placement_patch_3, patch('drover.placement_exec.subprocess', _placement_patch_3), patch('drover.placement_git.subprocess', _placement_patch_3), patch('drover.placement_host.subprocess', _placement_patch_3), patch('drover.placement_process.subprocess', _placement_patch_3), patch('drover.placement_proof.subprocess', _placement_patch_3), patch('drover.placement_tree.subprocess', _placement_patch_3), patch('drover.placement_worker.subprocess', _placement_patch_3):
+                    patch.object(process, 'subprocess', probe_answers(0)):
                 result = self.service.run(prog, self.repo.repo, commit, priority=priority)
                 invocation = self.launcher.commands[-1]
                 self.assertEqual(invocation[:5], ['systemd-run', '--user', '--scope', '--quiet', '-p'])
@@ -254,13 +261,13 @@ class PolicyCITests(unittest.TestCase):
                 self.assertIn('script executed', result['log_tail'])
         self.launcher.code = 124
         with patch.object(placement.shutil, 'which', return_value='systemd-run'), \
-                patch.object(placement, 'subprocess', SimpleNamespace(run=lambda *a, **kw: SimpleNamespace(returncode=0))) as _placement_patch_1, patch('drover.placement_exec.subprocess', _placement_patch_1), patch('drover.placement_git.subprocess', _placement_patch_1), patch('drover.placement_host.subprocess', _placement_patch_1), patch('drover.placement_process.subprocess', _placement_patch_1), patch('drover.placement_proof.subprocess', _placement_patch_1), patch('drover.placement_tree.subprocess', _placement_patch_1), patch('drover.placement_worker.subprocess', _placement_patch_1):
+                patch.object(process, 'subprocess', probe_answers(0)):
             result = self.service.run(prog, self.repo.repo, commit, priority='P4')
         self.assertEqual((result['passed'], result['exit_code']), (False, 124))
         self.assertIn('1800', self.launcher.commands[-1])
         self.launcher.code, self.launcher.output = 0, 'unwrapped\n'
         with patch.object(placement.shutil, 'which', return_value='systemd-run'), \
-                patch.object(placement, 'subprocess', SimpleNamespace(run=lambda *a, **kw: SimpleNamespace(returncode=1))) as _placement_patch_2, patch('drover.placement_exec.subprocess', _placement_patch_2), patch('drover.placement_git.subprocess', _placement_patch_2), patch('drover.placement_host.subprocess', _placement_patch_2), patch('drover.placement_process.subprocess', _placement_patch_2), patch('drover.placement_proof.subprocess', _placement_patch_2), patch('drover.placement_tree.subprocess', _placement_patch_2), patch('drover.placement_worker.subprocess', _placement_patch_2):
+                patch.object(process, 'subprocess', probe_answers(1)):
             result = self.service.run(prog, self.repo.repo, commit, priority='P4')
         self.assertEqual(self.launcher.commands[-1], command)
         self.assertTrue(result['passed'])

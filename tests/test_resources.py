@@ -2,11 +2,12 @@ from drover import placement
 import io
 import json
 import os
+import subprocess
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from drover import resources, disk, config
+from drover import resources, disk, config, process
 
 
 def wsl(**over):
@@ -210,10 +211,10 @@ REG_OUT = (
 class Vhdx(unittest.TestCase):
     def vhdx(self, distro='Ubuntu', env=None, out=REG_OUT):
         env = dict(env or {}, WSL_DISTRO_NAME=distro)
-        done = mock.Mock(stdout=out)
+        done = subprocess.CompletedProcess([], 0, out.encode(), b'')     # reg writes its code page; ASCII here
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch('os.path.exists', return_value=True), \
-                mock.patch('subprocess.run', return_value=done):
+                mock.patch.object(process.subprocess, 'run', return_value=done):
             return resources.placement.vhdx_dir()
 
     def test_registry_parsing_multi_distro_any_order(self):
@@ -233,6 +234,7 @@ class Vhdx(unittest.TestCase):
 
     def test_reader_failure_is_unknown_without_host_discovery(self):
         with mock.patch('subprocess.run', side_effect=AssertionError('no host probe')), \
+                mock.patch.object(process.subprocess, 'run', side_effect=AssertionError('no host probe')), \
                 mock.patch.object(disk.shutil, 'disk_usage', side_effect=OSError('unavailable')):
             rows = disk.read()
         self.assertTrue(all(row['free_gb'] is None for row in rows))

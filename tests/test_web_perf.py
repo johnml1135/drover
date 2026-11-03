@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import repos, origin
-from drover import placement_git
+from drover import placement_git, process
 from drover.ledger import ops
 from hub.perf import Perf
 from hub.app import create_app
@@ -34,7 +34,7 @@ class WebPerfTests(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.app.state.ui_view.repo_states.loader = lambda prog: dict(branches=set(), paths=set(), branch_paths={}, ahead=2)
         self.patches = [patch('drover.repos.repos_dir', return_value=self.repos_dir),
-                        patch('drover.placement_git.subprocess.run', side_effect=self.git)]
+                        patch.object(process.subprocess, 'run', side_effect=self.git)]
         for p in self.patches:
             p.start()
             self.addCleanup(p.stop)
@@ -47,7 +47,7 @@ class WebPerfTests(unittest.TestCase):
             output = '100644 blob abc .drover/config.toml\n'
         else:
             output = 'schema_version = 1\n'
-        return subprocess.CompletedProcess(argv, 0, output, '')
+        return subprocess.CompletedProcess(argv, 0, output.encode(), b'')
     def cold_repos(self):
         view = self.app.state.ui_view
         view._repo_cache, view._repo_at = None, 0
@@ -67,7 +67,7 @@ class WebPerfTests(unittest.TestCase):
         with patch.object(view.repo_states, 'get', return_value={'ahead': None}):
             page = self.client.get('/landing').text
             self.assertIn('unknown', page)
-        with patch('drover.placement_git.subprocess.run', side_effect=subprocess.TimeoutExpired('git', 30)) as run:
+        with patch.object(process.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 30)) as run:
             self.assertIsNone(origin.ahead(self.tmp.name, timeout=30))
             self.assertEqual(run.call_args.kwargs['timeout'], 30)
     def test_health_snapshot_age(self):

@@ -20,9 +20,10 @@ class BatchedOwners(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(dict(sid='S-1', processes=[
                 dict(ProcessId=5, Name='a.exe', ExecutablePath=None, CommandLine='a', SessionId=1, OwnerSid='S-1'),
                 dict(ProcessId=6, Name='b.exe', ExecutablePath=None, CommandLine='b', SessionId=0, OwnerSid=None),
-                dict(ProcessId=7, Name='c.exe', ExecutablePath=None, CommandLine='c', SessionId=1, OwnerSid='S-2')])), '')
+                dict(ProcessId=7, Name='c.exe', ExecutablePath=None, CommandLine='c', SessionId=1, OwnerSid='S-2')])).encode(),
+                b'')
 
-        with patch.object(placement.subprocess, 'run', run), \
+        with patch.object(process.subprocess, 'run', run), \
                 patch('drover.placement_process._windows_image_path', return_value=None):
             rows = placement._cim_rows(5)
         self.assertEqual(len(seen), 1)

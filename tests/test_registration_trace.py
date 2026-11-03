@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.registration_trace import CASES, materialize, recorded, rows_of
-from drover import git_worktrees, placement_git
+from drover import git_worktrees, process
 from drover.git_worktrees import Listings, RegistrationsUnknown, listing, prove
 from drover.placement_paths import cleanup_path
 
@@ -29,9 +29,15 @@ def every(code_zero):
                 yield case, side
 
 
+def at_process(run):
+    """`process.subprocess` with every spawn answered by `run`: the one seam git reaches."""
+    return patch.object(process, 'subprocess', SimpleNamespace(run=run, DEVNULL=subprocess.DEVNULL,
+                                                               TimeoutExpired=subprocess.TimeoutExpired))
+
+
 def git_answers(answer):
-    done = subprocess.CompletedProcess([], answer['code'], answer['stdout'], '')
-    return patch.object(placement_git, 'subprocess', SimpleNamespace(run=lambda *args, **kwargs: done))
+    done = subprocess.CompletedProcess([], answer['code'], answer['stdout'].encode('utf-8'), b'')
+    return at_process(lambda *args, **kwargs: done)
 
 
 class Replay(unittest.TestCase):
@@ -89,10 +95,10 @@ class Proof(unittest.TestCase):
 
         def run(argv, **_):
             output = said['stdout'] if 'list' in argv else f'{common}\n' if '--git-common-dir' in argv else f'{tip}\n'
-            return subprocess.CompletedProcess(argv, 0, output, '')
+            return subprocess.CompletedProcess(argv, 0, output.encode('utf-8'), b'')
         target = said['rows'][-1]['worktree']
         # On Windows a row spelled under the admin directory has a colon in its path, and `lstat` refuses the name.
-        with patch.object(placement_git, 'subprocess', SimpleNamespace(run=run)),                 patch.object(git_worktrees, '_dot_git', lambda path: os.path.lexists(os.path.join(path, '.git'))):
+        with at_process(run),                 patch.object(git_worktrees, '_dot_git', lambda path: os.path.lexists(os.path.join(path, '.git'))):
             # Expanded on a drive, a WSL recording's own trees read as drive letters too, so only this case is told.
             told = side if case == 'drive-letter' else None
             return prove(Listings([str(repo)]), str(repo), target, side=told, timeout_s=30.0,
