@@ -99,8 +99,10 @@ class Clock(unittest.TestCase):
 
     def test_can_mutate_needs_five_capped_steps_left_and_is_true_when_exempt(self):
         self.assertEqual(StageClock.MUTATION_STEPS, 5)
-        self.assertEqual([clock_at(t).can_mutate() for t in (0, 1440, 1500, 1500.1)], [True, True, True, False])
-        self.assertEqual([clock_at(t, 100).can_mutate() for t in (79.9, 80, 80.1)], [True, True, False])
+        # No removal starts past the 80% line, even where five capped steps would still fit (1,440 to 1,500 s).
+        self.assertEqual([clock_at(t).can_mutate() for t in (0, 1439.9, 1440, 1500)], [True, True, False, False])
+        self.assertEqual([clock_at(t, 100).can_mutate() for t in (79.9, 80, 80.1)], [True, False, False])
+        self.assertTrue(clock_at(1440, exempt=True).can_mutate())       # an approved removal is never cut off
         self.assertTrue(clock_at(1800, exempt=True).can_mutate())
         self.assertTrue(clock_at(10_000, exempt=True).can_mutate())
 

@@ -116,9 +116,9 @@ class StageClock:
         return self._cap
 
     def can_mutate(self) -> bool:
-        """Whether `left()` covers MUTATION_STEPS capped steps, so a removal begun now ends before the worker timeout;
-        always when exempt."""
-        return self._exempt or self.left() >= self.MUTATION_STEPS * self._cap
+        """Whether a removal may begin now: not past the 80% line, and `left()` covers MUTATION_STEPS capped steps, so
+        it ends before the worker timeout; always when exempt. A stage that omits its own `late()` check still keeps."""
+        return self._exempt or (not self.late() and self.left() >= self.MUTATION_STEPS * self._cap)
 
     def within(self, budget_s: float) -> 'StageClock':
         """A clock whose line is `budget_s` from now, or the stage's own line if that comes first; the worker timeout
