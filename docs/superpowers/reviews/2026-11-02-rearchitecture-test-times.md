@@ -358,3 +358,7 @@ Taken on 0b5de66 by the same `scripts/test.py -j 4 --durations 10`: `Ran 3901 te
 ## After slice 3b
 
 On ea5f404: `Ran 4092 tests (28 skipped) in 275 modules, wall 206.8s, 0 failed modules`; integration `Ran 208 tests (14 skipped) in 275 modules, wall 213.1s, 0 failed modules`. `test_disk_decision_trace` 10.7 s, `test_seams` 3.4 s, `test_git_worktrees_proof` 3.1 s, `test_disk_fresh_proof` 3.3 s under `-j 4`; the two proof modules take 2.0-2.5 s alone, ruled at 3 s. Census at 572dcb4: 3853 spawns over 275 modules against 3832 at baseline. `IMPURE_CEILING` 63, `INTEGRATION_CEILING` 208.
+
+## After slice 4
+
+On 5638837: `Ran 4165 tests (28 skipped) in 277 modules, wall 179.5s, 0 failed modules`; integration `Ran 205 tests (14 skipped) in 277 modules, wall 185.9s, 0 failed modules`. `test_landing_repository` 28.5 s (60.1 s before), `test_disk_registrations` 107.2 s. Converted modules: 568 to 47 real spawns, 28.0 s to 9.1 s; `test_origin_sync` 234 spawns to 0. `IMPURE_CEILING` 59, `INTEGRATION_CEILING` 205.
