@@ -45,14 +45,29 @@ def marked(entries):
     return found
 
 
-def owned(members, known, run_id):
-    """The group members still present, and whether one carries this run's marker, read before any kill: a killed
+def owned(members, known, entries):
+    """The group members still present, and whether one carries all of `entries`, read before any kill: a killed
     member that is still exiting shows an empty environ, and one gone on this read is gone, not an error."""
-    marker, present, ours = ('DROVER_RUN_ID=' + str(run_id)).encode(), [], False
+    present, ours = [], False
     for entry in members:
         try:
-            ours = int(entry.name) in known or marker in (entry / 'environ').read_bytes().split(b'\0') or ours
+            if int(entry.name) in known:
+                ours = True
+            elif set(entries) <= set((entry / 'environ').read_bytes().split(b'\0')):
+                ours = True
         except (FileNotFoundError, ProcessLookupError):
             continue
         present.append(entry)
     return present, ours
+
+
+def live(pids):
+    """Those of `pids` still listed and not zombies: a killed process counts until it is gone."""
+    found = []
+    for pid in pids:
+        try:
+            if (PROC / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z':
+                found.append(pid)
+        except FileNotFoundError:
+            continue
+    return found

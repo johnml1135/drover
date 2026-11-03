@@ -213,6 +213,24 @@ class MarkerSweep(unittest.TestCase):
         self.assertIs(self.stop(dict(pid=500, run_id=7)), True)      # no nonce: an integer id alone sweeps nothing
         self.assertEqual(self.killed, [])
 
+    def test_a_killed_process_still_exiting_keeps_the_proof_open(self):
+        """Once killed, a process drops out of the marker read (its environ empties); it counts until it is gone."""
+        self.task(101, f'DROVER_RUN_ID={TOKEN}\0'.encode())
+        def exiting(pid, sig):
+            (self.proc / str(pid) / 'environ').write_bytes(b'')        # exit_mm: still listed, not yet a zombie
+        self.assertIs(self.stop(dict(pid=500, run_id=TOKEN), kill=exiting), False)
+
+    def test_group_ownership_needs_the_nonce_too(self):
+        self.task(501, b'DROVER_RUN_ID=7\0DROVER_RUN_ID_NONCE=bbb\0', group=500)     # same id, another ledger
+        self.assertIs(self.stop(dict(pid=500, run_id=7, nonce='aaa')), False)
+        self.assertEqual(self.groups, [])
+
+    def test_an_unreadable_member_is_not_taken_for_gone(self):
+        self.task(501, 'unreadable', group=500)                        # EACCES is not absence
+        with self.assertRaises(OSError):
+            self.stop(dict(pid=500, run_id=TOKEN))
+        self.assertEqual(self.groups, [])
+
     def test_gate_children_carry_the_launch_nonce(self):
         import tempfile
         from drover import placement, runner_supervise

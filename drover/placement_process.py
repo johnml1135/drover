@@ -161,7 +161,8 @@ def stop_ci_children(status):
                 except FileNotFoundError:
                     continue
             if members and not signalled:
-                members, ours = sweep.owned(members, owned, status['run_id'])
+                identity = marks or (f"DROVER_RUN_ID={status['run_id']}".encode(),)    # with its nonce when known
+                members, ours = sweep.owned(members, owned, identity)
                 if members and not ours:
                     return False    # never signal a reused group id lacking this execution's marker
                 if members:
@@ -175,7 +176,7 @@ def stop_ci_children(status):
                     os.kill(pid, signal.SIGKILL)
                 except OSError:
                     pass
-            alive = bool(members) or bool(marked)
+            alive = bool(members) or bool(sweep.live(owned))     # every process it owns or killed, until gone
         if not alive:
             return True
         if time.monotonic() >= deadline:
