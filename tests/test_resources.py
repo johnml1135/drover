@@ -443,5 +443,6 @@ class RamWhereWorkRuns(unittest.TestCase):
             for run in (slow, missing):
                 with self.subTest(run.__name__), mock.patch.object(process, 'subprocess', answering(run)):
                     self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu'))
-            with mock.patch.object(resources.placement, 'WSL', side_effect=OSError('WSL is down for compaction')),                     mock.patch.object(process, 'subprocess', answering(missing)):
+            with mock.patch.object(resources.placement, 'WSL', side_effect=OSError('WSL is down for compaction')), \
+                    mock.patch.object(process, 'subprocess', answering(missing)):
                 self.assertIsNone(resources.read_wsl_ram_gb('Ubuntu'))

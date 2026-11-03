@@ -258,6 +258,9 @@ def _options(command):
                 **NO_WINDOW)
 
 
+MISSING = 'No such file or directory'
+
+
 def run(command: Command) -> Result:
     """Spawn, wait, then check elapsed: a command that ended at or past its timeout is `timed_out`, output kept."""
     started = time.perf_counter()
@@ -266,7 +269,10 @@ def run(command: Command) -> Result:
     except subprocess.TimeoutExpired as error:
         return Result('timed_out', None, error.stdout or b'', error.stderr or b'', time.perf_counter() - started,
                       f'timed out after {command.timeout_s} s')
-    except OSError as error:        # a missing executable or a refused spawn
+    except FileNotFoundError:       # fixed wording: Windows gives strerror in the user's language
+        return Result('unavailable', None, b'', b'', time.perf_counter() - started,
+                      f'{command.argv[0]}: {MISSING}')
+    except OSError as error:        # a refused spawn
         return Result('unavailable', None, b'', b'', time.perf_counter() - started,
                       f'{command.argv[0]}: {error.strerror or error}')
     elapsed = time.perf_counter() - started

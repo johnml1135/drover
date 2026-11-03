@@ -282,11 +282,6 @@ def _fresh_run_dir(d):
             raise LaunchError(f"cannot clear {d / name}: {e}") from e
 
 
-def _missing(why):
-    """Whether a spawn failed because the executable is not there, by the words Windows and POSIX use for it."""
-    return "No such file" in why or "cannot find" in why.lower()
-
-
 def _last_json(text):
     for line in reversed((text or "").strip().splitlines()):
         try:
@@ -303,8 +298,8 @@ class RunnerLauncher(Launcher):
     placement runs it through wsl.exe --exec with --cd to the drover directory so `python3 -m drover.runner`
     imports. The brief is the file in.txt (the runner opens it as the worker's stdin)."""
 
-    def __init__(self, runs_dir=None, distro=None, drover_dir=None, python=None, which=shutil.which, ceilings=None, windows=sys.platform == "win32", wsl_bins=None,
-                 on_complete=None, **handle_kw):
+    def __init__(self, runs_dir=None, distro=None, drover_dir=None, python=None, which=shutil.which, ceilings=None,
+                 windows=sys.platform == "win32", wsl_bins=None, on_complete=None, **handle_kw):
         self.windows = windows
         self.wsl_bins = wsl_bins or {}      # {'claude': '/abs/claude', 'codex': ...} or a callable returning it (ledger settings)
         self.runs_dir = str(runs_dir or config.state_path("runs"))
@@ -405,7 +400,7 @@ class RunnerLauncher(Launcher):
             spec['_admission_check']()
         info, err = None, None
         r = process.run(process.Command(cmd, DETACH_TIMEOUT_S, cwd=self.drover_dir if env else None, env=env))
-        if r.kind == 'unavailable' and _missing(r.detail):
+        if r.kind == 'unavailable' and seat_paths.missing_executable(r.detail):
             raise LaunchError(f"cannot start {r.detail}", missing=True)
         if r.kind != 'exited':            # a timeout or a refused spawn: the runner may still come up
             err = f"runner start failed: {r.detail}"
@@ -420,7 +415,7 @@ class RunnerLauncher(Launcher):
             err, started = err or f"{info['error']}: {self._log_tail(d)}", False
         if st and str(st.get("reason") or "").startswith("spawn-failed"):
             raise LaunchError(f"cannot start worker: {st['reason']}"[:300],
-                              missing=st.get("missing_executable", _missing(st["reason"])))
+                              missing=st.get("missing_executable", seat_paths.missing_executable(st["reason"])))
         if err and not started:
             raise LaunchError(err[:300], cancel_requested=self.cancel(rid, spec["nonce"]))
         pid = (info or {}).get("runner_pid") or (st or {}).get("runner_pid")

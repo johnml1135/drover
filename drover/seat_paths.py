@@ -5,13 +5,20 @@ from pathlib import Path
 from . import placement, process
 
 
+def missing_executable(why):
+    """True when a failure text says the executable was not found. `process` gives every missing executable the one
+    fixed detail `<argv0>: No such file or directory`, whatever the OS language; 'cannot find' is for a runner's
+    spawn-failed reason, which carries Windows' own message."""
+    return process.MISSING in why or 'cannot find' in why.lower()
+
+
 def _python_in_wsl(distro, code, arg):
     """The ended run of `python3 -c code arg` in the distro. A run that did not end raises, as a timeout or a failed
     spawn did: a missing executable as `FileNotFoundError`, which the launch reads as missing."""
     done = process.run(process.Command(placement.WSL(distro).command(['python3', '-c', code, arg]), 10))
     if done.kind == 'exited':
         return done
-    if done.kind == 'unavailable' and ('No such file' in done.detail or 'cannot find' in done.detail.lower()):
+    if done.kind == 'unavailable' and missing_executable(done.detail):
         raise FileNotFoundError(done.detail)
     raise OSError(done.detail)
 

@@ -238,7 +238,7 @@ class WorkerContinuationTests(Base):
                 task_context.repository_rules(task, '/home/worker/repo')
             with self.assertRaisesRegex(OSError, 'timed out after 15 s'):     # fails closed, as any IO error
                 task_context.repository_rules(task, '/home/worker/repo')
-            with self.assertRaisesRegex(OSError, '^owning-wsl-reader: No such file$'):
+            with self.assertRaisesRegex(OSError, '^owning-wsl-reader: No such file or directory$'):
                 task_context.repository_rules(task, '/home/worker/repo')
             with self.assertRaises(UnicodeDecodeError):      # strict UTF-8, as before
                 task_context.repository_rules(task, '/home/worker/repo')

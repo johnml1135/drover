@@ -237,7 +237,7 @@ class FakeCommandBoundaries(unittest.TestCase):
             result = placement_git.git(self.fake.cwd, 'rev-parse', 'HEAD', timeout=23, env=self.fake.env)
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertEqual((result.returncode, result.stdout), (127, ''))
-        self.assertIn('fixture git is missing', result.stderr)
+        self.assertIn('git: No such file or directory', result.stderr)     # process's fixed missing detail
 
     def test_in_process_ci_uses_fake_pwsh_python_and_git_without_processes_or_sleeps(self):
         from drover import ci, placement_exec, process, runner

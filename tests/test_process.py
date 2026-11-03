@@ -79,6 +79,12 @@ class Run(unittest.TestCase):
             self.assertEqual((r.kind, r.code, r.out, r.err), ('unavailable', None, b'', b''), error)
             self.assertIn(error.strerror, r.detail)
 
+    def test_a_missing_executable_has_one_fixed_detail_whatever_the_os_language(self):
+        for error in (FileNotFoundError(2, 'Das System kann die angegebene Datei nicht finden'), FileNotFoundError('nope'),
+                      FileNotFoundError(2, 'No such file or directory')):
+            r = self.ran(error=error)
+            self.assertEqual((r.kind, r.detail), ('unavailable', ARGV[0] + ': No such file or directory'), error)
+
     def test_timeout_must_be_positive(self):
         for timeout in (0, -1, None, float('nan'), float('inf'), True, '10'):
             with self.assertRaises(ValueError, msg=timeout):

@@ -27,7 +27,7 @@ class Git(unittest.TestCase):
             fake.expect(argv, error=FileNotFoundError(2, 'No such file'), **process_options(30))
             with fake.patch(process), patch('subprocess.run', side_effect=AssertionError('real process')):
                 self.assertEqual(decisions._git(state, 'log'), 'caf� \xe9')      # UTF-8, errors replaced
-                for message in ('^fatal: bad$', '^git: timed out after 30 s$', '^git: git: No such file$'):
+                for message in ('^fatal: bad$', '^git: timed out after 30 s$', '^git: git: No such file or directory$'):
                     with self.subTest(message), self.assertRaisesRegex(decisions.DecisionError, message):
                         decisions._git(state, 'log')
 

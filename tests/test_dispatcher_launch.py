@@ -48,11 +48,22 @@ class LaunchErrors(Base):
 
     def test_real_launcher_wraps_popen_errors(self):
         def boom(*a, **k):
-            raise FileNotFoundError(2, "No such file or directory")
+            raise FileNotFoundError("nope")
         answer_spawns(self, boom)
         with self.assertRaises(launch.LaunchError) as c:
             launch.RunnerLauncher(runs_dir=self.tmp.name).launch(SPEC)
         self.assertTrue(c.exception.missing)
+
+    def test_a_missing_binary_reported_in_another_language_still_pauses_dispatch(self):
+        def boom(*a, **k):
+            raise FileNotFoundError(2, "Das System kann die angegebene Datei nicht finden")
+        answer_spawns(self, boom)
+        self.task(size="S")
+        self.allow["codex"] = False
+        self.d = self.make(launcher=launch.RunnerLauncher(runs_dir=self.tmp.name))
+        self.d.tick()
+        self.assertEqual(self.port.get_setting('dispatch_enabled'), 'false')
+        self.assertEqual(set(self.d.unavailable), {("claude", "windows")})
 
 
 

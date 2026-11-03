@@ -45,16 +45,23 @@ The injected `run=`/`runner=` parameters are gone from compaction, compaction_vh
   - compaction_vhd `_pwsh` gives `label: detail` for a run that did not end. Otherwise it gives the last 300 characters of stderr.
   - disk_schedule.install: `unavailable` raises `OSError(detail)`. A timeout or a non-zero exit raises `RuntimeError('schedule installation failed: ...')`.
   - herdr_client: a timeout while starting is `start_unconfirmed`, and otherwise `down (timed out)`. `unavailable` is `down (... did not start: <strerror>)`.
-  - launch detach: a missing executable is still `LaunchError(missing=True)`, and the "No such file / cannot find" test is shared as `_missing`. Any other run that did not end is `runner start failed: <detail>`. `_wsl_runners` raises `ScanError` for a run that did not end, and `json.loads` stays inside its `ValueError` catch.
+  - Missing executable (fix round 1):
+    - `process.run` catches `FileNotFoundError` before any other `OSError`, and gives it the fixed detail `<argv0>: No such file or directory` whatever the OS language. `process.MISSING` holds that phrase.
+    - Other `OSError`s keep their strerror.
+    - launch and seat_paths share one check, `seat_paths.missing_executable`. It also matches 'cannot find', for the runner's own spawn-failed reason.
+    - A German strerror still pauses dispatch and marks the backend unavailable (test_dispatcher_launch).
+  - launch detach: a missing executable is still `LaunchError(missing=True)`. Any other run that did not end is `runner start failed: <detail>`. `_wsl_runners` raises `ScanError` for a run that did not end, and `json.loads` stays inside its `ValueError` catch.
   - pane_files.write_private: a run that is not `ok`, or an empty WSL path, raises `OSError`.
   - resources.read_wsl_ram_gb parses only an ended run. `WslOffline` and other `OSError` are still `None`.
   - usage: `_ended` raises `OSError` for a run that did not end. The probe's catch no longer names `SubprocessError`.
   - wsl_cache_reclaim: `_ended` raises `OSError`, which `reclaim` catches as before.
-  - seat_paths: `unavailable` with a missing-file message raises `FileNotFoundError`, so dispatch still pauses for a missing WSL. Anything else that did not end raises `OSError`.
+  - seat_paths: `unavailable` that `missing_executable` matches raises `FileNotFoundError`, so dispatch still pauses for a missing WSL. Anything else that did not end raises `OSError`.
 - **Tests:**
   - New: `test_compaction.Offline.test_compaction_shutdown_literal_runs_in_the_offline_phase` and `test_disk_schedule.test_schedule_install_times_out_at_600_seconds_and_reports_failed`.
   - New guards for runs that did not end, in test_resources, test_usage and test_first_dispatch_homes.
   - Each restated test is a `FakeCommands.patch(process)` test that refuses real spawns, in herdr_client, usage, wsl_cache_reclaim, launch_runner_handle, pane_launch_files, resources and first_dispatch_homes.
   - Everything that passed `run=` now uses `tests.fakeci.answer_spawns`/`answering`, which adapts an old-style fake to `process.subprocess`. `FakeHerdr.serve(case)` does the same for the herdr fake.
   - The ceilings are unchanged, and `tests.IMPURE` is unchanged.
+  - Three tests pinned the old short detail ('No such file', or the fake's own message), and now expect the fixed phrase: test_decisions, test_worker_continuation and test_guards' missing-git case. test_seat_paths_contract's EXPECTED gains launch's use of `missing_executable`.
+- **Carry.** If the hub's job refuses breakaway, a detach timeout now ends a runner that used to survive (review Minor 3). This is already in the ledger's carries for the final review.
 - **Trace.** `git diff --exit-code 6a95dba -- tests/disk_decision_trace.json` prints nothing.

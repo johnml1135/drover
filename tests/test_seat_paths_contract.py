@@ -6,6 +6,7 @@ from tests.test_architecture import alias_map, call_name, trees
 
 EXPECTED = {
     ('drover/launch.py', 'RunnerLauncher.launch', 'resolve_spec'),
+    ('drover/launch.py', 'RunnerLauncher.launch', 'missing_executable'),   # one missing-executable check (Task 18)
     ('hub/dispatch.py', 'DispatcherService._validate_seat_homes', 'validate'),
 }
 
