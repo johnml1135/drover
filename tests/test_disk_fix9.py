@@ -3,6 +3,7 @@
 All process/Git evidence is supplied at the placement seam; no agents or sleeps.
 """
 import subprocess
+import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -177,3 +178,16 @@ class DefaultBranchPolicy(DiskCase):
         self.assertFalse(self.bin.exists(), answer)
         self.assertTrue(self.src.exists())
 
+
+
+class RepositoryConfig(unittest.TestCase):
+    """A config git warns about but still lists with exit 0 is not a clean parse: it is repository evidence."""
+    def test_a_config_git_warns_about_is_kept_as_a_repository(self):
+        from pathlib import Path
+        for warning, expected in (('warning: bad config line 3\n', True), ('', False)):
+            def git(repo, *args, timeout):
+                if args[0] == 'rev-parse':
+                    return subprocess.CompletedProcess(args, 128, '', 'fatal: not a git repository\n')
+                return subprocess.CompletedProcess(args, 0, 'user.name=someone\ncolor.ui=auto\n', warning)
+            with self.subTest(warning=warning), git_answers(git):
+                self.assertIs(disk_paths.repository_config(Path('/admin')), expected)
