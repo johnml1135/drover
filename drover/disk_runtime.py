@@ -2,16 +2,17 @@
 
 Platform facts and process primitives come from placement; nothing in placement calls back into disk.
 """
-import copy
 import json
 import os
 import sys
 import time
 import uuid
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from . import compaction_hold, config, disk_state, placement, process
 from .disk_cleanup_decisions import CleanupRuntime
+from .disk_stage import StageRequest, read_rows
 
 
 def cleanup_runtime(cfg):
@@ -20,42 +21,25 @@ def cleanup_runtime(cfg):
     return CleanupRuntime(time.time, _free, cleanup_call, placement.disk_toast, lambda: cleanup_pressure(cfg))
 
 
-def cleanup_call(side: str, request: dict) -> dict:
-    """Run a fixed JSON worker; only declared paths are translated across sides."""
+def cleanup_call(side: str, request: StageRequest) -> dict:
+    """Run a fixed worker on `side` and read its rows back; only declared paths are translated across sides.
+
+    The answer is `read_rows`' fields as a dict. `complete` means an `end` line arrived and the worker exited 0; any
+    other end keeps the rows that arrived, adds today's error row, and saves those rows whole in the worker error."""
     if side not in ('windows', 'wsl'):
         raise ValueError('invalid cleanup side')
     if not placement.IS_WINDOWS and side == 'windows':
         errors = [dict(reason_code='side_unavailable')] if os.environ.get('WSL_DISTRO_NAME') else []
-        return dict(items=[], errors=errors, reclaimed_bytes=0)
-    if side == 'wsl' and placement.IS_WINDOWS and compaction_hold.active(request['state_dir']):
-        return dict(items=[], errors=[dict(reason_code='compaction_window')], reclaimed_bytes=0)
-    request = copy.deepcopy(request)
-    original_state = request['state_dir']
+        return _answer(errors=errors, complete=not errors)
+    if side == 'wsl' and placement.IS_WINDOWS and compaction_hold.active(request.state_dir):
+        return _answer(errors=[dict(reason_code='compaction_window')])
+    original_state = request.state_dir
     token = uuid.uuid4().hex
-    request['_worker_id'] = token
-    request['side'] = side
+    request = replace(request, side=side, worker_id=token)
     root = str(Path(__file__).resolve().parents[1])
     if placement.IS_WINDOWS and side == 'wsl':
         convert = placement.to_wsl_path
-        request['state_dir'] = convert(request['state_dir'])
-        snapshot = request.get('tasks') or {}
-        if snapshot:
-            snapshot['active_worktrees'] = [convert(p) for p in snapshot.get('active_worktrees', [])]
-            for task in snapshot.get('tasks', []):
-                if task.get('worktree'):
-                    task['worktree'] = convert(task['worktree'])
-        for repo in request['repos']:
-            for key in ('repo', 'worktrees'):
-                if repo.get(key):
-                    repo[key] = convert(repo[key])
-        for key in ('temp_roots', 'report_roots'):
-            request['paths'][key] = [convert(p) for p in request['paths'].get(key, [])
-                                     if placement.cleanup_path_side(p) == side]
-        request['paths']['caches'] = [c for c in request['paths'].get('caches', [])
-                                      if placement.cleanup_path_side(c.get('path', c.get('cwd'))) == side]
-        for cache in request['paths'].get('caches', []):
-            key = 'path' if 'path' in cache else 'cwd'
-            cache[key] = convert(cache[key])
+        request = request.for_side(side, convert)
         name = placement.distro()
         # Resolve HKCU on the Windows hub. A non-interactive WSL worker may not
         # have Windows interop available to run reg.exe, even though Git and its
@@ -76,7 +60,7 @@ def cleanup_call(side: str, request: dict) -> dict:
     # Pin the application root independently of cwd or the hub's environment.
     code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
             'from drover.placement import cleanup_worker;cleanup_worker(json.load(sys.stdin))')
-    job, done, status, answer, pending = None, None, None, None, None
+    job, done, status, answer, pending, rows = None, None, None, None, None, None
     evidence = {}
     reason, output, detail = 'worker_failed', '', ''
     exit_status = None
@@ -88,10 +72,12 @@ def cleanup_call(side: str, request: dict) -> dict:
         command = [*argv, '-c', code, root, token]
         if placement.IS_WINDOWS and side == 'wsl':
             command = process.wsl_argv(command[1:])
-        ran = process.run(process.Command(command, request['paths'].get('worker_timeout_s', 1800),
-                                          env={**os.environ, 'DROVER_RUN_ID': token}, stdin=json.dumps(request)))
+        ran = process.run(process.Command(command, request.policy.get('worker_timeout_s', 1800),
+                                          env={**os.environ, 'DROVER_RUN_ID': token},
+                                          stdin=json.dumps(request.to_wire())))
         if ran.kind == 'timed_out':
             reason, output, detail = 'worker_timeout', ran.out, text(ran.err)
+            rows = _arrived(ran.out)
         elif ran.kind == 'unavailable':
             reason, detail = 'worker_unavailable', ran.detail
         else:
@@ -101,11 +87,12 @@ def cleanup_call(side: str, request: dict) -> dict:
                 # A worker killed by the loader or OS says nothing on stderr; the status is then the only clue.
                 detail = (detail.rstrip() + ' | ' if detail.strip() else '') + \
                     f'worker exited with status {done.code} ({done.code & 0xFFFFFFFF:#x})'
+                rows = _arrived(done.out)
             else:
-                answer = json.loads(done.stdout)
-                if not isinstance(answer, dict):
-                    answer = None
-                    raise ValueError('invalid cleanup worker result')
+                rows = read_rows(done.out)
+                if not rows.complete:
+                    raise ValueError('cleanup worker ended without its end line')
+                answer = asdict(rows)
     except OSError as error:        # the Windows job, or wsl_argv refusing while WSL is offline
         reason, detail = 'worker_unavailable', str(error)
     except BaseException as error:
@@ -165,8 +152,11 @@ def cleanup_call(side: str, request: dict) -> dict:
                             termination_confirmed=confirmed, work_started=not startup_failure)
             if exit_status is not None:
                 evidence['exit_status'] = exit_status
+            # The rows that arrived are saved whole, in a key of their own: `output` is cut to 4,000 characters.
+            saved = evidence if rows is None else dict(evidence, rows=dict(
+                items=rows.items, errors=rows.errors, reclaimed_bytes=rows.reclaimed_bytes))
             try:
-                disk_state.save_file(original_state, 'worker-error-' + token + '.json', evidence)
+                disk_state.save_file(original_state, 'worker-error-' + token + '.json', saved)
             except BaseException as error:
                 evidence['persistence_error'] = str(error) or type(error).__name__
                 if confirmed and not isinstance(error, OSError):
@@ -177,7 +167,24 @@ def cleanup_call(side: str, request: dict) -> dict:
         raise pending
     if answer is not None:
         return answer
-    return dict(items=[], errors=[evidence], reclaimed_bytes=0)
+    if rows is None:
+        return _answer(errors=[evidence])
+    return dict(asdict(rows), errors=rows.errors + [evidence], complete=False, partial=True)
+
+
+def _answer(*, errors, complete=False):
+    """An answer with no rows: no worker ran, or none of its lines could be read."""
+    return dict(items=[], errors=errors, reclaimed_bytes=0, peak_intermediate_bytes=0, budget=None, complete=complete,
+                partial=not complete)
+
+
+def _arrived(output: bytes):
+    """The rows a failed worker sent before it ended, or None when a line was malformed: then only its error row is
+    known, as today."""
+    try:
+        return read_rows(output)
+    except ValueError:
+        return None
 
 
 def run_detached(cfg, apply):

@@ -85,7 +85,7 @@ class Caches(DiskCase):
         self.cfg['disk_cleanup']['caches'] = [dict(path=str(p), placement=self.side)
                                              for p in (repo, self.state)]
         from drover import placement
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         from types import SimpleNamespace
         from unittest.mock import patch
         request = dict(stage=3, mode='triggered', apply=True, now=self.now, repos=[], tasks={},
@@ -94,7 +94,7 @@ class Caches(DiskCase):
         with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch.object(placement, 'cleanup_free', return_value=80), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
-            result = serve(request)
+            result = served(request)
         self.assertEqual(source.read_text(), 'valuable')
         self.assertTrue(secret.exists())
         self.assertTrue(any(i['reason_code'] == 'protected' for i in result['items']))

@@ -8,13 +8,14 @@ import socket
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
 from . import config, disk, disk_budget, disk_runtime, disk_state, durable, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, CleanupState, decide, decide_and_store, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
+from .disk_stage import StageRequest
 
 
 def _repos(cfg, errors=None):
@@ -116,7 +117,7 @@ def _windows_paths(cfg, base):
     """What Windows processes name inside WSL, which the WSL worker cannot see. (paths, unreadable); paths is None
     when the snapshot is unknown or failed."""
     try:
-        proof = placement.cleanup_windows_proof(paths=base['paths'], state_dir=base['state_dir'], budget=True)
+        proof = placement.cleanup_windows_proof(paths=base['policy'], state_dir=base['state_dir'], budget=True)
         return (proof.wsl_paths(disk.tracker_distro(cfg)), proof.unreadable) if proof else (None, [])
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return None, []
@@ -126,7 +127,7 @@ def _serve_stage(runtime, progress, result, state_dir, side, request, *, trim=No
     """Call one destructive stage and merge what it says into `result`. A failure is recorded, unless its termination
     is unconfirmed, which saves the report and raises. `trim` is the stage-1 request to send after a large reclaim.
     Returns the stage's answer, kept even when the trim after it failed; None when the stage itself failed."""
-    answer, stage = None, request['stage']
+    answer, stage = None, request.stage
     try:
         answer = _valid_result(runtime.call(side, request))
         progress.end('ok', len(answer['items']), len(answer['errors']))
@@ -167,13 +168,13 @@ def _budget_purge(cfg, runtime, progress, result, base):
         receipt['budget'] = 'processes_unknown'
         return receipt
     free = drive.get('post_free_gb', drive['free_gb'])
-    request = dict(base, stage=5, apply=base['apply'] and free is not None, now=runtime.now(), drive=drive,
-                   budget=dict(target_gb=target, windows_paths=windows_paths))
-    receipt.update(applied=request['apply'], budget='failed')
+    request = StageRequest(**dict(base, apply=base['apply'] and free is not None), stage=5, side=None, now=runtime.now(),
+                           drive=drive, budget=dict(target_gb=target, windows_paths=windows_paths))
+    receipt.update(applied=request.apply, budget='failed')
     result['stages'].append(dict(drive=drive['name'], stage=5))
     progress.begin(drive['name'], 5, side)
     answer = _serve_stage(runtime, progress, result, config.state_dir(cfg), side, request,
-                          trim=dict(request, stage=1, budget=None) if request['apply'] else None)
+                          trim=replace(request, stage=1, budget=None) if request.apply else None)
     if answer is not None:
         receipt['reclaimed_bytes'] = answer['reclaimed_bytes']
         if answer.get('budget'):
@@ -233,12 +234,12 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                     break
                 result['stages'].append(dict(drive=row['name'], stage=stage))
                 for side in ('windows', 'wsl'):
-                    request = dict(stage=stage, mode=mode, apply=apply and free is not None, now=runtime.now(),
-                                   drive=drive, repos=machines, paths=cfg['disk_cleanup'],
-                                   state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
+                    request = StageRequest(stage=stage, side=None, mode=mode, apply=apply and free is not None,
+                                           now=runtime.now(), drive=drive, repos=machines, policy=cfg['disk_cleanup'],
+                                           state_dir=str(state_dir), tasks=tasks, inventory_id=inventory_id)
                     progress.begin(row['name'], stage, side)
                     answer = _serve_stage(runtime, progress, result, state_dir, side, request,
-                                          trim=dict(request, stage=1) if stage > 1 and apply and side == 'wsl' else None)
+                                          trim=replace(request, stage=1) if stage > 1 and apply and side == 'wsl' else None)
                     if answer is not None and stage == 6:
                         inventories.add((row['name'], side))
                 free = _reading(runtime.read(row['path'])) if row['path'] is not None else None
@@ -263,8 +264,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                     except BlockingIOError:
                         pass
             if wsl_claim:
-                base = dict(mode=mode, apply=apply, repos=machines, paths=cfg['disk_cleanup'], state_dir=str(state_dir),
-                            tasks=tasks, _inventory_id=inventory_id)
+                base = dict(mode=mode, apply=apply, repos=machines, policy=cfg['disk_cleanup'], state_dir=str(state_dir),
+                            tasks=tasks, inventory_id=inventory_id)
                 result['budget'] = _budget_purge(cfg, runtime, progress, result, base)
                 _finish_wsl(state_dir, wsl_claim, result['budget'], runtime.now())
         if apply and not drive_stages_skipped:
@@ -275,8 +276,9 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
                     for side in ('windows', 'wsl'):
                         if (row['name'], side) in inventories:
                             continue
-                        request = dict(stage=6, apply=False, now=runtime.now(), drive=row, repos=budgeted,
-                                       paths=cfg['disk_cleanup'], state_dir=str(state_dir), tasks=tasks, _inventory_id=inventory_id)
+                        request = StageRequest(stage=6, side=None, mode=None, apply=False, now=runtime.now(), drive=row,
+                                               repos=budgeted, policy=cfg['disk_cleanup'], state_dir=str(state_dir),
+                                               tasks=tasks, inventory_id=inventory_id)
                         try:
                             answer = _valid_result(runtime.call(side, request))
                             result['peak_intermediate_bytes'] = max(result['peak_intermediate_bytes'], answer.get('peak_intermediate_bytes', 0))
@@ -334,9 +336,10 @@ def remove_approved(cfg: dict, repo: str, path: str, *, runtime=None) -> dict:
             for drive in disk.read(cfg, reader=runtime.read):
                 if drive['free_gb'] is None:
                     continue
-                request = dict(stage=4, apply=True, now=runtime.now(), drive=drive, repos=machines,
-                               paths=cfg['disk_cleanup'], state_dir=str(config.state_dir(cfg)),
-                               tasks=_task_snapshot(config.state_dir(cfg)), approved_path=path)
+                request = StageRequest(stage=4, side=None, mode=None, apply=True, now=runtime.now(), drive=drive,
+                                       repos=machines, policy=cfg['disk_cleanup'],
+                                       state_dir=str(config.state_dir(cfg)),
+                                       tasks=_task_snapshot(config.state_dir(cfg)), approved_path=path)
                 for side in ('windows', 'wsl'):
                     answer = _valid_result(runtime.call(side, request))
                     out['items'].extend(answer['items'])

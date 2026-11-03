@@ -90,17 +90,21 @@
  },
  "native_bad_json": {
   "answer": {
+   "budget": null,
+   "complete": false,
    "errors": [
     {
-     "error": "Expecting value: line 1 column 1 (char 0)",
+     "error": "not a stage line: not ASCII JSON",
      "exit_status": 0,
-     "output": "not json",
+     "output": "not json\n",
      "reason_code": "worker_failed",
      "termination_confirmed": true,
      "work_started": true
     }
    ],
    "items": [],
+   "partial": true,
+   "peak_intermediate_bytes": 0,
    "reclaimed_bytes": 0
   },
   "calls": [
@@ -114,11 +118,17 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "worker_timeout_s": 11
      },
      "repos": [],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "<TMP>/state",
      "tasks": {}
     },
@@ -132,9 +142,9 @@
    }
   ],
   "persisted": {
-   "error": "Expecting value: line 1 column 1 (char 0)",
+   "error": "not a stage line: not ASCII JSON",
    "exit_status": 0,
-   "output": "not json",
+   "output": "not json\n",
    "reason_code": "worker_failed",
    "termination_confirmed": true,
    "work_started": true
@@ -152,12 +162,16 @@
  },
  "native_ok": {
   "answer": {
+   "budget": null,
+   "complete": true,
    "errors": [],
    "items": [
     {
      "path": "x"
     }
    ],
+   "partial": false,
+   "peak_intermediate_bytes": 0,
    "reclaimed_bytes": 7
   },
   "calls": [
@@ -171,11 +185,17 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "worker_timeout_s": 11
      },
      "repos": [],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "<TMP>/state",
      "tasks": {}
     },
@@ -202,6 +222,8 @@
  },
  "native_startup_failure": {
   "answer": {
+   "budget": null,
+   "complete": false,
    "errors": [
     {
      "error": "boom | worker exited with status 3 (0x3)",
@@ -213,6 +235,8 @@
     }
    ],
    "items": [],
+   "partial": true,
+   "peak_intermediate_bytes": 0,
    "reclaimed_bytes": 0
   },
   "calls": [
@@ -226,11 +250,17 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "worker_timeout_s": 11
      },
      "repos": [],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "<TMP>/state",
      "tasks": {}
     },
@@ -248,6 +278,11 @@
    "exit_status": 3,
    "output": "partial",
    "reason_code": "worker_error",
+   "rows": {
+    "errors": [],
+    "items": [],
+    "reclaimed_bytes": 0
+   },
    "termination_confirmed": true,
    "work_started": false
   },
@@ -275,11 +310,17 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "worker_timeout_s": 11
      },
      "repos": [],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "<TMP>/state",
      "tasks": {}
     },
@@ -296,6 +337,11 @@
    "error": "err",
    "output": "out",
    "reason_code": "worker_timeout",
+   "rows": {
+    "errors": [],
+    "items": [],
+    "reclaimed_bytes": 0
+   },
    "termination_confirmed": false,
    "work_started": true
   },
@@ -430,27 +476,39 @@
   "wsl_host": "Install disk schedules using native Windows Python so the physical reader survives WSL shutdown"
  },
  "windows_side_on_Ubuntu": {
+  "budget": null,
+  "complete": false,
   "errors": [
    {
     "reason_code": "side_unavailable"
    }
   ],
   "items": [],
+  "partial": true,
+  "peak_intermediate_bytes": 0,
   "reclaimed_bytes": 0
  },
  "windows_side_on_no_wsl": {
+  "budget": null,
+  "complete": true,
   "errors": [],
   "items": [],
+  "partial": false,
+  "peak_intermediate_bytes": 0,
   "reclaimed_bytes": 0
  },
  "windows_to_wsl_ok": {
   "answer": {
+   "budget": null,
+   "complete": true,
    "errors": [],
    "items": [
     {
      "path": "x"
     }
    ],
+   "partial": false,
+   "peak_intermediate_bytes": 0,
    "reclaimed_bytes": 7
   },
   "calls": [
@@ -471,6 +529,11 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "caches": [
        {
@@ -496,6 +559,7 @@
       }
      ],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "/w/<TMP>/state",
      "tasks": {
       "active_worktrees": [
@@ -534,6 +598,8 @@
  },
  "windows_to_wsl_startup_failure": {
   "answer": {
+   "budget": null,
+   "complete": false,
    "errors": [
     {
      "error": "worker exited with status 3 (0x3)",
@@ -545,6 +611,8 @@
     }
    ],
    "items": [],
+   "partial": true,
+   "peak_intermediate_bytes": 0,
    "reclaimed_bytes": 0
   },
   "calls": [
@@ -565,6 +633,11 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "caches": [
        {
@@ -590,6 +663,7 @@
       }
      ],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "/w/<TMP>/state",
      "tasks": {
       "active_worktrees": [
@@ -640,6 +714,11 @@
    "exit_status": 3,
    "output": "",
    "reason_code": "worker_error",
+   "rows": {
+    "errors": [],
+    "items": [],
+    "reclaimed_bytes": 0
+   },
    "termination_confirmed": true,
    "work_started": false
   },
@@ -675,6 +754,11 @@
     ],
     "input": {
      "_worker_id": "t0k3n",
+     "apply": false,
+     "drive": {
+      "path": "D:/"
+     },
+     "now": 1.0,
      "paths": {
       "caches": [
        {
@@ -700,6 +784,7 @@
       }
      ],
      "side": "wsl",
+     "stage": 4,
      "state_dir": "/w/<TMP>/state",
      "tasks": {
       "active_worktrees": [
@@ -750,6 +835,11 @@
    "exit_status": 3,
    "output": "",
    "reason_code": "worker_error",
+   "rows": {
+    "errors": [],
+    "items": [],
+    "reclaimed_bytes": 0
+   },
    "termination_confirmed": false,
    "work_started": false
   },

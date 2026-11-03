@@ -68,6 +68,12 @@ def cleanup_processes(*, paths=None, state_dir=None, inventory_id=None, stage=No
                              clear_ignored=clear_ignored)
 
 
+def proof_diagnostics(proof):
+    """What a process proof says of itself: (out_of_scope, unreadable, query_failure). A proof carrying none of them, as
+    a test's may, says nothing."""
+    return getattr(proof, 'out_of_scope', 0), getattr(proof, 'unreadable', []), getattr(proof, 'query_failure', None)
+
+
 def _parent(entry):
     try:
         return int((entry / 'stat').read_text().rsplit(')', 1)[1].split()[1])

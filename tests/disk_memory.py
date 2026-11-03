@@ -222,11 +222,11 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
 
     def stage5(self, *, apply=False, **paths):
         """The output stage as the worker serves it, on this side, with no process holding anything."""
-        from drover import disk_side
+        from tests.disk_fixture import served
         request, proof = self.stage5_request(apply=apply, **paths)
         with patch.object(placement, 'cleanup_processes', return_value=proof), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
-            return disk_side.serve(request)
+            return served(request)
 
     def branches(self):
         return dict(self.r.refs)

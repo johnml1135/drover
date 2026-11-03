@@ -5,6 +5,7 @@ from unittest.mock import patch
 from tests.disk_fixture import DiskCase
 from tests.dispatch_fixture import FakePipeline, Observations, make_dispatcher
 from tests.test_dispatcher import FakeLauncher
+from drover.disk_stage import StageRequest
 from drover import disk_runtime
 
 
@@ -150,7 +151,7 @@ class Hub(DiskCase):
             return subprocess.CompletedProcess(argv, 0, b'{"items":[],"errors":[],"reclaimed_bytes":0}', b'')
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(process.subprocess, 'run', side_effect=execute):
             with patch.object(placement, 'recover_ci_children', return_value=True):
-                disk_runtime.cleanup_call('wsl', request)
+                disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
         snapshot = captured[0]['tasks']
         self.assertEqual(snapshot['active_worktrees'], ['/mnt/h/trees/active'])
         self.assertEqual(snapshot['tasks'][0]['worktree'], '/mnt/h/trees/active')

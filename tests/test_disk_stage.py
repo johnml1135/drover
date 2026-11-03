@@ -1,5 +1,6 @@
 """`StageRequest` and `StageClock`: what a stage is asked and how long it has. The clock is faked through `clock=`."""
 import copy
+import heapq
 import io
 import json
 import unittest
@@ -207,6 +208,36 @@ def root_of(row):
                                       key=lambda r: len(r.parts), default=path.parent))
 
 
+def todays_compact(items, roots):
+    """`disk_inventory.compact` at e09ef3e over temp roots `roots`, kept as the oracle `StageRun` and `read_rows` match:
+    serve grouped a stage's whole answer with it, before rows crossed as lines."""
+    roots = [Path(placement_paths.native(p)) for p in roots]
+    groups, answer = {}, []
+    for original in items:
+        row = dict(original)
+        for key in ('dirty', 'ignored', 'excluded'):
+            if key in row:
+                row[key + '_count'] = len(row[key])
+                row[key] = row[key][:disk_inventory.LIMIT]
+        if row.get('reason_code') in WHOLE:
+            answer.append(row)
+            continue
+        path = Path(row['path'])
+        root = row.get('root') or str(max((r for r in roots if r == path or r in path.parents),
+                                         key=lambda r: len(r.parts), default=path.parent))
+        groups.setdefault((row['reason_code'], root, row['action']), []).append(row)
+    for (reason, root, action), rows in groups.items():
+        if len(rows) <= disk_inventory.LIMIT:
+            answer.extend(rows)
+        else:
+            answer.append(dict(path=root, root=root, action=action, reason_code=reason, count=len(rows),
+                               files=sum(r.get('files', 0) for r in rows), bytes=sum(r.get('bytes', 0) for r in rows),
+                               age_s=min(r.get('age_s', 0) for r in rows), owner=None,
+                               sample=heapq.nlargest(disk_inventory.LIMIT, rows,
+                                                     key=lambda r: (r.get('bytes', 0), r['path']))))
+    return answer
+
+
 def row(path, reason='declared_disposable', action='keep', **extra):
     return dict(dict(path=path, action=action, reason_code=reason, owner=None, files=1, age_s=5, bytes=10), **extra)
 
@@ -334,12 +365,13 @@ class Run(unittest.TestCase):
         items += [row('/var/reports/x', root='/own/root')]
         items += [row('/var/reports/deep/%02d' % n, bytes=n) for n in range(25, 30)]
         run = stage_run(limit=disk_inventory.LIMIT)
+        run._root_of = disk_inventory.root_of(dict(temp_roots=list(ROOTS)), [])     # the step serve passes in
         for number, item in enumerate(items):
             run.add(item)
             if number % 9 == 0:
                 run.checkpoint()                     # the `more` tally is a running total, so the last one stands
         run.finish()
-        today = disk_inventory.compact(items, dict(temp_roots=list(ROOTS), report_roots=[]), [])
+        today = todays_compact(items, ROOTS)
         self.assertEqual(read_rows(sent(run)).items, today)
         self.assertEqual([r['count'] for r in today if 'count' in r], [30, 22])
 

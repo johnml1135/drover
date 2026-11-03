@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from drover.disk_stage import StageRequest
 from drover import config, disk_cleanup, disk_runtime, disk_state, placement, process
 from tests.tiers import integration
 from tests.disk_fixture import DiskCase
@@ -39,7 +40,7 @@ class Startup(ProcessFreeDiskCase):
                            argv=[sys.executable, '-c', command, str(pidfile)],
                            cwd=str(self.temp_root), placement='wsl')]))
         with patch.object(process.subprocess, 'run', side_effect=session):
-            result = disk_runtime.cleanup_call('wsl', request)
+            result = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
         self.assertFalse(result['errors'], result)
         self.assertTrue(pidfile.exists(), 'the configured command really executed')
         pid = int(pidfile.read_text())
@@ -95,7 +96,7 @@ class Startup(ProcessFreeDiskCase):
         with disk_state.CleanupLock(self.state), \
                 patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), \
                 patch.object(process.subprocess, 'run', side_effect=locally):
-            result = disk_runtime.cleanup_call('wsl', request)
+            result = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
         self.assertEqual(len(observed), 2)
         self.assertTrue(result['errors'][0]['termination_confirmed'])
         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
@@ -220,13 +221,13 @@ class Startup(ProcessFreeDiskCase):
                         patch.object(process.subprocess, 'run', side_effect=execute):
                     if absent:
                         with disk_state.CleanupLock(self.state):
-                            result = disk_runtime.cleanup_call('wsl', request)
+                            result = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
                         self.assertEqual(result['errors'][0]['reason_code'], 'worker_error')
                         self.assertFalse((self.state / 'disk-cleanup.lock').exists())
                     else:
                         with self.assertRaises(placement.CleanupWorkerError):
                             with disk_state.CleanupLock(self.state):
-                                disk_runtime.cleanup_call('wsl', request)
+                                disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
                         self.assertTrue((self.state / 'disk-cleanup.lock').exists())
                         # This simulated lock belongs solely to the temp fixture.
                         import shutil
@@ -377,8 +378,8 @@ class Timeout(ProcessFreeDiskCase):
         request = dict(stage=1, apply=False, state_dir=str(self.state), repos=[], paths=dict(worker_timeout_s=2345))
         with patch.object(process.subprocess, 'run', side_effect=execute), \
                 patch.object(placement, 'recover_ci_children', return_value=True):
-            disk_runtime.cleanup_call('wsl', request)
-            disk_runtime.cleanup_call('wsl', request)
+            disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
+            disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
         self.assertEqual(calls, [2345, 2345])
 
 

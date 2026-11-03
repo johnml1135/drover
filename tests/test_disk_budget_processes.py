@@ -7,8 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_cleanup, disk_side, disk_state, placement, placement_proof
+from drover import disk_cleanup, disk_state, placement, placement_proof
+from drover.disk_stage import StageRequest
 from tests.disk_budget_fixture import DAY, LocalSide, live_row, row
+from tests.disk_fixture import served
 
 
 class WindowsProcesses(LocalSide):
@@ -26,7 +28,7 @@ class WindowsProcesses(LocalSide):
                 sent.append(request['budget']['windows_paths'])
                 named = [str(tree) + p.removeprefix('/home/me/wt') for p in request['budget']['windows_paths']]
                 request = dict(request, budget=dict(request['budget'], windows_paths=named))
-            return worker.call(side, request)
+            return worker.call(side, StageRequest.from_wire(request))
         return call, sent
 
     def test_windows_process_in_a_wsl_worktree_keeps_its_paths(self):
@@ -94,7 +96,7 @@ class WindowsProcesses(LocalSide):
         proof = SimpleNamespace(busy=lambda path: False)
         with patch.object(placement, 'cleanup_processes', return_value=proof), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
-            answer = disk_side.serve(request)
+            answer = served(request)
         self.assertEqual(answer['budget']['status'], 'processes_unknown')
         self.assertTrue(path.exists())
 

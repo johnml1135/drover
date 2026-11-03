@@ -6,6 +6,7 @@ import subprocess
 import sys
 from unittest.mock import patch
 
+from drover.disk_stage import StageRequest
 from drover import disk_runtime, placement, process
 from tests.disk_fixture import DiskCase, empty_result
 
@@ -27,11 +28,11 @@ class PlacementSafety(DiskCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(empty_result()).encode(), b'')
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(process.subprocess, 'run', side_effect=execute):
             with patch.object(placement, 'recover_ci_children', return_value=True):
-                disk_runtime.cleanup_call('wsl', self.request())
+                disk_runtime.cleanup_call('wsl', StageRequest.from_wire(self.request()))
         self.assertEqual(observed[0]['paths']['temp_roots'], ['/home/user/temp'])
 
     def test_empty_temp_policy_stays_empty(self):
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         old = self.file(self.temp_root / 'unconfigured')
         request = self.request()
         request['paths']['temp_roots'] = []
@@ -39,7 +40,7 @@ class PlacementSafety(DiskCase):
         with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch('tempfile.gettempdir', return_value=str(self.temp_root)), \
                 patch.object(placement, 'cleanup_processes', return_value=type('Idle', (), {'busy': lambda *a: False})()):
-            serve(request)
+            served(request)
         self.assertTrue(old.exists())
 
     def test_linux_longest_mount_is_used_for_measurement_and_scope(self):
@@ -69,7 +70,7 @@ class PlacementSafety(DiskCase):
             if '_worker_id' in request:
                 disk_state.save_file(self.state, 'worker-' + request['_worker_id'] + '.json',
                                      dict(pid=123456789, runner_pid=123456789, run_id=request['_worker_id']))
-            raise subprocess.TimeoutExpired(argv, 600, output='partial evidence', stderr='worker stalled')
+            raise subprocess.TimeoutExpired(argv, 600, output=b'partial evidence', stderr=b'worker stalled')
         def confirm(*args):
             self.assertTrue((self.state / 'disk-cleanup.lock').exists())
             confirmed.append(True)
@@ -115,7 +116,7 @@ class PlacementSafety(DiskCase):
             return execute(argv, **kwargs)
         with patch.object(process.subprocess, 'run', side_effect=bounded), \
                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-            result = disk_runtime.cleanup_call(self.side, request)
+            result = disk_runtime.cleanup_call(self.side, StageRequest.from_wire(request))
         self.assertEqual(result['errors'][0]['reason_code'], 'worker_timeout')
         self.assertTrue(result['errors'][0]['termination_confirmed'])
         self.assertTrue(list((self.state / 'disk').glob('worker-error-*.json')))

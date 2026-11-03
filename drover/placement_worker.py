@@ -92,12 +92,11 @@ def cleanup_worker(request):
     name = 'worker-' + request['_worker_id'] + '.json'
     disk_state.save_file(request['state_dir'], name, status)
     try:
-        answer = disk_side.serve(request)
+        # The rows leave as lines while the stage runs, ending with its `end` line, so the claim keeps no result.
+        disk_side.serve(request, out=sys.stdout.buffer)
     except BaseException as error:
         disk_state.save_file(request['state_dir'], name, dict(status, error=str(error)))
         raise
-    disk_state.save_file(request['state_dir'], name, dict(status, completed=True, result=answer))
-    json.dump(answer, sys.stdout)
 
 
 # No application import: a broken startup must still be independently verifiable.

@@ -9,10 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from drover.disk_stage import StageRequest
 from drover import config, disk_paths, disk_runtime, disk_side, git_worktrees, placement
 from drover import placement_host, placement_paths, placement_worker, process
 from tests.disk_budget_fixture import BudgetCase
-from tests.disk_fixture import DiskCase
+from tests.disk_fixture import DiskCase, placement_processes
 from tests.disk_memory import MemoryWorktreeCase
 
 
@@ -87,11 +88,12 @@ class WindowsHubOutputs(MemoryWorktreeCase):
                 stack.enter_context(patch.object(process.subprocess, 'run', real_run))
                 stack.enter_context(patch.object(placement_worker, 'lower_priority'))
                 stack.enter_context(patch.object(os, 'setsid'))
-                stream = stack.enter_context(patch('sys.stdout', new_callable=io.StringIO))
+                stream = stack.enter_context(patch('sys.stdout', SimpleNamespace(buffer=io.BytesIO())))
+                stack.enter_context(placement_processes())
                 placement_worker.cleanup_worker(payload)
                 receipt = self.state / 'disk' / ('worker-' + payload['_worker_id'] + '.json')
                 receipts.append(json.loads(receipt.read_text()))
-            return SimpleNamespace(returncode=0, stdout=stream.getvalue().encode(), stderr=b'')
+            return SimpleNamespace(returncode=0, stdout=stream.buffer.getvalue(), stderr=b'')
 
         with ExitStack() as stack:
             for module in (placement, placement_paths, placement_host):
@@ -102,12 +104,12 @@ class WindowsHubOutputs(MemoryWorktreeCase):
             stack.enter_context(patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)))
             stack.enter_context(patch.object(placement, 'recover_ci_children', return_value=True))
             stack.enter_context(patch.object(process.subprocess, 'run', side_effect=launch))
-            answer = disk_runtime.cleanup_call('wsl', request)
+            answer = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
             # A different physical drive must still retain the output.
-            other = disk_runtime.cleanup_call('wsl', dict(request, drive=dict(path='C:/', level='warn')))
+            other = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(dict(request, drive=dict(path='C:/', level='warn'))))
             # A different distro's mapping cannot stand in for unknown evidence.
             registry.return_value = {'Other': 'H:'}
-            unknown = disk_runtime.cleanup_call('wsl', request)
+            unknown = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
         candidates = [i for i in answer['items'] if i['action'] == 'candidate']
         self.assertTrue(candidates, answer)
         self.assertIn(str(output), [i['path'] for i in candidates])

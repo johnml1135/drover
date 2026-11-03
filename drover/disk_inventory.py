@@ -106,37 +106,27 @@ class Inventory:
                                           key=lambda r: (r['bytes'], r['path'])))
 
 
-def compact(items, policy, repos):
-    """Retained reasons aggregate by reason/root; full samples and path lists are capped. `policy` is the disk_cleanup
-    settings, whose temp and report roots group rows, as do `repos` and their worktree roots."""
+# Rows that always cross whole: fixed reason codes, never grouped under a root.
+WHOLE = ('worktree_inventory', 'untracked_or_ignored', 'budget_usage', 'merged_live_task', 'process_out_of_scope',
+         'process_visibility_unavailable', 'temp_root_elapsed', 'wsl_vhdx', 'wsl_vhdx_unavailable')
+
+
+def root_of(policy, repos):
+    """compact's root step, for `StageRun`: the root a row groups under, or None for a row that crosses whole, which
+    a row with no path also does, as the process rows serve adds. `policy` is the disk_cleanup settings, whose temp and
+    report roots group rows, as do `repos` and their worktree roots."""
     roots = [Path(placement.native(p)) for key in ('temp_roots', 'report_roots')
              for p in policy.get(key, [])]
     roots += [Path(placement.native(m['repo'])) for m in repos]
     roots += [r for m in repos for r in worktree_roots(m)]
-    groups, answer = {}, []
-    for original in items:
-        row = dict(original)
-        for key in ('dirty', 'ignored', 'excluded'):
-            if key in row:
-                row[key + '_count'] = len(row[key])
-                row[key] = row[key][:LIMIT]
-        if row.get('reason_code') in ('worktree_inventory', 'untracked_or_ignored', 'budget_usage',
-                                       'merged_live_task', 'process_out_of_scope', 'process_visibility_unavailable', 'temp_root_elapsed', 'wsl_vhdx', 'wsl_vhdx_unavailable'):
-            answer.append(row)
-            continue
+
+    def root(row):
+        if row.get('reason_code') in WHOLE or 'path' not in row:
+            return None
         path = Path(row['path'])
-        root = row.get('root') or str(max((r for r in roots if r == path or r in path.parents),
+        return row.get('root') or str(max((r for r in roots if r == path or r in path.parents),
                                          key=lambda r: len(r.parts), default=path.parent))
-        groups.setdefault((row['reason_code'], root, row['action']), []).append(row)
-    for (reason, root, action), rows in groups.items():
-        if len(rows) <= LIMIT:
-            answer.extend(rows)
-        else:
-            answer.append(dict(path=root, root=root, action=action, reason_code=reason, count=len(rows),
-                               files=sum(r.get('files', 0) for r in rows), bytes=sum(r.get('bytes', 0) for r in rows),
-                               age_s=min(r.get('age_s', 0) for r in rows), owner=None,
-                               sample=heapq.nlargest(LIMIT, rows, key=lambda r: (r.get('bytes', 0), r['path']))))
-    return answer
+    return root
 
 
 def bound_report(report):

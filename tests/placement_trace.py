@@ -13,13 +13,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import (config, disk, disk_preflight, disk_runtime, disk_schedule_steps, placement, placement_exec, process,
-                    resources)
+from drover import (config, disk, disk_preflight, disk_runtime, disk_schedule_steps, placement, placement_exec,
+                    placement_paths, process, resources)
+from drover.disk_stage import StageRequest
 
 RUNTIME = disk_runtime     # cleanup_runtime, cleanup_call, cleanup_enqueue
 SCHEDULE = disk_schedule_steps
 PLAN = 'schedule_plan'
 TOKEN = 't0k3n'
+
+
+def stage_request(**fields):
+    """A stage 4 dry request, as the coordinator builds one; `side` is cleanup_call's to set."""
+    return StageRequest(stage=4, side=None, mode=None, apply=False, now=1.0, drive=dict(path='D:/'), **fields)
+
+
+def lines(*values):
+    """A worker's stdout: one stage line per value."""
+    return ''.join(json.dumps(dict(v=1, **value)) + '\n' for value in values)
 
 
 def normalize(value, subs):
@@ -67,7 +78,7 @@ def collect():
         subs = [(sys.executable, '<PY>'), (str(tmp), '<TMP>'), (root, '<ROOT>')]
         trace = {}
         cfg = config.validate({'paths': {'state_dir': str(state)}})
-        request = {'state_dir': str(state), 'repos': [], 'tasks': {}, 'paths': {'worker_timeout_s': 11}}
+        request = stage_request(state_dir=str(state), repos=[], tasks={}, policy={'worker_timeout_s': 11})
         recovered = []
 
         def recover(side, status, directory, *rest):
@@ -82,7 +93,7 @@ def collect():
                        patch.object(process.subprocess, 'run', run), patch('uuid.uuid4', return_value=SimpleNamespace(hex=TOKEN))]
             if windows:
                 patches += [patch.object(placement, 'to_wsl_path', lambda p: '/w/' + str(p)),
-                            patch.object(placement, 'cleanup_path_side', lambda p: 'wsl' if str(p).startswith('/') else 'windows'),
+                            patch.object(placement_paths, 'cleanup_path_side', lambda p: 'wsl' if str(p).startswith('/') else 'windows'),
                             patch.object(placement, 'distro', lambda: 'Dist'),
                             patch.object(placement, 'detect_vhdx_drives', lambda: {'Dist': 'R:/disks'})]
             try:
@@ -111,7 +122,8 @@ def collect():
                 leftover.unlink()
             return dict(calls=run.calls, recovered=list(recovered), answer=answer, persisted=persisted)
 
-        ok = dict(rc=0, out=json.dumps(dict(items=[dict(path='x')], errors=[], reclaimed_bytes=7)), claim=True)
+        ok = dict(rc=0, out=lines(dict(row=dict(path='x')), dict(reclaimed=7), dict(end=dict(reclaimed_bytes=7))),
+                  claim=True)
         trace['invalid_side'] = worker('mac', [])['answer']
         for name in ('', 'Ubuntu'):
             with patch.object(placement, 'IS_WINDOWS', False), patch.dict(os.environ, {'WSL_DISTRO_NAME': name} if name else {}):
@@ -121,16 +133,17 @@ def collect():
         trace['native_ok'] = worker('wsl', [ok])
         trace['native_startup_failure'] = worker('wsl', [dict(rc=3, out='partial', err='boom')])
         trace['native_timeout'] = worker('wsl', [subprocess.TimeoutExpired('worker', 11, output=b'out', stderr=b'err')])
-        trace['native_bad_json'] = worker('wsl', [dict(rc=0, out='not json', claim=True)])
-        translated = {'state_dir': str(state), 'repos': [dict(repo='C:/r', worktrees='D:/w'), dict(repo='')],
-                      'tasks': dict(active_worktrees=['E:/a'], tasks=[dict(worktree='E:/t'), dict(id='no-worktree')]),
-                      'paths': dict(temp_roots=['/lin/t', 'H:/win/t'], report_roots=['/lin/r'], worker_timeout_s=9,
-                                    caches=[dict(path='/lin/c', placement='wsl'), dict(cwd='H:/c', placement='windows')])}
+        trace['native_bad_json'] = worker('wsl', [dict(rc=0, out='not json\n', claim=True)])
+        translated = stage_request(
+            state_dir=str(state), repos=[dict(repo='C:/r', worktrees='D:/w'), dict(repo='')],
+            tasks=dict(active_worktrees=['E:/a'], tasks=[dict(worktree='E:/t'), dict(id='no-worktree')]),
+            policy=dict(temp_roots=['/lin/t', 'H:/win/t'], report_roots=['/lin/r'], worker_timeout_s=9,
+                        caches=[dict(path='/lin/c', placement='wsl'), dict(cwd='H:/c', placement='windows')]))
         with patch.object(placement_exec, '_settings', lambda: {'wsl_distro': 'Dist'}):
             trace['windows_to_wsl_ok'] = worker('wsl', [ok], windows=True, request=translated)
             trace['windows_to_wsl_startup_failure'] = worker('wsl', [dict(rc=3), dict(rc=0)], windows=True, request=translated)
             trace['windows_to_wsl_unproven_startup'] = worker('wsl', [dict(rc=3), dict(rc=1)], windows=True, request=translated)
-        trace['request_unmodified'] = translated['state_dir'] == str(state) and translated['paths']['temp_roots'][0] == '/lin/t'
+        trace['request_unmodified'] = translated.state_dir == str(state) and translated.policy['temp_roots'][0] == '/lin/t'
 
         launched = []
 

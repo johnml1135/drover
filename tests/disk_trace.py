@@ -1,4 +1,4 @@
-"""Deterministic trace of what stage 4 decides and deletes, through today's disk_side.serve.
+"""Deterministic trace of what stage 4 decides and deletes, through disk_side.serve and its lines.
 
 Each scenario is a temp tree holding real admin files. `TraceGit` stands in for `subprocess` at PATCH_TARGETS and reads
 every answer from that tree, so the listing, a proof of it and a removal all see one state. The record is
@@ -13,8 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_paths, disk_side, disk_worktrees, placement, placement_proof, process
-from tests.disk_fixture import DAY, DiskCase
+from drover import disk_budget, disk_paths, disk_worktrees, placement, placement_proof, process
+from tests.disk_fixture import DAY, DiskCase, served
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
 from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree, TraceGit,
                                     active, deleting_behind, quick_state, task_at, terminal)  # noqa: F401  TraceGit: this interface
@@ -91,7 +91,7 @@ class Scene(SceneTree):
         for item in patches:
             item.start()
         try:
-            return disk_side.serve(request)
+            return served(request)
         finally:
             for item in reversed(patches):
                 item.stop()

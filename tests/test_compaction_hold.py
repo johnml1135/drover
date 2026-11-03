@@ -11,6 +11,7 @@ from drover import placement
 from drover import placement_git, placement_host, process, resources
 from tests.fakeci import FakeCommands, answering, process_options
 from drover.ledger import disk_notices
+from drover.disk_stage import StageRequest
 from drover.port import DirectPort
 from tests.disk_fixture import DiskCase
 from tests.compaction_fixture import Clock, FakeRun, NOW, ROOT, VHDX, Vhdx, done
@@ -162,9 +163,12 @@ class Hold(DiskCase):
     def test_the_wsl_stage_of_cleanup_does_not_call_wsl(self):
         self.live()
         with mock.patch.object(process.subprocess, 'run') as run, mock.patch.object(disk_runtime.placement, 'IS_WINDOWS', True):
-            answer = disk_runtime.cleanup_call('wsl', dict(state_dir=str(self.state), repos=[], paths={}))
+            answer = disk_runtime.cleanup_call('wsl', StageRequest(
+                stage=4, side=None, mode=None, apply=False, now=0.0, drive=dict(path='C:/'), repos=(), policy={},
+                state_dir=str(self.state), tasks={}))
         run.assert_not_called()
-        self.assertEqual(answer, dict(items=[], errors=[dict(reason_code='compaction_window')], reclaimed_bytes=0))
+        self.assertEqual(answer, dict(items=[], errors=[dict(reason_code='compaction_window')], reclaimed_bytes=0,
+                                      peak_intermediate_bytes=0, budget=None, complete=False, partial=True))
 
     def test_a_df_reading_returns_its_cached_value(self):
         self.addCleanup(placement._WSL_USED.clear)

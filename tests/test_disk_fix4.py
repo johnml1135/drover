@@ -6,9 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_worktrees, git_worktrees, ownership, placement
-from drover.disk_side import serve
 from tests import test_disk_fix2 as fix2
-from tests.disk_fixture import DiskCase
+from tests.disk_fixture import DiskCase, served
 from tests.tiers import integration
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 
@@ -99,7 +98,7 @@ class UncertaintyReports(WorktreeCase):
                         patch.object(placement, 'cleanup_processes', return_value=proof), \
                         patch.object(disk_worktrees, 'status', side_effect=status), \
                         patch.object(git_worktrees, 'listing', side_effect=listing):
-                    result = serve(request)
+                    result = served(request)
                 self.assertTrue(target.exists(), result)
                 reported_path = str(self.r.repo if unknown == 'listing' else path)
                 self.assertTrue(any(i['path'] == reported_path and i['action'] == 'keep'

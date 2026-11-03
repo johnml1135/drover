@@ -1,13 +1,17 @@
 """Hermetic public-interface fixtures for the disk contract."""
 import copy
+import io
 import os
 import tempfile
 import unittest
+from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import config, git_worktrees, placement
+from drover.disk_stage import read_rows
 from drover.git_worktrees import Listing, Listings, Proof
 from tests.gitfix import clean_parent
 
@@ -29,6 +33,27 @@ def agreeing_proof():
 def stage_request(request):
     """`request` as `disk_side.serve` hands it to a stage, for a test that calls the stage itself."""
     return dict(request, _listings=Listings([machine['repo'] for machine in request['repos']]))
+
+
+def placement_processes():
+    """Patch `disk_side.StageEvidence` so a stage's first process proof is asked of `placement.cleanup_processes` when
+    it is taken, as its fresh proofs are: a test patching that one name then reaches both. The default binds at
+    definition."""
+    from drover import disk_evidence, disk_side
+
+    def processes(**options):
+        return placement.cleanup_processes(**options)
+    return patch.object(disk_side, 'StageEvidence', partial(disk_evidence.StageEvidence, processes=processes))
+
+
+def served(wire, **options):
+    """`disk_side.serve` run in this process, its lines read back as `cleanup_call` reads them, so a test sees the
+    answer the coordinator gets, with `placement_processes`."""
+    from drover import disk_side
+    out = io.BytesIO()
+    with placement_processes():
+        disk_side.serve(wire, out=out, **options)
+    return asdict(read_rows(out.getvalue()))
 
 
 def empty_result():
@@ -95,18 +120,19 @@ class DiskCase(unittest.TestCase):
         from drover.disk_cleanup import CleanupRuntime
 
         def call(side, request):
+            # The one place a StageRequest becomes today's dict, a deep copy, which handlers and `calls` read.
+            request = request.to_wire()
             self.calls.append((side, copy.deepcopy(request)))
             if handler is not None:
                 return handler(side, request)
             if not real or side != self.side or request['stage'] == 1:
                 return empty_result()
-            from drover.disk_side import serve
             # Tests declare every temp root explicitly, never inspect host temp.
             request = {**request, 'tasks': self.tasks,
                        'paths': {**request['paths'], 'temp_roots': self.cfg['disk_cleanup']['temp_roots'],
                                  'report_roots': self.cfg['disk_cleanup']['report_roots'],
                                  'caches': self.cfg['disk_cleanup']['caches']}}
-            return serve(request)
+            return served(request)
 
         return CleanupRuntime(lambda: self.now, lambda path: self.free, call, self.toasts.append)
 

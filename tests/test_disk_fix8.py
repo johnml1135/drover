@@ -347,7 +347,7 @@ class RemainingSafety(DiskCase):
 
 class ReportingIntegration(DiskCase):
     def test_windows_stage_reports_sparse_diagnostics_without_running_commands(self):
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         rows = [dict(action='report', reason_code='wsl_vhdx', path=r'H:\ext4.vhdx', distro='Ubuntu',
                      sparse=False, allocated_bytes=590, apparent_bytes=1024, owner_action='owner action')]
         request = dict(stage=1, apply=False, now=self.now, repos=[], paths={}, state_dir=str(self.state),
@@ -356,7 +356,7 @@ class ReportingIntegration(DiskCase):
                 patch.object(placement, 'trim_argv', return_value=['never-execute']), \
                 patch.object(placement, 'cleanup_vhdx_report', return_value=rows), \
                 patch.object(subprocess, 'run', side_effect=AssertionError('report must not run a command')):
-            answer = serve(request)
+            answer = served(request)
         self.assertEqual(answer['items'], rows)
         self.assertEqual(answer['errors'], [])
 

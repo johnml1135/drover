@@ -11,7 +11,8 @@ from tests.disk_memory import MemoryWorktreeCase as WorktreeCase
 
 class Scope(WorktreeCase):
     def test_configured_repos_and_extra_paths_this_side_other_side_untouched(self):
-        from drover import disk_cleanup, disk_side, ownership
+        from drover import disk_cleanup, ownership
+        from tests.disk_fixture import served
         for side, other in (('wsl', 'windows'), ('windows', 'wsl')):
             with self.subTest(side=side):
                 extra = self.new_repo('beta-' + side)
@@ -43,13 +44,14 @@ class Scope(WorktreeCase):
                 requests = []
                 base_runtime = self.runtime(real=True)
                 def call(target, request):
+                    request = request.to_wire()
                     requests.append((target, copy.deepcopy(request)))
                     if target != side:
                         return {'items': [], 'errors': [], 'reclaimed_bytes': 0}
                     if request['stage'] == 1:
                         return {'items': [], 'errors': [], 'reclaimed_bytes': 0}
                     request = dict(request, tasks=self.tasks)
-                    return disk_side.serve(request)
+                    return served(request)
                 runtime = disk_cleanup.CleanupRuntime(base_runtime.now, base_runtime.read,
                                                        call, base_runtime.toast)
                 # Simulated owning side and path mapping; Git always uses the real native platform.
@@ -98,12 +100,14 @@ class Scope(WorktreeCase):
         other.mkdir()
         tracker = dict(self.cfg['trackers'][0], name='other', path=str(other))
         self.cfg['trackers'].append(tracker)
-        from drover import disk_cleanup, disk_side
+        from drover import disk_cleanup
+        from tests.disk_fixture import served
         runtime = self.runtime(real=True)
         def call(side, request):
+            request = request.to_wire()
             if side != self.side or request['stage'] == 1:
                 return {'items': [], 'errors': [], 'reclaimed_bytes': 0}
-            return disk_side.serve(request)
+            return served(request)
         runtime = disk_cleanup.CleanupRuntime(runtime.now, lambda path: 180 if path == '/simulated/other' else 80,
                                                call, runtime.toast)
         def physical(path):

@@ -14,9 +14,10 @@ def processes(request):
     proof = placement.cleanup_processes(
         paths=request.get('paths'), state_dir=request.get('state_dir'), inventory_id=request.get('_inventory_id'),
         stage=request.get('stage'), drive=request.get('drive'), budget=bool(request.get('budget')))
-    request.setdefault('_process_diagnostics', {}).update(((r['pid'], r['name']), r) for r in getattr(proof, 'unreadable', []))
-    if getattr(proof, 'query_failure', None):
-        request.setdefault('_process_query_failures', []).append(proof.query_failure)
+    _, unreadable, failure = placement.proof_diagnostics(proof)
+    request.setdefault('_process_diagnostics', {}).update(((r['pid'], r['name']), r) for r in unreadable)
+    if failure:
+        request.setdefault('_process_query_failures', []).append(failure)
     return proof
 
 

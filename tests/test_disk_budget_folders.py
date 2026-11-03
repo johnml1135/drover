@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-from drover import disk, disk_cleanup, disk_side, disk_state, disk_worktrees, placement
-from tests.disk_fixture import GIB, empty_result
+from drover import disk, disk_cleanup, disk_state, disk_worktrees, placement
+from tests.disk_fixture import GIB, empty_result, served
 from tests.disk_budget_fixture import BudgetCase, DAY, HOUR, LocalSide, SIZE
 
 
@@ -200,7 +200,7 @@ class OtherSide(BudgetCase):
                 patch.object(placement, 'cleanup_processes', return_value=proof), \
                 patch.object(placement, 'wsl_used_gb') as reader, \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
-            answer = disk_side.serve(request)
+            answer = served(request)
         self.assertEqual((answer['items'], answer['reclaimed_bytes']), ([], 0))
         reader.assert_not_called()
         self.assertTrue(path.exists())

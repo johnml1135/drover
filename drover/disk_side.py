@@ -1,71 +1,85 @@
-"""One parent-authorized stage request. No ledger or coordinator lock here."""
-import copy
-import json
-import sys
+"""One parent-authorized stage run in the cleanup worker. No ledger or coordinator lock here."""
+from dataclasses import replace
+from typing import BinaryIO
 
 from . import placement, process
-from .disk_paths import processes
-from .git_worktrees import Listings
+from .disk_budget import purge
+from .disk_evidence import StageEvidence
+from .disk_inventory import LIMIT, root_of
+from .disk_paths import caches, outputs, report
+from .disk_stage import StageClock, StageRequest, StageRun
+from .disk_temp import temporary
+from .disk_worktrees import settled
+
+PROVEN = (2, 3, 4, 5)        # the stages that take a process proof before they start
 
 
-def serve(request: dict) -> dict:
-    request = copy.deepcopy(request)
-    request['paths'], request['scope_errors'] = placement.cleanup_scope(request['drive']['path'], request['paths'])
-    from .disk_inventory import Inventory, compact
-    request['_inventory'] = Inventory(request['now'], request.get('side', placement.cleanup_side()),
-                                      request['drive']['path'], request['state_dir'], request.get('_inventory_id'))
-    request['_listings'] = Listings([m['repo'] for m in request['repos']])
-    proof = None
-    if request['stage'] in (2, 3, 4, 5):
-        proof = request['_processes'] = processes(request)     # its diagnostics gathered in the request
-    answer = _serve(request)
-    if not request['apply'] and request['stage'] < 6:
-        request['_inventory'].save()
-    answer['peak_intermediate_bytes'] = request['_inventory'].peak_intermediate_bytes
-    answer['items'] = compact(answer['items'], request['paths'], request['repos'])
-    if proof:
-        foreign = getattr(proof, 'out_of_scope', 0)
-        if foreign:
-            answer['items'].append(dict(action='report', reason_code='process_out_of_scope', count=foreign))
-        unreadable = list(request['_process_diagnostics'].values())
-        if unreadable:
-            answer['items'].append(dict(action='report', reason_code='process_visibility_unavailable',
-                                        count=len(unreadable), processes=unreadable))
-        answer['items'].extend(dict(action='report', **failure) for failure in request.get('_process_query_failures', []))
-    answer['errors'].extend(request['scope_errors'])
-    return answer
+def serve(wire: dict, *, out: BinaryIO, clock_factory=StageClock) -> None:
+    """Run the stage `wire` asks for, writing its rows to `out` as lines. Clock, scope, evidence, proof, stage,
+    `finish`: the clock starts first, so the process proof is inside the stage's time (section 3, item 4)."""
+    request = StageRequest.from_wire(wire)
+    clock = clock_factory(request.policy.get('worker_timeout_s', 1800))
+    policy, scope_errors = placement.cleanup_scope(request.drive['path'], request.policy)
+    request = replace(request, policy=policy)
+    run = StageRun(request, clock, out=out, root_of=root_of(policy, request.repos), limit=LIMIT)
+    run.scope_errors.extend(scope_errors)
+    run.evidence = StageEvidence(request, clock)
+    if request.stage in PROVEN:
+        run.evidence.processes()
+    extra = STAGES.get(request.stage, _nothing)(run)
+    if not request.apply and request.stage < 6:
+        run.evidence.inventory.save()
+    for row in run.evidence.process_rows():
+        run.add(row)
+    run.finish(peak_intermediate_bytes=run.evidence.inventory.peak_intermediate_bytes, **extra)
 
 
-def _serve(request):
-    stage = request['stage']
-    if stage == 1:
-        argv = placement.trim_argv()
-        result = dict(items=placement.cleanup_vhdx_report(), errors=[], reclaimed_bytes=0)
-        if request['apply'] and argv:
-            done = process.run(process.Command(argv, 120))
-            if done.kind != 'exited':
-                result['errors'].append(dict(reason_code='trim_unavailable', error=done.detail))
-            elif done.code:
-                result['errors'].append(dict(reason_code='trim_unavailable', output=done.stderr[-2000:]))
-        return result
-    if stage == 2:
-        from .disk_temp import temporary
-        return temporary(request)
-    if stage == 3:
-        from .disk_paths import caches
-        return caches(request)
-    if stage == 4:
-        from .disk_worktrees import settled
-        return settled(request)
-    if stage == 5 and request.get('budget'):
-        from .disk_budget import purge
-        return purge(request)
-    if stage in (5, 6):
-        from .disk_paths import outputs, report
-        return outputs(request) if stage == 5 else report(request)
-    return dict(items=[], errors=[], reclaimed_bytes=0)
+def _nothing(run):
+    return {}
 
 
+def _trim(request):
+    """Stage 1: the VHDX report, and a trim when applied."""
+    argv = placement.trim_argv()
+    result = dict(items=placement.cleanup_vhdx_report(), errors=[], reclaimed_bytes=0)
+    if request['apply'] and argv:
+        done = process.run(process.Command(argv, 120))
+        if done.kind != 'exited':
+            result['errors'].append(dict(reason_code='trim_unavailable', error=done.detail))
+        elif done.code:
+            result['errors'].append(dict(reason_code='trim_unavailable', output=done.stderr[-2000:]))
+    return result
 
-if __name__ == '__main__':
-    json.dump(serve(json.load(sys.stdin)), sys.stdout)
+
+def _outputs(request):
+    return purge(request) if request.get('budget') else outputs(request)
+
+
+def _bridge(run, stage_fn):
+    """Temporary, until Task 35: today's request dict built from `run`, today's stage on it, and its rows added. The
+    dict holds the evidence's own listings and diagnostics, so a fresh proof taken at removal still reports its
+    unreadable processes. Returns the answer's `budget`, for the `end` line."""
+    evidence = run.evidence
+    request = dict(run.request.to_wire(), scope_errors=run.scope_errors, _inventory=evidence.inventory,
+                   _listings=evidence._listings, _process_diagnostics=evidence._diagnostics,
+                   _process_query_failures=evidence._failures)
+    if run.request.stage in PROVEN:
+        request['_processes'] = evidence.processes()
+    answer = stage_fn(request)
+    for row in answer['items']:
+        run.add(row)
+    for row in answer['errors']:
+        run.error(row)
+    run.reclaimed(answer['reclaimed_bytes'])
+    run.checkpoint()
+    return {'budget': answer['budget']} if 'budget' in answer else {}
+
+
+STAGES = {
+    1: lambda run: _bridge(run, _trim),
+    2: lambda run: _bridge(run, temporary),
+    3: lambda run: _bridge(run, caches),
+    4: lambda run: _bridge(run, settled),
+    5: lambda run: _bridge(run, _outputs),
+    6: lambda run: _bridge(run, report),
+}

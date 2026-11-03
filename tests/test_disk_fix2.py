@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from drover.disk_stage import StageRequest
 from drover import config, disk_preflight, disk_runtime, placement, process
-from drover.disk_side import serve
 from tests.tiers import integration
-from tests.disk_fixture import DiskCase
+from tests.disk_fixture import DiskCase, served
 from tests.disk_memory import MemoryWorktreeCase as WorktreeCase, ProcessFreeDiskCase
 
 START = 'sys.path.insert(0,sys.argv[1]);'    # the worker's code imports drover only after this
@@ -27,7 +27,7 @@ class PathSafety(ProcessFreeDiskCase):
         with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                 patch.object(placement, 'cleanup_free', return_value=80), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
-            return serve(request)
+            return served(request)
 
     def repository(self, root, kind):
         if kind == 'bare-layout':
@@ -97,7 +97,7 @@ class PathSafety(ProcessFreeDiskCase):
                     with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                             patch.object(placement, 'cleanup_free', return_value=80), \
                             patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=busy)):
-                        result = serve(self.request(stage))
+                        result = served(self.request(stage))
                     self.assertTrue(valuable.exists(), result)
 
     def test_validation_normalizes_parent_components_without_resolving_links(self):
@@ -112,7 +112,7 @@ class PathSafety(ProcessFreeDiskCase):
         valuable = self.file(self.temp_root / 'precious')
         with patch.object(placement, 'physical_disk_path', return_value=None), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
-            result = serve(self.request(2))
+            result = served(self.request(2))
         self.assertTrue(valuable.exists(), result)
         self.assertTrue(result['errors'] or result['items'], result)
 
@@ -229,7 +229,7 @@ class WorkerSafety(ProcessFreeDiskCase):
                         if mode == 'worker-failure' and 'cleanup_worker' in ' '.join(map(str, argv)):
                             i = argv.index('-c') + 1
                             crash = ('from drover import disk_side\n_serve = disk_side.serve\n'
-                                     'def crash(request):\n _serve(request)\n raise RuntimeError("worker crash")\n'
+                                     'def crash(request, **kw):\n _serve(request, **kw)\n raise RuntimeError("worker crash")\n'
                                      'disk_side.serve = crash\n')
                             argv[i] = argv[i].replace('from drover.placement import cleanup_worker;',
                                                       'exec(' + repr(crash) + ');from drover.placement import cleanup_worker;')
@@ -275,7 +275,7 @@ _p.subprocess.run = _bounded_cache_run
                     try:
                         with patch.object(process.subprocess, 'run', side_effect=bounded), \
                                 patch.dict(os.environ, {'WSL_DISTRO_NAME': ''}):
-                            result = disk_runtime.cleanup_call(self.side, request)
+                            result = disk_runtime.cleanup_call(self.side, StageRequest.from_wire(request))
                         if observation == 'without-readiness':
                             self.assertFalse(pidfile.exists(), result)
                             self.assertTrue(result['errors'], result)

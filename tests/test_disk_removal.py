@@ -154,7 +154,7 @@ class RemovalContracts(WorktreeCase):
     def cleanup(self, *, apply=False, mode='on-demand'):
         # Exercise the owning-side adapter, not twelve unrelated coordinator stages.
         from types import SimpleNamespace
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         request = dict(stage=4, mode=mode, apply=apply, now=self.now,
                        drive=dict(name='test-drive', path=str(self.root), level='queue', warn_gb=150),
                        repos=[dict(name='alpha', repo=str(self.r.repo), worktrees=str(self.trees),
@@ -162,7 +162,7 @@ class RemovalContracts(WorktreeCase):
                        paths=self.cfg['disk_cleanup'], state_dir=str(self.state), tasks=self.tasks)
         with mock.patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=self.busy, reason=getattr(self, 'process_reason', None))), \
              mock.patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
-            return serve(request)
+            return served(request)
 
     def test_missing_folder_entry_by_path_other_side_survives(self):
         native = self.worktree('missing native')

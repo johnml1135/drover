@@ -6,6 +6,7 @@ from pathlib import Path
 from tests.disk_fixture import DiskCase, MemoryCleanupCase, MemoryCleanupEvidence, MemoryCleanupState, agreeing_proof, listing_answers
 from tests import test_disk_fix2 as fix2
 from tests.fakeci import git_answers
+from drover.disk_stage import StageRequest
 from drover import disk_runtime, process
 
 
@@ -101,7 +102,7 @@ class CancellationSafety(ProcessFreeDiskCase):
                 patch.object(placement, '_CleanupJob', return_value=SimpleNamespace(
                     terminate=terminate, close=lambda: None)):
             try:
-                disk_runtime.cleanup_call('windows', request)
+                disk_runtime.cleanup_call('windows', StageRequest.from_wire(request))
             except BaseException as error:
                 self.assertIsInstance(error, placement.CleanupWorkerError)
             else:
@@ -114,7 +115,7 @@ class TargetDriveSafety(ProcessFreeDiskCase):
         from pathlib import Path
         from types import SimpleNamespace
         from drover import placement
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         wt = self.root / 'checkout'
         wt.mkdir()
         for stage in (2, 3, 5):
@@ -140,7 +141,7 @@ class TargetDriveSafety(ProcessFreeDiskCase):
                             patch.object(placement, 'physical_disk_path', side_effect=physical), \
                                 patch.object(placement, 'cleanup_free', return_value=80), \
                                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
-                            result = serve(request)
+                            result = served(request)
                         self.assertTrue(target.exists(), result)
                         self.assertTrue(any(i['path'] == str(target) and i['action'] == 'keep'
                                             and i.get('reason_code') for i in result['items']), result)
@@ -256,7 +257,7 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
         from pathlib import Path
         from types import SimpleNamespace
         from drover import placement, disk_paths
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         from drover.disk_cleanup import CleanupRuntime, evaluate
         kinds = ('repo', 'bare', 'incomplete', 'venv', 'link', 'mount', 'live')
         all_protected, all_mounts, all_live = [], [], []
@@ -355,10 +356,10 @@ class ProtectedTreeProperty(ProcessFreeDiskCase):
                                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
                                 patch.object(placement, 'trim_argv', return_value=None), \
                                 unavailable_git():
-                            first = serve(request)
+                            first = served(request)
                             request['now'] += 4 * 86400
                             request['tasks']['at'] = request['now']
-                            result = serve(request)
+                            result = served(request)
                         if stage == 5:
                             self.assertEqual({Path(call.args[0]) for call in observed_status.call_args_list},
                                              set(registrations))

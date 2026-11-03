@@ -30,7 +30,8 @@ class Trim(DiskCase):
 
     def test_cache_command_runs_with_its_literal_argv_and_cwd(self):
         """A declared cache command reaches `process` word for word, in its cwd, with no shell."""
-        from drover import disk_side, process
+        from drover import process
+        from drover.disk_paths import caches
         literal = ['space value', 'line\nbreak', 'a;$(literal)']
         argv = [sys.executable, str(self.root / 'side cache.py'), *literal]
         request = dict(stage=3, apply=True, now=self.now,
@@ -41,7 +42,7 @@ class Trim(DiskCase):
         fake = FakeCommands(self.root / 'fake')
         fake.expect(argv, output='cleaned', **process_options(120, cwd=str(self.temp_root)))
         with fake.patch(process):
-            result = disk_side._serve(request)
+            result = caches(request)
         self.assertEqual(result['errors'], [])
         self.assertEqual([(row['action'], row['returncode'], row['output']) for row in result['items']],
                          [('executed', 0, 'cleaned')])
@@ -56,7 +57,7 @@ class Trim(DiskCase):
         request = dict(stage=1, apply=True)
         with fake.patch(process), patch.object(placement, 'trim_argv', return_value=argv), \
                 patch.object(placement, 'cleanup_vhdx_report', return_value=[]):
-            failed, timed_out, missing = (disk_side._serve(request)['errors'] for _ in range(3))
+            failed, timed_out, missing = (disk_side._trim(request)['errors'] for _ in range(3))
         self.assertEqual(failed, [dict(reason_code='trim_unavailable', output='fstrim: not permitted')])
         for errors in (timed_out, missing):
             self.assertEqual([error['reason_code'] for error in errors], ['trim_unavailable'])

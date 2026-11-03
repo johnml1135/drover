@@ -123,7 +123,7 @@ class ProcessPolicy(DiskCase):
 
 class ProcessQuery(DiskCase):
     def test_timeout_is_configurable_and_reported_once_with_elapsed_time(self):
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         self.assertEqual(config.validate({})['disk_cleanup']['process_query_timeout_s'], 240)
         for value in (0, -1, True, float('inf'), '240'):
             with self.subTest(value=value), self.assertRaises(config.ConfigError):
@@ -136,8 +136,8 @@ class ProcessQuery(DiskCase):
                 patch.object(placement, 'cleanup_scope', side_effect=lambda drive_path, paths: (paths, [])), \
                 patch.object(process.subprocess, 'run', side_effect=subprocess.TimeoutExpired('cim', 300)) as query, \
                 patch.object(placement.time, 'monotonic', side_effect=[10., 310.25, 400., 700.25]):
-            first = serve(request)
-            second = serve(dict(request, stage=3))
+            first = served(request)
+            second = served(dict(request, stage=3))
         self.assertEqual(query.call_count, 2)
         self.assertEqual(query.call_args.kwargs['timeout'], 300)
         for answer in (first, second):
@@ -234,7 +234,7 @@ class ReviewRegressions(DiskCase):
         self.assertTrue(any(r.get('path') == str(old) and r['reason_code'] == 'stale_temp' for r in result['items']))
 
     def test_process_detected_by_deletion_recheck_is_named_in_stage_report(self):
-        from drover.disk_side import serve
+        from tests.disk_fixture import served
         old = self.file(self.temp_root / 'old')
         request = dict(stage=2, apply=True, now=self.now, repos=[], state_dir=str(self.state),
                        drive=dict(path=str(self.root)), paths=self.cfg['disk_cleanup'], _inventory_id='fixture')
@@ -249,7 +249,7 @@ class ReviewRegressions(DiskCase):
                 patch.object(placement, '_windows_processes',
                              side_effect=[{'101': ['old.exe', 1]}, {'101': ['old.exe', 1], '202': ['build.exe', 2]},
                                           {'101': ['old.exe', 1], '202': ['build.exe', 2]}]) as _placement_patch_11, patch('drover.placement_proof._windows_processes', _placement_patch_11):
-            answer = serve(request)
+            answer = served(request)
         self.assertTrue(old.exists())
         row = next(r for r in answer['items'] if r['reason_code'] == 'process_visibility_unavailable' and r['action'] == 'report')
         self.assertEqual(row['processes'][0]['pid'], 202)
