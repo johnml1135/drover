@@ -11,7 +11,7 @@ import time
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from . import config, ownership, ci, placement, origin, repos
+from . import config, ownership, ci, placement, origin, repos, git_client, git_worktrees
 from .ledger import states
 
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -103,11 +103,10 @@ class Repository:
         return None if result.returncode else result.stdout.strip()
 
     def inventory(self, repo, side=None):
-        result = git(repo, "worktree", "list", "--porcelain", **({"side": side} if side else {}))
-        if result.returncode:
+        try:
+            return [dict(row) for row in git_worktrees.listing(repo, timeout_s=git_client.LONG, side=side).rows]
+        except git_worktrees.RegistrationsUnknown:     # a timeout included, as rc 124 was
             return []
-        return [dict(line.partition(" ")[::2] for line in block.splitlines())
-                for block in result.stdout.split("\n\n")]
 
     def owned(self, path, tid):
         return ownership.owned_by(path, OWNER_PREFIX + tid)

@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,37 +15,76 @@ try:
 except ImportError as exc:
     raise unittest.SkipTest(str(exc))
 
-from tests.gitfix import Repo
+from drover import placement_git, process, repos
+from tests.fakeci import FakeCommands, process_options
+
+LIST = ('worktree', 'list', '--porcelain', '-z')
+AHEAD = ('rev-list', '--count', 'refs/remotes/origin/main..refs/heads/main')
+
 
 class StateTests(unittest.TestCase):
+    """`probe` with git faked at the command: its three reads, the listing through `git_worktrees`."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / 'repo').mkdir()
+        self.cfg = dict(repo=str(self.root / 'repo'), worktrees=str(self.root / 'wts'))
+        self.fake = FakeCommands(self.root / 'fake')
+        context = self.fake.patch(process)
+        context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+
+    def probed(self, branches=('main',), trees=(), *, timeout=1, **listing):
+        """One `probe`, git answering with these branches and, after the main checkout, these (path, branch) rows."""
+        repo = repos.native(self.cfg['repo'])
+        self.fake.expect(['git', '-C', repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'],
+                         output=''.join(f'{name}\n' for name in branches), **process_options(timeout))
+        rows = ((self.cfg['repo'], 'main'), *trees)
+        output = ''.join(f'worktree {Path(path).as_posix()}\0HEAD {"a" * 40}\0branch refs/heads/{branch}\0\0'
+                         for path, branch in rows)
+        self.fake.expect(placement_git.git_argv(repo, LIST), **{'output': output, **listing}, **process_options(timeout))
+        if not listing:     # a failed listing raises before `ahead` is read
+            self.fake.expect(placement_git.git_argv(repo, AHEAD), output='0\n', **process_options(30))
+        return probe(self.cfg)
+
     def test_planned_existing_and_missing(self):
-        repo = Repo()
-        self.addCleanup(repo.cleanup)
-        cfg = dict(repo=str(repo.repo), worktrees=str(repo.root / 'wts'))
+        cfg, root = self.cfg, self.root
         t = dict(id='T-a', goal='First paragraph.\n\nSecond.')
-        disk = probe(cfg)
-        state = derive(t, cfg, disk)
+        state = derive(t, cfg, self.probed())
         self.assertEqual((state['branch_state'], state['worktree_state']), ('planned', 'planned'))
         self.assertEqual(state['branch_name'], 'drover/T-a')
-        self.assertEqual(state['worktree_name'], str(repo.root / 'wts' / 'drover-T-a'))
+        self.assertEqual(state['worktree_name'], str(root / 'wts' / 'drover-T-a'))
         self.assertEqual(state['first_paragraph'], 'First paragraph.')
-        repo.git('branch', 'topic')
         t['branch'] = 'topic'
-        state = derive(t, cfg, probe(cfg))
+        state = derive(t, cfg, self.probed(('main', 'topic')))
         self.assertEqual((state['branch_state'], state['worktree_state']), ('exists', 'planned'))
-        dest = repo.root / 'wts' / 'drover-T-a'
-        repo.git('worktree', 'add', str(dest), 'topic')
+        dest = root / 'wts' / 'drover-T-a'
+        dest.mkdir(parents=True)
         t['worktree'] = str(dest)
-        self.assertEqual(derive(t, cfg, probe(cfg))['worktree_state'], 'exists')
-        repo.git('worktree', 'remove', str(dest))
-        repo.git('branch', '-D', 'topic')
-        state = derive(t, cfg, probe(cfg))
+        self.assertEqual(derive(t, cfg, self.probed(('main', 'topic'), [(dest, 'topic')]))['worktree_state'], 'exists')
+        dest.rmdir()
+        state = derive(t, cfg, self.probed())
         self.assertEqual((state['branch_state'], state['worktree_state']), ('missing', 'missing'))
         self.assertTrue(derive(t, None)['unknown_repo'])
         self.assertTrue(derive(t, cfg)['state_pending'])
-        repo.git('worktree', 'add', '-b', 'drover/T-a', str(dest))
-        automatic = derive(dict(id='T-a'), cfg, probe(cfg))
+        dest.mkdir()
+        automatic = derive(dict(id='T-a'), cfg, self.probed(('main', 'drover/T-a'), [(dest, 'drover/T-a')]))
         self.assertEqual((automatic['branch_state'], automatic['worktree_state']), ('exists', 'exists'))
+
+    def test_probe_keeps_its_one_second_timeout(self):
+        dest = self.root / 'wts' / 'drover-T-a'
+        dest.mkdir(parents=True)
+        found = self.probed(('main', 'topic'), [(dest, 'topic')], timeout=1)
+        self.assertEqual(found['branches'], {'main', 'topic'})
+        self.assertEqual(found['paths'], {str((self.root / 'repo').resolve()), str(dest.resolve())})
+        self.assertEqual(Path(repos.native(found['branch_paths']['topic'])), dest)
+        self.assertEqual(found['ahead'], 0)
+        for answer in (dict(returncode=128, stderr_output='fixture stderr'),
+                       dict(error=subprocess.TimeoutExpired(['git'], 1))):
+            with self.subTest(answer=answer), self.assertRaises(OSError):    # the cache reads it as error
+                self.probed(**answer)
 
     def test_cache_never_waits_for_git_and_reuses_probe(self):
         entered, release = threading.Event(), threading.Event()

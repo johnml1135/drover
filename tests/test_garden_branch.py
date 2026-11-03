@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import cleanup, config
+from drover import cleanup, config, git_client
 from tests.gitfix import Repo, sh
 
 NOW = 1_792_000_000  # a fixed day
@@ -151,14 +151,10 @@ class TestFailClosed(Base):
             self.refused(self.run_del("feat/x"), "git error")
 
     def test_worktree_list_error_refuses(self):
-        real = cleanup.git
-
-        def fake(cwd, *args, **kw):
-            r = real(cwd, *args, **kw)
-            if "worktree" in args:
-                r.returncode = 1
-            return r
-        with mock.patch.object(cleanup, "git", fake):
+        def fake(repo, *args, error, **kw):     # the listing goes through git_worktrees on git_client
+            self.assertEqual(args[:2], ("worktree", "list"))
+            raise error(git_client.GitFailed(args, "exit", 1, "fixture stderr", ""))
+        with mock.patch.object(git_client, "out", fake):
             self.refused(self.run_del("feat/x"), "git error")
 
     def test_hostile_branch_names(self):

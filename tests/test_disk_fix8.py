@@ -294,13 +294,14 @@ class SafetyDecisions(DiskCase):
         self.assertEqual(result['reason_code'], 'revalidation_changed')
 
     def test_unlock_matches_extended_drive_spelling_and_preserves_owner_note(self):
-        from types import SimpleNamespace
-        for marker, calls in (('wsl', 2), ('owner note', 1)):
-            listing = 'worktree /mnt/h/repo\0locked ' + marker + '\0\0'
+        from drover import git_worktrees
+        for marker, calls in (('wsl', 1), ('owner note', 0)):
+            # The row as `listing` spells it on WSL; this host's Path flavour cannot be patched to give it.
+            listing = git_worktrees.Listing('/tmp/repo', (dict(worktree='/mnt/h/repo', locked=marker),))
             with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_23, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_23), patch('drover.placement_git.IS_WINDOWS', _placement_patch_23), patch('drover.placement_host.IS_WINDOWS', _placement_patch_23), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_23), patch('drover.placement_process.IS_WINDOWS', _placement_patch_23), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_23), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_23), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_23), \
-                    patch.object(placement, 'git', return_value=SimpleNamespace(returncode=0, stdout=listing)) as git, patch('drover.placement_git.git', git):
+                    patch.object(git_worktrees, 'listing', return_value=listing) as listed, patch.object(placement, 'git') as git:
                 placement.unlock_worktree('/tmp/repo', r'\\?\H:\Repo')
-            self.assertEqual(git.call_count, calls)
+            self.assertEqual((listed.call_count, git.call_count), (1, calls))     # one listing; an unlock for ours only
 
     def test_repository_boundary_accepts_symlink_alias_but_raw_link_is_still_unsafe(self):
         from drover.disk_paths import repository_tree, safe_path

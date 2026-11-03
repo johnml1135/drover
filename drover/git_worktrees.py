@@ -16,7 +16,7 @@ import re
 import time
 from typing import Literal, TypedDict
 
-from . import placement, placement_paths
+from . import git_client, placement_paths
 
 LISTING_TIMEOUT_S = 400.0       # 1.5 times the worst measured listing, motif's 265.9 s
 EVIDENCE_TIMEOUT_S = 60         # every other evidence command keeps today's fixed timeout until slice 6a
@@ -33,14 +33,14 @@ class RegistrationsUnknown(OSError):
     """Git could not say what a repo has registered; the message is what it said."""
 
 
+def _unknown(failed):
+    """git's stderr for an exit, `git unavailable: ...` when git could not run, GitFailed's own words for a timeout."""
+    return RegistrationsUnknown(str(failed) if failed.why == 'timeout' else failed.err.strip() or 'git command failed')
+
+
 def _git(repo, *args, timeout_s, side):
-    try:
-        done = placement.git(str(repo), *args, timeout=timeout_s, side=side)
-    except Exception as error:      # a timeout included; this module may not name `subprocess` (R1)
-        raise RegistrationsUnknown(str(error)) from error
-    if done.returncode:
-        raise RegistrationsUnknown(done.stderr.strip() or 'git command failed')
-    return done.stdout
+    """stdout, or RegistrationsUnknown. Only git's failure is translated: a fake's assertion is not the repo's."""
+    return git_client.out(str(repo), *args, timeout_s=timeout_s, side=side, error=_unknown)
 
 
 @dataclass(frozen=True)
@@ -347,7 +347,8 @@ def _dot_git(worktree):
 def prove(listings: Listings, repo: str, worktree: str, *, pointer: bool, timeout_s: float, side=None) -> Proof:
     """Read every repo's admin files now and compare with `listings`. `pointer` says whether <worktree>/.git should exist.
 
-    A failed listing or tip raises. `Proof.refused` holds only what refuses this removal; `why` picks its row."""
+    A failed listing raises RegistrationsUnknown, a failed tip GitFailed. `Proof.refused` holds only what refuses this
+    removal; `why` picks its row."""
     listings.every()            # a failed listing anywhere raises before anything is read
     own = listings.of(repo)
     side, deadline = side or placement_paths.cleanup_side(), time.monotonic() + timeout_s
@@ -378,6 +379,6 @@ def prove(listings: Listings, repo: str, worktree: str, *, pointer: bool, timeou
     if not refused:             # last, and only if it can still matter: the one spawn a proof makes
         refused = [Refusal(own.repo, str(worktree), 'changed', 'resolved HEAD') for row in own.rows
                    if placement_paths.cleanup_parts(row['worktree']) == target and 'branch' in row
-                   and _git(own.repo, 'rev-parse', '--verify', row['branch'], timeout_s=EVIDENCE_TIMEOUT_S,
-                            side=side).strip() != row['HEAD']]
+                   and git_client.out(own.repo, 'rev-parse', '--verify', row['branch'], timeout_s=EVIDENCE_TIMEOUT_S,
+                                      side=side).strip() != row['HEAD']]
     return Proof(tuple(refused), tuple(sorted(reach)))

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from markupsafe import Markup
-from drover import repos, placement, origin, process
+from drover import git_worktrees, repos, placement, origin, process
 
 
 def first_paragraph(text):
@@ -116,8 +116,7 @@ def probe(prog):
         return r.stdout.replace('\r\n', '\n')
     branches = set(git('for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes').splitlines())
     paths, branch_paths = set(), {}
-    for record in git('worktree', 'list', '--porcelain').split('\n\n'):
-        lines = dict(line.split(' ', 1) for line in record.splitlines() if ' ' in line)
+    for lines in git_worktrees.listing(repos.native(repos.repo_path(prog)), timeout_s=1).rows:   # raises an OSError
         path = lines.get('worktree')
         if path and Path(repos.native(path)).is_dir():
             paths.add(str(Path(repos.native(path)).resolve()))

@@ -3,9 +3,26 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from drover import placement, repos
+from drover import git_client, placement, repos
+from drover.placement_paths import cleanup_parts, cleanup_path
 
 EXT4 = "/home/dev/work/acme.worktrees/drover-T1"
+
+
+def listed(answer, seen):
+    """`git_client.out` for `listing`: `answer(side)` is git's -z porcelain, or None where git could not run."""
+    def out(repo, *args, timeout_s, side=None, error=None, **_):
+        seen.append(side)
+        text = answer(side)
+        if text is None:
+            raise error(git_client.GitFailed(args, 'unavailable', None, 'git unavailable: fixture', ''))
+        return text
+    return patch.object(git_client, 'out', out)
+
+
+def spelled(path):
+    """A listed path as `inventory` gives it, made native: `listing` spells each row with `cleanup_path`."""
+    return repos.native(cleanup_path(path))
 
 
 class AddOnExt4(unittest.TestCase):
@@ -55,11 +72,7 @@ class ListingSide(unittest.TestCase):
     def lookup(self, native, wsl, reachable):
         from drover import pipeline
         seen = []
-        def fake(repo, *args, **kw):
-            seen.append(kw.get('side'))
-            out = wsl if kw.get('side') == 'wsl' else native
-            return subprocess.CompletedProcess(args, 127 if out is None else 0, out or '', '')
-        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), patch.object(pipeline, 'git', fake), \
+        with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_2, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_2), patch('drover.placement_git.IS_WINDOWS', _placement_patch_2), patch('drover.placement_host.IS_WINDOWS', _placement_patch_2), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_2), patch('drover.placement_process.IS_WINDOWS', _placement_patch_2), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_2), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_2), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_2), listed(lambda side: wsl if side == 'wsl' else native, seen), \
                 patch.object(placement, 'reachable', side_effect=reachable):
             pipe = pipeline.Pipeline.__new__(pipeline.Pipeline)
             pipe.repository = pipeline.Repository()
@@ -67,12 +80,12 @@ class ListingSide(unittest.TestCase):
         return found, seen
 
     def record(self, path, lock=''):
-        return f'worktree {path}\nbranch refs/heads/drover/T\n' + (f'locked {lock}\n' if lock else '') + '\n'
+        return f'worktree {path}\0branch refs/heads/drover/T\0' + (f'locked {lock}\0' if lock else '') + '\0'
 
     def test_native_worktree_remains_available_without_wsl(self):
         path = 'H:/work/a'
-        found, seen = self.lookup(self.record(path), None, lambda p: p == placement.native(path))
-        self.assertEqual(found, (path, True))
+        found, seen = self.lookup(self.record(path), None, lambda p: cleanup_parts(p) == cleanup_parts(path))
+        self.assertEqual(found, (spelled(path), True))
         self.assertEqual(seen, [None])
 
     def test_wsl_lock_prevents_a_reachable_windows_misinterpretation_from_masking_ext4(self):
@@ -91,24 +104,21 @@ class ListingSide(unittest.TestCase):
     def test_missing_registration_is_retained_when_neither_side_can_reach_it(self):
         path = 'H:/work/missing'
         found, seen = self.lookup(self.record(path), None, lambda p: False)
-        self.assertEqual(found, (path, False))
+        self.assertEqual(found, (spelled(path), False))
         self.assertEqual(seen, [None, 'wsl'])
 
     def test_unavailable_wsl_retains_foreign_registration_without_permitting_reuse(self):
         phantom = 'H:/home/dev/work/a'
         found, seen = self.lookup(self.record(phantom, 'wsl'), None, lambda p: True)
-        self.assertEqual(found, (phantom, False))
+        self.assertEqual(found, (spelled(phantom), False))
         self.assertEqual(seen, [None, 'wsl'])
 
     def test_unlock_lists_worktrees_with_the_wsl_git(self):
         seen = []
-        def fake(repo, *args, **kw):
-            seen.append(kw.get('side'))
-            out = 'worktree /home/dev/work/a\0locked wsl\0\0'
-            return subprocess.CompletedProcess(args, 0, out, '')
-        with patch.object(placement, 'git', fake) as _placement_patch_3, patch('drover.placement_git.git', _placement_patch_3):
+        with listed(lambda side: 'worktree /home/dev/work/a\0locked wsl\0\0', seen), \
+                patch.object(placement, 'git', lambda repo, *args, **kw: seen.append(kw.get('side'))):
             placement.unlock_worktree('H:\\repos\\a', '/home/dev/work/a')
-        self.assertEqual(seen, ['wsl', 'wsl'])
+        self.assertEqual(seen, ['wsl', 'wsl'])     # the listing, then the unlock
 
 
 class CleanupCoversBothRoots(unittest.TestCase):

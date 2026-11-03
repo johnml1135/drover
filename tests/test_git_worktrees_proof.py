@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import git_worktrees, process
+from drover import git_client, git_worktrees, process
 from drover.git_worktrees import Listings, RegistrationsUnknown, parse, prove
 from drover.placement_paths import cleanup_parts
 
@@ -404,11 +404,12 @@ class Cost(Trees):
             self.proof(self.a)
         self.assertNotIn('common', self.calls)
 
-    def test_tip_failure_raises_registrations_unknown_and_keeps_the_row(self):
+    def test_tip_failure_raises_git_failure(self):
         self.scene()
         self.failing.add('tip')
-        with self.assertRaisesRegex(RegistrationsUnknown, 'fixture stderr'):
+        with self.assertRaises(git_client.GitFailed) as caught:
             self.proof(self.a)
+        self.assertEqual((caught.exception.why, caught.exception.code, caught.exception.err), ('exit', 128, 'fixture stderr'))
         self.assertIsNotNone(self.listings.of(self.one).row(self.a))
 
 

@@ -388,11 +388,8 @@ class Seams(unittest.TestCase):
         return {key[1:]: count for key, count in found_rows().items() if key[0] == rule}
 
     def test_r8_literal_only_in_git_worktrees_and_its_exceptions(self):
-        self.assertEqual(self.rows_of('R8'), {
-            ('drover/cleanup.py', 'checked_out_anywhere'): 1, ('drover/origin.py', 'fast_forward'): 1,
-            ('drover/pipeline.py', 'Repository.inventory'): 1, ('drover/placement.py', 'unlock_worktree'): 1,
-            ('hub/task_views.py', 'probe'): 1})
+        self.assertEqual(self.rows_of('R8'), {('drover/origin.py', 'fast_forward'): 1})     # its section 13 end row
 
-    def test_r5_git_worktrees_reaches_placement_at_load_and_nothing_else(self):
+    def test_r5_git_worktrees_reaches_only_git_client_and_placement_paths(self):
         rows = {where: count for where, count in self.rows_of('R5').items() if where[0] == 'drover/git_worktrees.py'}
-        self.assertEqual(rows, {('drover/git_worktrees.py', '<module>'): 1})
+        self.assertEqual(rows, {})

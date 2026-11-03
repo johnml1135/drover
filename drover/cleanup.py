@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from . import config, placement
+from . import config, git_client, git_worktrees, placement
 from .disk_state import CleanupLock
 
 
@@ -25,14 +25,6 @@ class GitError(RuntimeError):
     pass
 
 
-def _git_ok(repo, *args):
-    """stdout of a git command that must succeed; anything else is a GitError (callers fail closed)."""
-    r = git(repo, *args)
-    if r.returncode:
-        raise GitError('git %s: rc %d %s' % (' '.join(args[:2]), r.returncode, r.stderr.strip()))
-    return r.stdout
-
-
 def default_branch(repo):
     """The remote default branch name (origin/HEAD), else main or master when one exists on origin; None if unknown.
     The name is only a claim: delete_branch verifies refs/remotes/origin/<name> resolves to a commit."""
@@ -46,8 +38,8 @@ def default_branch(repo):
 
 
 def checked_out_anywhere(repo, branch):
-    out = _git_ok(repo, 'worktree', 'list', '--porcelain').splitlines()
-    return ('branch refs/heads/' + branch) in [ln.strip() for ln in out]
+    rows = git_worktrees.listing(repo, timeout_s=git_client.LONG).rows    # a failure raises; delete_branch refuses
+    return any(row.get('branch') == 'refs/heads/' + branch for row in rows)
 
 
 def valid_branch_name(repo, branch):

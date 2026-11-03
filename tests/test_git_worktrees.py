@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from drover import git_worktrees, placement_git, process
+from drover import cleanup, git_client, git_worktrees, pipeline, placement, placement_git, process
 from drover.git_worktrees import Listing, Listings, RegistrationsUnknown, listing
 from drover.placement_paths import cleanup_parts, cleanup_path, native
 from tests.fakeci import FakeCommands, process_options
@@ -51,8 +51,13 @@ class ListingOfOneRepo(FakedGit):
         self.expect(error=subprocess.TimeoutExpired(['git'], 400.0))
         with self.assertRaises(RegistrationsUnknown) as caught:
             listing(MAIN, timeout_s=400.0)
-        argv = placement_git.git_argv(MAIN, LIST)      # git's own TimeoutExpired, as the elapsed check raised it
-        self.assertEqual(str(caught.exception), str(subprocess.TimeoutExpired(argv, 400.0)))
+        self.assertEqual(str(caught.exception), 'git worktree failed: timeout')    # git_client's words, no stderr
+        self.assertEqual(caught.exception.__cause__.why, 'timeout')
+
+    def test_a_fakes_assertion_is_not_read_as_a_failed_repo(self):
+        self.expect(error=AssertionError('fixture assertion'))
+        with self.assertRaisesRegex(AssertionError, 'fixture assertion'):
+            listing(MAIN, timeout_s=400.0)
 
     def test_a_refused_spawn_is_a_failure_of_the_whole_repo(self):
         self.expect(error=PermissionError('fixture refused'))
@@ -205,6 +210,54 @@ class OneStage(FakedGit):
         self.assertEqual(len(self.fake.calls), 1)
         self.expect()
         self.assertEqual(len(listings.of(MAIN).rows), 2)
+
+
+class Callers(FakedGit):
+    """The four listings outside a stage go through `listing`, each on the timeout it had."""
+
+    def listed(self, *rows):
+        calls = []
+
+        def answer(repo, *, timeout_s, side=None):
+            calls.append((repo, timeout_s, side))
+            return Listing(repo, rows)
+        context = patch.object(git_worktrees, 'listing', answer)
+        context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        return calls
+
+    def test_inventory_returns_empty_on_a_failed_listing(self):
+        for answer in (dict(returncode=128, stderr_output='fixture stderr'),
+                       dict(error=subprocess.TimeoutExpired(['git'], 600.0)), dict(error=FileNotFoundError('git'))):
+            with self.subTest(answer=answer):
+                self.expect(timeout=600.0, **answer)
+                self.assertEqual(pipeline.Repository().inventory(MAIN), [])
+
+    def test_unlock_worktree_releases_nothing_on_a_failed_listing_and_raises_on_a_timeout(self):
+        argv = placement_git.git_argv(MAIN, LIST, side='wsl')
+        self.fake.expect(argv, returncode=128, **process_options(60.0))
+        placement.unlock_worktree(MAIN, TREE)       # no unlock is expected, so one would fail as unexpected
+        self.fake.expect(argv, error=subprocess.TimeoutExpired(['git'], 60.0), **process_options(60.0))
+        with self.assertRaisesRegex(RegistrationsUnknown, 'timeout'):      # as today's TimeoutExpired raised
+            placement.unlock_worktree(MAIN, TREE)
+
+    def test_checked_out_anywhere_and_unlock_worktree_use_listing(self):
+        calls = self.listed(dict(worktree=MAIN, branch='refs/heads/main'),
+                            dict(worktree=TREE, HEAD='bbb', detached='', locked='wsl'))
+        self.assertIs(cleanup.checked_out_anywhere(MAIN, 'main'), True)
+        self.assertIs(cleanup.checked_out_anywhere(MAIN, 'topic'), False)
+        unlocked = []
+        with patch.object(placement, 'git', lambda repo, *args, **options: unlocked.append((args, options))):
+            placement.unlock_worktree(MAIN, TREE)
+        self.assertEqual(calls[-1], (MAIN, git_client.NORMAL, 'wsl'))     # only the WSL git spells ext4 trees
+        self.assertEqual(unlocked, [(('worktree', 'unlock', TREE), dict(timeout=60, side='wsl'))])
+
+    def test_inventory_and_checked_out_anywhere_list_on_600_seconds(self):
+        calls = self.listed(dict(worktree=MAIN, HEAD='aaa', branch='refs/heads/main'))
+        self.assertEqual(pipeline.Repository().inventory(MAIN, 'wsl'),
+                         [dict(worktree=MAIN, HEAD='aaa', branch='refs/heads/main')])
+        cleanup.checked_out_anywhere(MAIN, 'main')
+        self.assertEqual(calls, [(MAIN, git_client.LONG, 'wsl'), (MAIN, git_client.LONG, None)])
 
 
 class Spellings(unittest.TestCase):

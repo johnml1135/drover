@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import process
+from . import git_client, git_worktrees, process
 from .placement_paths import (
     IS_WINDOWS, MNT_RE, WIN_RE, _ordinal_case, _ordinal_char, canonical, cleanup_link, cleanup_normalize,
     cleanup_parts, cleanup_path, cleanup_path_side, cleanup_side, config_path, drive, is_linux_native,
@@ -150,12 +150,14 @@ def unlock_worktree(repo, path):
     """Release only this creator's side marker; owner notes remain locked."""
     expected = 'wsl' if routes_through_wsl(path) or not IS_WINDOWS else 'windows'
     side = {'side': 'wsl'} if expected == 'wsl' else {}      # only the WSL git spells ext4 worktrees correctly
-    listed = git(repo, 'worktree', 'list', '--porcelain', '-z', timeout=60, **side)
-    if listed.returncode:
+    try:
+        listed = git_worktrees.listing(repo, timeout_s=git_client.NORMAL, **side)
+    except git_worktrees.RegistrationsUnknown as error:
+        if isinstance(error.__cause__, git_client.GitFailed) and error.__cause__.why == 'timeout':
+            raise       # as today's TimeoutExpired did; any other failure releases nothing
         return
-    for block in listed.stdout.split('\0\0'):
-        fields = dict(field.partition(' ')[::2] for field in block.split('\0') if field)
-        if fields.get('worktree') and cleanup_normalize(fields['worktree']) == cleanup_normalize(path) and fields.get('locked') == expected:
+    for fields in listed.rows:
+        if cleanup_normalize(fields['worktree']) == cleanup_normalize(path) and fields.get('locked') == expected:
             git(repo, 'worktree', 'unlock', str(path), timeout=60, **side)
 
 

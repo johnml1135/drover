@@ -98,15 +98,13 @@ class MergeGroupCleanup(LandingCase):
 
 class MarkerRelease(DiskCase):
     def test_windows_path_spelling_releases_only_own_side_marker(self):
-        import subprocess
-        from drover import placement
+        from drover import git_client, placement
         for marker, releases in (('windows', True), ('owner reviewing', False), ('wsl', False)):
             called = []
+            listing = 'worktree C:/Temp/Group\x00HEAD abc\x00locked ' + marker + '\x00\x00'
             def git(repo, *args, **kwargs):
                 called.append(args)
-                return subprocess.CompletedProcess(args, 0,
-                    'worktree C:/Temp/Group\x00HEAD abc\x00locked ' + marker + '\x00\x00', '')
-            with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(placement, 'git', side_effect=git) as _placement_patch_2, patch('drover.placement_git.git', _placement_patch_2):
+            with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(placement, 'git', side_effect=git), patch.object(git_client, 'out', return_value=listing):
                 placement.unlock_worktree('C:/repo', r'c:\temp\group')
             self.assertEqual(any(args[:2] == ('worktree', 'unlock') for args in called), releases)
 
