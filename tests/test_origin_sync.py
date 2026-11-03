@@ -181,6 +181,15 @@ class SyncTests(unittest.TestCase):
                 with self.assertRaisesRegex(origin.MainMoved, 'main moved during fast-forward; retry'):
                     origin.fast_forward(REPO, 'main', NEW, OLD, git=git)
 
+    def test_a_listing_that_fails_is_not_read_as_no_checkout(self):
+        for failed in ((128, ''), 'timeout', 'unavailable'):      # an empty listing would send main to the CAS
+            with self.subTest(failed=failed):
+                git = FakeGit(world({('worktree', 'list'): failed}))
+                with self.assertRaisesRegex(origin.SyncError, '^git worktree failed$') as caught:
+                    origin.fast_forward(REPO, 'main', NEW, OLD, git=git)
+                self.assertNotIsInstance(caught.exception, origin.MainMoved)
+                self.assertEqual(git.mutations(), [])
+
     def test_timed_out_merge_raises_sync_error_not_main_moved(self):
         for why in ('timeout', 'unavailable'):
             with self.subTest(why=why):
