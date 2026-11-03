@@ -139,6 +139,28 @@ class NativeMetadata(unittest.TestCase):
         self.assertEqual(list(self.admin.iterdir()), [])
 
 
+class WslMetadata(unittest.TestCase):
+    """The WSL worker that reads and writes admin files: a run that does not end in an exit is no answer."""
+    def test_a_worker_that_times_out_or_cannot_start_fails_a_write_and_reads_nothing(self):
+        import subprocess
+        from drover import git_client, placement_git
+        from tests.fakeci import FakeCommands, process_options
+        dirs = '/repo/.git/worktrees/T1\n/repo/.git\n'
+        worker = SimpleNamespace(command=lambda argv: ['wsl.exe', '--exec', *argv])
+        for error in (subprocess.TimeoutExpired(['wsl.exe'], 30), FileNotFoundError(2, 'No such file or directory')):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as root:
+                fake = FakeCommands(root)
+                for content in ('{"owner": "drover:1"}', None):
+                    argv = worker.command(['python3', '-c', placement_git._METADATA_IO, '/repo/.git/worktrees/T1', 'drover-tag.json'])
+                    fake.expect(argv, error=error, **process_options(30, input=json.dumps(content).encode()))
+                with patch.object(placement_git, 'routes_through_wsl', return_value=True), \
+                        patch.object(placement_git, 'WSL', return_value=worker), \
+                        patch.object(git_client, 'out', return_value=dirs), fake.patch(process):
+                    with self.assertRaisesRegex(OSError, '^worktree metadata IO: '):
+                        placement_git.worktree_metadata('/wt/T1', 'drover-tag.json', '{"owner": "drover:1"}')
+                    self.assertIsNone(placement_git.worktree_metadata('/wt/T1', 'drover-tag.json'))
+
+
 class Ownership(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
