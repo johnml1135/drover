@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 from markupsafe import Markup
-from drover import git_worktrees, repos, placement, origin, process
+from drover import git_client, git_worktrees, repos, placement, origin
 
 
 def first_paragraph(text):
@@ -107,14 +107,9 @@ def _join(base, name):
 
 def probe(prog):
     """Probe repository state only on the cache's background thread."""
-    def git(*args):
-        r = process.run(process.Command(['git', '-C', repos.native(repos.repo_path(prog)), *args], 1))
-        if r.kind != 'exited':      # raised, as TimeoutExpired and a missing git were; the cache reads it as error
-            raise OSError(r.detail)
-        if r.code:
-            raise OSError(r.stderr[-200:])
-        return r.stdout.replace('\r\n', '\n')
-    branches = set(git('for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes').splitlines())
+    refs = git_client.out(repos.native(repos.repo_path(prog)), 'for-each-ref', '--format=%(refname:short)',
+                          'refs/heads', 'refs/remotes', timeout_s=1)     # GitFailed, an OSError: the cache reads error
+    branches = set(refs.splitlines())
     paths, branch_paths = set(), {}
     for lines in git_worktrees.listing(repos.native(repos.repo_path(prog)), timeout_s=1).rows:   # raises an OSError
         path = lines.get('worktree')

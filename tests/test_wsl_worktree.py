@@ -150,7 +150,7 @@ class ListingSide(unittest.TestCase):
     def test_unlock_lists_worktrees_with_the_wsl_git(self):
         seen = []
         with listed(lambda side: 'worktree /home/dev/work/a\0locked wsl\0\0', seen), \
-                patch.object(placement, 'git', lambda repo, *args, **kw: seen.append(kw.get('side'))):
+                patch.object(git_client, 'mutate', lambda repo, *args, **kw: seen.append(kw.get('side')) or git_client.GitDone(True, '', '', 0, None)):
             placement.unlock_worktree('H:\\repos\\a', '/home/dev/work/a')
         self.assertEqual(seen, ['wsl', 'wsl'])     # the listing, then the unlock
 

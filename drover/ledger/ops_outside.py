@@ -1,8 +1,7 @@
 """Owner recording of work landed outside Drover."""
 import re
-import subprocess
 
-from .. import placement, repos
+from .. import git_client, repos
 from . import states
 from .db import tx
 from .ops_common import _j, event, events, stamp
@@ -40,17 +39,18 @@ def _reachable_base(task, sha, base_ref):
         raise ValueError('base ref must be the configured base')
     ref = ('refs/remotes/' if prog['landing']['push'] else 'refs/heads/') + expected
     repo = repos.native(repos.repo_path(prog))
-    try:
-        commit = placement.git(repo, 'cat-file', '-t', sha, timeout=30)
-        base = placement.git(repo, 'rev-parse', '--verify', '--quiet', ref + '^{commit}', timeout=30)
-        base_sha = base.stdout.strip()
-        if (commit.returncode or commit.stdout.strip() != 'commit' or base.returncode
-                or not re.fullmatch(r'[0-9a-f]{40}', base_sha)):
-            raise ValueError('commit or configured base cannot be verified')
-        ancestor = placement.git(repo, 'merge-base', '--is-ancestor', sha, base_sha, timeout=30)
-    except (OSError, subprocess.SubprocessError) as error:
-        raise ValueError('commit reachability cannot be verified') from error
-    if ancestor.returncode:
+
+    def ask(*args):
+        """Only YES verifies; a git that did not finish cannot verify anything."""
+        reply = git_client.ask(repo, *args, timeout_s=git_client.QUICK, no=(1,))
+        if reply.why == 'timeout':
+            raise ValueError('commit reachability cannot be verified')
+        return reply.answer is git_client.Answer.YES, reply.out.strip()
+    commit, kind = ask('cat-file', '-t', sha)
+    base, base_sha = ask('rev-parse', '--verify', '--quiet', ref + '^{commit}')
+    if not commit or kind != 'commit' or not base or not re.fullmatch(r'[0-9a-f]{40}', base_sha):
+        raise ValueError('commit or configured base cannot be verified')
+    if not ask('merge-base', '--is-ancestor', sha, base_sha)[0]:
         raise ValueError('commit is not verifiably reachable from the configured base')
     return base_sha
 

@@ -1,6 +1,6 @@
 """App factory: wires store, bus, auth, routers, SSE and the watchdog."""
 from drover import placement
-from drover.placement_git import request_git
+from drover.git_client import request_git
 import time
 import logging
 from fastapi import FastAPI, Request

@@ -17,7 +17,8 @@ NOW = 1_800_000_000.0
 
 class NativeMetadata(unittest.TestCase):
     def setUp(self):
-        from drover import placement_git as placement, process
+        from drover import placement_git as placement
+        from tests.fakeci import git_answers
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.admin = Path(self.tmp.name) / 'admin with spaces'
@@ -31,9 +32,8 @@ class NativeMetadata(unittest.TestCase):
                      for arg in args if arg in ('--absolute-git-dir', '--git-common-dir')]
             return SimpleNamespace(returncode=0, stdout=''.join(str(p) + '\n' for p in paths))
 
-        for context in (patch.object(placement, 'git', side_effect=git),
-                        patch.object(placement, 'routes_through_wsl', return_value=False),
-                        patch.object(process.subprocess, 'run', side_effect=AssertionError('native metadata spawned a process'))):
+        for context in (git_answers(git),           # anything but git, a Python child included, is refused
+                        patch.object(placement, 'routes_through_wsl', return_value=False)):
             context.start()
             self.addCleanup(context.stop)
 

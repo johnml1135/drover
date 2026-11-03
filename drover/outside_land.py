@@ -15,7 +15,6 @@ backlog reaches the Inbox a few at a time, and a question offers at most MAX_OPT
 import json
 import logging
 import re
-import subprocess
 import time
 
 from . import ci, config, decide as decide_module, disk, dispatch_repos, git_client, landing, placement, repos
@@ -35,10 +34,6 @@ LANDED_AT = re.compile(r'landed at\s+(\S+)', re.IGNORECASE)
 log = logging.getLogger(__name__)
 
 
-class GitUnknown(subprocess.SubprocessError):
-    """Git failed rather than answered, so nothing can be concluded and nobody should be asked."""
-
-
 class _OutOfTime(Exception):
     """A decider call would pass the scan's budget."""
 
@@ -52,14 +47,11 @@ def interval_s(cfg):
 
 
 def _out(repo, *args):
-    """Git's stripped stdout, or None when it answers no by exiting 1. Any other exit raises GitUnknown, and a timeout
-    raises TimeoutExpired."""
+    """Git's stripped stdout, or None when it answers no by exiting 1. Git that did not answer raises GitFailed, whose
+    `why` tells a timeout from any other failure: nothing can be concluded, and nobody should be asked."""
     reply = git_client.ask(repo, *args, timeout_s=GIT_TIMEOUT_S, no=(1,))
-    if reply.why == 'timeout':      # GitUnknown and this raise become one GitFailed in Task 27
-        raise subprocess.TimeoutExpired(args, GIT_TIMEOUT_S)
     if reply.answer is git_client.Answer.UNKNOWN:
-        how = f'exited {reply.code}' if reply.why == 'exit' else reply.why
-        raise GitUnknown(f'git {args[0]} {how}: {reply.err.strip()[:200]}')
+        raise git_client.GitFailed(args, reply.why, reply.code, reply.err, reply.out)
     return None if reply.answer is git_client.Answer.NO else reply.out.strip()
 
 
@@ -144,7 +136,7 @@ def git_proof(repo, branch, base_ref, commits=(), start=None):
     recorded commit never reached it. A timeout or a git failure is unknown, so it gives None too; `_proof` raises."""
     try:
         return _proof(repo, branch, base_ref, commits, start)
-    except (OSError, ValueError, subprocess.SubprocessError, ci.CIError):
+    except (OSError, ValueError, ci.CIError):     # GitFailed is an OSError
         return None
 
 
@@ -350,8 +342,8 @@ def _unproved(conn, task, prog, decide, room, opened):
     """Git answered, with no proof. True if the task lands all the same. One question per task, for ever, unless the
     owner's answer is refused. `opened` lists the questions this scan has opened."""
     name, ref, repo = *_base(prog), repos.native(repos.repo_path(prog))
-    if not _commit(repo, ref):
-        raise GitUnknown(f'{ref} does not resolve')
+    if not _commit(repo, ref):      # git answered no for the base itself: as unknown as a failure, so nobody is asked
+        raise git_client.GitFailed(('rev-parse', '--verify', '-q', ref), 'exit', 1, f'{ref} does not resolve', '')
     notices = [e['data'] for e in ops.events(conn, kind=KIND) if e['data']['notice']['task'] == task['id']]
     if notices:
         return _take_answer(conn, task, repo, name, ref, notices[-1], opened)
@@ -402,7 +394,7 @@ def _wsl_up():
     """Whether WSL is running; asking starts nothing, and a stopped WSL is never booted for a scan."""
     try:
         return placement.wsl_running(disk.tracker_distro(config.get()))
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         return False
 
 
@@ -459,12 +451,15 @@ def tick(conn, cfg, *, decide=None, now=time.monotonic):
             resume = task['id']
             log.info('outside landing scan opened %d questions; resuming at %s', len(opened), resume)
             break
-        except subprocess.TimeoutExpired:
-            stuck.add(key)
-            log.warning('outside landing scan skips %s: git timed out', key)
-            later = next((t['id'] for t in tasks[position + 1:] if t['repo'].lower() == key), '')
-            resume = resume or later    # or the task that timed out stands in front of its repo every interval
-        except (OSError, LookupError, ValueError, PermissionError, subprocess.SubprocessError, ci.CIError) as error:
+        except git_client.GitFailed as error:
+            if error.why == 'timeout':
+                stuck.add(key)
+                log.warning('outside landing scan skips %s: git timed out', key)
+                later = next((t['id'] for t in tasks[position + 1:] if t['repo'].lower() == key), '')
+                resume = resume or later    # or the task that timed out stands in front of its repo every interval
+            else:
+                log.warning('landing of %s not detected: %s', task['id'], error)
+        except (OSError, LookupError, ValueError, PermissionError, ci.CIError) as error:
             log.warning('landing of %s not detected: %s', task['id'], error)     # IllegalTransition is a ValueError
     if ops.get_setting(conn, RESUME_KEY, '') != resume:
         ops.set_setting(conn, RESUME_KEY, resume)

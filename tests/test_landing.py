@@ -116,6 +116,19 @@ class WorktreeErrorTests(ProcessFreeCase):
                     landing.build_tip(Path(root) / 'repo', work, 'a' * 40, [])
             self.assertEqual(run.call_count, 1)
 
+    def test_an_ownership_tag_whose_git_times_out_is_a_ci_error(self):
+        """renew_owner turns worktree_metadata's timeout, a GitFailed, into CIError, as it did TimeoutExpired."""
+        import subprocess, tempfile
+        from tests.fakeci import git_answers
+        def timed_out(repo, *args, timeout):
+            raise subprocess.TimeoutExpired(['git', *args], timeout)
+        added = git_client.GitDone(True, '', '', 0, None)
+        with tempfile.TemporaryDirectory() as root, git_answers(timed_out), \
+                patch.object(git_client, 'mutate', return_value=added):
+            with self.assertRaisesRegex(ci.CIError, 'could not record ownership') as caught:
+                landing.build_tip(Path(root) / 'repo', Path(root) / 'batch', 'a' * 40, [])
+        self.assertEqual(caught.exception.__cause__.why, 'timeout')
+
 
 class PushContractTests(ProcessFreeCase):
     def test_fast_forward_pushes_a_sha_not_a_ref(self):

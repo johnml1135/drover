@@ -247,10 +247,13 @@ class Callers(FakedGit):
         self.assertIs(cleanup.checked_out_anywhere(MAIN, 'main'), True)
         self.assertIs(cleanup.checked_out_anywhere(MAIN, 'topic'), False)
         unlocked = []
-        with patch.object(placement, 'git', lambda repo, *args, **options: unlocked.append((args, options))):
+        def mutate(repo, *args, **options):
+            unlocked.append((args, options))
+            return git_client.GitDone(True, '', '', 0, None)
+        with patch.object(git_client, 'mutate', mutate):
             placement.unlock_worktree(MAIN, TREE)
         self.assertEqual(calls[-1], (MAIN, git_client.NORMAL, 'wsl'))     # only the WSL git spells ext4 trees
-        self.assertEqual(unlocked, [(('worktree', 'unlock', TREE), dict(timeout=60, side='wsl'))])
+        self.assertEqual(unlocked, [(('worktree', 'unlock', TREE), dict(timeout_s=git_client.NORMAL, side='wsl'))])
 
     def test_inventory_and_checked_out_anywhere_list_on_600_seconds(self):
         calls = self.listed(dict(worktree=MAIN, HEAD='aaa', branch='refs/heads/main'))

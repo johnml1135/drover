@@ -23,6 +23,7 @@
     "drover.dispatch_hold._git",
     "drover.task_access._git",
     "drover.decisions._git",
+    "drover.outside_land.GitUnknown",
     "drover.durable.publish",
     "drover.durable._UMASK",
     "drover.placement_sweep.marked",

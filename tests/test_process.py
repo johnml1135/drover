@@ -313,6 +313,8 @@ class PlacementCallers(unittest.TestCase):
         self.fake.expect(probe, returncode=1, **process_options(20))
         admin = '/repo/.git/worktrees/one'
         content = json.dumps({'owner': 'é'})
+        self.fake.expect(['wsl.exe', '--exec', 'git', '-C', '/trees/one', 'rev-parse', '--path-format=absolute',
+                          '--absolute-git-dir', '--git-common-dir'], output=f'{admin}\n/repo/.git\n', **process_options(30))
         self.fake.expect(['wsl.exe', '--exec', 'python3', '-c', placement_git._METADATA_IO, admin, 'tag.json'],
                          output='written', **process_options(30, input=json.dumps(content).encode('utf-8')))
         status = dict(pid=7, runner_pid=8, run_id='r', nonce='n0nce')     # the nonce reaches the WSL sweep
@@ -320,11 +322,9 @@ class PlacementCallers(unittest.TestCase):
                 'sys.exit(0 if stop_ci_children(json.loads(sys.argv[1])) else 1)')
         self.fake.expect(['wsl.exe', '--exec', 'python3', '-c', code, json.dumps(status)], returncode=0,
                          **process_options(90))
-        located = subprocess.CompletedProcess([], 0, f'{admin}\n/repo/.git\n', '')
         with self.fake.patch(process), \
-                mock.patch.object(placement_git, 'git', return_value=located), \
                 mock.patch.object(placement_git, 'routes_through_wsl', return_value=True), \
-                mock.patch.object(placement_git, 'WSL', lambda: wsl), \
+                mock.patch.object(placement_git, 'WSL', lambda name=None: wsl), \
                 mock.patch.object(placement, 'IS_WINDOWS', True), \
                 mock.patch.object(placement, 'WSL', lambda name=None: wsl):
             with mock.patch.object(placement_exec.sys, 'platform', 'linux'), \

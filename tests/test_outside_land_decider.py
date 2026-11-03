@@ -114,7 +114,7 @@ class UnknownTests(DeciderCase):
         tip = self.r.branch('feat', {'f.txt': 'x'})
         self.r.commit('other.txt')
         self.r.git('cherry-pick', 'feat')
-        with self.fail_only('cherry'), self.assertRaises(outside_land.GitUnknown):
+        with self.fail_only('cherry'), self.assertRaises(git_client.GitFailed):
             outside_land._proof(self.r.repo, 'feat', 'main', [tip], self.fork)
 
     def test_no_git_inside_a_transaction(self):
@@ -204,7 +204,7 @@ class AmbiguousTests(GitCase):
 
     def test_failed_git_is_not_an_empty_answer(self):
         failed = git_client.GitReply(git_client.Answer.UNKNOWN, '', 'fatal', 128, 'exit')
-        with patch.object(git_client, 'ask', return_value=failed), self.assertRaises(outside_land.GitUnknown):
+        with patch.object(git_client, 'ask', return_value=failed), self.assertRaises(git_client.GitFailed):
             self.ambiguous()
 
     def test_a_subject_cannot_forge_a_changed_file(self):

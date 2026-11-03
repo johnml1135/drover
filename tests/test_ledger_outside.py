@@ -1,8 +1,11 @@
 """Owner recording of implementations landed outside Drover."""
+import itertools
+import subprocess
 from types import SimpleNamespace
 from unittest import mock
 
 from drover.ledger import ops
+from tests.fakeci import git_answers
 from tests.test_ledger import Base
 
 
@@ -16,7 +19,7 @@ class OutsideLandingTests(Base):
     def setUp(self):
         super().setUp()
         self.repo = mock.patch('drover.repos.load_all', return_value={'p': PROG})
-        self.git = mock.patch('drover.placement.git', side_effect=self.fake_git)
+        self.git = git_answers(self.fake_git)
         self.repo.start()
         self.git.start()
         self.addCleanup(self.repo.stop)
@@ -72,7 +75,7 @@ class OutsideLandingTests(Base):
                 with self.assertRaises(error):
                     ops.record_external_landing(self.conn, tid, **args)
                 self.assertEqual((ops.get_task(self.conn, tid), ops.events(self.conn, task_id=tid)), before)
-        with mock.patch('drover.placement.git', side_effect=lambda repo, *args, **kw:
+        with git_answers(lambda repo, *args, **kw:
                         SimpleNamespace(returncode=1 if args[0] == 'merge-base' else 0,
                                         stdout='commit' if args[0] == 'cat-file' else BASE)):
             with self.assertRaises(ValueError):
@@ -119,13 +122,15 @@ class OutsideLandingTests(Base):
     def test_unverifiable_git_results_and_wrong_state_do_not_mutate(self):
         tid = self.needs_owner()
         before = ops.get_task(self.conn, tid), ops.events(self.conn, task_id=tid)
-        for command in ('cat-file', 'rev-parse', 'merge-base'):
+        for command, failure in itertools.product(('cat-file', 'rev-parse', 'merge-base'), ('exit', 'timeout')):
             def git(repo, *args, **kwargs):
+                if args[0] == command and failure == 'timeout':
+                    raise subprocess.TimeoutExpired(['git', *args], kwargs['timeout'])
                 if args[0] == command:
                     return SimpleNamespace(returncode=2, stdout='')
                 return self.fake_git(repo, *args, **kwargs)
-            with self.subTest(command=command), mock.patch('drover.placement.git', side_effect=git):
-                with self.assertRaises(ValueError):
+            with self.subTest(command=command, failure=failure), git_answers(git):
+                with self.assertRaisesRegex(ValueError, 'reachability' if failure == 'timeout' else 'verif'):
                     ops.record_external_landing(self.conn, tid, SHA, 'origin/main', 'gate passed', 'review approved')
                 self.assertEqual((ops.get_task(self.conn, tid), ops.events(self.conn, task_id=tid)), before)
         other = self.task()
@@ -142,6 +147,6 @@ class OutsideLandingTests(Base):
                 self.assertEqual(args[-1], 'refs/heads/main^{commit}')
                 return SimpleNamespace(returncode=0, stdout=BASE)
             return self.fake_git(repo, *args, **kwargs)
-        with mock.patch('drover.repos.load_all', return_value={'p': local}), mock.patch('drover.placement.git', side_effect=git):
+        with mock.patch('drover.repos.load_all', return_value={'p': local}), git_answers(git):
             ops.record_external_landing(self.conn, tid, SHA, 'main', 'gate passed', 'review approved')
         self.assertEqual(self.status(tid), 'landed')

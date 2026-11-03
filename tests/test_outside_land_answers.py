@@ -1,5 +1,4 @@
 """What the scan does once git has answered: the decider in shadow, one owner question, and its answer, used once."""
-import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -91,14 +90,14 @@ class QuietTests(FakeGitCase):
 
     def test_timeout_after_the_proof_also_asks_nothing(self):
         self.unproved()
-        with patch.object(outside_land, 'ambiguous', side_effect=subprocess.TimeoutExpired('git', 1)), \
+        with patch.object(outside_land, 'ambiguous', side_effect=git_client.GitFailed(('rev-parse',), 'timeout', None, '', '')), \
                 self.assertLogs('drover.outside_land', 'WARNING'):
             self.scan()
         self.assertEqual((self.decider.calls, ops.open_questions(self.conn)), ([], []))
 
     def test_failed_cited_commit_check_asks_nothing(self):
         _, _, commit = self.unproved()
-        with patch.object(outside_land, '_holds', side_effect=outside_land.GitUnknown('broken')), \
+        with patch.object(outside_land, '_holds', side_effect=git_client.GitFailed(('rev-parse',), 'exit', 128, 'broken', '')), \
                 self.assertLogs('drover.outside_land', 'WARNING'):
             self.scan(Decider(self.conn, acted=True, answer=commit))
         self.assertEqual(ops.open_questions(self.conn), [])
@@ -234,7 +233,7 @@ class OwnerAnswerTests(FakeGitCase):
         tid, _, commit = self.unproved()
         self.scan()
         self.answer(f'Landed at {commit}')
-        with patch.object(outside_land, '_refusal', side_effect=subprocess.TimeoutExpired('git', 1)), \
+        with patch.object(outside_land, '_refusal', side_effect=git_client.GitFailed(('rev-parse',), 'timeout', None, '', '')), \
                 self.assertLogs('drover.outside_land', 'WARNING'):
             self.assertEqual(self.scan()['landed'], [])
         self.assertEqual(ops.open_questions(self.conn), [])

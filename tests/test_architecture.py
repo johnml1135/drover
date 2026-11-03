@@ -310,7 +310,7 @@ class Architecture(unittest.TestCase):
                             qualified = f'{module(path)}.{node.name}.{item.name}'
                             if qualified in data['qualified_names']:
                                 violations.append(f'{path}:{item.lineno} {qualified}')
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     qualified = f'{module(path)}.{node.name}'
                     if qualified in data['qualified_names'] and node in tree.body:
                         violations.append(f'{path}:{node.lineno} {qualified}')

@@ -88,6 +88,20 @@ class Worktrees(PolicyBase):
         self.assertEqual((tag["owner"], tag["repo"]), (pipeline.OWNER_PREFIX + tid, "p"))
         self.assertEqual(self.pipe.worktree(self.get(tid)), wt)             # idempotent
 
+    def test_an_ownership_tag_whose_git_times_out_refuses_the_worktree(self):
+        """pipeline :346 (reuse) and :457 (create) catch OSError: worktree_metadata's timeout is GitFailed, one."""
+        reused = self.task()
+        self.pipe.worktree(self.get(reused))
+        def timed_out(repo, *args, timeout):
+            raise subprocess.TimeoutExpired(['git', *args], timeout)
+        real = lambda path, name, tid: pipeline.Repository().tag(path, name, tid)     # ownership.tag, then git
+        with git_answers(timed_out), patch.object(self.repository, 'tag', side_effect=real):
+            for tid, why in ((reused, 'could not record ownership of'), (self.task(), 'but could not record ownership')):
+                with self.subTest(why=why), self.assertRaisesRegex(pipeline.WorktreeRefused, why) as caught:
+                    self.pipe.worktree(self.get(tid))
+                self.assertIsInstance(caught.exception.__cause__, OSError)
+                self.assertEqual(caught.exception.__cause__.why, 'timeout')
+
     def test_uses_an_existing_branch_and_a_clean_worktree_that_has_it(self):
         self.fix.branch("feat", {"f.txt": "f\n"})
         other = Path(self.tmp.name) / "other"

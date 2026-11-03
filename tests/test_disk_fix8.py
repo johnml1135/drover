@@ -294,12 +294,13 @@ class SafetyDecisions(DiskCase):
         self.assertEqual(result['reason_code'], 'revalidation_changed')
 
     def test_unlock_matches_extended_drive_spelling_and_preserves_owner_note(self):
-        from drover import git_worktrees
+        from drover import git_client, git_worktrees
         for marker, calls in (('wsl', 1), ('owner note', 0)):
             # The row as `listing` spells it on WSL; this host's Path flavour cannot be patched to give it.
             listing = git_worktrees.Listing('/tmp/repo', (dict(worktree='/mnt/h/repo', locked=marker),))
             with patch.object(placement, 'IS_WINDOWS', False) as _placement_patch_23, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_23), patch('drover.placement_git.IS_WINDOWS', _placement_patch_23), patch('drover.placement_host.IS_WINDOWS', _placement_patch_23), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_23), patch('drover.placement_process.IS_WINDOWS', _placement_patch_23), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_23), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_23), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_23), \
-                    patch.object(git_worktrees, 'listing', return_value=listing) as listed, patch.object(placement, 'git') as git:
+                    patch.object(git_worktrees, 'listing', return_value=listing) as listed, \
+                    patch.object(git_client, 'mutate', return_value=git_client.GitDone(True, '', '', 0, None)) as git:
                 placement.unlock_worktree('/tmp/repo', r'\\?\H:\Repo')
             self.assertEqual((listed.call_count, git.call_count), (1, calls))     # one listing; an unlock for ours only
 

@@ -138,7 +138,11 @@ def reachable(path):
     if not path:
         return False
     if routes_through_wsl(path):
-        return git(path, "rev-parse", "--git-dir", timeout=30).returncode == 0
+        from . import git_client     # here, not at load: git_client imports this module (R5)
+        reply = git_client.ask(path, "rev-parse", "--git-dir", timeout_s=git_client.QUICK, no=())
+        if reply.why == "timeout":   # unknown is not "missing": it raises, as TimeoutExpired did
+            raise git_client.GitFailed(("rev-parse", "--git-dir"), reply.why, reply.code, reply.err, reply.out)
+        return reply.answer is git_client.Answer.YES
     return os.path.exists(native(path))
 
 def relativize_gitdir(path):
@@ -202,26 +206,24 @@ def worktree_metadata(worktree: str, filename: str, content: str | None = None) 
     """Read/write a linked worktree's admin file on its owning host, replacing atomically."""
     if not filename or filename in ('.', '..') or any(c in filename for c in '/\\\0:'):
         raise ValueError('metadata filename must be a basename')
-    try:
-        discovered = git(worktree, 'rev-parse', '--path-format=absolute',
-                         '--absolute-git-dir', '--git-common-dir', timeout=30)
-        directories = discovered.stdout.strip().splitlines()
-        if discovered.returncode or len(directories) != 2 or not all(directories) or directories[0] == directories[1]:
+    from . import git_client     # here, not at load: git_client imports this module (R5)
+    try:      # a git that fails or times out raises GitFailed, an OSError, so callers' OSError handlers hold it
+        directories = git_client.out(worktree, 'rev-parse', '--path-format=absolute', '--absolute-git-dir',
+                                     '--git-common-dir', timeout_s=git_client.QUICK).strip().splitlines()
+        if len(directories) != 2 or not all(directories) or directories[0] == directories[1]:
             raise OSError('cannot resolve linked worktree admin directory')
         directory = directories[0]
         if not routes_through_wsl(worktree):
             return _native_metadata_io(native(directory), filename, content)
         argv = WSL().command(['python3', '-c', _METADATA_IO, directory, filename])
         result = process.run(process.Command(argv, 30, stdin=json.dumps(content)))
-        if result.kind == 'timed_out':
-            raise subprocess.TimeoutExpired(argv, 30, output=result.out, stderr=result.err)
-        if result.kind == 'unavailable':
-            raise OSError(result.detail)
+        if result.kind != 'exited':      # a timeout too: an OSError, as a git timeout is
+            raise OSError(f'worktree metadata IO: {result.detail}')
         strict = lambda data: data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')    # undecodable: ValueError
         if result.code:
             raise OSError(strict(result.err).strip() or 'worktree metadata IO failed')
         return strict(result.out) or None
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError):
         if content is not None:
             raise
         return None

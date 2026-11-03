@@ -1,5 +1,4 @@
 """What the scan looks at and how far it goes, with no repository behind it."""
-import subprocess
 import unittest
 import unittest.mock
 from types import SimpleNamespace
@@ -92,16 +91,40 @@ class ScanLimitTests(LedgerCase):
         self.assertEqual(calls.count(self.acme), 1)
         self.assertIn(self.beta, calls)
 
-    def test_a_timeout_gives_the_next_task_in_that_repo_the_first_turn(self):
-        slow, next_in_repo, _ = self.repo_task(), self.repo_task(), self.repo_task('beta')
-        def stuck(conn, task, prog):
+    def failing(self, why, code):
+        """`_out` raises GitFailed with this `why` and no stderr in its text; then a scan in which one task fails so.
+        tick's one handler for it (section 5.2, outside_land.py:459): a timeout stops the repo, anything else logs."""
+        reply = git_client.GitReply(git_client.Answer.UNKNOWN, '', 'fatal: secret-bearing stderr', code, why)
+        with patch.object(git_client, 'ask', return_value=reply), self.assertRaises(git_client.GitFailed) as caught:
+            outside_land._out(self.acme, 'rev-parse', '--verify', '-q', 'main')
+        self.assertEqual((caught.exception.why, caught.exception.code), (why, code))
+        self.assertNotIn('secret', str(caught.exception))
+        slow, next_in_repo, other = self.repo_task(), self.repo_task(), self.repo_task('beta')
+        seen = []
+        def detect(conn, task, prog):
+            seen.append(task['id'])
             if task['id'] == slow:
-                raise subprocess.TimeoutExpired('git', 1)
+                raise git_client.GitFailed(('rev-parse',), why, code, 'fatal', '')
             return False
-        with patch.object(outside_land, '_detect', side_effect=stuck), patch.object(outside_land, '_unproved', return_value=False), \
-                self.assertLogs('drover.outside_land', 'WARNING'):
+        with patch.object(outside_land, '_detect', side_effect=detect), \
+                patch.object(outside_land, '_unproved', return_value=False), \
+                self.assertLogs('drover.outside_land', 'WARNING') as logs:
             self.scan()
+        return (slow, next_in_repo, other), seen, logs.output
+
+    def test_459_timeout_takes_stuck_and_resume(self):
+        """The next task in the stuck repo has the first turn at the next interval."""
+        (slow, next_in_repo, other), seen, logs = self.failing('timeout', None)
+        self.assertEqual(seen, [slow, other])
         self.assertEqual(ops.get_setting(self.conn, outside_land.RESUME_KEY), next_in_repo)
+        self.assertTrue(any('git timed out' in line for line in logs), logs)
+
+    def test_459_any_other_failure_logs_as_464(self):
+        for why, code in (('exit', 128), ('unavailable', None)):
+            with self.subTest(why=why):
+                (slow, next_in_repo, other), seen, logs = self.failing(why, code)
+                self.assertEqual(seen[-3:], [slow, next_in_repo, other])     # the repo is not stuck, nothing resumes
+                self.assertTrue(any(f'landing of {slow} not detected' in line for line in logs), logs)
 
     def test_budget_stops_the_scan_and_the_next_one_resumes(self):
         first, second, third = self.repo_task(), self.repo_task(), self.repo_task()

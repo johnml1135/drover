@@ -238,3 +238,18 @@ class Notices(MemoryWorktreeCase):
         disk_notices.replay(conn, self.cfg, self.now)
         snapshot = json.loads((self.state / 'disk' / 'tasks.json').read_text())
         self.assertEqual({t['id']: t['live'] for t in snapshot['tasks']}, expected)
+        # disk_notices :50 catches OSError: a lease renewal whose git times out (GitFailed) skips, and the snapshot
+        # is still written.
+        import subprocess
+        from drover import ownership, placement, placement_git
+        from tests.fakeci import git_answers
+        live = next(iter(expected))
+        conn.execute('UPDATE tasks SET worktree=? WHERE id=?', (str(self.root / 'wt'), live))
+        def timed_out(repo, *args, timeout):
+            raise subprocess.TimeoutExpired(['git', *args], timeout)
+        with git_answers(timed_out), patch.object(ownership, 'owned_by', return_value=True), \
+                patch.object(placement, 'worktree_metadata', placement_git.worktree_metadata):
+            disk_notices.replay(conn, self.cfg, self.now)
+        snapshot = json.loads((self.state / 'disk' / 'tasks.json').read_text())
+        self.assertEqual({t['id']: t['live'] for t in snapshot['tasks']}, expected)
+        self.assertIn(str(self.root / 'wt'), snapshot['active_worktrees'])

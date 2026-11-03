@@ -350,7 +350,7 @@
     {"importer": "drover/ledger/ops_outside.py", "imported_symbol": "drover.ledger.states.LANDED", "count": 5, "owner_slice": "B-2b"},
     {"importer": "drover/ledger/ops_outside.py", "imported_symbol": "drover.ledger.states.NEEDS_OWNER", "count": 3, "owner_slice": "B-2b"},
     {"importer": "drover/ledger/ops_outside.py", "imported_symbol": "drover.ledger.states.YANKED", "count": 2, "owner_slice": "B-2b"},
-    {"importer": "drover/ledger/ops_outside.py", "imported_symbol": "drover.placement", "count": 1, "owner_slice": "B-2b"},
+    {"importer": "drover/ledger/ops_outside.py", "imported_symbol": "drover.git_client", "count": 1, "owner_slice": "B-2b"},
     {"importer": "drover/ledger/ops_outside.py", "imported_symbol": "drover.repos", "count": 1, "owner_slice": "B-2b"},
     {"importer": "drover/ledger/ops_stages.py", "imported_symbol": "drover.ci", "count": 1, "owner_slice": "B-2b"},
     {"importer": "drover/ledger/ops_stages.py", "imported_symbol": "drover.contract", "count": 1, "owner_slice": "B-2b"},

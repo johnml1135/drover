@@ -152,7 +152,7 @@ def build_tip(repo, worktree, base_sha, tasks):
         try:
             ownership.tag(str(worktree), Path(placement.native(repo)).name,
                           'session:merge-group:' + worktree.name, time.time() + 86400)
-        except (OSError, ValueError) as error:     # worktree_metadata's timeout joins OSError as GitFailed in Task 27
+        except (OSError, ValueError) as error:     # worktree_metadata's git failure, a timeout too, is GitFailed
             raise ci.CIError(f'created {worktree} but could not record ownership: {error}') from error
     if saved and saved.get('identity') == identity and (worktree / '.git').exists():
         if ci.head(worktree) == saved['tip']:

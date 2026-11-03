@@ -104,7 +104,8 @@ class MarkerRelease(DiskCase):
             listing = 'worktree C:/Temp/Group\x00HEAD abc\x00locked ' + marker + '\x00\x00'
             def git(repo, *args, **kwargs):
                 called.append(args)
-            with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(placement, 'git', side_effect=git), patch.object(git_client, 'out', return_value=listing):
+                return git_client.GitDone(True, '', '', 0, None)
+            with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(git_client, 'mutate', side_effect=git), patch.object(git_client, 'out', return_value=listing):
                 placement.unlock_worktree('C:/repo', r'c:\temp\group')
             self.assertEqual(any(args[:2] == ('worktree', 'unlock') for args in called), releases)
 

@@ -27,6 +27,7 @@ from drover.ledger.states import IllegalTransition
 from drover.ledger.waiting import TASK_TERMINAL, Waiting, cause_key
 from drover.notifications import Notifications
 from drover.port import DirectPort
+from tests.fakeci import git_answers
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'lifecycle-traces.json'
 WAITING_KEY = 'nested_event_release_order'      # produced by tests/test_waiting_characterization.py
@@ -244,7 +245,7 @@ class LifecycleTrace(Case):
         evidence = (SHA, 'origin/main', 'gate passed', 'review approved')
         prog = {'name': 'p', 'repo': '/repo', 'default_branch': 'main', 'remote': 'origin', 'landing': {'push': True}}
         git = lambda repo, *args, **kw: SimpleNamespace(returncode=0, stdout={'cat-file': 'commit\n', 'rev-parse': TIP + '\n'}.get(args[0], ''))
-        with mock.patch('drover.repos.load_all', return_value={'p': prog}), mock.patch('drover.placement.git', side_effect=git):
+        with mock.patch('drover.repos.load_all', return_value={'p': prog}), git_answers(git):
             rec.refused('outside by worker', PermissionError, ops.record_external_landing, c, needs, *evidence, actor='worker')
             rec.refused('outside by short sha', ValueError, ops.record_external_landing, c, needs, 'abc', *evidence[1:])
             rec.refused('outside on a ready task', IllegalTransition, ops.record_external_landing, c, write, *evidence)

@@ -160,7 +160,9 @@ def unlock_worktree(repo, path):
         return
     for fields in listed.rows:
         if cleanup_normalize(fields['worktree']) == cleanup_normalize(path) and fields.get('locked') == expected:
-            git(repo, 'worktree', 'unlock', str(path), timeout=60, **side)
+            done = git_client.mutate(repo, 'worktree', 'unlock', str(path), timeout_s=git_client.NORMAL, **side)
+            if done.why == 'timeout':      # raised, as the listing's timeout is; a refused unlock is not an error
+                raise git_client.GitFailed(('worktree', 'unlock'), done.why, done.code, done.err, done.out)
 
 
 def recover_ci_children(platform, status, drover_dir, distro_name=None):

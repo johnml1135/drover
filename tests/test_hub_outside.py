@@ -5,6 +5,7 @@ from unittest import TestCase, mock
 from fastapi.testclient import TestClient
 from drover.ledger import ops
 from tests.test_hub_api import AUTH, SAME, make
+from tests.fakeci import git_answers
 from tests.test_ledger_outside import BASE, PROG, SHA
 
 
@@ -24,12 +25,12 @@ class OutsideLandingApiTests(TestCase):
         self.assertEqual(store.get_task(tid)['status'], 'needs-owner')
         def git(repo, *args, **kw):
             return SimpleNamespace(returncode=0, stdout='commit' if args[0] == 'cat-file' else BASE)
-        with mock.patch('drover.repos.load_all', return_value={'p': PROG}), mock.patch('drover.placement.git', side_effect=git):
+        with mock.patch('drover.repos.load_all', return_value={'p': PROG}), git_answers(git):
             response = client.post(path, json=body, headers=SAME)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['status'], 'landed')
         before = list(app.state.bus.recent())
-        with mock.patch('drover.repos.load_all', return_value={'p': PROG}), mock.patch('drover.placement.git', side_effect=git):
+        with mock.patch('drover.repos.load_all', return_value={'p': PROG}), git_answers(git):
             repeated = client.post(path, json=body, headers=SAME)
         self.assertEqual(repeated.status_code, 200)
         self.assertEqual(app.state.bus.recent(), before)
