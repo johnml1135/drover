@@ -297,7 +297,9 @@ class WorktreeRules(unittest.TestCase):
                                 (dict(age_days=1, mode='on-demand', level='warn'), 'candidate'),
                                 (dict(age_days=1, mode='on-demand', level='critical'), 'candidate'),
                                 (dict(age_days=1, mode='daily', level='critical'), 'keep'),
-                                (dict(age_days=1, mode='on-demand'), 'keep')):
+                                (dict(age_days=1, mode='on-demand'), 'keep'),
+                                (dict(age_days=1, mode='on-demand', level='ok'), 'keep'),     # ok is not warn or worse
+                                (dict(age_days=30), 'keep')):       # exactly the limit is not older than it
             with self.subTest(**options):
                 ruling = ruled(**options)
                 self.assertEqual(ruling.action, action)
@@ -332,6 +334,38 @@ class Authority(unittest.TestCase):
         store = Store()
         disk_authority.decide_and_store(dict(apply=True, now=NOW), [observation()], store)
         self.assertEqual(store.state['quarantine']['/w/alpha']['since'], NOW)
+
+    def test_a_live_owner_never_ripens_into_quarantine_elapsed(self):
+        # Seen live from the first look, the observation carries no identity; a record of that None must not elapse.
+        observed = dict(row=dict(ROW), quarantine=dict(key='/w/alpha', identity=None, excluded=[], live=True))
+        previous = {'quarantine': {'/w/alpha': dict(identity=None, since=NOW - 4 * 86400)}}
+        answer = disk_authority.decide(dict(apply=True, now=NOW), [observed], previous, NOW)
+        self.assertEqual((answer['decisions'][0]['action'], answer['decisions'][0]['reason_code']), ('keep', 'live_owner'))
+        self.assertEqual(answer['state']['quarantine'], {})
+        self.assertEqual(answer['events'], [dict(kind='quarantine_reset', path='/w/alpha')])
+
+    def unlisted(self, *, live=False, tag=None):
+        reads = []
+        evidence = SimpleNamespace(tag=lambda path: tag, task_facts=lambda path, tag: (live, False),
+                                   declarations=lambda machine, path: reads.append(path) or ['bin'])
+        return SimpleNamespace(request=stage(), evidence=evidence), reads
+
+    def test_an_unlisted_folder_under_a_current_lease_is_live(self):
+        for tag, live in ((dict(v=2, lease_until=NOW + 1), True), (dict(v=2, lease_until=NOW), False),
+                          (dict(v=1, lease_until=NOW + 1), False), (None, False)):
+            with self.subTest(tag=tag):
+                run, _ = self.unlisted(tag=tag)
+                self.assertIs(disk_authority.unlisted_live(run, Path('/w/stray')), live)
+
+    def test_a_live_unlisted_folder_is_observed_without_identity_or_declarations(self):
+        # Defence in depth beside decide's own live check: a live tree is never fingerprinted for grace.
+        run, reads = self.unlisted(live=True)
+        row = dict(ROW, path=str(Path('/w/stray').absolute()), unlisted=True, ignored=[])
+        with patch.object(disk_authority.disk_evidence, 'identity', return_value='id'):
+            observed = disk_authority.quarantine_observation(run, dict(repo='/r', name='alpha'), row)
+        self.assertEqual({k: observed['quarantine'][k] for k in ('identity', 'excluded', 'live')},
+                         dict(identity=None, excluded=[], live=True))
+        self.assertEqual(reads, [], 'a live folder reads no declarations')
 
     def test_cleanup_state_is_the_disk_state_adapter(self):
         self.assertEqual(disk_state.CleanupState.__module__, 'drover.disk_state')
