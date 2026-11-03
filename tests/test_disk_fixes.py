@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from drover.disk_stage import StageRequest
 from drover import disk_runtime, placement, process
-from tests.disk_fixture import DiskCase, empty_result
+from tests.disk_fixture import DiskCase
 
 
 class PlacementSafety(DiskCase):
@@ -25,10 +25,11 @@ class PlacementSafety(DiskCase):
             payload = observed[-1]
             save_file(self.state, 'worker-' + payload['_worker_id'] + '.json', dict(
                 pid=123456789, run_id=payload['_worker_id']))
-            return subprocess.CompletedProcess(argv, 0, json.dumps(empty_result()).encode(), b'')
+            return subprocess.CompletedProcess(argv, 0, b'{"v":1,"end":{"reclaimed_bytes":0}}\n', b'')    # a complete answer: its end line
         with patch.object(placement, 'IS_WINDOWS', True) as _placement_patch_1, patch('drover.placement_exec.IS_WINDOWS', _placement_patch_1), patch('drover.placement_git.IS_WINDOWS', _placement_patch_1), patch('drover.placement_host.IS_WINDOWS', _placement_patch_1), patch('drover.placement_paths.IS_WINDOWS', _placement_patch_1), patch('drover.placement_process.IS_WINDOWS', _placement_patch_1), patch('drover.placement_proof.IS_WINDOWS', _placement_patch_1), patch('drover.placement_tree.IS_WINDOWS', _placement_patch_1), patch('drover.placement_worker.IS_WINDOWS', _placement_patch_1), patch.object(process.subprocess, 'run', side_effect=execute):
             with patch.object(placement, 'recover_ci_children', return_value=True):
-                disk_runtime.cleanup_call('wsl', StageRequest.from_wire(self.request()))
+                answer = disk_runtime.cleanup_call('wsl', StageRequest.from_wire(self.request()))
+        self.assertEqual((answer['complete'], answer['errors']), (True, []))
         self.assertEqual(observed[0]['paths']['temp_roots'], ['/home/user/temp'])
 
     def test_empty_temp_policy_stays_empty(self):

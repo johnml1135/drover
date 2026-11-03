@@ -6,7 +6,7 @@ import json
 import unittest
 from pathlib import Path
 
-from drover import disk_inventory, disk_paths, placement_paths
+from drover import disk_inventory, placement_paths
 from drover.disk_stage import StageAbandoned, StageClock, StageRequest, StageRun, read_rows
 
 
@@ -396,7 +396,9 @@ class Run(unittest.TestCase):
         self.assertTrue(run.stopped)
         run.finish()
         answer = read_rows(sent(run))
-        self.assertEqual(answer.items, [disk_paths.deadline_row({}, machine, left, later, 'settled_deadline')])
+        self.assertEqual(answer.items, [dict(           # the row disk_paths.deadline_row gave at 16a3623
+            path='/var/reports/r1', action='report', reason_code='settled_deadline', owner=None, files=0, age_s=0,
+            bytes=0, count=3, worktrees=['/w1', '/w2'], repos=['/var/reports/r2'])])
         self.assertEqual((answer.complete, answer.partial), (True, True))
 
     def test_stop_with_no_machine_writes_the_drive_path(self):

@@ -59,7 +59,7 @@ class _CleanupJob:
 
 def cleanup_worker(request):
     """Own the worker group/job before any stage can spawn children."""
-    from . import disk_side, disk_state
+    from . import disk_state
     lower_priority()
     cap = (request.get('paths') or {}).get('cpu_limit')
     if cap:
@@ -92,6 +92,9 @@ def cleanup_worker(request):
     name = 'worker-' + request['_worker_id'] + '.json'
     disk_state.save_file(request['state_dir'], name, status)
     try:
+        # The stage modules load once the claim is written, so their import spends no start-up time, and a failed
+        # import is a worker failure with its claim saved.
+        from . import disk_side
         # The rows leave as lines while the stage runs, ending with its `end` line, so the claim keeps no result.
         disk_side.serve(request, out=sys.stdout.buffer)
     except BaseException as error:

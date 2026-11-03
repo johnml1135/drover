@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import disk_state, placement
-from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request
+from drover.disk_stage import StageClock
+from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
 
 
 class Processes(DiskCase):
@@ -265,7 +266,7 @@ class SafetyDecisions(DiskCase):
         with listing_answers([dict(worktree='/mnt/h/tree')]), \
                 patch.object(disk_worktrees, 'inspect', return_value=row), \
                 patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda req, machine, value: dict(row=value)):
-            result = disk_worktrees.settled(stage_request(request))
+            result = staged(disk_worktrees.settled, request)
         self.assertEqual(result['items'][0]['action'], 'candidate')
 
     def test_remove_revalidation_finds_registration_with_variant_spelling(self):
@@ -277,7 +278,7 @@ class SafetyDecisions(DiskCase):
         selected = dict(path=r'H:\tree', repo='/mnt/h/repo', reason_code='unsettled')
         with listing_answers([dict(worktree=r'\\?\H:\TREE')]), agreeing_proof(), \
                 patch.object(disk_worktrees, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
-            result = disk_worktrees.remove(request, selected)
+            result = disk_worktrees.remove(request, selected, clock=StageClock(1800))
         self.assertTrue(check.called)
         self.assertEqual(result['reason_code'], 'revalidation_changed')
 

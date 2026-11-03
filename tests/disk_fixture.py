@@ -3,6 +3,7 @@ import copy
 import io
 import os
 import tempfile
+import time
 import unittest
 from dataclasses import asdict
 from functools import partial
@@ -11,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import config, git_worktrees, placement
-from drover.disk_stage import read_rows
+from drover.disk_stage import StageClock, StageRequest, StageRun, read_rows
 from drover.git_worktrees import Listing, Listings, Proof
 from tests.gitfix import clean_parent
 
@@ -33,6 +34,33 @@ def agreeing_proof():
 def stage_request(request):
     """`request` as `disk_side.serve` hands it to a stage, for a test that calls the stage itself."""
     return dict(request, _listings=Listings([machine['repo'] for machine in request['repos']]))
+
+
+def stage_run(request, *, clock=time.monotonic, listings=None):
+    """A `StageRun` for today's request dict `request`, as `disk_side.serve` builds one, for a test that calls a stage
+    itself: its StageClock reads `clock` and is exempt for an approved removal, and the evidence asks
+    `placement.cleanup_processes` when its proof is taken. Rows cross whole, in the order they are added."""
+    from drover import disk_evidence
+    wire = dict(dict(stage=4, now=0, apply=False, drive=dict(path='/'), repos=[], paths={}, tasks={}), **request)
+    stage = StageRequest.from_wire(wire)
+    clock = StageClock(stage.policy.get('worker_timeout_s', 1800), clock=clock, exempt=bool(stage.approved_path))
+    run = StageRun(stage, clock, out=io.BytesIO(), root_of=lambda row: None, limit=10 ** 6)
+    run.evidence = disk_evidence.StageEvidence(stage, clock, processes=lambda **o: placement.cleanup_processes(**o),
+                                               **({'listings': listings} if listings else {}))
+    return run
+
+
+def answer(run):
+    """`run` finished, and its lines read back as `cleanup_call` reads them."""
+    run.finish()
+    return asdict(read_rows(run._out.getvalue()))
+
+
+def staged(stage, request, *, clock=time.monotonic, listings=None, **options):
+    """`stage(run, **options)` on `stage_run(request)`, and its answer."""
+    run = stage_run(request, clock=clock, listings=listings)
+    stage(run, **options)
+    return answer(run)
 
 
 def placement_processes():
@@ -84,6 +112,7 @@ class DiskCase(unittest.TestCase):
         self.free = 80.
         self.calls, self.toasts, self.busy_paths = [], [], set()
         self.tasks = {}
+        self.stage_clock = None         # a StageClock factory for each served stage; None is the real clock
         self.side = placement.cleanup_side()
         self.other_side = 'wsl' if self.side == 'windows' else 'windows'
         for context in (patch.dict(os.environ, {'DROVER_HOME': str(self.state)}),
@@ -132,7 +161,7 @@ class DiskCase(unittest.TestCase):
                        'paths': {**request['paths'], 'temp_roots': self.cfg['disk_cleanup']['temp_roots'],
                                  'report_roots': self.cfg['disk_cleanup']['report_roots'],
                                  'caches': self.cfg['disk_cleanup']['caches']}}
-            return served(request)
+            return served(request, **({'clock_factory': self.stage_clock} if self.stage_clock else {}))
 
         return CleanupRuntime(lambda: self.now, lambda path: self.free, call, self.toasts.append)
 

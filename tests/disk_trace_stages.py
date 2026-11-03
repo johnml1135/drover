@@ -294,6 +294,12 @@ def jump_clock(s):
     s.clock = 1e9
 
 
+def settled_past_the_line(s):
+    """Stage 4: the line passes as a settled worktree's removal starts, so `can_mutate` keeps it before journal `planned`."""
+    s.worktree('w')
+    s.midstage = lambda request: jump_clock(s)
+
+
 def output_deadline_between_units(s):
     """Two units in status order; the clock runs out once the first is judged."""
     s.declared[:] = ['bin', 'out']
@@ -480,4 +486,4 @@ REPORTS = dict(
     report_root_is_a_link=on(6, lambda s: s.file(s.report_root / 'item') and s.links.add(s.report_root)),
     report_repo_error=on(6, report_listing_refused),
 )
-STAGE_SCENES = {**TEMP, **CACHES, **OUTPUTS, **BUDGETS, **REPORTS}
+STAGE_SCENES = {**TEMP, **CACHES, 'settled_past_the_line': mid(4, settled_past_the_line), **OUTPUTS, **BUDGETS, **REPORTS}

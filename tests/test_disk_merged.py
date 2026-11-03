@@ -3,8 +3,10 @@ with an answer raises, and the stage keeps the row. Git is faked below git_clien
 import subprocess
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from drover import disk_worktrees
+from drover import disk_worktrees, placement
+from tests.disk_fixture import staged
 from tests.fakeci import git_answers
 
 BASE, HEAD = 'b' * 40, 'h' * 40
@@ -58,11 +60,11 @@ class Merged(unittest.TestCase):
                 disk_worktrees.merged(MACHINE, HEAD)
                 raise AssertionError('merged answered')
 
-        request = dict(repos=[MACHINE], apply=False, approved_path=path, now=0, state_dir=None,
-                       _listings=SimpleNamespace(of=lambda repo: SimpleNamespace(rows=[dict(worktree=path)])))
+        request = dict(repos=[MACHINE], apply=False, approved_path=path, now=0, state_dir=None)
+        listings = lambda repos, **_: SimpleNamespace(of=lambda repo: SimpleNamespace(rows=[dict(worktree=path)]))
         runtime = SimpleNamespace(state=object(), evidence=Evidence())
-        with git(TIMEOUT):
-            out = disk_worktrees.settled(request, runtime=runtime)
+        with git(TIMEOUT), patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
+            out = staged(disk_worktrees.settled, request, listings=listings, runtime=runtime)
         [row] = out['items']
         self.assertEqual((row['action'], row['reason_code'], row['error']), ('keep', 'unavailable', 'ancestry unavailable'))
         self.assertEqual(out['reclaimed_bytes'], 0)

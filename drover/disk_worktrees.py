@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess
 
 from . import git_client, git_worktrees, ownership, placement, repos
-from .disk_paths import deadline_row, worktree_roots, facts, processes, safe_path, disposable_match, repository_tree
-from .disk_stage import item, result, within
+from .disk_paths import stage_dict, worktree_roots, facts, processes, safe_path, disposable_match, repository_tree
+from .disk_stage import item, within
 
 
 def _out(repo, *args, env=None):     # any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end
@@ -204,8 +204,8 @@ def inspect(request, machine, entry):
 
 class WorktreeEvidence:
     """Real evidence. apply always enters remove's independent fresh validation."""
-    def __init__(self, machine, entry, store=None):
-        self.machine, self.entry, self.store = machine, entry, store
+    def __init__(self, machine, entry, store=None, *, clock):
+        self.machine, self.entry, self.store, self.clock = machine, entry, store, clock
 
     def observe(self, request):
         row = inspect(request, self.machine, self.entry)
@@ -217,67 +217,73 @@ class WorktreeEvidence:
     def apply(self, request, decision, expected_identity):
         if registration_identity(decision) != expected_identity:
             raise ValueError('selected identity changed')
-        return remove(request, decision, store=self.store)
+        return remove(request, decision, store=self.store, clock=self.clock)
 
 
-def settled(request: dict, *, runtime=None) -> dict:
-    from . import disk_budget
+def settled(run, *, runtime=None) -> None:
+    """Stage 4 on `run`: each listed worktree judged, and removed on apply, its rows sent before the next starts. Past
+    the clock's line it stops with the one `settled_deadline` row, an item and not an error: unreached worktrees stay,
+    and every removal is re-proven. An approved removal's clock is exempt, so it is never cut off."""
     from .disk_cleanup import CleanupRuntime, CleanupState, evaluate
-    out = result()
-    until = disk_budget.deadline(request)
-    late = lambda: not request.get('approved_path') and disk_budget._clock() >= until     # an approved removal is never cut off
-    for number, machine in enumerate(request['repos']):
-        if late():      # item, not error: unreached worktrees stay, and every removal is re-proven
-            out['items'].append(deadline_row(request, machine, [], request['repos'][number:], 'settled_deadline'))
-            break
+    request = stage_dict(run)
+    repos = request['repos']
+    for number, machine in enumerate(repos):
+        if run.clock.late():
+            return run.stop('settled_deadline', machine, [], repos[number:])
         try:
             listed = request['_listings'].of(machine['repo']).rows
         except (OSError, ValueError, subprocess.SubprocessError) as error:
-            out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+            run.error(dict(repo=machine['repo'], error=str(error)))
             continue
         found = {}
         if not request.get('approved_path'):
-            found = registrations(request, machine, listed, runtime, out)
+            found = registrations(request, machine, listed, runtime, run)
         for position, entry in enumerate(listed):
-            if late():
-                out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:], 'settled_deadline'))
-                return out
+            run.checkpoint()        # between units: the last worktree's removal has completed or never started
+            if run.clock.late():
+                return run.stop('settled_deadline', machine, listed[position:], repos[number + 1:])
             try:
                 store = runtime.state if runtime and runtime.state is not None else None
-                evidence = runtime.evidence if runtime and runtime.evidence is not None else WorktreeEvidence(machine, entry, store)
+                evidence = runtime.evidence if runtime and runtime.evidence is not None else \
+                    WorktreeEvidence(machine, entry, store, clock=run.clock)
                 rt = CleanupRuntime(lambda: request.get('now', 0), None, None, None,
                                     evidence=evidence, state=store if store is not None else CleanupState(request.get('state_dir')))
                 answer = evaluate(dict(request, now=request.get('now', 0)), rt)
-                out['items'].extend(answer['items'])
-                out['errors'].extend(answer['errors'])
-                out['reclaimed_bytes'] += answer['reclaimed_bytes']
+                for row in answer['items']:
+                    run.add(row)
+                for row in answer['errors']:
+                    run.error(row)
+                run.reclaimed(answer['reclaimed_bytes'])
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 row = item(entry['worktree'], request, 'unavailable', error=str(error))
                 if request['apply']:
                     quarantine(request, machine, row)
                 if not request.get('approved_path') or placement.cleanup_parts(row['path']) == placement.cleanup_parts(request['approved_path']):
-                    out['items'].append(row)
-
+                    run.add(row)
         if not request.get('approved_path'):
-            loose = unlisted(request, machine, listed, skip=found) if found is not None else []
-            out['items'].extend(loose)
-            out['reclaimed_bytes'] += sum(r['bytes'] for r in loose if r['action'] == 'removed')
-            out['errors'].extend(r for r in loose if r.get('error') and r.get('unlisted'))
-    return out
+            loose = unlisted(request, machine, listed, skip=found, clock=run.clock) if found is not None else []
+            for row in loose:
+                run.add(row)
+                if row.get('error') and row.get('unlisted'):
+                    run.error(row)
+            run.reclaimed(sum(r['bytes'] for r in loose if r['action'] == 'removed'))
+        run.checkpoint()
 
 
-def registrations(request, machine, listed, runtime, out):
+def registrations(request, machine, listed, runtime, run):
     """Prevent a foreign prune from dropping registrations, then report (and on apply repair) lost ones."""
     from . import disk_registrations
     from .disk_cleanup import CleanupState
     try:
-        out['items'].extend(disk_registrations.protect(request, machine))
+        for row in disk_registrations.protect(request, machine):
+            run.add(row)
         found = disk_registrations.lost(machine, listed)
         store = runtime.state if runtime and runtime.state is not None else CleanupState(request.get('state_dir'))
-        out['items'].extend(disk_registrations.report(request, machine, listed, found, store))
+        for row in disk_registrations.report(request, machine, listed, found, store):
+            run.add(row)
         return found
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        out['errors'].append(dict(repo=machine['repo'], error=str(error)))
+        run.error(dict(repo=machine['repo'], error=str(error)))
         return None     # lost folders unknown: the caller must not judge this repo's orphans
 
 
@@ -286,8 +292,9 @@ def ignored_outside(path, ignored, declarations):
             not disposable_match(Path(name).relative_to(path), declarations)]
 
 
-def remove(request: dict, selected: dict, *, store=None) -> dict:
-    """Revalidate all evidence, then journal before unlocking or deleting by path."""
+def remove(request: dict, selected: dict, *, store=None, clock) -> dict:
+    """Revalidate all evidence, then journal before unlocking or deleting by path. No journal `planned` is written
+    unless `clock` can still finish a removal; otherwise the row is kept as `removal_deadline`."""
     import uuid
     from .disk_cleanup import CleanupState
     store = store if store is not None else CleanupState(request.get('state_dir'))
@@ -339,6 +346,9 @@ def remove(request: dict, selected: dict, *, store=None) -> dict:
             excluded = ignored_outside(path, current['ignored'], outputs_at(machine, machine['repo'] if row.get('unlisted') else path))
             if excluded:
                 return validate(excluded=excluded)
+        if not clock.can_mutate():      # past the line, or too little time left for its capped steps: nothing starts
+            current.update(action='keep', reason_code='removal_deadline')
+            return current
         rescue = 'refs/drover/disk-rescue/' + uuid.uuid4().hex if not row.get('branch') else None
         target = row['branch'].removeprefix('refs/heads/') if row.get('branch') else row['head']
         lock = ['--lock', '--reason', row.get('side_lock') or placement.cleanup_side()]   # restored locked, as created
@@ -440,7 +450,7 @@ def unlisted_live(request, path):
     return task_facts(request, path, tag)[0] or bool(tag and tag['v'] == 2 and tag['lease_until'] > request['now'])
 
 
-def unlisted(request, machine, listed, skip=()):
+def unlisted(request, machine, listed, skip=(), *, clock):
     out = []
     registered = {str(Path(placement.native(e['worktree']))) for e in listed}
     roots = [r for r in worktree_roots(machine, this_side=True)
@@ -464,7 +474,7 @@ def unlisted(request, machine, listed, skip=()):
                        tag=None, reason_code='orphan', **facts(path, request['now'], request=request))
             row = quarantine(request, machine, row)
             if request['apply'] and row['action'] == 'candidate':
-                row = remove(request, row)
+                row = remove(request, row, clock=clock)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             row.update(action='keep', reason_code='unavailable', error=str(error))
             quarantine(request, machine, row)

@@ -3,10 +3,11 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_registrations, disk_worktrees, git_client, placement
-from tests.disk_fixture import listing_answers, stage_request
+from tests.disk_fixture import answer, listing_answers, stage_run, staged
 
 TIMEOUT = ValueError('git rev-parse failed: timeout')      # what a git timeout gives the disk callers, through `_out`
 SPAWN_TIMEOUT = subprocess.TimeoutExpired(['git'], 60)    # the spawn's own, below git_client
@@ -30,11 +31,12 @@ class FolderTimeouts(unittest.TestCase):
         self.assertEqual([r['action'] for r in rows], ['keep', 'report'])
 
     def test_judge_timeout_leaves_no_repo_error(self):
-        out = dict(items=[], errors=[], reclaimed_bytes=0)
+        run = stage_run(dict(request(), repos=[MACHINE]))
         with patch.object(disk_registrations, 'protect', return_value=[]), \
                 patch.object(disk_registrations, 'lost', return_value=found('one', 'two')), \
                 patch.object(disk_registrations, 'judge', side_effect=[TIMEOUT, ('unproven', None, 'no', None)]):
-            got = disk_worktrees.registrations(request(), MACHINE, [], None, out)
+            got = disk_worktrees.registrations(request(), MACHINE, [], None, run)
+        out = answer(run)
         self.assertEqual(out['errors'], [])
         self.assertEqual(len(out['items']), 2)
         self.assertEqual(set(got), set(found('one', 'two')))
@@ -110,8 +112,9 @@ class UnknownLostFolders(unittest.TestCase):
                 patch.object(disk_registrations, 'protect', return_value=[]), \
                 patch.object(disk_registrations, 'lost', side_effect=TIMEOUT), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]) as unlisted, \
+                patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)), \
                 patch('drover.disk_cleanup.evaluate', return_value=dict(items=[], errors=[], reclaimed_bytes=0)):
-            out = disk_worktrees.settled(stage_request(dict(request(), repos=[MACHINE])), runtime=None)
+            out = staged(disk_worktrees.settled, dict(request(), repos=[MACHINE]), runtime=None)
         self.assertEqual([e['repo'] for e in out['errors']], ['/repo'])
         unlisted.assert_not_called()
 

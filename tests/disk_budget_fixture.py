@@ -1,8 +1,10 @@
 """The budget purge's fixture: a memory worktree case with a chosen WSL size."""
 import json
+from functools import partial
 from unittest.mock import patch
 
 from drover import disk, disk_budget, disk_state, placement, placement_proof
+from drover.disk_stage import StageClock
 from tests.disk_fixture import GIB
 from tests.disk_memory import MemoryWorktreeCase
 
@@ -38,12 +40,12 @@ class BudgetCase(MemoryWorktreeCase):
         def clock():
             self.clock += self.clock_step
             return self.clock
+        self.stage_clock = partial(StageClock, clock=clock)     # each served stage's clock reads this one
         for context in (patch.object(placement, 'wsl_used_gb', side_effect=self.reading),
                         patch.object(placement_proof, 'IS_WINDOWS', True),
                         patch.object(placement_proof, '_windows_processes',
                                      side_effect=lambda: {str(r['pid']): (r['name'], 1) for r in self.windows_rows}),
-                        patch.object(placement_proof, '_cleanup_cim', side_effect=cim),
-                        patch.object(disk_budget, '_clock', side_effect=clock)):
+                        patch.object(placement_proof, '_cleanup_cim', side_effect=cim)):
             context.start()
             self.addCleanup(context.stop)
 

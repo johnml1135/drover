@@ -4,20 +4,12 @@ This module only orders the candidates and decides when to stop. What is disposa
 removed stay with disk_paths, whose revalidated removal is the only one. Used space inside WSL is the WSL side's own."""
 import math
 import os
-import time
 
 from . import placement
-from .disk_stage import result
+from .disk_paths import disposable_rows
 
 SIDE = 'wsl'
 GIB = 1024 ** 3
-DEADLINE_SHARE = 0.8     # of worker_timeout_s: a purge ends itself in time to report what it did
-_clock = time.monotonic
-
-
-def deadline(request: dict) -> float:
-    """The `_clock` time by which a stage ends itself, DEADLINE_SHARE of the worker's time limit from now."""
-    return _clock() + request.get('paths', {}).get('worker_timeout_s', 1800) * DEADLINE_SHARE
 
 
 def need_bytes(used_gb, target_gb) -> int:
@@ -50,45 +42,46 @@ def _used():
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
 
 
-def purge(request: dict) -> dict:
+def purge(run) -> dict:
     """The output stage under a budget, one declared folder at a time: the oldest left is revalidated and removed,
     then used space is read again, since shared blocks can free less than they measure. Every step uses up a
     candidate, so this ends; short of the target it reports the shortfall. Unreadable used space stops it, because
-    nothing then proves a removal is needed. Past its deadline it stops between folders and returns what it did, so a
-    worker timeout cannot lose the outcome. A report-only request removes nothing and projects the plan from sizes."""
-    from .disk_paths import disposable_rows
-    out = result()
+    nothing then proves a removal is needed. Past the clock's line it stops between folders and reports what it did,
+    so a worker timeout cannot lose the outcome. A report-only request removes nothing and projects the plan from
+    sizes. Each candidate's row is added once decided. Returns the `end` line's `budget`."""
+    request = run.request
     if placement.cleanup_side() != SIDE:
-        return out
-    target = request['budget']['target_gb']
-    if request['budget'].get('windows_paths') is None:
-        out['items'].append(processes_unknown(request['drive']['path'], target))
-        out['budget'] = dict(status='processes_unknown', used_gb=None, target_gb=target, shortfall_bytes=None)
-        return out
-    limit = request['paths'].get('worker_timeout_s', 1800) * DEADLINE_SHARE
-    until = deadline(request)
-    remove, pending, late = {}, [], False
-    for row, removal in disposable_rows(request, out, deadline=until):
+        return {}
+    target = request.budget['target_gb']
+    if request.budget.get('windows_paths') is None:
+        run.add(processes_unknown(request.drive['path'], target))
+        return dict(budget=dict(status='processes_unknown', used_gb=None, target_gb=target, shortfall_bytes=None))
+    remove, pending = {}, []
+    for row, removal in disposable_rows(run):
         remove[id(row)] = removal
         pending.append(row)
-    late = any(i.get('reason_code') == 'output_deadline' for i in out['items'])    # gathering ran out of time
+    late = run.stopped      # gathering ran out of time
     used, short = _used(), None
     while used is not None:
         short = need_bytes(used, target)
         batch = plan(pending, short)
         if not batch:
             break
-        if not request['apply']:
+        if not request.apply:
             chosen = {id(row) for row in batch}
             pending = [row for row in pending if id(row) not in chosen]
+            for row in batch:
+                run.add(row)
             freed = sum(row['bytes'] for row in batch)
             used, short = used - freed / GIB, max(0, short - freed)
             break
-        if _clock() >= until:
+        if run.clock.late():
             late = True
             break
         pending = [row for row in pending if row is not batch[0]]
         remove[id(batch[0])]()
+        run.add(batch[0])
+        run.checkpoint()
         used = _used()
     if used is None:
         status, short, reason = 'unknown', None, 'budget_used_unknown'
@@ -99,10 +92,10 @@ def purge(request: dict) -> dict:
     else:
         status, reason = 'shortfall', 'budget_shortfall'
     for row in pending:
-        row.update(action='keep', reason_code=reason)
+        run.add(dict(row, action='keep', reason_code=reason))
     if status != 'met':
-        out['items'].append(dict(path=str(request['drive']['path']), action='report', target_gb=target, used_gb=used,
-                                 reason_code=reason, shortfall_bytes=short, reclaimed_bytes=out['reclaimed_bytes'],
-                                 deadline_s=limit, candidates_left=len(pending)))
-    out['budget'] = dict(status=status, used_gb=used, target_gb=target, shortfall_bytes=short)
-    return out
+        run.add(dict(path=str(request.drive['path']), action='report', target_gb=target, used_gb=used,
+                     reason_code=reason, shortfall_bytes=short, reclaimed_bytes=run.reclaimed_bytes,
+                     deadline_s=request.policy.get('worker_timeout_s', 1800) * run.clock.SHARE,
+                     candidates_left=len(pending)))
+    return dict(budget=dict(status=status, used_gb=used, target_gb=target, shortfall_bytes=short))

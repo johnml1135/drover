@@ -154,10 +154,19 @@ class OutputStageCost(BudgetCase):
         self.assertEqual(few, many)
         self.assertEqual(few, 1)
 
+    def costing(self, name, seconds):
+        """Each call of disk_paths' `name` takes `seconds` of the stage's clock."""
+        real = getattr(disk_paths, name)
+
+        def slow(*args, **options):
+            self.clock += seconds
+            return real(*args, **options)
+        return patch.object(disk_paths, name, slow)
+
     def test_outputs_deadline_returns_partial_report_instead_of_worker_timeout(self):
         self.trees_with(4, 1)
-        self.clock_step = 20.       # deadline 20 + 0.8 * 100 s; the repo, then each worktree, takes 20 s to reach
-        answer = self.stage5(worker_timeout_s=100)
+        with self.costing('output_evidence', 30.):      # the 80 s line: the repo, then each worktree, takes 30 s to judge
+            answer = self.stage5(worker_timeout_s=100)
         late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
         self.assertEqual(len(late), 1)
         self.assertEqual(answer['errors'], [])
@@ -171,8 +180,8 @@ class OutputStageCost(BudgetCase):
 
     def test_deadline_between_units_of_one_worktree_names_it_and_the_rest(self):
         self.trees_with(2, 3)
-        self.clock_step = 25.       # the deadline, 25 + 80 s, passes after the second unit of the first worktree
-        answer = self.stage5(apply=True, worker_timeout_s=100)
+        with self.costing('remove_output', 45.):        # the 80 s line passes with the first worktree's second unit
+            answer = self.stage5(apply=True, worker_timeout_s=100)
         late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
         done = [i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']
         self.assertEqual((len(late), len(done), answer['errors']), (1, 2, []))

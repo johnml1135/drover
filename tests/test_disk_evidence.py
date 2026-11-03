@@ -1,13 +1,14 @@
 """One stage run's evidence, held once: the inventory, the listings with the stage clock's patience, and the process
 proof with its report rows."""
+import io
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import git_worktrees, placement_paths
+from drover import disk_paths, git_worktrees, placement, placement_paths
 from drover.disk_evidence import StageEvidence
 from drover.disk_inventory import Inventory
-from drover.disk_stage import StageClock, StageRequest
+from drover.disk_stage import StageClock, StageRequest, StageRun
 from drover.git_worktrees import Listing, RegistrationsUnknown
 
 
@@ -87,6 +88,23 @@ class Processes(unittest.TestCase):
         self.assertEqual(evidence.process_rows(), [
             dict(action='report', reason_code='process_out_of_scope', count=3),
             dict(action='report', reason_code='process_visibility_unavailable', count=2, processes=unreadable),
+            dict(action='report', **failure)])
+
+    def test_a_fresh_proofs_rows_reach_process_rows_once_each_by_pid_and_name(self):
+        """A proof taken at removal (disk_paths.processes on the stage's dict) reports through the evidence: its query
+        failure is a row, and an unreadable process two proofs saw is counted once, keyed by (pid, name)."""
+        failure = dict(reason_code='process_query_failed', side='windows', error='timed out')
+        first = SimpleNamespace(unreadable=[dict(pid=7, name='a'), dict(pid=8, name='a')])
+        fresh = SimpleNamespace(unreadable=[dict(pid=7, name='a', seen='again'), dict(pid=7, name='b')],
+                                query_failure=failure)
+        clock = clock_at([0.0])
+        run = StageRun(request(), clock, out=io.BytesIO(), root_of=lambda row: None, limit=20)
+        run.evidence = StageEvidence(request(), clock, processes=lambda **_: first)
+        with patch.object(placement, 'cleanup_processes', return_value=fresh):
+            self.assertIs(disk_paths.processes(disk_paths.stage_dict(run)), fresh)
+        self.assertEqual(run.evidence.process_rows(), [
+            dict(action='report', reason_code='process_visibility_unavailable', count=3,
+                 processes=[dict(pid=7, name='a', seen='again'), dict(pid=8, name='a'), dict(pid=7, name='b')]),
             dict(action='report', **failure)])
 
     def test_a_proof_with_nothing_to_say_adds_no_rows(self):

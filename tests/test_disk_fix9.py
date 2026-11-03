@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_paths, disk_state, disk_worktrees, placement
-from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request
+from drover.disk_stage import StageClock
+from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
 from tests.fakeci import git_answers
 
 
@@ -54,9 +55,10 @@ class Approval(DiskCase):
                                    approved_path=prefix + approved)
                     row = dict(path=path, reason_code='orphan', action='keep')
                     with listing_answers([dict(worktree=path)]), \
+                            patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
                             patch.object(disk_worktrees, 'inspect', return_value=row), \
                             patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value: dict(row=value)):
-                        answer = disk_worktrees.settled(stage_request(request))
+                        answer = staged(disk_worktrees.settled, request)
                     self.assertEqual(bool(answer['items']), windows and equal_on_windows)
 
 
@@ -134,7 +136,7 @@ class DefaultBranchPolicy(DiskCase):
         return subprocess.CompletedProcess(args, code, answer, 'default branch unreadable' if code else '')
 
     def test_old_worktree_uses_main_policy_and_own_tracked_index(self):
-        answer = disk_paths.outputs(stage_request(self.request))
+        answer = staged(disk_paths.outputs, self.request)
         self.assertFalse(self.bin.exists(), answer)
         self.assertTrue(self.tracked.exists())
         self.assertTrue(self.src.exists())
@@ -142,7 +144,7 @@ class DefaultBranchPolicy(DiskCase):
 
     def test_feature_policy_cannot_widen_default_branch_declarations(self):
         self.feature = 'schema_version=1\n[cleanup]\ndisposable=["bin", "src/**"]\n'
-        answer = disk_paths.outputs(stage_request(self.request))
+        answer = staged(disk_paths.outputs, self.request)
         self.assertTrue(self.src.exists(), answer)
         self.assertFalse(self.bin.exists())
         self.assertTrue(all('old-head:' not in str(args) for repo, args in self.reads))
@@ -151,7 +153,7 @@ class DefaultBranchPolicy(DiskCase):
         for branch, contents in (('missing', self.main), ('main', None), ('main', '<invalid policy>')):
             with self.subTest(branch=branch):
                 self.machine['default_branch'], self.main = branch, contents
-                answer = disk_paths.outputs(stage_request(self.request))
+                answer = staged(disk_paths.outputs, self.request)
                 self.assertTrue(self.bin.exists(), answer)
                 self.assertTrue(self.src.exists())
                 self.assertEqual(answer['items'][0]['reason_code'], 'output_evidence_unavailable')
@@ -168,13 +170,13 @@ class DefaultBranchPolicy(DiskCase):
         selected = dict(path=str(self.wt), repo=str(self.repo), head='old-head',
                         reason_code='settled', action='candidate', ignored=[str(self.src)])
         with patch.object(disk_worktrees, 'inspect', return_value=selected.copy()):
-            answer = disk_worktrees.remove(stage_request(self.request), selected)
+            answer = disk_worktrees.remove(stage_request(self.request), selected, clock=StageClock(1800))
         self.assertEqual(answer['reason_code'], 'ignored_content')
         self.assertTrue(self.src.exists())
 
     def test_explicit_local_default_branch_ref_has_the_same_policy(self):
         self.machine['default_branch'] = 'refs/heads/main'
-        answer = disk_paths.outputs(stage_request(self.request))
+        answer = staged(disk_paths.outputs, self.request)
         self.assertFalse(self.bin.exists(), answer)
         self.assertTrue(self.src.exists())
 

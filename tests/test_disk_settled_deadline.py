@@ -1,9 +1,10 @@
 """Stage 4 ends itself before the worker timeout: unreached worktrees are named, never removed, never an error."""
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_worktrees
-from tests.disk_fixture import listing_answers, stage_request
+from drover import disk_worktrees, placement
+from tests.disk_fixture import listing_answers, staged
 
 MACHINE = dict(name='alpha', repo='/repo')
 OTHER = dict(name='beta', repo='/other')
@@ -11,23 +12,26 @@ OTHER = dict(name='beta', repo='/other')
 
 class SettledDeadline(unittest.TestCase):
     def run_settled(self, *, step, repos=(MACHINE, OTHER), **extra):
-        clock = iter(range(0, 10 ** 6, step))
+        """Each worktree judged takes `step` seconds of the stage's StageClock, which is exempt for an approved
+        removal. A clock reading ticks no time: the evidence's listings read it too."""
+        now = [0]
         listed = [dict(worktree=f'/wt/{i}') for i in range(4)]
         seen = []
 
         def evaluate(request, runtime):
             seen.append(runtime.evidence.entry['worktree'])
+            now[0] += step
             return dict(items=[dict(path=seen[-1], action='keep', reason_code='fresh')], errors=[], reclaimed_bytes=0)
         request = dict(apply=True, now=0, state_dir='state', repos=list(repos), paths=dict(worker_timeout_s=100), **extra)
-        with patch.object(disk_budget, '_clock', lambda: next(clock)), \
-                listing_answers(listed), \
+        with listing_answers(listed), \
                 patch.object(disk_worktrees, 'registrations', return_value={}), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]), \
+                patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)), \
                 patch('drover.disk_cleanup.evaluate', side_effect=evaluate):
-            return disk_worktrees.settled(stage_request(request)), seen
+            return staged(disk_worktrees.settled, request, clock=lambda: now[0]), seen
 
     def test_late_run_reports_what_it_did_not_reach_as_an_item(self):
-        out, seen = self.run_settled(step=20)
+        out, seen = self.run_settled(step=30)
         late = [i for i in out['items'] if i.get('reason_code') == 'settled_deadline']
         self.assertEqual(len(late), 1)
         self.assertEqual(out['errors'], [])

@@ -2,7 +2,14 @@
 
 `SLICE_BASE`: 16a3623. Commits: Task 30's, then Tasks 31 to 36.
 
-Changed decision trace rows, cumulative: none yet.
+Changed decision trace rows, cumulative, by `python -m tests.disk_trace --compare` against `SLICE_BASE`:
+
+| Task | Scenario | Part | Category | Row |
+|---|---|---|---|---|
+| 34 | `settled_past_the_line.applied` (new scene) | row | report_added | `<TMP>/repos/alpha`, keep, `main_checkout` |
+| 34 | `settled_past_the_line.applied` (new scene) | row | report_added | `<TMP>/worktrees/alpha.worktrees/w`, keep, `removal_deadline` |
+
+No other row moved, and no row reads `towards_deletion`.
 
 ## Task 30: partial delivery proven; `StageRequest` and `StageClock`
 
@@ -41,3 +48,19 @@ What this does not show: a kill in the middle of a large line's relay (each line
 - **Trace.** Untouched.
 
 Mutants a pre-merge gate should run (none run here, by the memory rule): `>=` to `>` in `late` (the 80 s case), `max(0.0, ...)` dropped in `left` and `remaining`, `FLOOR_S` dropped from `patience` (the 1,439 s row), `min(60.0, ...)` dropped from the cap (1,800 s gives 72), `self._exempt or` or `not self.late() and` dropped from `can_mutate`, `inner._exempt = False` dropped from `within`, the side filter dropped from `for_side`'s caches, and `_OPTIONAL` emptied (the absent-keys test).
+
+## Task 33: carried notes
+
+- **`native_bad_json`'s input changed** in `tests/placement_trace.py`, from `'not json'` to `'not json\n'`, so the scene still records the malformed-line branch: a complete line that is not a stage line gives `worker_failed` with `not a stage line: not ASCII JSON`. The old input, unterminated text at exit 0, now takes the "ended without its end line" branch. The trace no longer records that branch; `test_disk_worker_status.test_exit_zero_without_an_end_line_is_a_worker_failure` covers it.
+- **Row order.** Unstamped rows, the process rows among them, now cross before the root-grouped rows, because `read_rows` lists them first. Before, they followed compact's groups. No decision reads the order, and the decision trace sorts rows.
+
+## Task 34: stages 4 and 5 and the budget purge on the run
+
+- **Stages.** `settled(run)`, `outputs(run)`, `purge(run)` and `disposable_rows(run)` take the `StageRun`. Their five stop checks (`disk_paths` at `disposable_rows` twice, `disk_worktrees.settled` twice, `disk_budget.purge` once) read `run.clock.late()`, and each deadline ends with `run.stop(reason, machine, left, later)`, the one deadline row. `purge` reads `run.stopped`, not `out['items']`, to learn that gathering ran out of time. `disk_budget.deadline`, `_clock`, `DEADLINE_SHARE` and `disk_paths.deadline_row` are gone and listed in `qualified_names`, with `disk_inventory.compact` and `disk_side._serve` from Task 33's review.
+- **Rows.** `disposable_rows` hands each candidate to its consumer unadded; `outputs` adds it after `remove()`, and `purge` adds each when decided (removed, chosen in a dry run, or kept with the outcome's reason). Kept rows are added where they are made. `remove_output` counts bytes on `run.reclaimed` as each path goes.
+- **Clock.** `serve` builds the clock as `clock_factory(worker_timeout_s, exempt=bool(approved_path))`, so an approved removal's clock has no line and is never cut off. `disk_worktrees.remove(..., clock=)` returns `removal_deadline`, kept, unless `clock.can_mutate()`, just before journal `planned`; it writes no journal row and touches nothing. `WorktreeEvidence` and `unlisted` carry the stage's clock to it.
+- **Checkpoints** run between removal units only: at the start of each listed worktree in stages 4 and 5, after each applied output unit, after each purged folder, and after each repo's unlisted folders. None runs inside `remove` or `remove_output`.
+- **Bridge.** Stages 4 and 5 left `disk_side._bridge`. Until Task 35, `disk_paths.stage_dict(run)` builds the request dict the stage helpers still read: `decide_view()` with the evidence's inventory, listings, first-pass proof and diagnostics. So `decide` receives `decide_view()` plus those underscore keys; it reads only `apply` and `approved_path`. The bridge for stages 1, 2, 3 and 6 uses the same builder.
+- **HOLDING.** `removal_deadline` joins `HOLDING` in `tests/disk_trace_compare.py` in this commit, as the HOLDING ruling requires, with the new stage-4 scene `settled_past_the_line`. In that scene the line passes as the settled worktree's removal starts. Before this task that worktree was removed; now it is kept with no journal row.
+- **Why so few trace rows moved.** The trace's clock reads 0 unless a scene jumps it, so starting the clock earlier changes nothing there. The jumping scenes (`output_deadline_*`, `budget_deadline_mid_purge`) stop at the same checks as before.
+- **Seams.** R6 rows fall: `disk_budget.purge` (now imports `disposable_rows` at load) and `disk_paths.outputs` are deleted; `disk_paths.disposable_rows` and `disk_worktrees.settled` drop `disk_budget`, each to 1.

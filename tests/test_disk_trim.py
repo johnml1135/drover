@@ -28,6 +28,22 @@ class Trim(DiskCase):
                 self.assertEqual(sum(side == 'windows' and request['stage'] == 1
                                      for side, request in self.calls), retrims)
 
+    def test_a_failed_stage_that_freed_a_gib_still_sends_the_trim(self):
+        """Ruling (Task 33): a failed or timed-out stage reports its last `reclaimed` total, so blocks it really
+        freed are handed back to the host; one that freed less than 1 GiB sends no trim."""
+        for reclaimed, retrims in ((GIB - 1, 1), (GIB, 2)):
+            with self.subTest(reclaimed=reclaimed):
+                def stage(side, request):
+                    if side == 'wsl' and request['stage'] == 2:      # cleanup_call's answer for a timed-out worker
+                        return dict(empty_result(), errors=[dict(reason_code='worker_timeout', termination_confirmed=True)],
+                                    reclaimed_bytes=reclaimed, complete=False, partial=True)
+                    return empty_result()
+                self.approve_report()
+                self.calls.clear()
+                self.run_cleanup(apply=True, real=False, handler=stage)
+                self.assertEqual(sum(side == 'windows' and request['stage'] == 1
+                                     for side, request in self.calls), retrims)
+
     def test_cache_command_runs_with_its_literal_argv_and_cwd(self):
         """A declared cache command reaches `process` word for word, in its cwd, with no shell."""
         from drover import process

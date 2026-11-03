@@ -374,13 +374,13 @@ class Timeout(ProcessFreeDiskCase):
             disk_state.save_file(self.state, 'worker-' + request['_worker_id'] + '.json',
                                  dict(pid=123456789, run_id=request['_worker_id']))
             calls.append(kw['timeout'])
-            return subprocess.CompletedProcess(argv, 0, b'{"items":[],"errors":[],"reclaimed_bytes":0}', b'')
+            return subprocess.CompletedProcess(argv, 0, b'{"v":1,"end":{"reclaimed_bytes":0}}\n', b'')    # a complete answer: its end line
         request = dict(stage=1, apply=False, state_dir=str(self.state), repos=[], paths=dict(worker_timeout_s=2345))
         with patch.object(process.subprocess, 'run', side_effect=execute), \
                 patch.object(placement, 'recover_ci_children', return_value=True):
-            disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
-            disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request))
+            answers = [disk_runtime.cleanup_call('wsl', StageRequest.from_wire(request)) for _ in range(2)]
         self.assertEqual(calls, [2345, 2345])
+        self.assertEqual([(a['complete'], a['errors']) for a in answers], [(True, [])] * 2)
 
 
 class VisibilityReport(ProcessFreeDiskCase):

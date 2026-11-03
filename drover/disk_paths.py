@@ -276,9 +276,19 @@ def prune_emptied(target, removed, touched):
             pass
 
 
-def remove_output(request, out, machine, entry, evidence, touched, target, measured, row):
+def stage_dict(run, *, proven=True):
+    """Temporary, until Task 35: the dict today's stage helpers read, `decide_view()` with the evidence's inventory,
+    listings, diagnostics and, when `proven`, first-pass proof, so a fresh proof at removal reports into `process_rows`."""
+    evidence = run.evidence
+    request = dict(run.request.decide_view(), scope_errors=run.scope_errors, _inventory=evidence.inventory,
+                   _listings=evidence._listings, _process_diagnostics=evidence._diagnostics,
+                   _process_query_failures=evidence._failures)
+    return dict(request, _processes=evidence.processes()) if proven else request
+
+
+def remove_output(request, run, machine, entry, evidence, touched, target, measured, row):
     """The one removal of declared outputs: `target` is proven again now, as one unit, immediately before its paths
-    (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count as each path actually goes."""
+    (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count on `run` as each path goes."""
     from .disk_worktrees import registration_identity, tracked_at, overlaps_worktrees, status
     path = evidence[0]
     try:
@@ -309,7 +319,7 @@ def remove_output(request, out, machine, entry, evidence, touched, target, measu
             # status expands ignored directories to leaves; only empty directories reach here.
             leaf.rmdir() if leaf.is_dir() else leaf.unlink()
             touched.add(leaf.parent)
-            out['reclaimed_bytes'] += known['bytes']
+            run.reclaimed(known['bytes'])
         if str(target) not in measured:
             prune_emptied(target, measured, touched)
         row['action'] = 'removed'
@@ -335,28 +345,20 @@ def output_units(names, path, tracked, declarations, whole):
     return units
 
 
-def deadline_row(request, machine, left, later, reason='output_deadline'):
-    """The one item a stage that ran out of time ends with: the worktrees it did not reach, and the repos after them.
-    An item, not an error: the unreached worktrees are left alone, and every removal is re-proven."""
-    return dict(item(machine['repo'], request, reason, count=len(left) + len(later),
-                     worktrees=[e['worktree'] for e in left], repos=[m['repo'] for m in later]), action='report')
-
-
-def disposable_rows(request, out, *, deadline=None):
-    """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row already in `out`; calling
-    remove() runs the one revalidated removal. Whatever is not eligible is recorded in `out` as kept, never yielded.
-    Past `deadline` (a disk_budget clock time) it stops between units with an `output_deadline` row, so the worker can answer."""
-    from . import disk_budget
+def disposable_rows(run):
+    """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row not yet added: the consumer
+    adds it once decided, after remove(), the one revalidated removal, if it calls that. Whatever is not eligible is
+    added as kept, never yielded. Past the clock's line it stops between units with the one `output_deadline` row."""
     from .disk_worktrees import tracked_at, overlaps_worktrees, status
+    request = stage_dict(run)
     budget = bool(request.get('budget'))
-    late = lambda: deadline is not None and disk_budget._clock() >= deadline
     for number, machine in enumerate(request['repos']):
         try:
             listed = request['_listings'].of(machine['repo']).rows
             for position, entry in enumerate(listed):
-                if late():
-                    out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:]))
-                    return
+                run.checkpoint()        # between units: the last worktree's removals are done or never started
+                if run.clock.late():
+                    return run.stop('output_deadline', machine, listed[position:], request['repos'][number + 1:])
                 try:
                     evidence = output_evidence(request, machine, entry)
                     path, head, tag, declarations = evidence
@@ -388,7 +390,7 @@ def disposable_rows(request, out, *, deadline=None):
                                     if safe_path(leaf, proven) and not (repository_tree(leaf, boundary=path, proven=proven) if request['apply'] else request['_inventory'].contains_repository(leaf)):
                                         measured[name] = facts(leaf, request['now'], request=request)
                                     elif len(names) > 1:
-                                        out['items'].append(dict(row_for(leaf), reason_code='protected'))
+                                        run.add(dict(row_for(leaf), reason_code='protected'))
                                 if measured:
                                     rows = list(measured.values())
                                     row.update(files=sum(r['files'] for r in rows), bytes=sum(r['bytes'] for r in rows),
@@ -398,28 +400,28 @@ def disposable_rows(request, out, *, deadline=None):
                                     row['reason_code'] = 'protected'
                         except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
                             row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
-                        out['items'].append(row)
                         if row['action'] == 'candidate':
-                            yield row, partial(remove_output, request, out, machine, entry, evidence, touched, target, measured, row)
-                        if count < len(units) and late():
-                            out['items'].append(deadline_row(request, machine, listed[position:], request['repos'][number + 1:]))
-                            return
+                            yield row, partial(remove_output, request, run, machine, entry, evidence, touched, target, measured, row)
+                        else:
+                            run.add(row)
+                        if count < len(units) and run.clock.late():
+                            return run.stop('output_deadline', machine, listed[position:], request['repos'][number + 1:])
                 except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
-                    out['items'].append(item(entry['worktree'], request, 'output_evidence_unavailable',
-                                             repo=machine['repo'], error=str(error)))
+                    run.add(item(entry['worktree'], request, 'output_evidence_unavailable', repo=machine['repo'], error=str(error)))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
-            out['items'].append(item(machine['repo'], request, 'repository_unavailable', error=str(error)))
-            out['errors'].append(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
+            run.add(item(machine['repo'], request, 'repository_unavailable', error=str(error)))
+            run.error(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
 
 
-def outputs(request: dict) -> dict:
-    """Remove only declared ignored/untracked files; source edits always survive."""
-    from .disk_budget import deadline
-    out = result()
-    for _, remove in disposable_rows(request, out, deadline=deadline(request)):
-        if request['apply']:
+def outputs(run) -> None:
+    """Remove only declared ignored/untracked files; source edits always survive. Each unit's row is added once its
+    removal has run, and sent before the next unit starts."""
+    for row, remove in disposable_rows(run):
+        if run.request.apply:
             remove()
-    return out
+        run.add(row)
+        if run.request.apply:
+            run.checkpoint()
 
 
 def report(request: dict) -> dict:

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_budget, disk_paths, disk_worktrees, placement, placement_proof, process
+from drover.disk_stage import StageClock
 from tests.disk_fixture import DAY, DiskCase, served
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
 from tests.disk_trace_scene import (CLEAN_MERGE, FEATURE, NOW, PARTLY_PICKED, PICKED, SQUASHED, TIP, SceneTree, TraceGit,
@@ -86,12 +87,11 @@ class Scene(SceneTree):
                     patch.object(placement, 'wsl_used_gb', self.used),
                     patch.object(placement, 'cleanup_free', self.free_reading),
                     patch.object(disk_budget, 'SIDE', self.budget_side),
-                    patch.object(disk_budget, '_clock', lambda: self.clock),
                     patch('uuid.uuid4', lambda: SimpleNamespace(hex='0' * 32))]
         for item in patches:
             item.start()
         try:
-            return served(request)
+            return served(request, clock_factory=lambda timeout_s, **o: StageClock(timeout_s, clock=lambda: self.clock, **o))
         finally:
             for item in reversed(patches):
                 item.stop()

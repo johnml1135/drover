@@ -226,7 +226,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
         request, proof = self.stage5_request(apply=apply, **paths)
         with patch.object(placement, 'cleanup_processes', return_value=proof), \
                 patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
-            return served(request)
+            return served(request, **({'clock_factory': self.stage_clock} if self.stage_clock else {}))
 
     def branches(self):
         return dict(self.r.refs)

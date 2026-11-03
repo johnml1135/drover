@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-from drover import disk, disk_cleanup, disk_state, disk_worktrees, placement
+from drover import disk, disk_cleanup, disk_paths, disk_state, disk_worktrees, placement
 from tests.disk_fixture import GIB, empty_result, served
 from tests.disk_budget_fixture import BudgetCase, DAY, HOUR, LocalSide, SIZE
 
@@ -172,8 +172,14 @@ class Folders(LocalSide):
     def test_deadline_with_a_candidate_in_hand_still_names_the_unreached_worktrees(self):
         paths = [self.output(name, (9 - i) * DAY) for i, name in enumerate('abcd')]
         self.cfg['disk_cleanup']['worker_timeout_s'] = 100
-        self.clock_step = 30.     # the 80 s deadline passes as the second worktree's candidate is yielded
-        result = self.purge()
+        real = disk_paths.output_evidence
+
+        def judged(*args, **options):       # each worktree judged takes 45 s of the stage's clock
+            self.clock += 45.
+            return real(*args, **options)
+        # The 80 s line passes once the main checkout and `a` are judged, `a`'s candidate in hand.
+        with patch.object(disk_paths, 'output_evidence', judged):
+            result = self.purge()
         late = [i for i in result['items'] if i['reason_code'] == 'output_deadline']
         self.assertEqual(len(late), 1)
         self.assertEqual([Path(w).name for w in late[0]['worktrees']], ['b', 'c', 'd'])    # 'a' was reached
@@ -265,6 +271,18 @@ class StopLevel(LocalSide):
                 self.run_cleanup(apply=True, mode='triggered', real=False, handler=lambda side, request: answer)
                 self.assertEqual(self.receipt()['budget'], status)
                 self.assert_next_launch(6 * HOUR)    # which claims again, for the next outcome
+
+    def test_a_failed_purge_waits_by_its_last_reclaimed_total(self):
+        """Ruling (Task 33): a failed or timed-out purge reports its last `reclaimed` total. One that freed bytes
+        comes back at the 30-minute floor; one that freed nothing waits out the full cooldown."""
+        self.claimed()
+        for reclaimed, gap in ((SIZE, 30 * 60), (0, 6 * HOUR)):
+            with self.subTest(reclaimed=reclaimed):
+                failed = dict(empty_result(), errors=[dict(reason_code='worker_timeout', termination_confirmed=True)],
+                              reclaimed_bytes=reclaimed, complete=False, partial=True)    # cleanup_call's, cut off
+                self.run_cleanup(apply=True, mode='triggered', real=False, handler=lambda side, request: failed)
+                self.assertEqual((self.receipt()['budget'], self.receipt()['reclaimed_bytes']), ('failed', reclaimed))
+                self.assert_next_launch(gap)        # which claims again, for the next outcome
 
     def test_a_report_only_claim_does_not_relaunch_every_tick(self):
         disk_state.update(self.state, lambda state: state.update(automation=dict(apply=False)))

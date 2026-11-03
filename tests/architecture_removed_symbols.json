@@ -63,7 +63,13 @@
     "drover.placement.CREATE_NO_WINDOW",
     "drover.disk_paths.item",
     "drover.disk_paths.result",
-    "drover.disk_paths.within"
+    "drover.disk_paths.within",
+    "drover.disk_inventory.compact",
+    "drover.disk_side._serve",
+    "drover.disk_budget.deadline",
+    "drover.disk_budget._clock",
+    "drover.disk_budget.DEADLINE_SHARE",
+    "drover.disk_paths.deadline_row"
   ],
   "removed_receipt_fields": [
     "infra"
