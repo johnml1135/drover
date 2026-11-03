@@ -237,3 +237,15 @@ def save_file(state_dir, name, value):
     directory = Path(state_dir) / 'disk'
     directory.mkdir(parents=True, exist_ok=True)
     _save(directory / name, value)
+
+
+class CleanupState:
+    """Durable state and journal adapter; state transforms run under the file lock."""
+    def __init__(self, state_dir):
+        self.state_dir = state_dir
+
+    def update(self, transform):
+        return update(self.state_dir, transform)
+
+    def append(self, record):
+        append_manifest(self.state_dir, record)

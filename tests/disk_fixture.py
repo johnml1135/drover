@@ -264,7 +264,7 @@ class MemoryCleanupEvidence:
         return observations
 
     def apply(self, request, decision, expected_identity):
-        from drover.disk_cleanup import decide
+        from drover.disk_authority import decide
         from drover.disk_evidence import registration_identity
         if self.before_apply:
             self.before_apply(decision['path'])

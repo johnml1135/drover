@@ -4,9 +4,11 @@ from pathlib import Path
 import subprocess
 
 from . import disk_evidence, git_client, ownership, placement
+from .disk_authority import decide, decide_and_store
 from .disk_evidence import _out
 from .disk_inventory import safe_path, worktree_roots
 from .disk_paths import disposable_match, repository_tree
+from .disk_state import CleanupState
 from .disk_stage import item, within
 
 
@@ -45,7 +47,6 @@ def needs_idle_gate(evidence, tag):
 
 def inspect(request, machine, entry, *, evidence, fresh=False):
     """One listed worktree judged. `evidence` is the stage's; a removal's last look takes a `fresh` process proof."""
-    from .disk_cleanup import decide
     path = Path(placement.native(entry['worktree']))
     row = item(path, 'unsettled', repo=machine['repo'], name=machine['name'],
                head=entry.get('HEAD'), branch=entry.get('branch'), side_lock=entry.get('locked'))
@@ -117,7 +118,7 @@ def settled(run, *, runtime=None) -> None:
     """Stage 4 on `run`: each listed worktree judged, and removed on apply, its rows sent before the next starts. Past
     the clock's line it stops with the one `settled_deadline` row, an item and not an error: unreached worktrees stay,
     and every removal is re-proven. An approved removal's clock is exempt, so it is never cut off."""
-    from .disk_cleanup import CleanupRuntime, CleanupState, evaluate
+    from .disk_cleanup import CleanupRuntime, evaluate
     request = run.request.decide_view()
     repos = request['repos']
     for number, machine in enumerate(repos):
@@ -166,7 +167,6 @@ def settled(run, *, runtime=None) -> None:
 def registrations(request, machine, listed, runtime, run):
     """Prevent a foreign prune from dropping registrations, then report (and on apply repair) lost ones."""
     from . import disk_registrations
-    from .disk_cleanup import CleanupState
     try:
         for row in disk_registrations.protect(request, machine):
             run.add(row)
@@ -190,7 +190,6 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
     unless `clock` can still finish a removal; otherwise the row is kept as `removal_deadline`. `evidence` is the
     stage's, holding the listing this removal is compared with."""
     import uuid
-    from .disk_cleanup import CleanupState
     store = store if store is not None else CleanupState(request.get('state_dir'))
     row = dict(selected)
     machine = next(m for m in request['repos'] if placement.cleanup_parts(m['repo']) == placement.cleanup_parts(row['repo']))
@@ -230,7 +229,6 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
             return quarantine(request, machine, current, evidence=evidence) if row.get('unlisted') else current
         keys = ('head', 'branch', 'side_lock', 'gitdir', 'tag')
         fresh_identity, selected_identity = disk_evidence.registration_identity(current), disk_evidence.registration_identity(row)
-        from .disk_cleanup import decide
         def validate(**validation):
             return decide(dict(request, approved_path=None), [dict(row=current, validation=validation)], {}, request['now'])['decisions'][0]
         matches = current['action'] == 'candidate' and all(fresh_identity.get(k) == selected_identity.get(k) for k in keys)
@@ -299,7 +297,6 @@ def quarantine_observation(request, machine, row, *, evidence):
 
 
 def quarantine(request, machine, row, *, evidence, store=None):
-    from .disk_cleanup import CleanupState, decide_and_store
     observation = quarantine_observation(request, machine, row, evidence=evidence)
     answer = decide_and_store(dict(request, approved_path=None), [observation],
                               store if store is not None else CleanupState(request['state_dir']))

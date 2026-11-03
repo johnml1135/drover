@@ -22,6 +22,8 @@
     "drover.cleanup.git",
     "drover.cleanup._git_ok",
     "drover.disk_worktrees.git",
+    "drover.disk_cleanup_decisions.decide",
+    "drover.disk_cleanup_decisions.CleanupState",
     "drover.dispatch_hold._git",
     "drover.task_access._git",
     "drover.decisions._git",

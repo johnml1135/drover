@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import config, disk, disk_budget, disk_evidence, disk_runtime, disk_state, durable, placement, repos
-from .disk_cleanup_decisions import CleanupRuntime, CleanupState, decide, decide_and_store, evaluate
+from .disk_cleanup_decisions import CleanupRuntime, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
 from .disk_stage import StageRequest
 

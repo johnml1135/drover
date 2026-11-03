@@ -114,7 +114,7 @@ class Removal(MemoryCleanupCase):
 
     def test_decide_is_pure_and_journal_failure_retains_candidate(self):
         import copy
-        from drover.disk_cleanup import decide
+        from drover.disk_authority import decide
         self.evidence.add('orphan')['row']['tag'] = None
         request = dict(apply=True, now=self.now, tasks=self.tasks)
         observations = self.evidence.observe(request)
