@@ -109,7 +109,7 @@ class Removals(unittest.TestCase):
         with listing_answers(listed), agreeing_proof(), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)), \
                 patch.object(disk_worktrees, 'inspect', return_value=gone_row()), \
-                patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value: dict(row=value)), \
+                patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value, **_: dict(row=value)), \
                 patch.object(disk_worktrees, 'registrations', return_value={}), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \

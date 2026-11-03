@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-from drover import disk, disk_cleanup, disk_paths, disk_state, disk_worktrees, placement
+from drover import disk, disk_cleanup, disk_paths, disk_state, placement
+from drover.disk_evidence import StageEvidence
 from tests.disk_fixture import GIB, empty_result, served
 from tests.disk_budget_fixture import BudgetCase, DAY, HOUR, LocalSide, SIZE
 
@@ -24,7 +25,7 @@ class Folders(LocalSide):
         return tree, paths
 
     def statuses(self, tree, action=None):
-        real, calls = disk_worktrees.status, []
+        real, calls = StageEvidence.status, []
 
         def status(path, **kw):
             if str(path) == str(tree):
@@ -32,7 +33,7 @@ class Folders(LocalSide):
                 if action:
                     action(len(calls))
             return real(path, **kw)
-        return patch.object(disk_worktrees, 'status', side_effect=status), calls
+        return patch.object(StageEvidence, 'status', side_effect=status), calls
 
     def test_a_folder_is_proven_once_not_per_leaf(self):
         tree, paths = self.leaves('many', 40)

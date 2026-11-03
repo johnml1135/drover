@@ -78,7 +78,10 @@
     "drover.disk_paths.worktree_roots",
     "drover.disk_paths.safe_path",
     "drover.disk_paths.repository_root",
-    "drover.disk_paths.repository_config"
+    "drover.disk_paths.repository_config",
+    "drover.disk_worktrees.identity",
+    "drover.disk_worktrees.snapshot",
+    "drover.disk_worktrees.registration_identity"
   ],
   "removed_receipt_fields": [
     "infra"

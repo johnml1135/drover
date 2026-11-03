@@ -13,15 +13,16 @@ from drover import disk_runtime, process
 @contextmanager
 def output_facts(path, side, registrations=None):
     """A source-free checkout: fake Git observations, real path protection probes."""
-    from drover import disk_paths, disk_worktrees
+    from drover import disk_paths
+    from drover.disk_evidence import StageEvidence
     entries = [dict(worktree=str(p), HEAD='head', branch='refs/heads/test', locked=side)
                for p in (registrations if registrations is not None else [path])]
     def status(root, **kwargs):
         generated = Path(root) / 'generated'
         return [], [str(p) for p in generated.rglob('*') if p.is_file() or p.is_symlink()]
     with listing_answers(entries), agreeing_proof(), \
-         patch.object(disk_worktrees, 'status', side_effect=status) as observed_status, \
-         patch.object(disk_worktrees, '_out', return_value=''), \
+         patch.object(StageEvidence, 'status', side_effect=status) as observed_status, \
+         patch.object(StageEvidence, 'tracked', return_value=[]), \
          patch.object(disk_paths, 'output_evidence', side_effect=lambda request, machine, entry, **kw:
                       (Path(entry['worktree']), 'head', None, ['generated'])):
         yield observed_status

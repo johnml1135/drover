@@ -87,14 +87,15 @@ class SafetyPaths(DiskCase):
     def test_containment_and_live_task_paths_accept_drive_and_extended_spellings(self):
         from drover.disk_paths import live_tree
         from drover.disk_stage import within
-        from drover.disk_worktrees import task_facts
+        from tests.disk_fixture import bare_evidence
         for root in (r'H:\Repo', '/mnt/h/repo', r'\\?\H:\repo'):
             with self.subTest(root=root):
                 self.assertTrue(within('/mnt/h/repo/child', root))
                 self.assertFalse(within('/mnt/h/repository', root))
                 request = dict(now=self.now, tasks=dict(at=self.now, active_worktrees=[root], tasks=[]))
-                self.assertTrue(task_facts(request, '/mnt/h/repo', None)[0])
-                self.assertTrue(live_tree('/mnt/h/repo/child', request))
+                evidence = bare_evidence(request)
+                self.assertTrue(evidence.task_facts('/mnt/h/repo', None)[0])
+                self.assertTrue(live_tree('/mnt/h/repo/child', evidence))
         self.assertTrue(within(r'\\?\UNC\server\share\repo\child', '//server/share/repo'))
 
     @unittest.skipIf(os.name == 'nt', 'Linux realpath semantics')
@@ -265,7 +266,7 @@ class SafetyDecisions(DiskCase):
         row = dict(path='/mnt/h/tree', reason_code='orphan', action='keep')
         with listing_answers([dict(worktree='/mnt/h/tree')]), \
                 patch.object(disk_worktrees, 'inspect', return_value=row), \
-                patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda req, machine, value: dict(row=value)):
+                patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda req, machine, value, **_: dict(row=value)):
             result = staged(disk_worktrees.settled, request)
         self.assertEqual(result['items'][0]['action'], 'candidate')
 
@@ -316,11 +317,11 @@ class SafetyDecisions(DiskCase):
 
 class RemainingSafety(DiskCase):
     def test_activity_exclusion_normalizes_equivalent_paths(self):
-        from drover.disk_paths import facts
+        from tests.disk_fixture import bare_evidence
         target = self.file(self.root / 'generated' / 'payload', age=0)
         spelling = target.parent / 'sub' / '..' / target.name
         (target.parent / 'sub').mkdir()
-        row = facts(target, self.now, ignore_activity=[spelling])
+        row = bare_evidence(dict(now=self.now)).measure(target, ignore_activity=[spelling])
         self.assertEqual(row['age_s'], self.now)
 
     @unittest.skipIf(os.name == 'nt', 'Linux mount evidence')

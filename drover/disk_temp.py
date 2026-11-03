@@ -13,13 +13,14 @@ class TempBudgetExceeded(ValueError):
     """A temp root used up its scan budget; whatever it did not reach stays unproven and is kept."""
 
 
-def temp_facts(path, request, *, budget, cached, children):
+def temp_facts(path, request, *, budget, cached, children, evidence):
     """Prove safety and measure in one pass; stop at the first protected descendant. `budget` is the root's clock;
-    `cached` holds each path's facts and `children` each declared root's listing, both read once per stage."""
+    `cached` holds each path's facts and `children` each declared root's listing, both read once per stage.
+    `evidence` is the stage's, whose task snapshot says what is live."""
     roots = [Path(request['state_dir']).absolute()]
     roots += [Path(placement.native(repo['repo'])).absolute() for repo in request['repos'] if repo.get('repo')]
     roots += [root.absolute() for repo in request['repos'] for root in worktree_roots(repo)]
-    if not safe_path(path) or live_tree(path, request) or \
+    if not safe_path(path) or live_tree(path, evidence) or \
             any(within(path, root) or within(root, path) for root in roots) or \
             any(repository_root(parent) for parent in path.parents):
         raise ValueError('protected subtree')
@@ -88,7 +89,7 @@ def temporary(run) -> None:
                     break
                 row = item(path, 'temp_retained')
                 try:
-                    row.update(temp_facts(path, request, budget=budget, cached=cached, children=children))
+                    row.update(temp_facts(path, request, budget=budget, cached=cached, children=children, evidence=evidence))
                     if row['age_s'] >= 7 * 86400:
                         if proof.busy(str(path)):
                             row['reason_code'] = getattr(proof, 'reason', None) or 'process_busy'
@@ -98,7 +99,7 @@ def temporary(run) -> None:
                                 current = evidence.fresh_processes()
                                 if current.busy(str(path)):
                                     row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
-                                elif temp_facts(path, request, budget=budget, cached={}, children={}) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request['drive']['path'], str(path)):
+                                elif temp_facts(path, request, budget=budget, cached={}, children={}, evidence=evidence) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request['drive']['path'], str(path)):
                                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                                     row['action'] = 'removed'
                                     run.reclaimed(row['bytes'])

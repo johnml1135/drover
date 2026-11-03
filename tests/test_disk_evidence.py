@@ -1,14 +1,20 @@
 """One stage run's evidence, held once: the inventory, the listings with the stage clock's patience, and the process
 proof with its report rows."""
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_inventory, git_client, git_worktrees, placement_paths
+from drover import disk_evidence, disk_inventory, disk_worktrees, git_client, git_worktrees, ownership, placement, \
+    placement_paths
 from drover.disk_evidence import StageEvidence
 from drover.disk_inventory import Inventory
 from drover.disk_stage import StageClock, StageRequest
 from drover.git_worktrees import Listing, RegistrationsUnknown
+from tests.disk_fixture import listing_answers, staged
+from tests.fakeci import git_answers
+from tests.gitfix import clean_parent
 
 
 def request(**changes):
@@ -150,6 +156,119 @@ class PathFacts(unittest.TestCase):
             raise TypeError('a bug, not an answer')
         with patch.object(git_client, 'ask', ask), self.assertRaises(TypeError):
             disk_inventory.repository_config(Path('/admin'))
+
+
+def git_reply(seen, answers=None, *, code=0, err=''):
+    """`git_answers`' reply: each command's (first word, timeout) joins `seen`; `answers` maps an argv's words to
+    stdout, '' when it names none."""
+    def reply(repo, *args, timeout):
+        seen.append((args[0], timeout))
+        out = next((text for words, text in (answers or {}).items() if words == args[:len(words)]), '')
+        return SimpleNamespace(returncode=code, stdout=out, stderr=err)
+    return git_answers(reply)
+
+
+class Reads(unittest.TestCase):
+    """Section 7.1: every read's git call takes the stage clock's patience, and a failed read is unknown."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='disk-evidence-', dir=clean_parent())
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.worktree = self.root / 'alpha.worktrees' / 'w'
+        self.worktree.mkdir(parents=True)
+        (self.worktree / 'a.txt').write_text('a', encoding='utf-8')
+        self.machine = dict(name='alpha', repo=str(self.root / 'repo'), remote='origin', default_branch='main')
+        self.wire = dict(stage=4, side=placement.cleanup_side(), apply=False, now=100.0,
+                         drive=dict(path=str(self.root)), repos=[self.machine], paths=dict(worker_timeout_s=1800),
+                         state_dir=str(self.root / 'state'), tasks={})
+        for context in (patch.object(placement, 'physical_disk_path', return_value=str(self.root)),
+                        patch.object(ownership, 'read', return_value=None)):
+            context.start()
+            self.addCleanup(context.stop)
+
+    def evidence(self, times, **changes):
+        stage = StageRequest.from_wire(dict(self.wire, **changes))
+        return StageEvidence(stage, StageClock(1800, clock=lambda: times[-1]),
+                             processes=lambda **_: SimpleNamespace(busy=lambda path: False))
+
+    def test_read_steps_take_patience_not_60_seconds(self):
+        """At the 80% line patience(NORMAL) is the 10 s floor, where a fixed read waited 60 s."""
+        times, seen = [0.0], []
+        evidence = self.evidence(times)
+        times.append(1440.0)
+        answers = {('rev-parse', '--verify', 'HEAD'): 'abc\n', ('rev-parse', '--absolute-git-dir'): '/admin/w\n'}
+        with git_reply(seen, answers):
+            disk_worktrees.inspect(StageRequest.from_wire(self.wire).decide_view(), self.machine,
+                                   dict(worktree=str(self.worktree)), evidence=evidence)
+        self.assertEqual(seen, [('status', 10.0), ('rev-parse', 10.0), ('rev-parse', 10.0)])
+        seen.clear()
+        with git_reply(seen, answers):
+            evidence.status(self.worktree)
+            evidence.head(self.worktree)
+            evidence.gitdir(self.worktree)
+            evidence.tracked(self.worktree)
+            self.assertIs(evidence.merged(self.machine, 'abc'), True)       # merge-base says yes
+        self.assertEqual([word for word, _ in seen], ['status', 'rev-parse', 'rev-parse', 'ls-files', 'rev-parse',
+                                                       'merge-base'])
+        self.assertEqual({timeout for _, timeout in seen}, {10.0})
+
+    def test_a_failed_read_raises_and_the_row_is_kept(self):
+        """A failed read is unknown: it raises, and stage 4 keeps the worktree as `unavailable`."""
+        seen = []
+        evidence = self.evidence([0.0])
+        with git_reply(seen, code=128, err='fatal: bad object\n'):
+            for read in (evidence.status, evidence.head, evidence.gitdir, evidence.tracked):
+                with self.subTest(read.__name__), self.assertRaisesRegex(ValueError, '^fatal: bad object$'):
+                    read(self.worktree)
+            with listing_answers([dict(worktree=str(self.worktree))]), \
+                    patch.object(disk_worktrees, 'registrations', return_value={}), \
+                    patch.object(disk_worktrees, 'unlisted', return_value=[]), \
+                    patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)):
+                out = staged(disk_worktrees.settled, self.wire)
+        row = next(i for i in out['items'] if i['path'] == str(self.worktree))
+        self.assertEqual((row['action'], row['reason_code'], row['error']), ('keep', 'unavailable', 'fatal: bad object'))
+
+    def test_only_report_only_runs_reuse_the_inventory(self):
+        """disk_paths.py:23 at 0cf5d7b: a report-only run measures with the stage's inventory; an apply run, or one
+        ignoring activity, measures afresh."""
+        for apply, ignore, reused in ((False, (), True), (True, (), False), (False, (str(self.worktree),), False)):
+            evidence, used = self.evidence([0.0], apply=apply), []
+
+            def measure(inventory, path, *, strict=False):
+                used.append((inventory, strict))
+                return dict(files=1, bytes=2, age_s=3, incomplete=False)
+            with self.subTest(apply=apply, ignore=ignore), patch.object(Inventory, 'measure', autospec=True,
+                                                                        side_effect=measure):
+                self.assertEqual(evidence.measure(self.worktree, ignore_activity=ignore), dict(files=1, bytes=2, age_s=3))
+                self.assertEqual([(inventory is evidence.inventory, strict) for inventory, strict in used],
+                                 [(reused, True)])
+
+    def test_fresh_snapshot_is_none_past_900_seconds(self):
+        now = 100_000.0
+        for at, fresh in ((now, True), (now - 900, True), (now - 901, False), (now + 1, False), ('99999', False),
+                          (None, False)):
+            snapshot = dict(at=at, tasks=[]) if at is not None else {}
+            with self.subTest(at=at):
+                found = self.evidence([0.0], now=now, tasks=snapshot).fresh_snapshot()
+                self.assertEqual(found, snapshot if fresh else None)
+
+    def test_needs_idle_gate_route_reads_fresh_snapshot(self):
+        """The closed-task gate asks the evidence for its snapshot: a closed, unlanded task gates, a stale one never."""
+        evidence, tag = self.evidence([0.0]), dict(owner='drover:7')
+        closed = dict(at=100.0, tasks=[dict(id=7, state='yanked', terminal=True, live=False)])
+        with patch.object(evidence, 'fresh_snapshot', return_value=closed) as fresh:
+            self.assertIs(disk_worktrees.needs_idle_gate(evidence, tag), True)
+        fresh.assert_called_once_with()
+        with patch.object(evidence, 'fresh_snapshot', return_value=None):
+            self.assertIs(disk_worktrees.needs_idle_gate(evidence, tag), False)
+        landed = dict(closed, tasks=[dict(id=7, state='landed')])
+        with patch.object(evidence, 'fresh_snapshot', return_value=landed):
+            self.assertIs(disk_worktrees.needs_idle_gate(evidence, tag), False)
+
+    def test_moved_functions_live_in_disk_evidence(self):
+        for name in ('identity', 'registration_identity', 'outputs_at', 'snapshot'):
+            self.assertEqual(getattr(disk_evidence, name).__module__, 'drover.disk_evidence')
 
 
 if __name__ == '__main__':

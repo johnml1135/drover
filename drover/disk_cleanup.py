@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from . import config, disk, disk_budget, disk_runtime, disk_state, durable, placement, repos
+from . import config, disk, disk_budget, disk_evidence, disk_runtime, disk_state, durable, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, CleanupState, decide, decide_and_store, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
 from .disk_stage import StageRequest
@@ -34,13 +34,12 @@ def _repos(cfg, errors=None):
 
 def scope_key(cfg):
     """A report authorizes this machine and these exact configured scopes only."""
-    from .disk_worktrees import outputs_at
     machines = _repos(cfg)
     policies = {}
     for machine in machines:
         values = set()
         try:
-            values.add(tuple(outputs_at(machine, machine['repo'])))
+            values.add(tuple(disk_evidence.outputs_at(machine, machine['repo'])))
         except (OSError, ValueError):
             values.add(('<unavailable>',))
         policies[machine['name']] = sorted(values)

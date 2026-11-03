@@ -339,7 +339,7 @@ class OwnProcesses(DiskCase):
 class MachineTransport(unittest.TestCase):
     def test_cleanup_transports_machine_facts_without_trusting_serialized_metadata(self):
         from drover.disk_cleanup import _repos
-        from drover.disk_worktrees import outputs_at
+        from drover.disk_evidence import outputs_at
         fixture = Repo()
         self.addCleanup(fixture.cleanup)
         head = fixture.commit('.drover/config.toml', 'schema_version=1\n[cleanup]\ndisposable=["out"]\n')

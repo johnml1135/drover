@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 
 from drover.disk_cleanup import decide
-from drover.disk_worktrees import identity
+from drover.disk_evidence import identity
 from tests.disk_trace import TRACE, Scene, collect, compare
 from tests.disk_trace_compare import HOLDING, KEPT, ON_THE_CLOCK
 from tests.disk_trace_scene import deleting_behind

@@ -5,7 +5,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_worktrees, git_worktrees, ownership, placement
+from drover import git_worktrees, ownership, placement
+from drover.disk_evidence import StageEvidence
 from tests import test_disk_fix2 as fix2
 from tests.disk_fixture import DiskCase, served
 from tests.tiers import integration
@@ -80,7 +81,7 @@ class UncertaintyReports(WorktreeCase):
                 request = fix2.PathSafety.request(self, 5)
                 request['repos'] = [dict(name='alpha', repo=str(self.r.repo),
                     worktrees=str(self.trees), remote='origin', default_branch='main')]
-                real_status, real_listing = disk_worktrees.status, git_worktrees.listing
+                real_status, real_listing = StageEvidence.status, git_worktrees.listing
                 def status(repo, **kwargs):
                     if str(repo) == str(path):
                         if unknown == 'status-timeout':
@@ -96,7 +97,7 @@ class UncertaintyReports(WorktreeCase):
                                         reason='process visibility unavailable', unknown=True)
                 with patch.object(placement, 'physical_disk_path', return_value=str(self.root)), \
                         patch.object(placement, 'cleanup_processes', return_value=proof), \
-                        patch.object(disk_worktrees, 'status', side_effect=status), \
+                        patch.object(StageEvidence, 'status', side_effect=status), \
                         patch.object(git_worktrees, 'listing', side_effect=listing):
                     result = served(request)
                 self.assertTrue(target.exists(), result)

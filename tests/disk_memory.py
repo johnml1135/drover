@@ -10,7 +10,8 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_cleanup, disk_paths, disk_worktrees, git_worktrees, ownership, placement, repos
+from drover import config, disk_cleanup, disk_evidence, disk_worktrees, git_worktrees, ownership, placement, repos
+from drover.disk_evidence import StageEvidence
 from drover.git_worktrees import Proof, Refusal
 from tests.disk_fixture import DiskCase
 
@@ -170,19 +171,19 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
         bindings = [(disk_cleanup, '_repos', machines),
                     (git_worktrees, 'listing', lambda p, **_: git_worktrees.Listing(str(p), tuple(repository(p).entries()))),
                     (git_worktrees, 'prove', prove),
-                    (disk_worktrees, 'status', lambda p, **kw: repository(p).status(p, **kw)),
-                    (disk_worktrees, 'merged', lambda m, h: h in repository(m['repo']).merged_heads),
-                    (disk_worktrees, 'outputs_at', lambda m, p: list(repository(m['repo']).policy)),
-                    (disk_worktrees, 'head_at', lambda p: repository(p).head(p)),
-                    (disk_worktrees, 'gitdir_at', lambda p: str(repository(p).repo / '.git' / Path(p).name)),
-                    (disk_worktrees, 'tracked_at', lambda p, relative=None: [n for n in repository(p).tree(p)['tracked']
+                    (StageEvidence, 'status', lambda p, **kw: repository(p).status(p, **kw)),
+                    (StageEvidence, 'merged', lambda m, h: h in repository(m['repo']).merged_heads),
+                    (disk_evidence, 'outputs_at', lambda m, p: list(repository(m['repo']).policy)),
+                    (StageEvidence, 'head', lambda p: repository(p).head(p)),
+                    (StageEvidence, 'gitdir', lambda p: str(repository(p).repo / '.git' / Path(p).name)),
+                    (StageEvidence, 'tracked', lambda p, relative=None: [n for n in repository(p).tree(p)['tracked']
                         if relative is None or n == str(relative).replace('\\', '/') or n.startswith(str(relative).rstrip('/') + '/')]),
                     (disk_worktrees, 'unlock_at', lambda repo, p, *, timeout_s: repository(repo).lock(p, None)),
                     (disk_worktrees, 'lock_at', lambda repo, p, reason, *, timeout_s: repository(repo).lock(p, reason)),
                     (disk_worktrees, 'discard_at', lambda repo, p, evidence, *, timeout_s: (repository(repo).discard(p), evidence.took(repo, p))),
                     (disk_worktrees, 'rescue_at', lambda repo, ref, head, *, timeout_s: None),
                     (disk_worktrees, 'registrations', lambda *args: {}),    # process-free; real git is tested in test_disk_registrations
-                    (disk_worktrees, 'snapshot', snapshot),
+                    (disk_evidence, 'snapshot', snapshot),
                     (placement, 'worktree_metadata', metadata),
                     (repos, 'wsl_worktrees_root', lambda: str(self.root / 'ext4'))]
         for module, name, value in bindings:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import disk_state
+from .disk_evidence import registration_identity
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,6 @@ def evaluate(request, runtime):
     rows = []
     for row in answer['decisions']:
         if request['apply'] and row['action'] == 'candidate':
-            from .disk_worktrees import registration_identity
             row = runtime.evidence.apply(request, row, registration_identity(row))
         rows.append(row)
     return dict(items=rows, errors=[dict(r) for r in rows if r.get('error')],

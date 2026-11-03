@@ -65,14 +65,14 @@ class Outputs(WorktreeCase):
 
     def test_output_rechecks_marker_after_final_status(self):
         from unittest import mock
-        from drover import disk_worktrees
+        from drover.disk_evidence import StageEvidence
         wt = self.worktree('output-race')
         self.r.commit('pending.txt', cwd=wt)
         output = wt / 'generated' / 'result'
         output.parent.mkdir()
         output.write_text('preserve on ownership change')
         self.cleanup()
-        real_status = disk_worktrees.status
+        real_status = StageEvidence.status
         checks = []
         def status(repo, **kw):
             if str(repo) == str(wt):
@@ -80,7 +80,7 @@ class Outputs(WorktreeCase):
                 if len(checks) == 3:
                     self.r.lock(wt, self.other_side)
             return real_status(repo, **kw)
-        with mock.patch.object(disk_worktrees, 'status', side_effect=status):
+        with mock.patch.object(StageEvidence, 'status', side_effect=status):
             self.cleanup(apply=True)
         self.assertGreaterEqual(len(checks), 3)
         self.assertEqual(output.read_text(), 'preserve on ownership change')
@@ -239,7 +239,7 @@ class OutputsContracts(GitWorktreeCase):
         output.parent.mkdir()
         output.write_text('preserve on ownership change')
         self.cleanup()
-        real_git = git_client.out      # disk_worktrees.status reads through git_client
+        real_git = git_client.out      # StageEvidence.status reads through git_client
         checks = []
         def git(repo, *args, **kw):
             if str(repo) == str(wt) and 'status' in args:

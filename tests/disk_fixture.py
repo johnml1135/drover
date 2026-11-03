@@ -212,6 +212,16 @@ class MemoryCleanupState:
         self.journal.append(copy.deepcopy(record))
 
 
+def bare_evidence(request):
+    """A StageEvidence holding only `request`'s task snapshot and time, on a fresh 1800 s clock, for an adapter or a
+    test that lists no repo."""
+    from drover.disk_evidence import StageEvidence
+    stage = StageRequest(stage=4, side=placement.cleanup_side(), mode=None, apply=bool(request.get('apply')),
+                         now=request['now'], drive=dict(path='/'), repos=(), policy={}, state_dir=None,
+                         tasks=request.get('tasks') or {})
+    return StageEvidence(stage, StageClock(1800), processes=None)
+
+
 class MemoryCleanupEvidence:
     """Semantic observations, never a fake Git CLI. All policy lives in decide."""
     def __init__(self, store):
@@ -232,14 +242,14 @@ class MemoryCleanupEvidence:
         return observation
 
     def observe(self, request):
-        from drover.disk_worktrees import task_facts
+        evidence = bare_evidence(request)
         observations = []
         for path, facts in self.paths.items():
             if facts['removed']:
                 continue
             observed = copy.deepcopy(facts)
             row = observed['row']
-            live, terminal = task_facts(request, path, row.get('tag'))
+            live, terminal = evidence.task_facts(path, row.get('tag'))
             observed['settlement'].update(live=live, terminal=terminal)
             if row.get('unlisted'):
                 tag = row.get('tag')
@@ -255,7 +265,7 @@ class MemoryCleanupEvidence:
 
     def apply(self, request, decision, expected_identity):
         from drover.disk_cleanup import decide
-        from drover.disk_worktrees import registration_identity
+        from drover.disk_evidence import registration_identity
         if self.before_apply:
             self.before_apply(decision['path'])
         observed = next(o for o in self.observe(request) if o['row']['path'] == decision['path'])

@@ -151,10 +151,9 @@ class ReregisterClock(unittest.TestCase):
         def listing(repo, *, timeout_s):
             asked.append(timeout_s)
             return git_worktrees.Listing(repo, (dict(worktree=str(orphan)),))
-        evidence = SimpleNamespace(repaired=lambda repo, path: told.append((repo, path)))
+        evidence = SimpleNamespace(repaired=lambda repo, path: told.append((repo, path)), gitdir=lambda path: str(tmp / 'admin'))
         with patch.object(placement, 'add_worktree', side_effect=add), \
                 patch.object(disk_registrations, '_out', return_value=''), \
-                patch.object(disk_registrations, 'gitdir_at', return_value=str(tmp / 'admin')), \
                 patch.object(git_worktrees, 'listing', side_effect=listing):
             disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
                                           SimpleNamespace(append=records.append), evidence=evidence,
@@ -177,11 +176,11 @@ class ReregisterClock(unittest.TestCase):
             return ''
         with patch.object(placement, 'add_worktree', side_effect=add), \
                 patch.object(disk_registrations, '_out', side_effect=out), \
-                patch.object(disk_registrations, 'gitdir_at', return_value=str(tmp / 'admin')), \
                 patch.object(git_worktrees, 'listing', return_value=git_worktrees.Listing('/repo', (dict(worktree=str(orphan)),))):
             disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
                                           SimpleNamespace(append=lambda record: None),
-                                          evidence=SimpleNamespace(repaired=lambda repo, path: None),
+                                          evidence=SimpleNamespace(repaired=lambda repo, path: None,
+                                                                   gitdir=lambda path: str(tmp / 'admin')),
                                           clock=StageClock(100, clock=at(10)))
         self.assertEqual(asked, [('add', 4), ('repair', 4), ('reset', 4)])     # section 6.1:643: each mutating step's cap
 

@@ -57,7 +57,7 @@ class Approval(DiskCase):
                     with listing_answers([dict(worktree=path)]), \
                             patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda p: False)), \
                             patch.object(disk_worktrees, 'inspect', return_value=row), \
-                            patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value: dict(row=value)):
+                            patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value, **_: dict(row=value)):
                         answer = staged(disk_worktrees.settled, request)
                     self.assertEqual(bool(answer['items']), windows and equal_on_windows)
 
@@ -162,7 +162,8 @@ class DefaultBranchPolicy(DiskCase):
     def test_quarantine_uses_default_policy_even_when_feature_has_no_declaration(self):
         row = dict(path=str(self.wt), repo=str(self.repo), ignored=[str(self.bin)],
                    head='old-head', reason_code='orphan', action='keep')
-        answer = disk_worktrees.quarantine({**self.request, 'apply': False}, self.machine, row)
+        request, evidence = stage_request({**self.request, 'apply': False})
+        answer = disk_worktrees.quarantine(request, self.machine, row, evidence=evidence)
         self.assertEqual(answer['reason_code'], 'orphan')
 
     def test_remove_cannot_use_feature_declarations_to_discard_source(self):

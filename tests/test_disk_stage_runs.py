@@ -8,7 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_inventory, disk_worktrees, placement, process
+from drover import disk_inventory, placement, process
+from drover.disk_evidence import StageEvidence
 from drover.disk_paths import caches, report
 from drover.disk_temp import temporary
 from tests.disk_fixture import DAY, listing_answers, staged
@@ -144,10 +145,10 @@ class Lines(unittest.TestCase):
                 patch.object(placement, 'cleanup_contains', return_value=True), \
                 patch.object(placement, 'worktree_side', return_value=side), \
                 patch('drover.ownership.read', return_value=dict(owner='drover:7')), \
-                patch.object(disk_worktrees, 'task_facts', return_value=(True, False)), \
-                patch.object(disk_worktrees, 'head_at', return_value='h'), \
-                patch.object(disk_worktrees, 'merged', return_value=True), \
-                patch.object(disk_worktrees, 'status', side_effect=status or (lambda path, **_: ([], []))), \
+                patch.object(StageEvidence, 'task_facts', return_value=(True, False)), \
+                patch.object(StageEvidence, 'head', return_value='h'), \
+                patch.object(StageEvidence, 'merged', return_value=True), \
+                patch.object(StageEvidence, 'status', side_effect=status or (lambda path, **_: ([], []))), \
                 patch.object(disk_inventory.Inventory, 'measure', autospec=True,
                              side_effect=measure or (lambda self, path, **_: dict(files=1, bytes=2, age_s=3, largest=[]))):
             answer = staged(report, self.request(6, apply=False, repos=[machine]))

@@ -16,7 +16,7 @@ from pathlib import Path
 from . import durable, git_client, git_worktrees, placement
 from .disk_inventory import safe_path, worktree_roots
 from .disk_stage import item
-from .disk_worktrees import _out, gitdir_at
+from .disk_evidence import _out
 
 THRESHOLD = 10   # percent of the branch's tracked files that may differ from the directory
 WIN = re.compile(r'^[A-Za-z]:[\\/]')
@@ -278,7 +278,7 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
             durable.move(place / '.git', path / '.git', wait=durable.NO_WAIT)
             moved = True
         _out(repo, 'worktree', 'repair', str(path), timeout_s=cap)
-        admin = Path(placement.native(gitdir_at(path)))
+        admin = Path(placement.native(evidence.gitdir(path)))
         if not (admin / 'index').exists():
             _out(path, 'reset', '-q', timeout_s=cap)
         if git_worktrees.listing(repo, timeout_s=clock.patience(git_worktrees.LISTING_TIMEOUT_S)).row(path) is None:

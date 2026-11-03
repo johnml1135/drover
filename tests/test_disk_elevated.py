@@ -79,7 +79,9 @@ class ElevatedProcesses(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             request = dict(now=1000, apply=False, drive=dict(level='hold', path=directory))
-            evidence = SimpleNamespace(processes=lambda: proof)      # the stage's first-pass proof
+            evidence = SimpleNamespace(processes=lambda: proof,      # the stage's first-pass proof
+                                       task_facts=lambda path, tag: (False, False), head=lambda path: 'head',
+                                       tag=lambda path: None, declarations=lambda machine, path: ['bin'])
             machine = dict(repo=str(path / 'repo'), name='fixture')
             entry = dict(worktree=str(path), locked='windows')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
@@ -89,10 +91,7 @@ class ElevatedProcesses(unittest.TestCase):
             self.assertEqual(row['reason_code'], 'protected')
             with patch.object(placement, 'cleanup_side', return_value='windows'), \
                     patch.object(placement, 'cleanup_contains', return_value=True), \
-                    patch.object(disk_paths, 'safe_path', return_value=True), \
-                    patch.object(disk_worktrees, 'head_at', return_value='head'), \
-                    patch.object(disk_worktrees, 'outputs_at', return_value=['bin']), \
-                    patch('drover.ownership.read', return_value=None):
+                    patch.object(disk_paths, 'safe_path', return_value=True):
                 found = disk_paths.output_evidence(request, machine, entry, evidence=evidence)
             self.assertEqual(found, (path, 'head', None, ['bin']))
 

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from drover import config, repos
-from drover.disk_worktrees import outputs_at
+from drover.disk_evidence import outputs_at
 from tests.gitfix import Repo
 from tests.tiers import integration
 
