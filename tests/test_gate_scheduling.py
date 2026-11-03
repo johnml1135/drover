@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from drover import ci, dispatcher, launch, runner
+from drover import ci, dispatcher, durable, launch, runner
 from drover.ledger import ci as slots, db, ops
 from drover.port import DirectPort
 from tests.fakeci import resources_go
@@ -247,23 +247,23 @@ class FullGateOrder(unittest.TestCase):
 
     def prepare(self, prog, checkout, commit, run_id, *, kind, platform, **kw):
         runner.run_dir(self.tmp.name, run_id).mkdir(parents=True, exist_ok=True)
-        runner.write_json_atomic(runner.run_dir(self.tmp.name, run_id) / 'plan.json', dict(sha=commit, kind=kind, platform=platform, run_id=run_id, nonce=run_id))
+        durable.write_json(runner.run_dir(self.tmp.name, run_id) / 'plan.json', dict(sha=commit, kind=kind, platform=platform, run_id=run_id, nonce=run_id), sync=False)
         return {'spec': {'run_id': run_id, 'nonce': run_id, 'placement': platform}, 'receipt': ''}
 
     def finish(self, spec):
         passed = self.outcomes.get(spec['placement'], True)
         d = runner.run_dir(self.tmp.name, spec['run_id'])
-        runner.write_json_atomic(d / 'receipt.json', {'version': 1, 'sha': 'exact-sha', 'platform': spec['placement'],
-                                'nonce': spec['nonce'], 'run_id': spec['run_id'], 'tree_unchanged': True, 'kind': self.kind, 'passed': passed, 'exit_code': 0 if passed else 1,
-                                'status': 'passed' if passed else 'failed', 'outcome': 'passed' if passed else 'code-failed'})
-        runner.write_json_atomic(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce'], 'run_id': spec['run_id'], 'exit_code': 0 if passed else 1})
+        durable.write_json(d / 'receipt.json', {'version': 1, 'sha': 'exact-sha', 'platform': spec['placement'],
+                          'nonce': spec['nonce'], 'run_id': spec['run_id'], 'tree_unchanged': True, 'kind': self.kind, 'passed': passed, 'exit_code': 0 if passed else 1,
+                          'status': 'passed' if passed else 'failed', 'outcome': 'passed' if passed else 'code-failed'}, sync=False)
+        durable.write_json(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce'], 'run_id': spec['run_id'], 'exit_code': 0 if passed else 1}, sync=False)
         return SimpleNamespace(poll=lambda: {'returncode': 0 if passed else 1, 'status': 'done'})
 
     def launch(self, spec):
         self.calls.append(('launch', spec['placement'], spec['run_id']))
         if self.interrupt == spec['placement']:
-            runner.write_json_atomic(runner.run_dir(self.tmp.name, spec['run_id']) / runner.STATUS_FILE,
-                                     {'state': 'running', 'nonce': spec['nonce']})
+            durable.write_json(runner.run_dir(self.tmp.name, spec['run_id']) / runner.STATUS_FILE,
+                               {'state': 'running', 'nonce': spec['nonce']}, sync=False)
             raise RuntimeError('lost response')
         return self.finish(spec)
 
@@ -329,13 +329,13 @@ class FullGateOrder(unittest.TestCase):
         status_path = runner.run_dir(self.tmp.name, spec['run_id']) / runner.STATUS_FILE
         row, = slots.lease_queue(self.conn)
         self.assertEqual(row['pinned'], 1)
-        runner.write_json_atomic(status_path, dict(state='exited', nonce='wrong', exit_code=0))
+        durable.write_json(status_path, dict(state='exited', nonce='wrong', exit_code=0), sync=False)
         with self.assertRaises(ci.CIInterrupted):
             self.run_gate()
         self.assertEqual(len(self.calls), 1)
         self.assertTrue(saved_path.exists())
         self.assertEqual(slots.lease_queue(self.conn)[0]['pinned'], 1)
-        runner.write_json_atomic(status_path, dict(state='exited', nonce=spec['nonce'], run_id=spec['run_id'], exit_code=0))
+        durable.write_json(status_path, dict(state='exited', nonce=spec['nonce'], run_id=spec['run_id'], exit_code=0), sync=False)
         self.launcher.launch = self.launch
         self.assertTrue(self.run_gate()['passed'])
         self.assertEqual([call[0] for call in self.calls], ['launch', 'adopt', 'launch'])
@@ -364,8 +364,8 @@ class FullGateOrder(unittest.TestCase):
         saved['context']['spec']['placement'] = 'windows'  # pre-upgrade first platform
         plan_path = runner.run_dir(self.tmp.name, saved['context']['spec']['run_id']) / 'plan.json'
         plan = json.loads(plan_path.read_text())
-        runner.write_json_atomic(plan_path, {**plan, 'platform': 'windows'})
-        runner.write_json_atomic(saved_path, saved)
+        durable.write_json(plan_path, {**plan, 'platform': 'windows'}, sync=False)
+        durable.write_json(saved_path, saved, sync=False)
         self.interrupt = None
         result = self.run_gate()
         self.assertTrue(result['passed'])

@@ -1,6 +1,7 @@
 """Publish, move and remove files so that a brief Windows reader cannot lose the write, with the wait stated by the caller.
 
 Stdlib only: `compaction_hold`, the WSL cleanup worker and the runner all import it. `durable` makes no directory.
+`private` keeps mkstemp's 0600 on POSIX, for a site that published it before `durable`; the default is the umask's mode.
 """
 import contextlib
 import json
@@ -44,7 +45,7 @@ def _discard(temporary):
         remove(temporary, wait=ROUTINE)
 
 
-def _land(path, content, mode, sync, wait, **text):
+def _land(path, content, mode, sync, wait, private, **text):
     path = Path(path)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
     try:
@@ -53,7 +54,7 @@ def _land(path, content, mode, sync, wait, **text):
             if sync:
                 stream.flush()
                 os.fsync(stream.fileno())
-        if POSIX:
+        if POSIX and not private:
             os.chmod(temporary, 0o666 & ~_UMASK)    # mkstemp's 0600 is the temp's, not the published file's
     except BaseException:
         _discard(temporary)
@@ -61,16 +62,17 @@ def _land(path, content, mode, sync, wait, **text):
     publish(temporary, path, wait=wait)
 
 
-def write_bytes(path, data: bytes, *, sync: bool, wait: Wait = ORDINARY) -> None:
-    _land(path, data, 'wb', sync, wait)
+def write_bytes(path, data: bytes, *, sync: bool, wait: Wait = ORDINARY, private: bool = False) -> None:
+    _land(path, data, 'wb', sync, wait, private)
 
 
-def write_text(path, text: str, *, sync: bool, wait: Wait = ORDINARY, newline: str | None = None) -> None:
-    _land(path, text, 'w', sync, wait, encoding='utf-8', newline=newline)
+def write_text(path, text: str, *, sync: bool, wait: Wait = ORDINARY, newline: str | None = None, private: bool = False) -> None:
+    _land(path, text, 'w', sync, wait, private, encoding='utf-8', newline=newline)
 
 
-def write_json(path, value, *, sync: bool, wait: Wait = ORDINARY, indent: int | None = 1, allow_nan: bool = True) -> None:
-    write_text(path, json.dumps(value, indent=indent, allow_nan=allow_nan), sync=sync, wait=wait)
+def write_json(path, value, *, sync: bool, wait: Wait = ORDINARY, indent: int | None = 1, allow_nan: bool = True,
+               private: bool = False) -> None:
+    write_text(path, json.dumps(value, indent=indent, allow_nan=allow_nan), sync=sync, wait=wait, private=private)
 
 
 def publish(temporary, path, *, wait: Wait = ORDINARY, sync_dir: bool = False) -> None:

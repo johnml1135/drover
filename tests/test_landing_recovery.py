@@ -114,7 +114,7 @@ class RecoveryTests(unittest.TestCase):
                 patch.object(service, 'prepare', return_value=dict(spec=spec)), \
                 patch.object(service, 'result', return_value=dict(receipt=None, outcome='infrastructure-failed', reason='timeout', nonce='nonce', run_id=spec['run_id'], excerpt='wall timeout')), \
                 patch('drover.disk.read', return_value=[]), \
-                patch.object(ci.runner, 'write_json_atomic'):
+                patch.object(ci, 'durable'):
             result = service.run({}, '.', SHA, platforms=['wsl'])
         self.assertEqual((result['status'], result['reason'], result['run_id']),
                          ('failed', 'timeout', 'ci-timeout'))
@@ -196,12 +196,12 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)), \
                 patch('drover.disk.read', return_value=[]), \
-                patch.object(ci.runner, 'write_json_atomic') as save:
+                patch.object(ci, 'durable') as save:
             with self.assertRaisesRegex(ci.CIDeferred, 'load too high'):
                 service.run({}, '.', SHA, platforms=['wsl'], conn=self.conn)
         launcher.launch.assert_not_called()
         self.assertEqual(slots.lease_queue(self.conn), [])
-        checkpoint = save.call_args.args[1]
+        checkpoint = save.write_json.call_args.args[1]
         self.assertEqual(checkpoint['execution'], 'prepared')
         self.assertNotIn('ticket', checkpoint)
 
@@ -288,7 +288,7 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(ci.repos, 'load', side_effect=lambda prog, *a: prog), \
                 patch.object(service, 'prepare', return_value=dict(spec=spec)) as prepare, \
                 patch.object(service, 'result', return_value=dict(receipt=None, outcome='infrastructure-failed', reason='timeout', nonce='nonce', run_id=spec['run_id'], excerpt='wall timeout')), \
-                patch('drover.disk.read', return_value=[]), patch.object(ci.runner, 'write_json_atomic'):
+                patch('drover.disk.read', return_value=[]), patch.object(ci, 'durable'):
             service.run({}, '.', SHA, platforms=['wsl'], force_full=True)
         self.assertTrue(prepare.call_args.kwargs['force_full'])
 

@@ -5,7 +5,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+from drover import disk_state, durable
+from drover.durable import ORDINARY, RELEASE
 from tests.disk_fixture import DiskCase
+from tests.test_durable import Clock, Flaky, on_clock
 
 
 class State(DiskCase):
@@ -56,35 +59,55 @@ except BlockingIOError:
                 first.kill()
                 first.communicate(timeout=10)
 
-    def test_release_outlasts_a_brief_reader_of_the_owner_record(self):
+    def test_lock_release_outlasts_a_reader_for_five_seconds(self):
         # Windows refuses to delete a file another thread has open; a live holder's lock is never reclaimed.
-        from drover.disk_state import CleanupLock
         lock = self.state / 'disk-cleanup.lock'
-        for name in ('unlink', 'rmdir'):
-            with self.subTest(name), patch('drover.disk_state.time.sleep'):
-                real = getattr(Path, name)
-                refusals = iter([True, True, False])
-
-                def refusing(path, *args, real=real, refusals=refusals, **kwargs):
-                    if next(refusals, False):
-                        raise PermissionError(13, 'in use', str(path))
-                    return real(path, *args, **kwargs)
-                with patch.object(Path, name, refusing):
-                    with CleanupLock(self.state):
+        for name, real in (('unlink', os.unlink), ('rmdir', os.rmdir)):
+            with self.subTest(name):
+                clock = Clock()
+                reader = Flaky(real=real, blocked=lambda: clock.now < 1000.0 + RELEASE.seconds - .1)
+                with on_clock(clock), patch.object(durable.os, name, reader):
+                    with disk_state.CleanupLock(self.state):
                         pass
                 self.assertFalse(lock.exists())
 
     def test_release_gives_up_loudly_when_the_reader_never_leaves(self):
-        from drover import disk_state
         lock = self.state / 'disk-cleanup.lock'
-
-        def refusing(path, *args, **kwargs):
-            raise PermissionError(13, 'in use', str(path))
-        with patch.object(disk_state, 'RELEASE_WAIT_S', 0), patch.object(Path, 'unlink', refusing):
+        clock = Clock()
+        with on_clock(clock), patch.object(durable.os, 'unlink', Flaky(real=os.unlink, blocked=lambda: True)):
             with self.assertRaises(PermissionError):
                 with disk_state.CleanupLock(self.state):
                     pass
         self.assertTrue((lock / 'owner.json').exists())
+        self.assertAlmostEqual(clock.now - 1000.0, RELEASE.seconds, delta=RELEASE.step_s * 1.5)
+
+    def test_state_write_syncs_and_waits_ordinary(self):
+        """Both writers: fsync before the replace, the ordinary wait, the compact strict encoding and mkstemp's own 0600."""
+        (self.state / 'disk').mkdir(parents=True, exist_ok=True)
+        writers = ((lambda value: disk_state.save_file(self.state, 'fact.json', value), self.state / 'disk' / 'fact.json'),
+                   (lambda value: disk_state._write(self.state, value), self.state / 'disk' / 'state.json'))
+        for write, target in writers:
+            with self.subTest(target.name):
+                clock, events = Clock(), []
+                reader = Flaky(blocked=lambda: clock.now < 1000.0 + ORDINARY.seconds - .1)
+                replace = lambda *paths: (events.append('replace'), reader(*paths))[1]
+                with on_clock(clock), patch.object(durable, 'POSIX', True), patch.object(durable.os, 'chmod') as chmod, \
+                        patch.object(durable.os, 'fsync', lambda fd: events.append('fsync')), \
+                        patch.object(durable.os, 'replace', replace):
+                    write({'v': 1})
+                self.assertEqual(events[:2], ['fsync', 'replace'])
+                self.assertEqual((events.count('fsync'), target.read_text(encoding='utf-8')), (1, '{"v": 1}'))
+                chmod.assert_not_called()
+
+                clock.now = 1000.0
+                with on_clock(clock), patch.object(durable.os, 'replace', Flaky(blocked=lambda: True)), \
+                        self.assertRaises(PermissionError):
+                    write({'v': 1, 'late': True})
+                self.assertAlmostEqual(clock.now - 1000.0, ORDINARY.seconds, delta=ORDINARY.step_s * 1.5)
+                self.assertEqual(target.read_text(encoding='utf-8'), '{"v": 1}')
+                with self.assertRaises(ValueError):
+                    write({'v': 1, 'x': float('nan')})
+        self.assertEqual(sorted(p.name for p in (self.state / 'disk').glob('*.tmp')), [])
 
     def test_manifest_failure_prevents_removal(self):
         # Build a real settled checkout; fsync failure must block its removal.
@@ -109,7 +132,6 @@ except BlockingIOError:
                                  for line in journal.read_text().splitlines()))
 
     def test_state_transactions_versions_and_durable_journal(self):
-        from drover import disk_state
         self.assertEqual(disk_state.read(self.state), {'v': 1})
         disk_state.write(self.state, {'v': 1, 'readings': {'drive': 90}})
         changed = disk_state.read(self.state)
@@ -132,7 +154,6 @@ except BlockingIOError:
             self.assertEqual(path.read_text(), payload)
 
     def test_partial_holder_diagnostic_failure_releases_lock(self):
-        from drover import disk_state
         original = Path.write_text
 
         def fail_after_creation(path, *args, **kwargs):
@@ -232,7 +253,6 @@ class StaleLock(DiskCase):
         return json.loads((self.state / 'disk-cleanup.lock' / 'owner.json').read_text())['token']
 
     def hooked(self, hook):
-        from drover import disk_state
         return patch.object(disk_state, '_HOOK', hook)
 
     def enter(self):
@@ -290,5 +310,4 @@ class StaleLock(DiskCase):
             lock, won = self.enter()
         self.assertFalse(won)
         self.assertEqual(self.holder(), 'dead-token')
-        from drover import disk_state
         self.assertIn('reclaim_guard', disk_state.lock_blocker(self.state))

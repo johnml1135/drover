@@ -1,9 +1,7 @@
-"""Shared runner paths, file operations and constants."""
+"""Shared runner paths and constants."""
 import json
 import os
 import re
-import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from .placement import IS_WINDOWS
@@ -39,39 +37,6 @@ def run_dir(runs_dir, run_id):
     if not RUN_ID_RE.fullmatch(str(run_id)) or str(run_id) in (".", ".."):
         raise ValueError(f"bad run id {run_id!r}")
     return Path(runs_dir) / str(run_id)
-
-
-# ---- files ------------------------------------------------------------------------------------------------
-REPLACE_WAIT_S = 2.0       # an ordinary write outlasts a reader this long
-TERMINAL_WAIT_S = 30.0     # the write that records a run's outcome outlasts a reader much longer
-REPLACE_STEP_S = 0.05
-
-
-def write_json_atomic(path, obj, wait_s=REPLACE_WAIT_S):
-    """Write obj to path through a temp file. A PermissionError on the replace is retried for up to wait_s seconds:
-    the status files live on /mnt/c, where a Windows reader (the hub, Defender) can hold the target open for a moment.
-    When the wait runs out the temp file is removed and the last error is raised."""
-    path = Path(path)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        tmp.write_text(json.dumps(obj, indent=1), encoding="utf-8")
-        deadline = None          # the clock starts at the first refusal: a write that lands costs no clock read
-        while True:
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:
-                now = time.monotonic()
-                deadline = now + wait_s if deadline is None else deadline
-                if now >= deadline:
-                    raise
-                time.sleep(REPLACE_STEP_S)
-    except BaseException:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
 
 
 def read_status(runs_dir, run_id):

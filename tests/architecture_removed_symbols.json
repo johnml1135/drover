@@ -11,6 +11,9 @@
     "_PROCESS_IGNORE_WSL"
   ],
   "qualified_names": [
+    "drover.runner_common.write_json_atomic",
+    "drover.compaction_hold._retried",
+    "drover.disk_state._outlast_readers",
     "hub.dispatch.HubPort.set_status",
     "drover.dispatcher_launch.LaunchSteps._launch",
     "drover.pipeline.Repository.ahead",

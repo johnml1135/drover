@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from drover import config, contract, dispatcher, repos, stats, runner
+from drover import config, contract, dispatcher, durable, repos, stats, runner
 from hub.dispatch import LandingService
 from drover.ledger import ops
 from tests.ledger_fixture import claim as fixture_claim, stage as fixture_stage
@@ -215,8 +215,8 @@ class GateBoth(test_dispatcher.Base):
                                                        "exit_code": 0 if ok else 1, "steps": [], "version": 1, "tree_unchanged": True,
                                                        "kind": ev["kind"], "platform": ev["platform"],
                                                        "nonce": spec["nonce"], "run_id": spec["run_id"]}))
-            runner.write_json_atomic(Path(ev["receipt"]).parent / runner.STATUS_FILE,
-                                     dict(state="exited", exit_code=0 if ok else 1, nonce=spec["nonce"], run_id=spec["run_id"]))
+            durable.write_json(Path(ev["receipt"]).parent / runner.STATUS_FILE,
+                               dict(state="exited", exit_code=0 if ok else 1, nonce=spec["nonce"], run_id=spec["run_id"]), sync=False)
             h = test_pipeline.FakeHandle({"status": "done" if ok else "error", "record": None, "text": "", "handoff": None,
                                           "usage": {"tokens_in": 0, "tokens_out": 0, "tokens_cached": 0, "context": 0},
                                           "returncode": 0 if ok else 1, "timeout": None})

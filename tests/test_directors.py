@@ -11,7 +11,7 @@ from drover.ledger import actions, ops
 from drover.ledger.db import connect
 from drover.notifications import Notifications, roles
 from drover.port import DirectPort
-from drover import usage
+from drover import durable, usage
 from tests.director_fixture import ControlledAdapter, ResidentAdapter
 
 
@@ -58,7 +58,7 @@ class DirectorRuntimeTests(unittest.TestCase):
         spec = self.adapter.started[0]
         path = runner.run_dir(self.tmp.name, rid) / runner.STATUS_FILE
         path.parent.mkdir(parents=True)
-        runner.write_json_atomic(path, dict(nonce=spec['nonce'], state='starting' if starting else 'running'))
+        durable.write_json(path, dict(nonce=spec['nonce'], state='starting' if starting else 'running'), sync=False)
         handle = RunnerHandle(spec, self.tmp.name, None, clock=lambda: self.time, autostart=False)
         self.addCleanup(handle.cancel)
         if starting:
@@ -90,7 +90,7 @@ class DirectorRuntimeTests(unittest.TestCase):
         self.tick()
         self.assertEqual([r['run_id'] for r in self.runtime.active_runs()], [rid])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM action_outbox WHERE kind='director.stop'").fetchone()[0], 1)
-        runner.write_json_atomic(path, dict(nonce=spec['nonce'], state='killed'))
+        durable.write_json(path, dict(nonce=spec['nonce'], state='killed'), sync=False)
         self.runtime.recover()
         self.assertEqual(self.runtime.active_runs(), [])
 
@@ -153,11 +153,11 @@ class DirectorRuntimeTests(unittest.TestCase):
         adapter = RunnerDirectorAdapter(launcher)
         path = runner.run_dir(self.tmp.name, 1) / runner.STATUS_FILE
         path.parent.mkdir(exist_ok=True)
-        runner.write_json_atomic(path, {'nonce': nonce, 'state': 'running'})
+        durable.write_json(path, {'nonce': nonce, 'state': 'running'}, sync=False)
         self.assertEqual(adapter.probe(spec), 'unknown')
-        runner.write_json_atomic(path, {'nonce': nonce, 'state': 'exited'})
+        durable.write_json(path, {'nonce': nonce, 'state': 'exited'}, sync=False)
         self.assertEqual(adapter.probe(spec), 'gone')
-        runner.write_json_atomic(path, {'nonce': 'b' * 32, 'state': 'exited'})
+        durable.write_json(path, {'nonce': 'b' * 32, 'state': 'exited'}, sync=False)
         self.assertEqual(adapter.probe(spec), 'unknown')
 
     def test_authenticated_adapter_processing_finishes_without_ack_or_credential_fabrication(self):

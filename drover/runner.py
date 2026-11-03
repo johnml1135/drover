@@ -21,12 +21,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from . import placement
+from . import durable, placement
 from .placement import IS_WINDOWS, KILL_AFTER_S, ScanError
 
 from .runner_common import (POLL_S, WATCH_GLOBS, STOP_FILE, STATUS_FILE, RECORD_FILE, OUT_FILE, RUNNER_LOG,
                             STOP_REASONS, RUN_ID_RE, NONCE_RE, DETACH_WAIT_S, scratch_path, now_iso, run_dir,
-                            write_json_atomic, read_status)
+                            read_status)
 from .runner_record import (SCAN_BYTES, MAX_SCAN_TRIES, NOTE_MAX, BLOCKER_KEYS, SHA_RE, ARTIFACT_URI_RE, SHA256_RE,
                             KIND_MAX, DETAIL_MAX, _record_from, parse_action_record, _message_text, _reverse_lines,
                             scan_record)
@@ -152,9 +152,9 @@ def detach(run_id, runs_dir, child_args, wait_s=DETACH_WAIT_S, nonce=None):
            "PYTHONPATH": os.pathsep.join(filter(None, [pkg_root, os.environ.get("PYTHONPATH")]))}
     cmd = [sys.executable, "-m", "drover.runner", *child_args]
     in_job = False
-    write_json_atomic(d / STATUS_FILE, {"run_id": run_id, "state": "starting", "pid": None, "runner_pid": None,
-                                        "started": now_iso(), "ended": None, "exit_code": None, "reason": None,
-                                        "nonce": nonce, "detached_in_job": False})
+    durable.write_json(d / STATUS_FILE, {"run_id": run_id, "state": "starting", "pid": None, "runner_pid": None,
+                                         "started": now_iso(), "ended": None, "exit_code": None, "reason": None,
+                                         "nonce": nonce, "detached_in_job": False}, sync=False)
     with open(d / RUNNER_LOG, "ab") as log:
         proc, in_job = placement.detach(cmd, env, log)
     # proc.pid may be a venv launcher over the real runner: report the pid the runner wrote itself

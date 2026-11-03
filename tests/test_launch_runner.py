@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import launch, runner
+from drover import durable, launch, runner
 from drover.runner import ScanError
 
 DONE = '{"status": "done", "sha": "abc1234", "blocker": null, "note": "ok"}'
@@ -84,7 +84,7 @@ class Base(unittest.TestCase):
         d = self.dir(rid)
         st = json.loads((d / runner.STATUS_FILE).read_text())
         st.update(kw)
-        runner.write_json_atomic(d / runner.STATUS_FILE, st)
+        durable.write_json(d / runner.STATUS_FILE, st, sync=False)
 
     def emit(self, *objs, rid=7):
         with open(self.dir(rid) / runner.OUT_FILE, "ab") as f:
@@ -92,7 +92,7 @@ class Base(unittest.TestCase):
                 f.write((o if isinstance(o, str) else json.dumps(o)).encode() + b"\n")
 
     def record(self, text=DONE, rid=7):
-        runner.write_json_atomic(self.dir(rid) / runner.RECORD_FILE, runner.parse_action_record(text))
+        durable.write_json(self.dir(rid) / runner.RECORD_FILE, runner.parse_action_record(text), sync=False)
 
 
 def split_worker(cmd):
@@ -241,7 +241,7 @@ class Commands(Base):
             fake(cmd, **kw)
             st = json.loads((self.dir(51) / runner.STATUS_FILE).read_text())
             st["runner_pid"] = None
-            runner.write_json_atomic(self.dir(51) / runner.STATUS_FILE, st)
+            durable.write_json(self.dir(51) / runner.STATUS_FILE, st, sync=False)
             raise subprocess.TimeoutExpired("x", 1)
         self.rl.run = slow
         with self.assertRaises(launch.LaunchError) as c:
@@ -302,8 +302,8 @@ class Commands(Base):
         d.mkdir(parents=True)
         for n in (runner.OUT_FILE, runner.RUNNER_LOG, launch.TAIL_FILE):
             (d / n).write_text("OLD\n")
-        runner.write_json_atomic(d / runner.RECORD_FILE, {"status": "done", "sha": "deadbee", "blocker": None, "note": ""})
-        runner.write_json_atomic(d / runner.STOP_FILE, {"reason": "requested", "nonce": "OLDNONCE"})
+        durable.write_json(d / runner.RECORD_FILE, {"status": "done", "sha": "deadbee", "blocker": None, "note": ""}, sync=False)
+        durable.write_json(d / runner.STOP_FILE, {"reason": "requested", "nonce": "OLDNONCE"}, sync=False)
         h = self.start()
         for n in (runner.OUT_FILE, runner.RUNNER_LOG, launch.TAIL_FILE, runner.RECORD_FILE, runner.STOP_FILE):
             self.assertFalse((d / n).exists(), n)
@@ -321,10 +321,10 @@ class Commands(Base):
 
         d = self.dir(8)
         d.mkdir(parents=True)
-        runner.write_json_atomic(d / runner.STATUS_FILE, {
+        durable.write_json(d / runner.STATUS_FILE, {
             "run_id": "8", "state": "exited", "pid": 1, "runner_pid": 2, "nonce": NONCE,
-            "exit_code": 0, "reason": None, "started": "x", "ended": "x", "detached_in_job": False})
-        runner.write_json_atomic(d / runner.RECORD_FILE, runner.parse_action_record(DONE))
+            "exit_code": 0, "reason": None, "started": "x", "ended": "x", "detached_in_job": False}, sync=False)
+        durable.write_json(d / runner.RECORD_FILE, runner.parse_action_record(DONE), sync=False)
         adopted = self.rl.adopt(spec(run_id=8, adopted=True))
         self.assertEqual(wait_for(adopted.poll)["status"], "done")
         self.assertEqual(wakes, ["wake", "wake"])

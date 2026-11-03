@@ -14,13 +14,13 @@ import uuid
 from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from drover import placement, repos, runner, contract
+    from drover import durable, placement, repos, runner, contract
     from drover.ledger import ci as slots, ops
     from drover.ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
                                   _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail,
                                   GIT_PROMPT_ENV, COMPACTION_STOP, git_environment, _unfinished, active_wsl, stop_for_compaction)
 else:
-    from . import placement, repos, runner, contract
+    from . import durable, placement, repos, runner, contract
     from .ledger import ci as slots, ops
     from .ci_common import (VERSION, now, _norm, _glob_re, DOCS_EXTENSIONS, DOCS_EXACT,
                             _glob_hit, docs_only, status_problems, validate_receipt, evaluate_result, INFRA_RETRIES, read_result, _tail,
@@ -139,7 +139,7 @@ class CI:
                 'kind': kind, 'platform': platform, 'commands': commands, 'priority': priority,
                 'out': placement.ci_path(platform, result_path),
                 'log': placement.ci_path(platform, d / runner.OUT_FILE)}
-        runner.write_json_atomic(d / 'plan.json', plan)
+        durable.write_json(d / 'plan.json', plan, sync=False)
         spec = {'run_id': run_id, 'role': 'gate', 'backend': 'local', 'model': 'gate', 'effort': None,
                 'argv': placement.ci_invocation(platform, Path(__file__), d / 'plan.json'),
                 'cwd': str(checkout), 'placement': platform, 'nonce': nonce,
@@ -173,7 +173,7 @@ class CI:
                 saved['held_reason'] = 'termination-uncertain: capacity reservation missing; reconcile original execution'
             else:
                 saved['held_reason'] = 'termination-uncertain: stop requested'
-            runner.write_json_atomic(request, saved)
+            durable.write_json(request, saved, sync=False)
             stop_intent(DirectPort(conn), spec, epoch,
                         lambda value: runner.request_stop(self.runs_dir, value['run_id'], nonce=value['nonce']))
 
@@ -233,7 +233,7 @@ class CI:
             error.detail.update(sha=commit, kind=kind, platform=spec['placement'], run_id=spec['run_id'], nonce=spec['nonce'])
             deferred.append(error)
             saved.pop('ticket', None)
-            runner.write_json_atomic(request, saved)
+            durable.write_json(request, saved, sync=False)
             raise error
         # Legacy requests keep their saved order so an issued runner is never relabelled.
         order = saved.get('order', platforms)
@@ -248,7 +248,7 @@ class CI:
                                        **({'module': module, 'tier': tier} if module else {}))
                 saved['context'] = context
                 saved['execution'] = 'prepared'
-                runner.write_json_atomic(request, saved)
+                durable.write_json(request, saved, sync=False)
             spec = dict(context['spec'])
             ticket = saved.get('ticket')
             def status_now():
@@ -283,7 +283,7 @@ class CI:
                         if ticket is None:
                             ticket = slots.lease_request(conn, key, priority, holder=spec['run_id'], platform=spec['placement'])
                             saved['ticket'] = ticket
-                            runner.write_json_atomic(request, saved)
+                            durable.write_json(request, saved, sync=False)
                         try:
                             if slots.lease_acquire(conn, ticket, *limits, ttl=600,
                                     windows_slots=slots.configured_windows_limit(lambda k, d: ops.get_setting(conn, k, d))) is not None:
@@ -317,7 +317,7 @@ class CI:
                     if conn is not None:
                         slots.lease_pin(conn, ticket)
                     saved['execution'] = 'issued'
-                    runner.write_json_atomic(request, saved)
+                    durable.write_json(request, saved, sync=False)
                     following = True  # includes a lost launch response
                     try:
                         handle = self.launcher.launch(spec)
@@ -346,7 +346,7 @@ class CI:
                     # The runner owns its timeout. Keep its ticket and request so resume
                     # follows this execution before landing can rebuild the checkout.
                     saved['held_reason'] = 'termination-uncertain: ' + str(error)
-                    runner.write_json_atomic(request, saved)
+                    durable.write_json(request, saved, sync=False)
                     raise CIInterrupted(f'CI supervision interrupted; resume saved runner: {error}',
                         dict(sha=commit, platform=spec['placement'], kind=kind, run_id=spec['run_id'], nonce=spec['nonce'])) from error
                 request.unlink(missing_ok=True)
@@ -393,9 +393,8 @@ class CI:
                         runner.request_stop(self.runs_dir, spec['run_id'], nonce=spec['nonce'])
                         if current.get('nonce') != spec['nonce'] or not self.launcher.recover_ci(spec, current):
                             raise CIInterrupted('CI runner lost; child termination is not confirmed')
-                        runner.write_json_atomic(runner.run_dir(self.runs_dir, spec['run_id']) / runner.STATUS_FILE,
-                                                 {**current, 'state': 'killed', 'exit_code': None,
-                                                  'ended': now(), 'reason': 'runner disappeared'})
+                        durable.write_json(runner.run_dir(self.runs_dir, spec['run_id']) / runner.STATUS_FILE,
+                                           {**current, 'state': 'killed', 'exit_code': None, 'ended': now(), 'reason': 'runner disappeared'}, sync=False)
                         handle.cancel()
                         raise CIInfrastructure(dict(status='failed', passed=False,
                             sha=commit, platform=spec['placement'], run_id=spec['run_id'], kind=saved['kind'],
@@ -424,7 +423,7 @@ class CI:
         saved['index'] = i + 1
         for field in ('context', 'ticket', 'execution', 'held_reason'):
             saved.pop(field, None)
-        runner.write_json_atomic(request, saved)
+        durable.write_json(request, saved, sync=False)
         if evaluated['passed']:
             return None
         request.unlink(missing_ok=True)
@@ -436,9 +435,9 @@ def _execute(plan):
     checkout, commit, base = plan['repo'], plan['sha'], plan['base']
     placement.prepare_worktree(checkout)
     def refuse(reason):
-        runner.write_json_atomic(Path(plan['out']), dict(version=VERSION, sha=commit, passed=False,
-                                 status=contract.CI_REFUSED, outcome='deferred', reason=reason, failures=[], kind=plan['kind'], run_id=plan.get('run_id'), nonce=plan.get('nonce'),
-                                 platform=plan['platform'], exit_code=None, log_tail=[reason]))
+        durable.write_json(Path(plan['out']), dict(version=VERSION, sha=commit, passed=False,
+                           status=contract.CI_REFUSED, outcome='deferred', reason=reason, failures=[], kind=plan['kind'], run_id=plan.get('run_id'), nonce=plan.get('nonce'),
+                           platform=plan['platform'], exit_code=None, log_tail=[reason]), sync=False)
         raise CIError(reason)
     if head(checkout) != commit:
         refuse(f'HEAD is not the planned commit {commit[:12]}')
@@ -475,7 +474,7 @@ def _execute(plan):
                 receipt['tier'], receipt['module'] = next(iter(failures))
         except OSError:
             pass
-    runner.write_json_atomic(Path(plan['out']), receipt)
+    durable.write_json(Path(plan['out']), receipt, sync=False)
     return 0 if passed else 1
 
 

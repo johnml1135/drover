@@ -2,7 +2,6 @@
 import contextlib
 import io
 import json
-import os
 import tempfile
 import time
 import unittest
@@ -10,34 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import runner_common, runner_supervise
-from drover.runner_common import REPLACE_WAIT_S, TERMINAL_WAIT_S
-
-REAL_REPLACE = os.replace
-
-
-class Clock:
-    """A clock the retry loop can sleep on without waiting."""
-    def __init__(self):
-        self.now = 1000.0
-
-    def monotonic(self):
-        return self.now
-
-    def sleep(self, s):
-        self.now += s
-
-
-class Flaky:
-    """os.replace that raises PermissionError for the first `fails` calls, or while `blocked()` says so."""
-    def __init__(self, fails=0, blocked=None):
-        self.fails, self.blocked, self.calls = fails, blocked, 0
-
-    def __call__(self, src, dst):
-        self.calls += 1
-        if self.calls <= self.fails or (self.blocked and self.blocked()):
-            raise PermissionError(13, "Permission denied", str(src))
-        return REAL_REPLACE(src, dst)
+from drover import runner_supervise
+from drover.durable import ORDINARY, TERMINAL
+from tests.test_durable import REAL_REPLACE, Clock, Flaky, on_clock
 
 
 class Base(unittest.TestCase):
@@ -46,8 +20,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
         self.clock = Clock()
-        patcher = patch.object(runner_common, "time", SimpleNamespace(
-            monotonic=self.clock.monotonic, sleep=self.clock.sleep))
+        patcher = on_clock(self.clock)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -113,10 +86,10 @@ class Supervise(Base):
 
     def test_the_terminal_write_retries_longer_than_a_heartbeat(self):
         exit_at = []
-        replace = Flaky(blocked=lambda: exit_at and self.clock.now < exit_at[0] + REPLACE_WAIT_S + 3)
+        replace = Flaky(blocked=lambda: exit_at and self.clock.now < exit_at[0] + ORDINARY.seconds + 3)
         result, err = self.run_supervise(FakeProc(3, on_exit=lambda: exit_at.append(self.clock.now)), replace)
         self.assertEqual((self.status()["state"], err, self.temps()), ("exited", "", []))
-        self.assertGreater(self.clock.now - exit_at[0], REPLACE_WAIT_S)
+        self.assertGreater(self.clock.now - exit_at[0], ORDINARY.seconds)
 
     def test_a_terminal_write_that_cannot_land_reports_the_outcome_and_leaves_no_temp(self):
         result, err = self.run_supervise(FakeProc(0), Flaky(blocked=lambda: True))
@@ -124,7 +97,19 @@ class Supervise(Base):
         self.assertEqual(self.temps(), [])
         self.assertIn("could not write the terminal status", err)
         self.assertEqual(json.loads(err.splitlines()[-1])["state"], "exited")
-        self.assertGreaterEqual(self.clock.now - 1000.0, TERMINAL_WAIT_S)
+        self.assertGreaterEqual(self.clock.now - 1000.0, TERMINAL.seconds)
+
+    def test_the_record_write_outlasts_a_reader_as_the_terminal_status_does(self):
+        exit_at = []
+
+        def replace(source, target):
+            if Path(target).name == "record.json" and exit_at and self.clock.now < exit_at[0] + ORDINARY.seconds + 3:
+                raise PermissionError(13, "Permission denied", str(source))
+            return REAL_REPLACE(source, target)
+        with patch.object(runner_supervise, "scan_record", return_value={"status": "done"}):
+            _, err = self.run_supervise(FakeProc(0, on_exit=lambda: exit_at.append(self.clock.now)), replace)
+        self.assertEqual((self.status().get("record_error"), err), (None, ""))
+        self.assertEqual(json.loads((self.dir / "record.json").read_text()), {"status": "done"})
 
 
 if __name__ == "__main__":

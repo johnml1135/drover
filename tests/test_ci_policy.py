@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import tempfile
 
-from drover import ci, config, repos, runner
+from drover import ci, config, durable, repos, runner
 from drover.ledger import db, ci as slots
 from tests import test_ci
 from tests.fakeci import resources_go
@@ -162,9 +162,9 @@ class PolicyCITests(unittest.TestCase):
         finish = self.launcher.finish
 
         def stopped(spec):      # what the real runner leaves after a stop file with this reason
-            runner.write_json_atomic(runner.run_dir(self.runs, spec['run_id']) / runner.STATUS_FILE,
-                                     dict(state='killed', reason=ci.COMPACTION_STOP, exit_code=None, nonce=spec['nonce'],
-                                          run_id=spec['run_id']))
+            durable.write_json(runner.run_dir(self.runs, spec['run_id']) / runner.STATUS_FILE,
+                               dict(state='killed', reason=ci.COMPACTION_STOP, exit_code=None, nonce=spec['nonce'],
+                                    run_id=spec['run_id']), sync=False)
             return dict(status='error', returncode=None, record=None, text='', handoff=None, timeout=None, usage={})
         self.launcher.finish = stopped
         with self.assertRaises(ci.CIDeferred) as raised:       # landing queues this; a retry is not spent

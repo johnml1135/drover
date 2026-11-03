@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import ci, placement, runner
+from drover import ci, durable, placement, runner
 
 
 class Handle:
@@ -43,8 +43,8 @@ class Launcher:
         self.specs.append(spec)
         self.on_start()
         handle = self.handles[spec['run_id']] = Handle(self, spec)
-        runner.write_json_atomic(runner.run_dir(self.runs, spec['run_id']) / runner.STATUS_FILE,
-            dict(state='running', run_id=spec['run_id'], nonce=spec['nonce'], runner_pid=1))
+        durable.write_json(runner.run_dir(self.runs, spec['run_id']) / runner.STATUS_FILE,
+            dict(state='running', run_id=spec['run_id'], nonce=spec['nonce'], runner_pid=1), sync=False)
         return handle
 
     def adopt(self, spec):
@@ -69,8 +69,8 @@ class Launcher:
                 (directory / runner.OUT_FILE).write_text(f'CI: {error}')
                 code = 2
         execution = self.execution or dict(status='done' if code == 0 else 'error', returncode=code)
-        runner.write_json_atomic(directory / runner.STATUS_FILE,
-            dict(state='exited', exit_code=execution['returncode'], nonce=spec['nonce'], run_id=spec['run_id']))
+        durable.write_json(directory / runner.STATUS_FILE,
+            dict(state='exited', exit_code=execution['returncode'], nonce=spec['nonce'], run_id=spec['run_id']), sync=False)
         return {**execution, 'record': None, 'text': '', 'handoff': None, 'timeout': execution.get('timeout'),
                 'usage': dict(tokens_in=0, tokens_out=0, tokens_cached=0, context=0)}
 

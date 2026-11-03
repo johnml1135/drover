@@ -6,12 +6,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_runtime, disk_state, ledger, placement
+from drover import compaction, compaction_hold, compaction_vhd, config, disk, disk_runtime, disk_state, durable, ledger
+from drover import placement
 from drover import placement_git, placement_host, resources
 from drover.ledger import disk_notices
 from drover.port import DirectPort
 from tests.disk_fixture import DiskCase
 from tests.compaction_fixture import Clock, FakeRun, NOW, ROOT, VHDX, Vhdx, done
+from tests.test_durable import Clock as RetryClock, Flaky, on_clock
 
 
 class Vhd(unittest.TestCase):
@@ -93,6 +95,26 @@ class Hold(DiskCase):
         record['phase'] = phase
         disk_state.save_file(self.state, compaction_hold.HOLD_FILE, record)
         return record
+
+    def test_hold_write_goes_through_save_file_and_the_ordinary_wait(self):
+        record, clock = self.live(), RetryClock()
+        with on_clock(clock), mock.patch.object(disk_state, 'save_file', wraps=disk_state.save_file) as save, \
+                mock.patch.object(durable.os, 'replace', Flaky(blocked=lambda: True)), self.assertRaises(PermissionError):
+            compaction_hold.save(self.state, dict(record, step='late'))
+        self.assertEqual(save.call_count, 1)        # the wait is durable's, and only durable's
+        self.assertAlmostEqual(clock.now - 1000.0, durable.ORDINARY.seconds, delta=durable.ORDINARY.step_s * 1.5)
+        self.assertEqual(compaction_hold.read(self.state), record)
+        with mock.patch.object(durable, 'POSIX', True), mock.patch.object(durable.os, 'chmod') as chmod:
+            compaction_hold.save(self.state, dict(record, step='landed'))
+        chmod.assert_not_called()
+
+    def test_a_hold_removal_outlasts_a_reader_for_the_release_wait(self):
+        compaction_hold.note_mount(self.state, 'x.vhdx')
+        clock = RetryClock()
+        reader = Flaky(real=os.unlink, blocked=lambda: clock.now < 1000.0 + durable.RELEASE.seconds - .1)
+        with on_clock(clock), mock.patch.object(durable.os, 'unlink', reader):
+            compaction_hold.clear_mount(self.state)
+        self.assertIsNone(compaction_hold.mounted(self.state))
 
     def test_no_file_holds_nothing(self):
         self.assertIsNone(compaction_hold.active(self.state))

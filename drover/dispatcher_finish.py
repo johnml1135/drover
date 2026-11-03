@@ -1,7 +1,7 @@
 """Dispatcher finish steps."""
 import json
 
-from . import brief, compaction_hold, config, contract, repos, route as routing, runner, task_access, task_context
+from . import brief, compaction_hold, config, contract, durable, repos, route as routing, runner, task_access, task_context
 from .ledger import ops
 from .pipeline import WorktreeRefused
 from .dispatcher_admission import (MAX_FINISH_TRIES, MAX_ROTATIONS, MAX_PROVIDER_ERRORS, BACKOFF_MAX_MIN,
@@ -300,7 +300,7 @@ class FinishSteps:
             directory = runner.run_dir(getattr(self.launcher, 'runs_dir', self.pipeline.runs_dir), run_id)
             directory.mkdir(parents=True, exist_ok=True)
             criteria_path = directory / 'worker-continue-criteria.json'
-            runner.write_json_atomic(criteria_path, task_context.continuation_criteria(choices))
+            durable.write_json(criteria_path, task_context.continuation_criteria(choices), sync=False)
             decision = self._ask('worker_continue', state, rule, task_id, criteria_path=criteria_path)
         answer = decision.get('answer') if decision and decision.get('acted') else rule
         if answer not in (*choices, 'owner'):

@@ -9,10 +9,11 @@ import json
 import os
 import socket
 import subprocess
-import tempfile
 import time
 import uuid
 from pathlib import Path
+
+from . import durable
 
 
 def holder_dead(owner: dict) -> bool:
@@ -29,20 +30,6 @@ def holder_dead(owner: dict) -> bool:
 
 
 _HOOK = None  # tests inject interleavings here
-RELEASE_WAIT_S = 5.0
-
-
-def _outlast_readers(remove):
-    """Windows refuses to delete a file or folder something has open, and contenders read owner.json. Waiting
-    matters: a live holder's lock is never reclaimed, so a release lost to one brief reader holds until a restart."""
-    deadline = time.monotonic() + RELEASE_WAIT_S
-    while True:
-        try:
-            return remove()
-        except PermissionError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(0.02)
 
 
 def _step(name):
@@ -175,8 +162,10 @@ class CleanupLock:
             # Never unlink a replacement holder's directory.
             if json.loads(owner.read_text(encoding='utf-8')).get('token') != self.token:
                 raise RuntimeError(f'cleanup lock ownership changed: {self.path}')
-            _outlast_readers(owner.unlink)
-            _outlast_readers(self.path.rmdir)
+            # Contenders read owner.json, and a live holder's lock is never reclaimed: a release lost to one brief reader
+            # would hold until a restart.
+            durable.remove(owner, missing_ok=False)
+            durable.rmdir(self.path)
             self.acquired = False
 
 
@@ -206,22 +195,14 @@ def read(state_dir: Path) -> dict:
         return _read(state_dir)
 
 
+def _save(path, value):
+    durable.write_json(path, value, sync=True, indent=None, allow_nan=False, private=True)
+
+
 def _write(state_dir, state):
     if not isinstance(state, dict) or type(state.get('v')) is not int or state['v'] != 1:
         raise ValueError('disk state requires version 1')
-    payload = json.dumps(state, allow_nan=False)
-    directory = Path(state_dir) / 'disk'
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(directory / 'state.json')
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    _save(Path(state_dir) / 'disk' / 'state.json', state)
 
 
 def write(state_dir: Path, state: dict) -> None:
@@ -255,14 +236,4 @@ def save_file(state_dir, name, value):
     """Independent durable fact (critical token or result), even if state.lock is busy."""
     directory = Path(state_dir) / 'disk'
     directory.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory, delete=False) as stream:
-            temporary = Path(stream.name)
-            json.dump(value, stream, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(directory / name)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    _save(directory / name, value)

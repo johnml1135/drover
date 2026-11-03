@@ -7,13 +7,15 @@ calls wsl.exe. The phase says how far the job has got: `draining` still lets the
 ignored, so a crashed job cannot hold work forever. `compaction-drain.json` is the hub's answer to the job about its
 runs, and `compaction-panes.json` about agents in WSL panes. `resuming` follows WSL's restart, for those agents.
 
-This module sits below placement: it imports nothing from Drover at load time.
+This module sits below placement: at load time it imports only `durable`, which is stdlib only.
 """
 import json
 import os
 import time
 import uuid
 from pathlib import Path
+
+from . import durable
 
 HOLD_FILE = 'compaction-active.json'
 DRAIN_FILE = 'compaction-drain.json'
@@ -25,7 +27,6 @@ WIND_DOWN_S = 300   # headless WSL workers get this long from the start of the h
 ASK_S = 300         # agents in WSL panes get this long from the start of the hold to act on "stop now"
 INTERRUPT_S = 60    # and this long after their interruption, then the job's kill
 RESUME_S = 180      # from the `resume` step: every agent is back by then, or is a failed resume
-RETRIES, RETRY_S = 10, 0.05
 
 clock = time.time
 
@@ -49,23 +50,13 @@ def _read(name, state_dir=None):
     return value if isinstance(value, dict) else None
 
 
-def _retried(action):
-    """On Windows a file cannot be replaced or removed in the instant another process is reading it."""
-    for _ in range(RETRIES - 1):
-        try:
-            return action()
-        except PermissionError:
-            time.sleep(RETRY_S)
-    return action()
-
-
 def _write(name, value, state_dir):
     from . import disk_state
-    _retried(lambda: disk_state.save_file(state_dir, name, value))
+    disk_state.save_file(state_dir, name, value)
 
 
 def _remove(name, state_dir):
-    _retried(lambda: _file(name, state_dir).unlink(missing_ok=True))
+    durable.remove(_file(name, state_dir))
 
 
 def read(state_dir=None):

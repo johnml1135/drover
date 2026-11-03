@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from drover import launch, runner
+from drover import durable, launch, runner
 from tests.test_launch_runner import FakeRunner, spec
 
 
@@ -62,7 +62,7 @@ class ArtifactRecords(unittest.TestCase):
         fake = FakeRunner(self.runs, state="exited")
         launcher = launch.RunnerLauncher(runs_dir=self.runs, run=fake, windows=False, autostart=False)
         original = launcher.launch(spec())
-        runner.write_json_atomic(original.dir / runner.RECORD_FILE, DONE)
+        durable.write_json(original.dir / runner.RECORD_FILE, DONE, sync=False)
         status = original.status()
         self.assertEqual((status["run_id"], status["nonce"]), ("7", NONCE))
         self.assertEqual(status["state"], "exited")

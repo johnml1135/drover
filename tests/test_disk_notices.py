@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from drover import durable
 from tests.disk_memory import MemoryWorktreeCase
 
 
@@ -134,14 +135,14 @@ class Notices(MemoryWorktreeCase):
     def test_failed_outbox_write_does_not_consume_notice_episode(self):
         from drover import disk_cleanup
         self.approve_report()
-        replace = Path.replace
+        replace = durable.os.replace
         failed = []
         def fail_outbox(path, target):
-            if Path(target).name == 'state.json' and 'outbox' in path.read_text() and not failed:
+            if Path(target).name == 'state.json' and 'outbox' in Path(path).read_text() and not failed:
                 failed.append(1)
                 raise OSError('fixture atomic replacement refused')
             return replace(path, target)
-        with patch.object(Path, 'replace', fail_outbox):
+        with patch.object(durable.os, 'replace', fail_outbox):
             failed_result = disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())
         self.assertTrue(any(e.get('reason_code') == 'notice_persistence_failed' for e in failed_result['errors']))
         disk_cleanup.run(self.cfg, mode='triggered', apply=True, runtime=self.runtime())

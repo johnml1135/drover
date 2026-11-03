@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 
-from drover import ci, config, origin, placement, repos, runner
+from drover import ci, config, durable, origin, placement, repos, runner
 
 SCRIPT = '.drover/scripts/drover/test.ps1'
 
@@ -273,8 +273,8 @@ def finish_gate(spec, runs_dir, *, code=0, output=''):
                    passed=code == 0, exit_code=code, tree_unchanged=True, kind=plan['kind'],
                    duration_s=.125, steps=[], platform=spec['placement'], base=plan['base'], run_id=spec['run_id'], nonce=spec['nonce'])
     (d / 'receipt.json').write_text(json.dumps(receipt))
-    runner.write_json_atomic(d / runner.STATUS_FILE,
-                             dict(state='exited', exit_code=code, nonce=spec.get('nonce'), run_id=spec['run_id']))
+    durable.write_json(d / runner.STATUS_FILE,
+                       dict(state='exited', exit_code=code, nonce=spec.get('nonce'), run_id=spec['run_id']), sync=False)
     return dict(status='done' if code == 0 else 'error', record=None, text='', handoff=None,
                 returncode=code, timeout=None,
                 usage=dict(tokens_in=0, tokens_out=0, tokens_cached=0, context=0))

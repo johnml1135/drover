@@ -2,6 +2,7 @@
 import contextlib
 import errno
 import inspect
+import io
 import json
 import os
 import tempfile
@@ -13,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from drover.durable import (NO_WAIT, ORDINARY, RELEASE, ROUTINE, TERMINAL, Wait, move, publish, remove, rmdir, write_bytes,
                             write_json, write_text)
-from drover import durable
+from drover import durable, runner_supervise
 from tests.disk_trace_scene import quick_state
 
 REAL_REPLACE, REAL_UNLINK, REAL_RMDIR, REAL_FDOPEN = os.replace, os.unlink, os.rmdir, os.fdopen
@@ -45,10 +46,14 @@ class Flaky:
         return self.real(*paths)
 
 
+def on_clock(clock):
+    return patch.object(durable, "time", SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep))
+
+
 class FullDisk:
-    """The file a write opens, on a drive that runs out at `at`: 'write' or, as buffered data meets it, 'close'."""
+    """The file a write opens, on a drive that runs out at `at`: 'write', 'flush' or, as buffered data meets it, 'close'."""
     def __init__(self, at):
-        self.at = at
+        self.at, self.flushed = at, False
 
     def __call__(self, *args, **options):
         self.stream = REAL_FDOPEN(*args, **options)
@@ -67,6 +72,12 @@ class FullDisk:
             raise OSError(errno.ENOSPC, 'No space left on device')
         return self.stream.write(data)
 
+    def flush(self):
+        self.flushed = True
+        if self.at == 'flush':
+            raise OSError(errno.ENOSPC, 'No space left on device')
+        self.stream.flush()
+
 
 class Base(unittest.TestCase):
     def setUp(self):
@@ -75,7 +86,7 @@ class Base(unittest.TestCase):
         self.dir = Path(self.tmp.name)
         self.target = self.dir / "status.json"
         self.clock = Clock()
-        patcher = patch.object(durable, "time", SimpleNamespace(monotonic=self.clock.monotonic, sleep=self.clock.sleep))
+        patcher = on_clock(self.clock)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -201,10 +212,24 @@ class Writes(Base):
         self.assertEqual(len(seen), 1)
         self.assertEqual(os.umask(durable._UMASK), durable._UMASK)  # the reading is true and left the process's umask alone
 
+    def test_private_keeps_the_temps_0600(self):
+        for write, content in ((write_bytes, b"x"), (write_text, "x"), (write_json, {})):
+            with patch.object(durable, "POSIX", True), patch.object(durable.os, "chmod") as chmod:
+                write(self.target, content, sync=False, private=True)
+            chmod.assert_not_called()
+            self.assertIs(inspect.signature(write).parameters["private"].default, False)
+            self.assertIs(inspect.signature(write).parameters["private"].kind, inspect.Parameter.KEYWORD_ONLY)
+
     @unittest.skipUnless(os.name == "posix", "POSIX file modes")
     def test_posix_file_has_the_default_mode(self):
         write_text(self.target, "x", sync=False)
         self.assertEqual(self.target.stat().st_mode & 0o777, 0o666 & ~durable._UMASK)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes")
+    def test_posix_private_file_is_0600(self):
+        for write, content in ((write_bytes, b"x"), (write_text, "x"), (write_json, {})):
+            write(self.target, content, sync=False, private=True)
+            self.assertEqual(self.target.stat().st_mode & 0o777, 0o600)
 
     def test_write_json_keeps_each_encoding(self):
         write_json(self.target, {"a": float("nan")}, sync=False)
@@ -250,14 +275,15 @@ class Writes(Base):
 
     def test_disk_full_leaves_target_whole_removes_temp_and_raises_at_once(self):
         self.holding('{"old": true}')
-        at_write, at_close = (patch.object(durable.os, "fdopen", FullDisk(at)) for at in ("write", "close"))
+        at_write, at_flush, at_close = (patch.object(durable.os, "fdopen", FullDisk(at)) for at in ("write", "flush", "close"))
         at_fsync = patch.object(durable.os, "fsync", side_effect=OSError(errno.ENOSPC, "No space left on device"))
-        for full in (at_write, at_close, at_fsync):
+        for full, sync in ((at_write, True), (at_flush, True), (at_fsync, True), (at_close, False)):
             with full, patch.object(durable.os, "replace") as replace, self.assertRaises(OSError) as raised:
-                write_json(self.target, {"a": 1}, sync=True, wait=TERMINAL)
+                write_json(self.target, {"a": 1}, sync=sync, wait=TERMINAL)
             self.assertEqual(raised.exception.errno, errno.ENOSPC)
             self.assertEqual((replace.call_count, self.clock.slept), (0, []))
             self.assertEqual((self.target.read_text(), self.temps()), ('{"old": true}', []))
+        self.assertFalse(at_close.new.flushed)      # without a sync, only the close meets the full drive
 
     def test_a_reader_on_the_temp_gets_a_wait_and_never_hides_the_error(self):
         unlink = Flaky(real=REAL_UNLINK, fails=2)
@@ -298,6 +324,28 @@ class Writes(Base):
         self.assertEqual((errors, self.temps()), ([], []))
         self.assertLessEqual(seen, set(texts))
         self.assertIn(self.target.read_text(), texts)
+
+
+class RunFiles(Base):
+    def status(self):
+        return runner_supervise.Status(self.target, "r1", "n" * 16)
+
+    def refused_for(self, write):
+        self.clock.now = 1000.0
+        with patch.object(durable.os, "replace", Flaky(blocked=lambda: True)), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.suppress(PermissionError):
+            self.assertFalse(write(state="running"))
+        return self.clock.now - 1000.0
+
+    def test_status_routine_heartbeat_waits_half_a_second_and_terminal_thirty(self):
+        status = self.status()
+        for write, wait in ((status.routine, ROUTINE), (status.set, ORDINARY), (status.terminal, TERMINAL)):
+            self.assertAlmostEqual(self.refused_for(write), wait.seconds, delta=wait.step_s * 1.5)
+        self.assertEqual(self.temps(), [])
+
+    def test_status_routine_keeps_nan_writable(self):
+        self.assertTrue(self.status().routine(peaks={"cpu": float("nan")}))
+        self.assertIn("NaN", self.target.read_text())
 
 
 class Publish(Base):

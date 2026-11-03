@@ -3,7 +3,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from drover import runner, ci, config
+from drover import durable, runner, ci, config
 
 from drover import dispatcher, repos, usage
 from tests.fakeci import resources_go
@@ -16,7 +16,7 @@ class FixtureCI(ci.CI):
         out = runner.run_dir(self.runs_dir, run_id) / 'receipt.json'
         out.parent.mkdir(parents=True, exist_ok=True)
         nonce = uuid.uuid4().hex
-        runner.write_json_atomic(out.parent / 'plan.json', dict(run_id=run_id, nonce=nonce, sha=commit, kind=kind, platform=platform))
+        durable.write_json(out.parent / 'plan.json', dict(run_id=run_id, nonce=nonce, sha=commit, kind=kind, platform=platform), sync=False)
         return {'kind': kind, 'diff_lines': 0, 'scope': None, 'files': [], 'sha': commit, 'receipt': str(out),
                 'spec': {'run_id': run_id, 'role': 'gate', 'backend': 'local', 'model': 'gate',
                          'placement': platform, 'nonce': nonce, 'argv': ['fixture-ci', str(out), commit], 'cwd': checkout}}

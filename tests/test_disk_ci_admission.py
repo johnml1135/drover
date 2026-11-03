@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import runner
+from drover import durable, runner
 from tests.fakeci import resources_go
 from tests.disk_fixture import DiskCase
 from tests.gitfix import Repo
@@ -41,7 +41,7 @@ class Admission(DiskCase):
                     'sha': plan['sha'], 'kind': plan['kind'], 'platform': plan['platform'],
                     'nonce': spec['nonce'], 'run_id': spec['run_id'], 'outcome': 'passed',
                     'exit_code': 0, 'tree_unchanged': True, 'log_tail': []}))
-            runner.write_json_atomic(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce'], 'run_id': spec['run_id'], 'exit_code': 0})
+            durable.write_json(d / runner.STATUS_FILE, {'state': 'exited', 'nonce': spec['nonce'], 'run_id': spec['run_id'], 'exit_code': 0}, sync=False)
             return SimpleNamespace(poll=lambda: {'status': 'done', 'returncode': 0})
         def adopt(spec):
             handle = execute(spec)
@@ -73,9 +73,9 @@ class Admission(DiskCase):
             self.assertIsNotNone(slots.lease_acquire(conn, saved['ticket']))
             slots.lease_pin(conn, saved['ticket'])
             saved['execution'] = 'issued'
-            runner.write_json_atomic(request, saved)
-            runner.write_json_atomic(runner.run_dir(service.runs_dir, spec['run_id']) / runner.STATUS_FILE,
-                                     {'state': 'running', 'run_id': spec['run_id'], 'nonce': spec['nonce']})
+            durable.write_json(request, saved, sync=False)
+            durable.write_json(runner.run_dir(service.runs_dir, spec['run_id']) / runner.STATUS_FILE,
+                               {'state': 'running', 'run_id': spec['run_id'], 'nonce': spec['nonce']}, sync=False)
             receipt = service.run(prog, repo.repo, commit, kind='full', conn=conn)
             self.assertTrue(receipt['passed'])
             self.assertEqual([kind for kind, spec in calls], ['adopt'])

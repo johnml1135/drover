@@ -16,7 +16,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import mock
 
-from drover import ci, runner
+from drover import ci, durable, runner
 
 
 class FakeCommands:
@@ -195,8 +195,8 @@ def execute_gate(spec, runs_dir, *, command_runner=None):
             print(f'CI: {error}', file=out)
             code = 2
     # The runner's terminal status: CI.run uses it to tell a finished run from one it must keep for adoption.
-    runner.write_json_atomic(runner.run_dir(runs_dir, spec['run_id']) / runner.STATUS_FILE,
-                             {'state': 'exited', 'exit_code': code, 'nonce': spec.get('nonce'), 'run_id': spec['run_id']})
+    durable.write_json(runner.run_dir(runs_dir, spec['run_id']) / runner.STATUS_FILE,
+                       {'state': 'exited', 'exit_code': code, 'nonce': spec.get('nonce'), 'run_id': spec['run_id']}, sync=False)
     return {'status': 'done' if code == 0 else 'error', 'record': None, 'text': '', 'handoff': None,
             'returncode': code, 'timeout': None,
             'usage': {'tokens_in': 0, 'tokens_out': 0, 'tokens_cached': 0, 'context': 0}}

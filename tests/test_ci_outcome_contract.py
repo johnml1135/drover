@@ -50,7 +50,7 @@ class OutcomeContract(unittest.TestCase):
 
 from pathlib import Path
 from unittest.mock import Mock, patch
-from drover import runner
+from drover import durable, runner
 from drover.ledger import ops
 from tests.test_pipeline import PolicyBase
 
@@ -73,13 +73,13 @@ class DispatcherOutcomeContract(PolicyBase):
             if value is None:
                 (directory / runner.STATUS_FILE).unlink(missing_ok=True)
             else:
-                runner.write_json_atomic(directory / runner.STATUS_FILE, value)
+                durable.write_json(directory / runner.STATUS_FILE, value, sync=False)
             for _ in range(3):
                 self.d.tick()
             self.assertEqual(len(self.fl.of('gate')), 1)
             self.assertIsNone(ops.list_runs(self.conn, task)[1]['ended'])
             self.assertIn(task, self.d.ci_runners.tickets)
-        runner.write_json_atomic(directory / runner.STATUS_FILE, original)
+        durable.write_json(directory / runner.STATUS_FILE, original, sync=False)
         self.d.tick()
         self.assertEqual(ops.list_runs(self.conn, task)[0]['outcome'], 'gated')
 
@@ -181,8 +181,8 @@ class DispatcherOutcomeContract(PolicyBase):
                     patch.object(placement, 'prepare_worktree'), patch.object(placement, 'ci_command', side_effect=lambda a, _: a):
                 self.assertEqual(ci._execute(plan), 1)
             fake.assert_done()
-            runner.write_json_atomic(directory / runner.STATUS_FILE,
-                                     dict(state='exited', exit_code=1, nonce=spec['nonce'], run_id=spec['run_id']))
+            durable.write_json(directory / runner.STATUS_FILE,
+                               dict(state='exited', exit_code=1, nonce=spec['nonce'], run_id=spec['run_id']), sync=False)
             value = dict(status='error', returncode=1, record=None, text='', timeout=None,
                          usage=dict(tokens_in=0, tokens_out=0, tokens_cached=0, context=0))
             self.fl.specs.append(spec)

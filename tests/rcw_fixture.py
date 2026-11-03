@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from drover import ci, config, origin, placement, repos, runner
+from drover import ci, config, durable, origin, placement, repos, runner
 from tests import rcw_repo
 from tests.rcw_repo import MemoryRepo, MemoryRepository
 
@@ -145,8 +145,8 @@ class PolicyCase:
             receipt.write_text(json.dumps(dict(version=ci.VERSION, sha=sha, passed=True, status='passed', outcome='passed',
                 exit_code=0, tree_unchanged=True, kind='checks', platform=spec['placement'],
                 nonce=spec['nonce'], run_id=spec['run_id'], log_tail=[])))
-            runner.write_json_atomic(receipt.parent / runner.STATUS_FILE,
-                                     dict(state='exited', exit_code=0, nonce=spec['nonce'], run_id=spec['run_id']))
+            durable.write_json(receipt.parent / runner.STATUS_FILE,
+                               dict(state='exited', exit_code=0, nonce=spec['nonce'], run_id=spec['run_id']), sync=False)
             value = dict(status='done', returncode=0, record=None, text='', timeout=None,
                          usage=dict(tokens_in=0, tokens_out=0, tokens_cached=0, context=0))
             handle = FakeHandle(value)

@@ -9,15 +9,13 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from . import placement
+from . import durable, placement
 from .placement import KILL_AFTER_S
 from .runner_common import (POLL_S, WATCH_GLOBS, STOP_FILE, STATUS_FILE, RECORD_FILE, OUT_FILE,
-                            STOP_REASONS, NONCE_RE, TERMINAL_WAIT_S, scratch_path, now_iso, run_dir, write_json_atomic, read_status)
+                            STOP_REASONS, NONCE_RE, scratch_path, now_iso, run_dir, read_status)
 from .runner_record import scan_record
 
 # ---- supervising ------------------------------------------------------------------------------------------
-ROUTINE_WAIT_S = 0.5     # a heartbeat is retried at the next sample, so it must not hold the watchdog loop long
-
 class Status:
     def __init__(self, path, run_id, nonce):
         self.path = path
@@ -27,24 +25,25 @@ class Status:
 
     def set(self, **kw):
         self.d.update(kw)
-        write_json_atomic(self.path, self.d)
+        durable.write_json(self.path, self.d, sync=False)
 
     def routine(self, **kw):
-        """A heartbeat or progress update: a write that cannot land is skipped, and the next update carries it."""
+        """A heartbeat or progress update: a write that cannot land is skipped, and the next update carries it, so the
+        wait is short and does not hold the watchdog loop."""
         self.d.update(kw)
         try:
-            write_json_atomic(self.path, self.d, ROUTINE_WAIT_S)
+            durable.write_json(self.path, self.d, sync=False, wait=durable.ROUTINE)
             return True
         except OSError:
             return False
 
     def terminal(self, **kw):
-        """The write that records the outcome. It waits out a reader for TERMINAL_WAIT_S; if the status file still
+        """The write that records the outcome. It waits out a reader for `durable.TERMINAL`; if the status file still
         cannot be replaced, the outcome goes to stderr (runner.log when detached) and the caller still returns it, so
         the runner's exit code and output keep what the worker did."""
         self.d.update(kw)
         try:
-            write_json_atomic(self.path, self.d, TERMINAL_WAIT_S)
+            durable.write_json(self.path, self.d, sync=False, wait=durable.TERMINAL)
             return True
         except OSError as e:
             print(f"runner: could not write the terminal status {self.path}: {e!r}", file=sys.stderr)
@@ -78,12 +77,12 @@ def request_stop(runs_dir, run_id, reason="requested", nonce=None):
             raise ValueError("bad nonce")
         d = run_dir(runs_dir, run_id)
         d.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(d / STOP_FILE, {"reason": reason, "nonce": str(nonce)})
+        durable.write_json(d / STOP_FILE, {"reason": reason, "nonce": str(nonce)}, sync=False)
         return True
     st = read_status(runs_dir, run_id)
     if not st or not st.get("nonce"):
         return False
-    write_json_atomic(run_dir(runs_dir, run_id) / STOP_FILE, {"reason": reason, "nonce": st["nonce"]})
+    durable.write_json(run_dir(runs_dir, run_id) / STOP_FILE, {"reason": reason, "nonce": st["nonce"]}, sync=False)
     return True
 
 
@@ -234,7 +233,7 @@ def _supervise(st, d, out, argv, wall_s, idle_s, stdin_file, cwd, kill_after, po
             record_error = None
             if rec:
                 try:
-                    write_json_atomic(d / RECORD_FILE, rec, TERMINAL_WAIT_S)
+                    durable.write_json(d / RECORD_FILE, rec, sync=False, wait=durable.TERMINAL)
                 except OSError as e:        # out.log still holds the record; the outcome below matters more
                     record_error = repr(e)
             st.terminal(state=state, reason=reason, exit_code=rc, ended=now_iso(), peaks=dict(peaks.sample()),

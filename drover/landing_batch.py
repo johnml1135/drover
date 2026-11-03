@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path, PureWindowsPath
 
-from . import config, ci, placement
+from . import config, ci, durable, placement
 from .ledger import ops, landing as storage
 
 MIN_SIZE, MAX_SIZE = 1, 5
@@ -181,8 +181,7 @@ def build_tip(repo, worktree, base_sha, tasks):
         else:
             conflicts.append(t['id'])
     tip = git(worktree, 'rev-parse', 'HEAD').stdout.strip()
-    from .runner import write_json_atomic
-    write_json_atomic(checkpoint, dict(identity=identity, tip=tip, applied=applied, conflicts=conflicts))
+    durable.write_json(checkpoint, dict(identity=identity, tip=tip, applied=applied, conflicts=conflicts), sync=False)
     return tip, applied, conflicts
 
 

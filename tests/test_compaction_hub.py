@@ -13,7 +13,7 @@ from unittest import mock
 import unittest
 
 from drover import compaction, compaction_hold, config, disk, disk_state, ledger, placement
-from drover import ci, placement_exec, placement_host, resources, runner, runner_supervise, usage
+from drover import ci, durable, placement_exec, placement_host, resources, runner, runner_supervise, usage
 from drover.launch import RunnerLauncher
 from drover.runner import ScanError
 from tests.test_dispatcher import Base, res
@@ -394,13 +394,13 @@ class LandingGate(Draining):
         self.runs.mkdir(parents=True, exist_ok=True)
         spec = dict(run_id=run_id, nonce=nonce, placement=platform)
         request = self.runs / name
-        runner.write_json_atomic(request, dict(execution=execution, context=dict(spec=spec), ticket=None))
+        durable.write_json(request, dict(execution=execution, context=dict(spec=spec), ticket=None), sync=False)
         return request
 
     def gate_status(self, state, reason=None, run_id=GATE, nonce=NONCE):
         folder = runner.run_dir(str(self.runs), run_id)
         folder.mkdir(parents=True, exist_ok=True)
-        runner.write_json_atomic(folder / runner.STATUS_FILE, dict(nonce=nonce, state=state, reason=reason, run_id=run_id))
+        durable.write_json(folder / runner.STATUS_FILE, dict(nonce=nonce, state=state, reason=reason, run_id=run_id), sync=False)
 
     def test_the_drain_waits_for_a_running_gate_and_stops_it_after_the_grace(self):
         self.hold()
@@ -449,8 +449,8 @@ class LandingGate(Draining):
         self.gate_status('killed', reason)
         gate = ci.CI(self.runs, launcher=mock.Mock())
         spec = dict(run_id=self.GATE, nonce=self.NONCE, placement='wsl')
-        runner.write_json_atomic(runner.run_dir(str(self.runs), self.GATE) / 'plan.json',
-                                 dict(run_id=self.GATE, nonce=self.NONCE, platform='wsl', sha='a' * 40, kind='full'))
+        durable.write_json(runner.run_dir(str(self.runs), self.GATE) / 'plan.json',
+                           dict(run_id=self.GATE, nonce=self.NONCE, platform='wsl', sha='a' * 40, kind='full'), sync=False)
         return gate._classify(spec, dict(status='error', returncode=None), dict(kind='full'), self.request, 'a' * 40, 0)
 
     def test_a_gate_stopped_for_any_other_reason_still_counts(self):

@@ -5,7 +5,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from drover import launch
+from drover import durable, launch
 from tests.dispatch_fixture import FakePipeline, Observations, make_dispatcher
 from drover.ledger import connect, ops
 from drover.port import DirectPort
@@ -57,7 +57,7 @@ class FakeLauncher:
                                       'exit_code': 0, 'tree_unchanged': True, 'kind': 'checks', 'platform': spec['placement'],
                                       'run_id': spec['run_id'], 'nonce': spec['nonce'], 'log_tail': []}))
             from drover import runner
-            runner.write_json_atomic(out.parent / runner.STATUS_FILE, dict(state='exited', exit_code=0, nonce=spec['nonce'], run_id=spec['run_id']))
+            durable.write_json(out.parent / runner.STATUS_FILE, dict(state='exited', exit_code=0, nonce=spec['nonce'], run_id=spec['run_id']), sync=False)
             return FakeHandle({'status': 'done', 'returncode': 0, 'record': None, 'text': '',
                                'usage': {'tokens_in': 0, 'tokens_out': 0, 'tokens_cached': 0, 'context': 0}})
         self.specs.append(spec)
