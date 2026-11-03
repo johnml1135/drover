@@ -3,7 +3,7 @@ import subprocess
 from functools import partial
 from pathlib import Path
 
-from . import git_worktrees, placement, process
+from . import placement, process
 from .disk_inventory import repository_root, safe_path, worktree_roots
 from .disk_stage import item, within
 
@@ -121,7 +121,7 @@ def folder_cache(run, request, entry):
             row = item(path, 'folder_cache')
             row.update(action='candidate', files=1, bytes=info.st_size, age_s=max(0, request['now'] - activity))
             if request['apply']:
-                proof = run.evidence.fresh_processes()
+                proof = run.evidence.fresh_processes().proof
                 if not run.clock.can_mutate():      # the line passed while it was proven: it stays, as in stage 2
                     run.add(dict(row, action='keep', reason_code='removal_deadline'))
                     return run.stop('cache_deadline', None, [], []) or True
@@ -175,7 +175,7 @@ def output_evidence(request, machine, entry, *, evidence, touched=(), fresh=Fals
                f'host={placement.physical_disk_path(entry["worktree"])!r}, '
                f'drive={request["drive"]["path"]!r}, '
                f'drive_host={placement.physical_disk_path(request["drive"]["path"])!r}')
-    if (evidence.fresh_processes() if fresh else evidence.processes()).busy(str(path)):
+    if (evidence.fresh_processes().proof if fresh else evidence.processes()).busy(str(path)):
         raise ValueError('process using worktree')
     # This worker cannot see Windows processes; a budget carries what the coordinator found them naming inside WSL.
     if any(within(named, path) for named in (request.get('budget') or {}).get('windows_paths') or ()):
@@ -210,7 +210,7 @@ def prune_emptied(target, removed, touched):
 def remove_output(request, run, machine, entry, evidence, touched, target, measured, row):
     """The one removal of declared outputs: `target` is proven again now, as one unit, immediately before its paths
     (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count on `run` as each path goes."""
-    from . import disk_evidence, disk_worktrees     # disk_evidence reaches config, which loads this module
+    from . import disk_evidence     # disk_evidence reaches config, which loads this module
     path = evidence[0]
     try:
         current = run.evidence.row(machine['repo'], entry['worktree'])
@@ -225,13 +225,13 @@ def remove_output(request, run, machine, entry, evidence, touched, target, measu
                 tracked & set(measured) or (tracked and str(target) in measured) or \
                 any(run.evidence.measure(Path(name)) != known for name, known in measured.items()):
             raise ValueError('disposable evidence changed')
-        proof = git_worktrees.prove(run.evidence.listings, machine['repo'], str(path), pointer=True, timeout_s=git_worktrees.PROOF_TIMEOUT_S)
+        proof = run.evidence.fresh_registrations(machine['repo'], target, path, pointer=True)
         if proof.refused:
             first = proof.refused[0]
             return row.update(action='keep', reason_code='registration_unknown' if first.why == 'unknown' else 'output_evidence_unavailable',
                               error=f'disposable registration changed ({first.detail})')
         proven = set()
-        if disk_worktrees.overlaps_worktrees(request, target, path, reach=proof.reach) or \
+        if proof.overlaps or \
                 any(repository_tree(Path(name), boundary=path, proven=proven) for name in measured) or \
                 not placement.cleanup_contains(request['drive']['path'], str(target)) or live_tree(target, run.evidence):
             raise ValueError('disposable side marker changed')
@@ -270,7 +270,7 @@ def disposable_rows(run):
     """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row not yet added: the consumer
     adds it once decided, after remove(), the one revalidated removal, if it calls that. Whatever is not eligible is
     added as kept, never yielded. Past the clock's line it stops between units with the one `output_deadline` row."""
-    from .disk_worktrees import overlaps_worktrees
+    from .disk_evidence import overlaps     # disk_evidence reaches config, which loads this module
     request, stage = run.request.decide_view(), run.evidence
     budget = bool(request.get('budget'))
     for number, machine in enumerate(request['repos']):
@@ -302,7 +302,7 @@ def disposable_rows(run):
                                 row['reason_code'] = 'drive_unproven'
                             elif live_tree(target, stage):
                                 row['reason_code'] = 'live_owner'
-                            elif overlaps_worktrees(request, target, path, reach=stage.every_registered()):    # a failed repo raises: each unit stays
+                            elif overlaps(target, path, stage.every_registered()):    # a failed repo raises: each unit stays
                                 row['reason_code'] = 'protected'
                             else:
                                 proven = set()

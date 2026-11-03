@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 from drover import disk_evidence, disk_inventory, disk_worktrees, git_client, git_worktrees, ownership, placement, \
     placement_paths
-from drover.disk_evidence import StageEvidence
+from drover.disk_evidence import FreshProcesses, FreshRegistrations, StageEvidence
 from drover.disk_inventory import Inventory
 from drover.disk_stage import StageClock, StageRequest
-from drover.git_worktrees import Listing, RegistrationsUnknown
+from drover.git_worktrees import Listing, Proof, Refusal, RegistrationsUnknown
 from tests.disk_fixture import listing_answers, staged
 from tests.fakeci import git_answers
 from tests.gitfix import clean_parent
@@ -105,7 +105,7 @@ class Processes(unittest.TestCase):
         proofs = iter([first, fresh])
         evidence = StageEvidence(request(), clock_at([0.0]), processes=lambda **_: next(proofs))
         self.assertIs(evidence.processes(), first)
-        self.assertIs(evidence.fresh_processes(), fresh)
+        self.assertIs(evidence.fresh_processes().proof, fresh)
         self.assertIs(evidence.processes(), first)          # the first pass's proof stands
         self.assertEqual(evidence.process_rows(), [
             dict(action='report', reason_code='process_visibility_unavailable', count=3,
@@ -116,6 +116,107 @@ class Processes(unittest.TestCase):
         evidence = StageEvidence(request(), clock_at([0.0]), processes=lambda **_: SimpleNamespace(busy=lambda p: False))
         evidence.processes()
         self.assertEqual(evidence.process_rows(), [])
+
+    def test_fresh_processes_is_always_a_new_snapshot(self):
+        proofs = [SimpleNamespace(name=n) for n in ('first', 'second', 'third')]
+        asked = iter(proofs)
+        evidence = StageEvidence(request(), clock_at([0.0]), processes=lambda **_: next(asked))
+        self.assertIs(evidence.processes(), proofs[0])
+        fresh = [evidence.fresh_processes(), evidence.fresh_processes()]
+        self.assertEqual([type(proof) for proof in fresh], [FreshProcesses, FreshProcesses])
+        self.assertEqual([proof.proof for proof in fresh], proofs[1:])
+        self.assertIs(evidence.processes(), proofs[0])       # the first pass's proof is no fresh one
+
+
+class FreshProofs(unittest.TestCase):
+    """Section 7.1: a removal's final check takes proof only `fresh_*` can make, read now."""
+
+    def test_constructors_refuse_without_the_token(self):
+        with self.assertRaises(TypeError):
+            FreshRegistrations((), False)
+        with self.assertRaises(TypeError):
+            FreshRegistrations((), False, object())
+        with self.assertRaises(TypeError):
+            FreshProcesses(SimpleNamespace(busy=lambda path: False))
+        self.assertFalse(hasattr(StageEvidence, 'listings'))      # the mutable Listings never leave the evidence
+
+    def proving(self, proof, times=None):
+        """Evidence whose `prove` answers `proof`, and the calls it was asked."""
+        asked = []
+
+        def prove(listings, repo, worktree, *, pointer, timeout_s, side=None):
+            asked.append(((repo, worktree), dict(pointer=pointer, timeout_s=timeout_s)))
+            return proof
+        return StageEvidence(request(), clock_at(times or [0.0]), processes=None, prove=prove), asked
+
+    def test_overlaps_comes_from_proof_reach_as_overlaps_worktrees_did(self):
+        """The cases of `overlaps_worktrees` at 6a2d0b1 (test_disk_removal, test_disk_fix8), measured against `Proof.reach`:
+        the target nests in, or holds, another place; its own row never counts."""
+        rows = ('/w/outer', '/w/outer/generated/inner', '/w/solo')
+        reach = tuple(placement.cleanup_parts(path) for path in rows)
+        for target, own, expected in (('/w/outer/generated', '/w/outer', True), ('/w/outer', '/w/outer', True),
+                                      ('/w/solo/bin', '/w/solo', False), ('/w/free/bin', '/w/free', False),
+                                      ('/w', '/w/solo', True), ('/w/outer/generated/inner/x', '/w/outer', True)):
+            with self.subTest(target=target):
+                evidence, asked = self.proving(Proof((), reach))
+                fresh = evidence.fresh_registrations('/r/one', target, own, pointer=True)
+                self.assertEqual((type(fresh), fresh.refused, fresh.overlaps), (FreshRegistrations, (), expected))
+                self.assertEqual(asked[0][0], ('/r/one', own))       # the proof is of the worktree, nesting of the target
+        nested, tree = placement.cleanup_parts('/mnt/h/tree/nested'), placement.cleanup_parts('/mnt/h/tree')
+        for target, own, reach, expected in ((r'H:\TREE', '/mnt/h/tree', (nested,), True),
+                                             (r'H:\tree/out', r'\\?\H:\TREE', (tree,), False)):
+            with self.subTest(spelling=target):
+                evidence, _ = self.proving(Proof((), reach))
+                self.assertIs(evidence.fresh_registrations('/r/one', target, own, pointer=True).overlaps, expected)
+        refusal = Refusal('/r/one', '/w/solo', 'changed', '.git')
+        evidence, asked = self.proving(Proof((refusal,), ()))
+        self.assertEqual(evidence.fresh_registrations('/r/one', '/w/solo', '/w/solo', pointer=False).refused, (refusal,))
+        self.assertIs(asked[0][1]['pointer'], False)
+
+    def test_proof_timeout_is_patience(self):
+        """The proof's timeout is the clock's patience on PROOF_TIMEOUT_S: its cap early, the 10 s floor at the 80% line."""
+        times = [0.0]
+        evidence, asked = self.proving(Proof((), ()), times)
+        evidence.fresh_registrations('/r/one', '/w/a', '/w/a', pointer=True)
+        times.append(1440.0)
+        evidence.fresh_registrations('/r/one', '/w/a', '/w/a', pointer=True)
+        self.assertEqual([options['timeout_s'] for _, options in asked], [git_worktrees.PROOF_TIMEOUT_S, 10.0])
+
+    def test_a_repo_whose_listing_failed_raises_in_any_repo(self):
+        def listing(repo, **_):
+            if repo == '/r/two':
+                raise RegistrationsUnknown('fatal: not a git repository')
+            return Listing(repo, (dict(worktree='/w/a'),))
+
+        evidence = StageEvidence(request(), clock_at([0.0]), processes=None)
+        with patch.object(git_worktrees, 'listing', listing):
+            for repo in ('/r/one', '/r/two'):
+                with self.subTest(repo=repo), self.assertRaisesRegex(RegistrationsUnknown, 'not a git repository'):
+                    evidence.fresh_registrations(repo, '/w/a', '/w/a', pointer=True)
+
+    def test_fresh_registrations_reads_every_repo_once_and_one_tip_for_a_branch(self):
+        """Through a removal over a scene of two repos: one proof, each repo's admin files read once, each repo listed
+        once in the stage (beta first at the proof), and one tip `rev-parse` for a branch target, none for a detached one."""
+        from tests.disk_trace import Scene
+        for detached, tips in ((False, 1), (True, 0)):
+            with self.subTest(detached=detached):
+                scene = Scene()
+                self.addCleanup(scene.doCleanups)
+                scene.repo('beta')
+                scene.worktree('w', detached=detached)
+                start = []
+                scene.midstage = lambda _: start.append(len(scene.git.asked))
+                with patch.object(git_worktrees, '_read_admin', wraps=git_worktrees._read_admin) as read, \
+                        patch.object(StageEvidence, 'fresh_registrations', autospec=True,
+                                     side_effect=StageEvidence.fresh_registrations) as fresh:
+                    trace = scene.record(apply=True)
+                self.assertTrue(trace['deleted'])
+                self.assertEqual(fresh.call_count, 1)
+                self.assertEqual(sorted(placement.cleanup_parts(call.args[0]) for call in read.call_args_list),
+                                 sorted(placement.cleanup_parts(scene.common(name)) for name in ('alpha', 'beta')))
+                self.assertEqual(scene.git.count('worktree', 'list'), 2)
+                asked = scene.git.asked[start[0]:]
+                self.assertEqual(asked.count(['rev-parse', '--verify', 'refs/heads/w']), tips)   # the tip, not main's
 
 
 class Inventories(unittest.TestCase):
@@ -269,6 +370,16 @@ class Reads(unittest.TestCase):
     def test_moved_functions_live_in_disk_evidence(self):
         for name in ('identity', 'registration_identity', 'outputs_at', 'snapshot'):
             self.assertEqual(getattr(disk_evidence, name).__module__, 'drover.disk_evidence')
+
+    def test_snapshot_takes_fresh_processes_never_processes(self):
+        """Section 7.1: a stray's snapshot always takes a new process proof, whatever the first pass saw."""
+        evidence = StageEvidence(StageRequest.from_wire(self.wire), StageClock(1800),
+                                 processes=lambda **_: SimpleNamespace(busy=lambda path: True))
+        with patch.object(evidence, 'processes', side_effect=AssertionError('the first pass proof')), \
+                patch.object(evidence, 'fresh_processes', wraps=evidence.fresh_processes) as fresh, \
+                self.assertRaisesRegex(ValueError, '^snapshot busy$'):
+            disk_evidence.snapshot(self.machine, self.worktree, evidence=evidence)
+        fresh.assert_called_once_with()
 
 
 if __name__ == '__main__':

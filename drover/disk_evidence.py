@@ -1,17 +1,50 @@
 """One stage run's evidence, held once.
 
 Slice 5 landed this holding the inventory, the listings, and the process proof with its report rows; slice 6a adds
-the reads, each git call taking the stage clock's patience, and the fresh proofs. A listing selects and a proof
-selects: neither authorises a deletion here. A failed read is unknown: it raises, and the stage keeps the row.
+the reads, each git call taking the stage clock's patience, and the fresh proofs. A listing selects and a first-pass
+value selects: neither authorises a deletion. Only `FreshRegistrations` and `FreshProcesses` are proof at removal, and
+only `fresh_*` here make them, each a new read. A failed read is unknown: it raises, and the stage keeps the row.
 """
 import hashlib
 import os
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import git_client, git_worktrees, ownership, placement, repos
 from .disk_inventory import Inventory, safe_path
 from .disk_stage import StageClock, StageRequest
+
+_TOKEN = object()       # held here alone: no type checker runs, so each fresh proof's constructor checks it
+
+
+class _Fresh:
+    def __post_init__(self):
+        if self._token is not _TOKEN:
+            raise TypeError(f'{type(self).__name__} is made only by StageEvidence.fresh_*, read now')
+
+
+@dataclass(frozen=True)
+class FreshRegistrations(_Fresh):
+    """The fresh proof of the registrations. Removal's final check takes no other kind."""
+    refused: tuple[git_worktrees.Refusal, ...]      # empty means nothing objected
+    overlaps: bool          # the target nests in, or holds, another place in the proof's reach
+    _token: object = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class FreshProcesses(_Fresh):
+    """A process proof taken now, with the same constructor rule."""
+    proof: object           # placement's ProcessProof
+    _token: object = field(default=None, repr=False, compare=False)
+
+
+def overlaps(target, own, reach) -> bool:
+    """Whether `target` nests in, or holds, a place in `reach` (cleanup_parts tuples) other than `own`'s. Registrations
+    protect descendants even when their pointer or folder is broken. This never lists."""
+    target_parts, own_parts = placement.cleanup_parts(str(target)), placement.cleanup_parts(str(own))
+    return any(other != own_parts and (other[:len(target_parts)] == target_parts or target_parts[:len(other)] == other)
+               for other in reach)
 
 
 # Any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end.
@@ -43,18 +76,20 @@ def _task_facts(snapshot, path, tag):
 
 class StageEvidence:
     """What one stage run knows. `processes` binds at definition: a test passes its own, as
-    `partial(StageEvidence, processes=fake)` in place of `disk_side.StageEvidence`."""
+    `partial(StageEvidence, processes=fake)` in place of `disk_side.StageEvidence`. `prove` left as None is
+    `git_worktrees.prove` looked up at each proof, so a test patching it there reaches every stage's proof."""
 
     def __init__(self, request: StageRequest, clock: StageClock, *, listings=git_worktrees.Listings,
-                 prove=git_worktrees.prove, processes=placement.cleanup_processes):
+                 prove=None, processes=placement.cleanup_processes):
         self._request = request
         self._clock = clock
         self._inventory = Inventory(request.now, request.side or placement.cleanup_side(), request.drive['path'],
                                     request.state_dir, request.inventory_id)
-        # Each lazy listing takes its patience when it starts, so the clamp to the worker timeout applies.
+        # Each lazy listing takes its patience when it starts, so the clamp to the worker timeout applies. The Listings
+        # change as this stage removes and repairs, so they never leave this object.
         self._listings = listings([machine['repo'] for machine in request.repos],
                                   timeout_s=lambda: clock.patience(git_worktrees.LISTING_TIMEOUT_S))
-        self._prove = prove                  # slice 6a's fresh_registrations
+        self._prove = prove
         self._query = processes
         self._proof = None
         # Every proof's diagnostics, the first pass's and each fresh one's, by (pid, name), and its query failures.
@@ -63,12 +98,6 @@ class StageEvidence:
     @property
     def inventory(self) -> Inventory:
         return self._inventory
-
-    @property
-    def listings(self) -> git_worktrees.Listings:
-        """The stage's listings, which a removal's `git_worktrees.prove` reads until slice 6a's `fresh_registrations`
-        takes that proof in here."""
-        return self._listings
 
     def listed(self, repo: str) -> git_worktrees.Listing:
         """The first pass's listing of `repo`; its failure raised."""
@@ -93,12 +122,21 @@ class StageEvidence:
     def processes(self):
         """The first pass's process proof: one snapshot per stage run."""
         if self._proof is None:
-            self._proof = self.fresh_processes()
+            self._proof = self._snapshot()
         return self._proof
 
-    def fresh_processes(self):
-        """A process proof taken now, always a new snapshot, its diagnostics joining `process_rows`. Slice 6a gives it
-        its own type."""
+    def fresh_processes(self) -> FreshProcesses:
+        """A process proof taken now, always a new snapshot, its diagnostics joining `process_rows`."""
+        return FreshProcesses(self._snapshot(), _TOKEN)
+
+    def fresh_registrations(self, repo: str, target, own, *, pointer: bool) -> FreshRegistrations:
+        """The fresh proof of ruling 13, read now: `own`, the worktree, proven against this stage's listing in every
+        repo, and whether `target` overlaps anything in the proof's reach. A failed listing in any repo raises."""
+        proof = (self._prove or git_worktrees.prove)(self._listings, repo, str(own), pointer=pointer,
+                                                     timeout_s=self._clock.patience(git_worktrees.PROOF_TIMEOUT_S))
+        return FreshRegistrations(proof.refused, overlaps(target, own, proof.reach), _TOKEN)
+
+    def _snapshot(self):
         request = self._request
         return self._noted(self._query(
             paths=request.policy, state_dir=request.state_dir, inventory_id=request.inventory_id,
@@ -254,7 +292,7 @@ def snapshot(machine, path, *, evidence):
     git read takes the stage clock's patience."""
     if not safe_path(path) or any(p.name == '.git' for p in path.rglob('*')):
         raise ValueError('independent or broken git metadata')
-    if evidence.fresh_processes().busy(str(path)):
+    if evidence.fresh_processes().proof.busy(str(path)):        # never `processes()`: R7 cannot see in here
         raise ValueError('snapshot busy')
     head = evidence._read(machine['repo'], 'rev-parse', '--verify', 'HEAD^{commit}').strip()
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:

@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from . import disk_evidence, git_client, git_worktrees, ownership, placement
+from . import disk_evidence, git_client, ownership, placement
 from .disk_evidence import _out
 from .disk_inventory import safe_path, worktree_roots
 from .disk_paths import disposable_match, repository_tree
@@ -62,7 +62,7 @@ def inspect(request, machine, entry, *, evidence, fresh=False):
     checks['main'] = placement.cleanup_parts(path) == placement.cleanup_parts(machine['repo'])
     if checks['main']:
         return decision()
-    proof = evidence.fresh_processes() if fresh else evidence.processes()
+    proof = evidence.fresh_processes().proof if fresh else evidence.processes()
     checks.update(busy=evidence.task_facts(path, None)[0] or proof.busy(str(path)),
                   process_reason=getattr(proof, 'reason', None))
     if checks['busy']:
@@ -217,8 +217,8 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
                     current.update(action='candidate', reason_code='quarantine_elapsed')
         if request.get('approved_path') and placement.cleanup_parts(request['approved_path']) == placement.cleanup_parts(path) and current['reason_code'] in ('unsettled', 'orphan'):
             current['action'] = 'candidate'
-        proof = git_worktrees.prove(evidence.listings, machine['repo'], str(path), timeout_s=git_worktrees.PROOF_TIMEOUT_S,
-                                    pointer=not row.get('unlisted') and current['reason_code'] != 'missing')
+        proof = evidence.fresh_registrations(machine['repo'], path, path,
+                                             pointer=not row.get('unlisted') and current['reason_code'] != 'missing')
         refusal = next(iter(proof.refused), None)
         if refusal and refusal.why == 'changed' and row.get('unlisted'):
             # Registered since the listing, as a row at `entry` would say: its three days start again (spec S5).
@@ -236,7 +236,7 @@ def remove(request: dict, selected: dict, *, store=None, clock, evidence) -> dic
         matches = current['action'] == 'candidate' and all(fresh_identity.get(k) == selected_identity.get(k) for k in keys)
         if not matches:
             return validate(identity_matches=False)
-        if overlaps_worktrees(request, path, path, reach=proof.reach):
+        if proof.overlaps:
             return validate(nested=True)
         if current['reason_code'] != 'missing':
             excluded = ignored_outside(path, current['ignored'], evidence.declarations(machine, machine['repo'] if row.get('unlisted') else path))
@@ -341,12 +341,3 @@ def unlisted(request, machine, listed, skip=(), *, clock, evidence):
             quarantine(request, machine, row, evidence=evidence)
         out.append(row)
     return out
-
-
-def overlaps_worktrees(request, target, own, *, reach):
-    """Registrations protect descendants even when their pointer or folder is broken. `reach` is cleanup_parts tuples:
-    the listing's rows at first pass, and `Proof.reach` before a deletion. This never lists."""
-    target_parts = placement.cleanup_parts(str(target))
-    own_parts = placement.cleanup_parts(str(own))
-    return any(other != own_parts and (other[:len(target_parts)] == target_parts or
-                                       target_parts[:len(other)] == other) for other in reach)

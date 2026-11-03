@@ -22,7 +22,7 @@ R6_CLUSTER = tuple(f'drover/{name}.py' for name in (
     'disk_paths', 'disk_preflight', 'disk_registrations', 'disk_removal', 'disk_runtime', 'disk_side', 'disk_stage',
     'disk_temp', 'disk_worktrees'))
 R9_NAMED = ('drover.git_worktrees.parse', 'drover.git_worktrees.AdminFiles')
-R9_CALLERS = tuple(f'drover/{name}.py' for name in ('disk_evidence', 'disk_worktrees', 'disk_paths'))   # `disk_evidence` alone from 6a
+R9_CALLERS = ('drover/disk_evidence.py',)      # from slice 6a every fresh proof is `StageEvidence.fresh_registrations`
 
 
 def only(*allowed):

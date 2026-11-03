@@ -96,7 +96,7 @@ def temporary(run) -> None:
                         else:
                             row.update(action='candidate', reason_code='stale_temp')
                             if request['apply']:
-                                current = evidence.fresh_processes()
+                                current = evidence.fresh_processes().proof
                                 if current.busy(str(path)):
                                     row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
                                 elif temp_facts(path, request, budget=budget, cached={}, children={}, evidence=evidence) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request['drive']['path'], str(path)):

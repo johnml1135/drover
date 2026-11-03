@@ -81,7 +81,8 @@
     "drover.disk_paths.repository_config",
     "drover.disk_worktrees.identity",
     "drover.disk_worktrees.snapshot",
-    "drover.disk_worktrees.registration_identity"
+    "drover.disk_worktrees.registration_identity",
+    "drover.disk_worktrees.overlaps_worktrees"
   ],
   "removed_receipt_fields": [
     "infra"

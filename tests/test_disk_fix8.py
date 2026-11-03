@@ -258,11 +258,11 @@ class SafetyDecisions(DiskCase):
                 output_evidence(request, machine, entry, evidence=None)
 
     def test_nested_registrations_and_approved_selection_normalize_spelling(self):
-        from drover import disk_worktrees
+        from drover import disk_evidence, disk_worktrees
         request = dict(repos=[dict(repo=r'H:\repo')], apply=False, approved_path=r'\\?\H:\tree')
         nested, tree = placement.cleanup_parts('/mnt/h/tree/nested'), placement.cleanup_parts('/mnt/h/tree')
-        self.assertTrue(disk_worktrees.overlaps_worktrees(request, r'H:\TREE', '/mnt/h/tree', reach=[nested]))
-        self.assertFalse(disk_worktrees.overlaps_worktrees(request, r'H:\tree/out', r'\\?\H:\TREE', reach=[tree]))
+        self.assertTrue(disk_evidence.overlaps(r'H:\TREE', '/mnt/h/tree', [nested]))
+        self.assertFalse(disk_evidence.overlaps(r'H:\tree/out', r'\\?\H:\TREE', [tree]))
         row = dict(path='/mnt/h/tree', reason_code='orphan', action='keep')
         with listing_answers([dict(worktree='/mnt/h/tree')]), \
                 patch.object(disk_worktrees, 'inspect', return_value=row), \

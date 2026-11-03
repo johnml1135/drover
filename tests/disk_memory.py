@@ -151,7 +151,7 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
             path = Path(path)
             if any(p.name == '.git' for p in path.rglob('*')):
                 raise ValueError('independent or broken git metadata')
-            if evidence.fresh_processes().busy(str(path)):
+            if evidence.fresh_processes().proof.busy(str(path)):
                 raise ValueError('snapshot busy')
             repo = repository(machine['repo'])
             expected = repo.tree(repo.repo)['tracked']
