@@ -73,12 +73,13 @@ def temp_facts(path, request, *, budget, cached, children, run):
     return dict(files=files, bytes=size, age_s=max(0, request['now'] - newest))
 
 
-def build_facts(path, request, *, clock):
+def build_facts(path, request, *, clock, device):
     """(files, bytes, age_s) of one build unit, its age that of its newest path, walked without following a link. A
-    link, `.git`, `.venv`, repository evidence or another device anywhere in it raises ValueError, which keeps the
-    unit; past the clock's line it raises TempBudgetExceeded."""
+    link, `.git`, `.venv`, repository evidence, or a path off `device`, its build root's, anywhere in it, the unit
+    itself included (a mount, which on WSL is no link), raises ValueError, which keeps the unit; past the clock's line
+    it raises TempBudgetExceeded."""
     files = size = 0
-    newest, device, pending = None, None, [path]
+    newest, pending = None, [path]
     while pending:
         if clock.late():
             raise TempBudgetExceeded('stage line reached')
@@ -86,9 +87,8 @@ def build_facts(path, request, *, clock):
         if placement.cleanup_link(current) or current.name.casefold() in ('.git', '.venv'):
             raise ValueError('protected descendant')
         info = current.stat()
-        device = info.st_dev if device is None else device
         if info.st_dev != device:
-            raise ValueError('another device below the build unit')
+            raise ValueError('on another device than its build root')
         newest = info.st_mtime if newest is None else max(newest, info.st_mtime)
         if current.is_dir():
             if repository_root(current):
@@ -116,6 +116,7 @@ def build_roots(run, request) -> bool:
                 continue
             if not root.is_dir():       # not made yet: nothing to judge
                 continue
+            device = root.stat().st_dev     # every path of every unit must be on the root's own device
             units = sorted(p for p in root.iterdir() if placement.cleanup_link(p) or p.is_dir())   # a file is no unit
         except OSError as error:
             run.error(dict(path=str(root), error=str(error)))
@@ -126,7 +127,7 @@ def build_roots(run, request) -> bool:
                 return True
             row = item(path, 'build_root_recent')
             try:
-                measured = build_facts(path, request, clock=run.clock)
+                measured = build_facts(path, request, clock=run.clock, device=device)
                 row.update(measured)
                 ruling = rule_build_unit(run, path, measured, entry=entry, processes=first)
                 if ruling.action == 'candidate' and request['apply']:
@@ -135,7 +136,7 @@ def build_roots(run, request) -> bool:
                         run.stop('temp_deadline', None, [], [])
                         return True
                     fresh = evidence.fresh_processes(regenerable=True)
-                    again = build_facts(path, request, clock=run.clock)
+                    again = build_facts(path, request, clock=run.clock, device=device)
                     ruling = rule_build_unit_fresh(run, path, measured, again, entry=entry, processes=fresh)
                 row.update(action=ruling.action, reason_code=ruling.reason_code,
                            **({'error': ruling.detail} if ruling.detail else {}))

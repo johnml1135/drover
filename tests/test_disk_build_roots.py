@@ -204,6 +204,35 @@ class BuildRoots(DiskCase):
         after = answer['items'].index(stops[0])
         self.assertFalse(any(i['action'] == 'removed' for i in answer['items'][after:]))
 
+    def on_another_device(self, target):
+        """Patch `Path.stat` so `target` and everything below it report another device, as a mount there would."""
+        real = Path.stat
+
+        def stat(path, *args, **options):
+            info = real(path, *args, **options)
+            if Path(path) != target and target not in Path(path).parents:
+                return info
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+            return SimpleNamespace(**dict(fields, st_dev=info.st_dev + 1))
+        return patch.object(Path, 'stat', stat)
+
+    def test_a_unit_that_is_itself_a_mount_is_kept(self):
+        unit = self.unit('mounted', 3 * DAY)
+        with self.on_another_device(unit):
+            answer = self.stage(True)
+        [row] = self.rows(answer, unit)
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'protected'))
+        self.assertIn('device', row['error'])
+        self.assertTrue((unit / 'debug' / 'app.exe').exists())
+
+    def test_a_deep_path_on_another_device_keeps_the_unit(self):
+        unit = self.unit('deep mount', 3 * DAY)
+        with self.on_another_device(unit / 'debug' / 'deps' / 'lib.rlib'):
+            answer = self.stage(True)
+        [row] = self.rows(answer, unit)
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'protected'))
+        self.assertTrue((unit / 'debug' / 'app.exe').exists())
+
     def test_a_build_root_not_made_yet_gives_no_row(self):
         self.build.rmdir()
         answer = self.stage(True)
@@ -246,8 +275,28 @@ class BuildRootConfig(DiskCase):
                     config.validate(dict(disk_cleanup=dict(build_roots=bad)))
 
     def preflight(self, folder):
-        self.cfg['disk_cleanup']['build_roots'] = [dict(path=str(folder), placement=self.side)]
+        self.cfg['disk_cleanup']['build_roots'] = [dict(path=str(folder), placement=placement.cleanup_path_side(str(folder)))]
         disk_preflight.check_cache_folders(config.validate(self.cfg))
+
+    def refused(self, folders, words):
+        for folder in folders:
+            with self.subTest(folder=folder):
+                with self.assertRaisesRegex(config.ConfigError, 'build root .*' + words):
+                    self.preflight(folder)
+
+    def test_preflight_refuses_drive_and_filesystem_roots(self):
+        self.refused(('C:\\', 'D:\\', 'C:/', '/', '/mnt/c'), 'drive or filesystem root')
+
+    def test_preflight_refuses_system_folders(self):
+        self.refused(('C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)', 'C:\\ProgramData', 'C:\\Users',
+                      'c:\\windows', '/usr', '/etc', '/home', '/var'), 'system folder')
+
+    def test_preflight_refuses_home_on_either_side_by_its_shape(self):
+        self.refused(('/home/someone', '/root', 'C:\\Users\\someone'), 'home folder')
+        for side in ('windows', 'wsl'):         # a Windows root checked from WSL, too, is known by its shape
+            with patch.object(placement, 'cleanup_side', return_value=side):
+                self.refused(('C:\\Users\\someone', '/home/someone'), 'home folder')
+        self.refused((Path.home(),), 'home folder')
 
     def test_preflight_refuses_protected_roots_and_git_trees(self):
         repo = self.root / 'checkout'

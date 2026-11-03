@@ -4,6 +4,10 @@ from pathlib import Path
 from . import placement
 from .config_defaults import ConfigError
 
+# Folders no build root may be, below a drive letter (any drive) or the Linux root; each is or holds what the system runs.
+SYSTEM_WINDOWS = frozenset((('windows',), ('program files',), ('program files (x86)',), ('programdata',), ('users',)))
+SYSTEM_LINUX = frozenset((('/', 'usr'), ('/', 'etc'), ('/', 'home'), ('/', 'var')))
+
 
 def check_cache_folders(cfg):
     """Refuse a validated configuration whose folder caches could reach a repository, worktree or state path, or whose
@@ -38,22 +42,29 @@ def check_cache_folders(cfg):
 
 
 def _build_root(entry, protected, repository_root):
-    """One build root: never in or holding a repository, worktree root or the state path, never home or holding it,
-    never in a git tree. Only a root on this side is probed for a repository above it, so loading a configuration never
+    """One build root: never a drive or filesystem root, a system folder, home or a folder holding it, never in or
+    holding a repository, worktree root or the state path, never in a git tree. Only a root on this side is probed for a repository above it, so loading a configuration never
     wakes WSL; the stage's rule checks each unit's ancestors again before anything goes."""
     parts = placement.cleanup_parts(entry['path'])
     folded = tuple(part.casefold() for part in parts)
     if any(part in ('.git', '.venv') for part in folded):
         raise ConfigError(f"build root {entry['path']!r} is in a protected path")
+    if len(parts) <= 1:
+        raise ConfigError(f"build root {entry['path']!r} is a drive or filesystem root")
+    drive = folded[0].endswith(':')
+    if folded[1:] in SYSTEM_WINDOWS if drive else folded in SYSTEM_LINUX:
+        raise ConfigError(f"build root {entry['path']!r} is a system folder")
+    here = entry['placement'] == placement.cleanup_side()
+    home = placement.cleanup_parts(str(Path.home())) if here else ()
+    # Off its side the home folder is known by its shape alone: C:\Users\<u>, /home/<u>, /root.
+    shaped = folded[1:2] == ('users',) and len(folded) == 3 if drive else \
+        folded == ('/', 'root') or folded[:2] == ('/', 'home') and len(folded) == 3
+    if (here and home[:len(parts)] == parts) or shaped:
+        raise ConfigError(f"build root {entry['path']!r} is or holds the home folder")
     for root in filter(None, protected):
         other = placement.cleanup_parts(root)
         if parts[:len(other)] == other or other[:len(parts)] == parts:
             raise ConfigError(f"build root {entry['path']!r} overlaps a repository, worktree or state path")
-    here = entry['placement'] == placement.cleanup_side()
-    home = placement.cleanup_parts(str(Path.home())) if here else ()
-    linux_home = folded in (('/',), ('/', 'root')) or folded[:2] == ('/', 'home') and len(folded) <= 3
-    if (here and home[:len(parts)] == parts) or (entry['placement'] == 'wsl' and linux_home):
-        raise ConfigError(f"build root {entry['path']!r} is or holds the home folder")
     if here:
         concrete = Path(placement.native(entry['path'])).absolute()
         if any(repository_root(parent) for parent in (concrete, *concrete.parents)):
