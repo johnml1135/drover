@@ -362,3 +362,7 @@ On ea5f404: `Ran 4092 tests (28 skipped) in 275 modules, wall 206.8s, 0 failed m
 ## After slice 4
 
 On 5638837: `Ran 4165 tests (28 skipped) in 277 modules, wall 179.5s, 0 failed modules`; integration `Ran 205 tests (14 skipped) in 277 modules, wall 185.9s, 0 failed modules`. `test_landing_repository` 28.5 s (60.1 s before), `test_disk_registrations` 107.2 s. Converted modules: 568 to 47 real spawns, 28.0 s to 9.1 s; `test_origin_sync` 234 spawns to 0. `IMPURE_CEILING` 59, `INTEGRATION_CEILING` 205.
+
+## After slices 5 to 7 (final checkpoint)
+
+On bcfccf5: `Ran 4405 tests (28 skipped) in 288 modules, wall 247.0s, 0 failed modules`; integration `Ran 205 tests (14 skipped) in 288 modules, wall 237.5s`, with one load flake (`test_compaction_hub` real-process hold, 3/3 alone). Taken with other agents' Motif test runs on the machine, so walls overstate; the slice 6b ship run on a quieter machine was 145.9 s / 198.9 s. Integration modules over 60 s: `test_disk_registrations`, `test_disk_yanked`. `IMPURE_CEILING` 55, `INTEGRATION_CEILING` 205 (ruled at the final review: every real-git contract named). Spawn census not re-run since 572dcb4: carried.
