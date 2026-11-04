@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import config, disk_preflight, placement, placement_proof
+from drover.disk_stage import StageClock
 from drover.disk_temp import temporary
 from tests.disk_fixture import DAY, DiskCase, staged
 
@@ -133,6 +134,20 @@ class BuildRoots(DiskCase):
         self.assertEqual(self.rows(result, unit)[0]['action'], 'keep')
         self.assertTrue(unit.exists())
 
+    def test_a_folder_holding_a_bare_repository_inside_a_unit_keeps_it(self):
+        unit = self.unit('agent-bare', 3 * DAY, files=('mirror/HEAD', 'mirror/objects/pack/p', 'mirror/refs/heads/main'))
+        self.approve_report()
+        result = self.run_cleanup(apply=True)
+        [row] = self.rows(result, unit)
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'protected'))
+        self.assertTrue((unit / 'mirror' / 'HEAD').exists())
+
+    def test_a_unit_exactly_max_idle_hours_old_is_the_first_age_that_is_idle(self):
+        edge, inside = self.unit('exactly', 2 * HOUR), self.unit('a-second-short', 2 * HOUR - 1)
+        result = self.run_cleanup()
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, edge)], [('candidate', 'build_root_idle')])
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, inside)], [('keep', 'build_root_recent')])
+
     # --- one stage run, with the process proofs as the stage asks for them
 
     def request(self, apply, **paths):
@@ -203,6 +218,26 @@ class BuildRoots(DiskCase):
         self.assertEqual({str(u) for u in units if not u.exists()}, removed)
         after = answer['items'].index(stops[0])
         self.assertFalse(any(i['action'] == 'removed' for i in answer['items'][after:]))
+
+    def test_past_the_line_a_unit_not_reached_gets_no_row(self):
+        first, second = self.unit('unit00', 3 * DAY), self.unit('unit01', 3 * DAY)
+        clock = lambda: 0.0 if first.exists() else 100.0        # the line (48 s of 60) is crossed once the first unit is gone
+        answer = self.stage(True, clock=clock, worker_timeout_s=60)
+        self.assertTrue(answer['partial'])
+        self.assertEqual([i['reason_code'] for i in answer['items']], ['build_root_idle', 'temp_deadline'])
+        self.assertEqual(self.rows(answer, second), [])
+        self.assertTrue(second.exists())
+
+    def test_a_removal_the_clock_will_not_let_begin_is_a_row_and_a_stop_and_leaves_the_unit(self):
+        idle = self.unit('agent-late', 3 * DAY)
+        with patch.object(StageClock, 'can_mutate', return_value=False):      # the scan was on time; a removal would not end
+            answer = self.stage(True)
+        self.assertEqual([i['reason_code'] for i in answer['items']], ['removal_deadline', 'temp_deadline'])
+        [row] = self.rows(answer, idle)
+        self.assertNotEqual(row['action'], 'removed')
+        self.assertTrue(answer['partial'])
+        self.assertTrue((idle / 'debug' / 'app.exe').exists())
+        self.assertEqual(answer['reclaimed_bytes'], 0)
 
     def on_another_device(self, target):
         """Patch `Path.stat` so `target` and everything below it report another device, as a mount there would."""
@@ -308,6 +343,11 @@ class BuildRootConfig(DiskCase):
             with self.subTest(folder=folder):
                 with self.assertRaisesRegex(config.ConfigError, 'build root'):
                     self.preflight(folder)
+
+    def test_preflight_refuses_a_git_tree_that_is_not_a_registered_repository(self):
+        checkout = self.root / 'unregistered'
+        self.file(checkout / '.git' / 'HEAD', 'ref: refs/heads/main\n')
+        self.refused((checkout / 'target', checkout / 'target' / 'deep'), 'git tree')
 
     def test_preflight_accepts_a_plain_folder(self):
         self.preflight(self.root / 'cargo-targets')

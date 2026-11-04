@@ -340,6 +340,12 @@ class Suggestions(unittest.TestCase):
             rows = self.report()
         self.assertEqual(rows['f1'].get('suggestion'), 'work/one')
 
+    def test_a_blob_in_two_commits_on_different_branches_is_suggested_from_the_newest_commit(self):
+        twice = [(C3, [(ZERO, A)]), (C4, [(ZERO, C), (ZERO, A)])] + LOG[2:]     # C3 is newer; C4, on work/two, also adds it
+        with patch.dict(globals(), LOG=twice):
+            rows = self.report()
+        self.assertEqual(rows['f1'].get('suggestion'), 'work/one')
+
 
 class NewestFiles(unittest.TestCase):
     """The suggestion's walk asks the file system once per file: on 9p each ask cost about 4 ms, and the old walk's
