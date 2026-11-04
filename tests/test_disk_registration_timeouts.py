@@ -35,7 +35,7 @@ class FolderTimeouts(unittest.TestCase):
     def test_judge_timeout_keeps_that_folder_and_judges_the_next(self):
         outcomes = [TIMEOUT, ('repair', 'b2', 'ok', None)]
         with patch.object(disk_registrations, 'judge', side_effect=outcomes):
-            rows = disk_registrations.report(request(), MACHINE, [], found('one', 'two'), None, evidence=None, clock=CLOCK)
+            rows = list(disk_registrations.report(request(), MACHINE, [], found('one', 'two'), None, evidence=None, clock=CLOCK))
         self.assertEqual([r['reason_code'] for r in rows], ['lost_registration_unproven', 'lost_registration'])
         self.assertEqual([r['action'] for r in rows], ['keep', 'report'])
 
@@ -53,8 +53,8 @@ class FolderTimeouts(unittest.TestCase):
     def test_reregister_timeout_is_a_failed_row_not_an_exception(self):
         with patch.object(disk_registrations, 'judge', return_value=('repair', 'b', 'ok', None)), \
                 patch.object(disk_registrations, 'reregister', side_effect=TIMEOUT):
-            rows = disk_registrations.report(request(apply=True), MACHINE, [], found('one'), None, evidence=None, clock=CLOCK)
-        self.assertEqual((rows[0]['action'], rows[0]['reason_code']), ('keep', 'lost_registration_failed'))
+            [row] = disk_registrations.report(request(apply=True), MACHINE, [], found('one'), None, evidence=None, clock=CLOCK)
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'lost_registration_failed'))
 
 
 class UnknownCandidate(unittest.TestCase):
@@ -292,7 +292,7 @@ class Suggestions(unittest.TestCase):
         """Report `lost` as the stage of `drive` sees them; a folder is on a drive by path prefix."""
         from tests.fakeci import git_answers
         with git_answers(self.git), patch.object(placement, 'cleanup_contains', lambda root, path: str(path).startswith(str(root))),                 patch.object(disk_registrations, 'newest_files', wraps=disk_registrations.newest_files) as walk:
-            rows = disk_registrations.report(request(drive=str(drive)), MACHINE, [], lost, None, evidence=None, clock=clock)
+            rows = list(disk_registrations.report(request(drive=str(drive)), MACHINE, [], lost, None, evidence=None, clock=clock))
         self.walked = walk.call_count
         return {Path(r['path']).name: r for r in rows}
 

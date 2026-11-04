@@ -2,13 +2,14 @@
 `planned`. The clock is faked through `clock=`; git, processes and the journal are faked at their seams."""
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover import disk_budget, disk_removal, disk_worktrees, placement
-from drover.disk_stage import StageClock
-from tests.disk_fixture import MemoryCleanupState, agreeing_proof, listing_answers, served, stage_request
+from drover.disk_stage import StageClock, read_rows
+from tests.disk_fixture import MemoryCleanupState, agreeing_proof, answer, listing_answers, served, stage_request
 from tests.disk_fixture import stage_run as stage_run_for
 
 MACHINE = dict(name='alpha', repo='/repo')
@@ -143,6 +144,100 @@ class Removals(unittest.TestCase):
                 outcomes.append(disk_budget.purge(run)['budget']['status'])
         self.assertEqual(outcomes, ['deadline', 'shortfall'])
 
+
+class Killed(BaseException):
+    """The worker timeout's kill: nothing in the stage catches it, and only what was sent before it crossed."""
+
+
+class StrayAndLostFolders(unittest.TestCase):
+    """Stage 4's stray and lost-folder loops: `late()` before each folder, and each row sent as its folder settles,
+    so a worker killed at its timeout keeps the removals and repairs already done (sections 6.1 and 7.3)."""
+    def setUp(self):
+        self.now, self.done, self.sent = [0.0], [], None
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        self.state = state.name
+        self.run = stage_run_for(dict(repos=[MACHINE], apply=True, now=1.0, drive=dict(path='/'), state_dir=self.state),
+                                 clock=lambda: self.now[0])
+
+    def step(self, result, *, late=False, kill=False):
+        """A removal or repair that succeeds with `result(args)`; then past the line if `late`. With `kill`, the
+        worker is killed as the second one starts, and `sent` is what had crossed by then."""
+        def act(*args, **_):
+            if kill and self.done:
+                self.sent = self.run._out.getvalue()
+                raise Killed()
+            self.done.append(args)
+            if late:
+                self.now[0] = LATE
+            return result(args)
+        return act
+
+    def settle(self, listed=()):
+        with listing_answers(list(listed)), \
+                patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)):
+            disk_worktrees.settled(self.run, runtime=SimpleNamespace(state=MemoryCleanupState(), evidence=None))
+
+    def strays(self, **step):
+        """Two stray folders under the repo's worktree root, each proven a candidate, and removed."""
+        root = Path(self.state) / 'repo.worktrees'
+        for name in ('a', 'b'):
+            (root / name).mkdir(parents=True)
+        removal = self.step(lambda args: dict(args[1], action='removed'), **step)
+        with patch.object(disk_worktrees, 'registrations', return_value={}), \
+                patch.object(disk_worktrees, 'worktree_roots', return_value=[root]), \
+                patch.object(disk_worktrees, 'unlisted_live', return_value=False), \
+                patch.object(disk_worktrees.disk_evidence, 'snapshot', return_value='h'), \
+                patch.object(type(self.run.evidence), 'measure', return_value=dict(files=1, bytes=5, age_s=0)), \
+                patch.object(disk_worktrees, 'quarantine', side_effect=lambda run, machine, row: dict(row, action='candidate')), \
+                patch.object(placement, 'cleanup_contains', return_value=True), \
+                patch.object(placement, 'worktree_side', return_value=placement.cleanup_side()), \
+                patch.object(disk_removal, 'remove_worktree', side_effect=removal):
+            self.settle()
+
+    def lost(self, listed=(), **step):
+        """Two lost folders, each proven a repair, and re-registered."""
+        found = {f'/nowhere/{n}': (Path(f'/nowhere/admin-{n}'), n) for n in ('one', 'two')}
+        registrations = disk_worktrees.disk_registrations
+        with patch.object(disk_worktrees, 'unlisted', return_value=[]), \
+                patch.object(registrations, 'protect', return_value=[]), \
+                patch.object(registrations, 'lost', return_value=found), \
+                patch.object(registrations, 'judge', return_value=('repair', 'b', 'ok', None)), \
+                patch.object(registrations, 'reregister', side_effect=self.step(lambda args: None, **step)):
+            self.settle(listed)
+
+    def test_a_stray_folder_past_the_line_is_not_removed_and_the_stage_stops(self):
+        self.strays(late=True)
+        out = answer(self.run)
+        self.assertEqual(len(self.done), 1, 'the second stray was removed past the line')
+        self.assertEqual([(r['reason_code'], r['action']) for r in out['items']],
+                         [('orphan', 'removed'), ('settled_deadline', 'report')])
+        stop = out['items'][-1]
+        self.assertEqual((stop['path'], stop['worktrees'], stop['repos']), ('/repo', [], []))
+        self.assertEqual(out['reclaimed_bytes'], 5)
+
+    def test_a_kill_after_the_first_stray_removal_keeps_its_row_and_bytes(self):
+        with self.assertRaises(Killed):
+            self.strays(kill=True)
+        sent = asdict(read_rows(self.sent))
+        self.assertEqual([(r['reason_code'], r['action']) for r in sent['items']], [('orphan', 'removed')])
+        self.assertEqual(sent['reclaimed_bytes'], 5)
+
+    def test_a_lost_folder_past_the_line_is_not_repaired_and_the_stage_stops(self):
+        self.lost(listed=[dict(worktree='/wt/a')], late=True)
+        out = answer(self.run)
+        self.assertEqual(len(self.done), 1, 'the second lost folder was repaired past the line')
+        self.assertEqual([(r['reason_code'], r['action']) for r in out['items']],
+                         [('lost_registration', 'reregistered'), ('settled_deadline', 'report')])
+        stop = out['items'][-1]
+        self.assertEqual((stop['path'], stop['worktrees'], stop['repos']), ('/repo', ['/wt/a'], []))
+
+    def test_a_kill_after_the_first_repair_keeps_its_row(self):
+        with self.assertRaises(Killed):
+            self.lost(kill=True)
+        sent = asdict(read_rows(self.sent))
+        self.assertEqual([(r['reason_code'], r['action']) for r in sent['items']],
+                         [('lost_registration', 'reregistered')])
 
 
 if __name__ == '__main__':

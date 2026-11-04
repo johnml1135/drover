@@ -304,11 +304,12 @@ def lost(machine, listed):
 
 
 def report(request, machine, listed, found, store, *, evidence, clock):
-    """Decide each lost directory; on apply, register the proven ones. Dry runs only describe. `evidence` and `clock`
-    are the stage's, which a repair tells and keeps to. The repo's history is read once, for every folder's suggestion,
-    with the clock's long patience: it stands in for up to ten reads per folder. A folder off the stage's drive is listed
-    and matched for repair as ever but gets no suggestion: its own drive's pass makes it, once."""
-    rows = []
+    """Decide each lost directory; on apply, register the proven ones. Dry runs only describe. Each directory's row is
+    yielded as it settles and the next is not started until asked for, so the stage sends each row and checks its line
+    in between. `evidence` and `clock` are the stage's, which a repair tells and keeps to. The repo's history is read
+    once, for every folder's suggestion, with the clock's long patience: it stands in for up to ten reads per folder. A
+    folder off the stage's drive is listed and matched for repair as ever but gets no suggestion: its own drive's pass
+    makes it, once."""
     history = History(machine['repo'], timeout_s=lambda: clock.patience(git_client.LONG) if clock else git_client.LONG,
                       late=lambda: bool(clock and clock.late()))
     for text, (target, rel) in found.items():
@@ -333,8 +334,7 @@ def report(request, machine, listed, found, store, *, evidence, clock):
                 row.update(action='reregistered', **({'error': journal} if journal else {}))
             except (OSError, ValueError, RuntimeError) as error:
                 row.update(action='keep', reason_code='lost_registration_failed', error=str(error))
-        rows.append(row)
-    return rows
+        yield row
 
 
 def reregister(request, machine, path, target, branch, store, *, evidence, clock):
