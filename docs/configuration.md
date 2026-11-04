@@ -253,13 +253,20 @@ cleaned on their own, whatever any drive's free space, with no dry report and no
 `drover disk-cleanup --mode build-roots` once every `[disk_cleanup] build_root_interval_s` (default 3600, finite and
 positive) while at least one Windows build root is declared, outside the 6 h cleanup cooldown; it records each start in
 the disk state, so a restarted hub waits out the interval. It launches none from 02:30 to 04:00 local time, so no
-build-roots run holds the cleanup lock when the daily apply starts at 03:00. That run serves only the Windows build roots, in its own
-process, on every tracked drive that holds one, and starts no worker on either side; a WSL build root is reported and
-left to the full cleanup's stage 2. Every guard above still applies. It takes the cleanup lock and skips when another
-cleanup holds it. It writes no `report_scope`, saves its rows as `disk/last-build-roots.json` (journalled like the full
-report, never replacing `last-report.json`), and is no applied daily report for the 3 clean applied days. A detached
-cleanup, triggered or build-roots, reads `config.toml` itself, so an edit counts from the next run without restarting
-the hub.
+build-roots run holds the cleanup lock when the daily apply starts at 03:00. A launch that fails is logged and recorded
+as `build_roots.error` in the disk state, and retried once the interval has passed again. The hub's own tick applies the
+run. A `drover disk-tracker tick` from the command line launches it report-only unless automation is applied and it is
+no `--dry-run`, and `drover disk-cleanup --mode build-roots --dry-run` reports without removing. That run serves only
+the Windows build roots, in its own process, on every tracked drive that holds one, and starts no worker on either side;
+a WSL build root is reported and left to the full cleanup's stage 2, and a root on a drive no enabled tracker covers
+gets a `build_root_untracked_drive` row. Every guard above still applies. It takes the cleanup lock, naming itself in
+the lock's owner record, and skips when another cleanup holds it. A daily or triggered run that finds a build-roots run
+holding the lock waits for it, up to 30 minutes, and a tick claims no triggered cleanup while one holds the lock or was
+launched in the last two minutes. It writes no `report_scope` and saves its rows as `disk/last-build-roots.json`, never
+replacing `last-report.json`; the hub journals that report only when it removed something or has a failed row, and it is
+no applied daily report for the 3 clean applied days. A detached cleanup, triggered or build-roots, reads `config.toml`
+itself, so an edit to its roots counts from the next run; the hub decides when to launch from the config it loaded, so a
+changed `build_root_interval_s` or a newly declared root reaches the hub's cadence at its next restart.
 
 ```toml
 [[disk_cleanup.build_roots]]
