@@ -315,16 +315,17 @@ class PlannerInspectionCache(BatchPipelineCase):
         routes = {tid: {**ROUTE, 'seat': f'seat{i}'} for i, tid in enumerate(tids)}   # three separate batches
         calls = []
         real = Replanning._inputs
-        def counting(replanning, task):
+        def counting(replanning, task, fresh=False):
             calls.append(task['id'])
-            return real(replanning, task)
+            return real(replanning, task, fresh=fresh)
         inspected = {}
         with patch.object(Replanning, '_inputs', counting):
             batches = [planning.prepare(lambda task, inputs: routes[task['id']], now=1000, inspected=inspected)
                        for _ in range(3)]
         self.assertTrue(all(batches))
-        # One inspection per candidate, plus the one post-enrollment freshness check per started member.
-        self.assertEqual(sorted(calls), sorted(tids * 2))
+        # One inspection per candidate, one at the current tip once it can start, and the one post-enrollment
+        # freshness check per started member.
+        self.assertEqual(sorted(calls), sorted(tids * 3))
         self.assertEqual(set(inspected), set(tids))
 
 

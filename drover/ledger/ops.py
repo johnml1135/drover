@@ -82,6 +82,7 @@ from .ops_execution import (
     finish_run,
     amend_run,
     list_runs,
+    open_read_checkouts,
     _siblings,
     _renormalise,
     reorder,

@@ -314,7 +314,8 @@ class GitSites(unittest.TestCase):
         from types import SimpleNamespace
         from drover import replan
         r = pipeline.Repository()
-        planner = replan.Replanning(SimpleNamespace(port=None, repo=lambda task: prog_dict('repo', 'wts'),
+        planner = replan.Replanning(SimpleNamespace(port=SimpleNamespace(open_read_checkouts=list),
+                                                    repo=lambda task: prog_dict('repo', 'wts'),
                                                     all_repos=dict))
         task = {'worktree': 'repo', 'branch': 'feat', 'read_access': ['p']}
         return [(':72', 'diff', lambda: r.changed_paths('repo', 'main')), (':89', 'rev-parse', lambda: r.head('repo')),

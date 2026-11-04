@@ -242,7 +242,7 @@ class PolicyBase(Base):
         dispatcher.replanning._inputs = self.planner_inputs
         return dispatcher
 
-    def planner_inputs(self, task):
+    def planner_inputs(self, task, fresh=False):
         checkout = task['worktree']
         reads = read_checkouts(self.repository, task['read_access'], self.pipe.all_repos(),
                                Path(self.tmp.name) / 'read-checkouts')
@@ -265,7 +265,7 @@ class PolicyBase(Base):
         shared = patch.object(placement, 'drive', side_effect=lambda p: 'T' if str(p).startswith((self.tmp.name, self.memory_tmp.name)) else drive(p))
         shared.start(); self.addCleanup(shared.stop)
         for context in (
-            patch('drover.task_access.prepare', side_effect=lambda entries, configured=None, root=None:
+            patch('drover.task_access.prepare', side_effect=lambda entries, configured=None, root=None, **_:
                   read_checkouts(self.repository, entries, configured or self.pipe.all_repos(),
                                  root or Path(self.tmp.name) / 'read-checkouts')),
             patch('drover.task_access.verify'),

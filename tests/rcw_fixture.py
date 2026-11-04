@@ -69,7 +69,7 @@ class PolicyCase:
                     patch.object(pipeline.Pipeline, 'diff_text', lambda pipe, repo, base, tip: self.source.diff_text(repo, base, tip)),
                     patch.object(pipeline.Pipeline, 'diff_lines', lambda pipe, repo, base, tip: self.source.diff_lines(repo, base, tip)),
                     patch.object(ci.CI, 'prepare', self.prepare_ci),
-                    patch.object(Replanning, '_inputs', lambda planning, task: self.inputs(planning, task)),
+                    patch.object(Replanning, '_inputs', lambda planning, task, fresh=False: self.inputs(planning, task)),
                     patch.object(task_access, 'prepare', self.reads),
                     patch.object(task_access, 'verify', self.verify_reads),
                     patch('subprocess.Popen', side_effect=AssertionError('policy tests must not start a process')),
@@ -93,8 +93,9 @@ class PolicyCase:
         self.source.fixtures.append(f)
         return f
 
-    def reads(self, entries, configured=None, root=None):
+    def reads(self, entries, configured=None, root=None, *, pinned=(), reuse=False):
         from drover.task_context import split_read
+        self.pinned_reads = list(pinned)
         configured = configured or self.pipe.all_repos()
         result = []
         for entry in entries:

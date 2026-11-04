@@ -44,12 +44,17 @@ an “unknown repo” warning; explicit read declarations require known configs,
 and execution refuses unresolved repos or refs. Existing rows store the repo
 name, which resolves to its configured default branch at launch.
 
-Read inputs are independent, shallow, detached checkouts under
-`<state>/read-checkouts`, cached by source, branch and commit. The owner checkout
-is never switched and its uncommitted files are never exposed in these snapshots.
-Files and directories are marked read-only as defense in depth; permissions on
-Windows alone do not prevent creating files. Codex's sandbox enforces the write
-boundary. Snapshots are listed in the brief and read through their absolute paths;
+Read inputs are independent, full-history clones checked out at a detached
+commit under `<state>/read-checkouts`, cached by source, branch and commit. The
+owner checkout is never switched and its uncommitted files are never exposed in
+these snapshots. Files are not marked read-only: end-of-run verification refuses
+any changed, untracked or ignored file, and Codex's sandbox enforces the write
+boundary. Each prepare keeps the two most recently used snapshots per source and
+branch, every snapshot an open run recorded in its access manifest, and the ones
+it just made or reused; it removes the rest, and leftover `read-*` clones older
+than an hour. Last use is kept in `read-checkouts/.index.json`, outside every
+checkout. Replan inspection reuses the newest snapshot of a branch; a batch that
+starts takes a fresh one at the current tip. Snapshots are listed in the brief and read through their absolute paths;
 they are never passed to `--add-dir`, which grants write access. Drover clears
 inherited extra writable roots, disables the shared `/tmp` and `$TMPDIR` write
 roots, and refuses snapshots overlapping the writable workspace. Write workers

@@ -24,12 +24,17 @@ class PreparedBatch:
     members: list
 
 
+class _Fresh(dict):
+    """Inspected inputs whose read snapshots were taken at the current tip, not reused."""
+
+
 class Replanning:
     def __init__(self, pipeline):
         self.pipeline, self.port = pipeline, pipeline.port
 
-    def _inputs(self, task) -> dict:
-        """Inspect source and immutable context without creating a writable worktree."""
+    def _inputs(self, task, *, fresh=False) -> dict:
+        """Inspect source and immutable context without creating a writable worktree.
+        Inspection reuses the newest snapshot of each branch; a starting batch (`fresh`) takes the current tip."""
         import hashlib
         from . import task_access
         prog = self.pipeline.repo(task)
@@ -37,11 +42,13 @@ class Replanning:
             raise WorktreeRefused('replan repo unavailable')
         configured = self.pipeline.all_repos()
         entries = task.get('read_access') or [repos.repo_name(prog)]
-        reads = task_access.prepare(entries, configured=configured)
+        pinned = self.port.open_read_checkouts()           # open runs' snapshots must outlive the prune
+        reads = task_access.prepare(entries, configured=configured, pinned=pinned, reuse=not fresh)
         checkout = task.get('worktree')
         branch = task.get('branch') or repos.default_branch(prog)
         if not checkout or not placement.reachable(checkout):
-            own = task_access.prepare([f"{repos.repo_name(prog)}@{branch}"], configured=configured)
+            own = task_access.prepare([f"{repos.repo_name(prog)}@{branch}"], configured=configured,
+                                      pinned=[*pinned, *(r['path'] for r in reads)], reuse=not fresh)
             checkout = own[0]['path']
             reads = own + [r for r in reads if r not in own]
         # prepare() has just verified each read checkout, so they are not verified a second time here.
@@ -98,6 +105,11 @@ class Replanning:
                 assignment = assign(task, inputs)
                 if assignment is None:
                     continue
+                if not isinstance(inputs, _Fresh):   # it can start: take its snapshots at the current tip
+                    inputs = inspected[task['id']] = _Fresh(self._inputs(task, fresh=True))
+                    assignment = assign(task, inputs)
+                    if assignment is None:
+                        continue
                 identity = (str(inputs['repo']).strip().casefold(), *(assignment.get(k) for k in
                             ('backend', 'seat', 'model', 'effort', 'harness', 'placement')))
                 item = dict(task=task, inputs=inputs, runs=p.list_runs(task['id']), notes=p.owner_notes(task['id']),
@@ -151,7 +163,7 @@ class Replanning:
         for member in batch['members']:
             try:
                 task_access.verify(member['snapshot']['inputs']['read_checkouts'])
-                fresh[member['request_id']] = self._inputs(self.port.get_task(member['task_id']))
+                fresh[member['request_id']] = self._inputs(self.port.get_task(member['task_id']), fresh=True)
             except (OSError, ValueError, WorktreeRefused):
                 fresh[member['request_id']] = None
         return fresh

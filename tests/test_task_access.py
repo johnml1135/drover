@@ -25,6 +25,11 @@ class Clones:
         self.trees = {MAIN: {'base.txt': 'base'}, TOPIC: {'base.txt': 'base', **(topic or {})}}
         self.asked = []
 
+    def move(self, branch, sha):
+        """The owner's branch moves to a new commit with the same tree."""
+        self.refs[f'refs/heads/{branch}'] = sha
+        self.trees[sha] = dict(self.trees[MAIN if branch == 'main' else TOPIC])
+
     def __call__(self, repo, *args, timeout):
         if args[0] != '--no-optional-locks':
             raise AssertionError(f'git without --no-optional-locks: {args!r}')
@@ -218,6 +223,170 @@ class AccessTests(unittest.TestCase):
                 self.assertEqual(reads[0]['sha'], sha)
                 self.assertEqual([a[-1] for a in asked[:2]], ['refs/heads/main^{commit}', 'refs/remotes/origin/main^{commit}'])
 
+    def _fake(self, tmp, topic=False):
+        fake = Clones(Path(tmp) / 'source', topic={'topic.txt': 'topic'} if topic else None)
+        return fake, {'p': {'repo': str(fake.source), 'default_branch': 'main'}}, Path(tmp) / 'reads'
+
+    @staticmethod
+    def _keys(root):
+        return {p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith('read-')}
+
+    def test_prune_keeps_the_newest_two_snapshots_of_a_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            with git_answers(fake):
+                paths = []
+                for sha in ('1' * 40, '2' * 40, '3' * 40):
+                    fake.move('main', sha)
+                    paths.append(task_access.prepare(['p'], cfg, root)[0]['path'])
+            self.assertEqual(self._keys(root), {Path(p).name for p in paths[1:]})
+
+    def test_pinned_snapshot_survives_even_when_oldest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            with git_answers(fake):
+                fake.move('main', '1' * 40)
+                old = task_access.prepare(['p'], cfg, root)[0]['path']
+                paths = []
+                for sha in ('2' * 40, '3' * 40, '4' * 40):
+                    fake.move('main', sha)
+                    paths.append(task_access.prepare(['p'], cfg, root, pinned=[old])[0]['path'])
+            self.assertEqual(self._keys(root), {Path(p).name for p in (old, *paths[1:])})
+
+    def test_each_branch_keeps_its_own_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp, topic=True)
+            kept = set()
+            with git_answers(fake):
+                for i, (one, other) in enumerate((('1', '7'), ('2', '8'), ('3', '9'))):
+                    fake.move('main', one * 40)
+                    main = task_access.prepare(['p'], cfg, root)[0]['path']
+                    fake.move('topic', other * 40)
+                    topic = task_access.prepare(['p@topic'], cfg, root)[0]['path']
+                    if i:
+                        kept |= {Path(main).name, Path(topic).name}
+            self.assertEqual(len(kept), 4)
+            self.assertEqual(self._keys(root), kept)
+
+    def test_prune_removes_old_format_dirs_and_stale_temp_dirs(self):
+        import os
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            for name in ('objects-0123', 'deadbeef', 'c' * 24, 'read-old', 'read-new'):
+                (root / name / '.git').mkdir(parents=True)
+                (root / name / 'file.txt').write_text('x')
+            two_hours_ago = time.time() - 2 * 3600
+            os.utime(root / 'read-old', (two_hours_ago, two_hours_ago))
+            with git_answers(fake):
+                read = task_access.prepare(['p'], cfg, root)[0]
+            names = {p.name for p in root.iterdir() if p.is_dir()}
+            self.assertEqual(names, {Path(read['path']).name, 'read-new'})
+
+    def test_read_only_file_does_not_stop_removal(self):
+        import os
+        import stat
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            fake, cfg, root = self._fake(tmp)
+            locked = root / ('d' * 24)
+            (locked / 'sub').mkdir(parents=True)
+            (locked / 'sub' / 'frozen.txt').write_text('x')
+            os.chmod(locked / 'sub' / 'frozen.txt', stat.S_IREAD)
+            with git_answers(fake):
+                task_access.prepare(['p'], cfg, root)
+            self.assertFalse(locked.exists())
+
+    def test_prune_never_follows_a_link_out_of_the_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            outside = Path(tmp) / 'outside'
+            outside.mkdir()
+            (outside / 'keep.txt').write_text('owner bytes')
+            root.mkdir()
+            linked = 0
+            try:
+                (root / ('e' * 24)).symlink_to(outside, target_is_directory=True)
+                linked += 1
+            except OSError:
+                pass
+            try:
+                import _winapi
+                _winapi.CreateJunction(str(outside), str(root / ('f' * 24)))
+                linked += 1
+            except (ImportError, OSError):
+                pass
+            if not linked:
+                self.skipTest('neither directory symlinks nor junctions available')
+            with git_answers(fake):
+                task_access.prepare(['p'], cfg, root)
+            self.assertEqual((outside / 'keep.txt').read_text(), 'owner bytes')
+
+    def test_reuse_returns_the_newest_snapshot_without_a_new_clone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            with git_answers(fake):
+                first = task_access.prepare(['p'], cfg, root)[0]
+                fake.move('main', '5' * 40)
+                again = task_access.prepare(['p'], cfg, root, reuse=True)[0]
+                self.assertEqual(again, first)
+                self.assertEqual(self._keys(root), {Path(first['path']).name})
+                fresh = task_access.prepare(['p'], cfg, root)[0]
+                self.assertEqual(fresh['sha'], '5' * 40)
+                (root / '.index.json').unlink()       # no record: reuse falls back to a fresh prepare
+                self.assertEqual(task_access.prepare(['p@main'], cfg, root, reuse=True)[0]['path'], fresh['path'])
+
+    def test_open_run_checkout_still_verifies_after_its_branch_moves_on(self):
+        """Finish verifies the manifest an open run recorded; the open runs' paths are what the dispatcher pins."""
+        from drover.ledger import connect, ops
+        from drover.port import DirectPort
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            conn = connect(Path(tmp) / 'l.db')
+            try:
+                port = DirectPort(conn)
+                tid = ops.create_task(conn, 't', 'p')['id']
+                run = port.start_run(tid, 'worker', 'claude')
+                with git_answers(fake):
+                    fake.move('main', '1' * 40)
+                    recorded = task_access.prepare(['p'], cfg, root, pinned=port.open_read_checkouts())
+                    port.append_event('dispatch.access', {'run': run, 'read_checkouts': recorded, 'write': True}, tid)
+                    self.assertEqual(port.open_read_checkouts(), [recorded[0]['path']])
+                    for sha in ('2' * 40, '3' * 40, '4' * 40):
+                        fake.move('main', sha)
+                        task_access.prepare(['p'], cfg, root, pinned=port.open_read_checkouts())
+                    task_access.verify(recorded)
+                    port.finish_run(run, 'done')
+                    self.assertEqual(port.open_read_checkouts(), [])
+                    fake.move('main', '6' * 40)
+                    task_access.prepare(['p'], cfg, root, pinned=port.open_read_checkouts())
+                    self.assertFalse(Path(recorded[0]['path']).exists())
+            finally:
+                conn.close()
+
+    def test_replan_inspection_reuses_the_branch_snapshot_after_the_branch_moves(self):
+        from types import SimpleNamespace
+        from drover import config
+        from drover.replan import Replanning
+        repo = Repo()
+        self.addCleanup(repo.cleanup)
+        with tempfile.TemporaryDirectory() as tmp:
+            original = config.get()
+            config.use(config.validate({'paths': {'state_dir': str(Path(tmp) / 'state')}}))
+            self.addCleanup(config.use, original)
+            prog = {'name': 'p', 'repo': str(repo.repo), 'default_branch': 'main'}
+            planning = Replanning(SimpleNamespace(port=SimpleNamespace(open_read_checkouts=list), repo=lambda task: prog, all_repos=lambda: {'p': prog}))
+            task = {'id': 'T-1', 'worktree': None, 'branch': None, 'read_access': None}
+            root = Path(tmp) / 'state' / 'read-checkouts'
+            first = planning._inputs(task)
+            before = self._keys(root)
+            repo.commit('moved.txt', 'moved')
+            for _ in range(2):
+                self.assertEqual(planning._inputs(task)['head'], first['head'])
+                self.assertEqual(self._keys(root), before)
+            fresh = planning._inputs(task, fresh=True)
+            self.assertNotEqual(fresh['head'], first['head'])
+            self.assertEqual(len(self._keys(root)), len(before) + 1)
+
     def test_brief_states_access_and_kind(self):
         b = brief.assemble(dict(id='T-a', title='Read', kind='research', write=False,
                                read_access=['p@main'], read_dirs=['/reads/p']))['user_prompt']
@@ -285,3 +454,14 @@ class WorkerAccessTests(PipelineBase):
         restarted.reap()
         self.assertEqual(self.port.list_runs(tid)[-1]['outcome'], 'blocked')
         self.assertEqual(self.get(tid)['status'], 'needs-owner')
+
+    def test_admission_pins_the_read_checkouts_of_open_runs(self):
+        self.task()
+        self.d.tick()
+        recorded = self.fl.of('worker')[-1]['read_dirs']
+        self.assertTrue(recorded)
+        self.task()
+        self.pinned_reads = None
+        self.d.tick()
+        self.assertEqual(len(self.fl.of('worker')), 2, 'the second task was admitted')
+        self.assertTrue(set(recorded) <= set(self.pinned_reads or ()), self.pinned_reads)

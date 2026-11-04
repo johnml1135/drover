@@ -2,16 +2,30 @@
 
 Never switch the owner's checkout. Key snapshots by repository, ref and commit;
 a moving branch gets a new snapshot. Each clone retains history independently. These are read inputs, never task worktrees to land.
+Each prepare keeps the newest KEEP snapshots per (source, branch), the pinned ones and its own, and removes the rest.
 """
+from collections.abc import Iterable
 import hashlib
+import json
+import logging
+import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
+import stat
+import sys
 import tempfile
 import threading
+import time
 
-from . import config, git_client, placement, repos, task_context
+from . import config, durable, git_client, placement, repos, task_context
 
 _LOCK = threading.Lock()
+KEEP = 2                                     # snapshots kept per (source, branch), newest by last use
+INDEX = '.index.json'                        # key -> {source, branch, sha, used, seq}; outside every checkout
+_KEY = re.compile(r'[0-9a-f]{24}')
+TEMP_AGE_S = 3600                            # an unfinished `read-*` clone this old is left over
+_log = logging.getLogger(__name__)
 
 
 def check_read_roots(cwd, paths):
@@ -43,11 +57,77 @@ def verify(reads):
             raise ValueError(f'read-only checkout changed: {path}')
 
 
-def prepare(entries, configured=None, root=None):
+def _load(root):
+    """The last-use index; missing or unreadable counts as empty (those entries are then least recently used)."""
+    try:
+        data = json.loads((root / INDEX).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if _KEY.fullmatch(k) and isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def _newest(index, root, source, branch):
+    found = [(rec.get('seq', 0), key) for key, rec in index.items()
+             if rec.get('source') == source and rec.get('branch') == branch and rec.get('sha') and (root / key).is_dir()]
+    return max(found)[1] if found else None
+
+
+def _touch(index, key, **rec):
+    seq = max((r.get('seq', 0) for r in index.values()), default=0) + 1
+    index[key] = {**index.get(key, {}), **rec, 'used': time.time(), 'seq': seq}
+
+
+def _remove(path):
+    """Remove one tree; a read-only file (the old chmod) has its attribute cleared and is retried. Never raises."""
+    def retry(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=retry)
+        else:
+            shutil.rmtree(path, onerror=retry)
+    except OSError as exc:
+        _log.warning('read checkout %s was not removed: %s', path, exc)
+
+
+def _prune(root, index, keep):
+    """Remove every directory in the root but the keep set and the newest KEEP per (source, branch). Links are skipped."""
+    groups = {}
+    for key, rec in index.items():
+        if (root / key).is_dir():
+            groups.setdefault((rec.get('source'), rec.get('branch')), []).append((rec.get('seq', 0), key))
+    keep = set(keep)
+    for (source, branch), ranked in groups.items():
+        if source is not None and branch is not None:
+            keep.update(key for _, key in sorted(ranked, reverse=True)[:KEEP])
+    now = time.time()
+    with os.scandir(root) as entries:
+        listed = list(entries)
+    for entry in listed:
+        if entry.is_symlink() or (sys.version_info >= (3, 12) and os.path.isjunction(entry.path)):
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        if entry.name.startswith('read-'):
+            stale = now - entry.stat(follow_symlinks=False).st_mtime > TEMP_AGE_S
+        else:
+            stale = entry.name not in keep
+        if stale:
+            _remove(entry.path)
+            index.pop(entry.name, None)
+    for key in [k for k in index if not (root / k).is_dir()]:
+        del index[key]
+
+
+def prepare(entries, configured=None, root=None, *, pinned: Iterable[str] = (), reuse=False):
+    """Read checkouts at each entry's branch tip. `pinned` paths (open runs' manifests) are never pruned.
+    `reuse` takes the newest existing snapshot of the branch when there is one, so inspection makes no new clone."""
     configured = repos.load_all() if configured is None else configured
     root = Path(root or config.state_path('read-checkouts')).resolve()
     out = []
     with _LOCK:
+        index = _load(root)
         for entry in entries:
             name, branch = task_context.split_read(entry)
             prog = configured.get(name.lower())
@@ -55,6 +135,16 @@ def prepare(entries, configured=None, root=None):
                 raise ValueError(f'unknown read repo {name!r}')
             source = repos.native(repos.repo_path(prog))
             branch = branch or repos.default_branch(prog)
+            if reuse and (key := _newest(index, root, source, branch)):
+                read = dict(entry=entry, path=str(root / key), sha=index[key]['sha'])
+                try:
+                    verify([read])
+                except ValueError:
+                    pass                                 # changed or unreadable: take a fresh snapshot below
+                else:
+                    _touch(index, key)
+                    out.append(read)
+                    continue
             sha = None
             # Only named branches, never revision syntax or an arbitrary path.
             for ref in (f'refs/heads/{branch}', f'refs/remotes/{repos.remote_name(prog)}/{branch}'):
@@ -87,5 +177,14 @@ def prepare(entries, configured=None, root=None):
                     shutil.rmtree(temp)
                     raise
             verify([read])
+            _touch(index, key, source=source, branch=branch, sha=sha)
             out.append(read)
+        if out:
+            # Kept by name: a pinned path may spell the root differently from this call.
+            keep = {Path(r['path']).name for r in out} | {Path(str(p)).name for p in pinned}
+            try:
+                _prune(root, index, keep)
+                durable.write_json(root / INDEX, index, sync=False)
+            except Exception as exc:                     # bounding the folder must never fail a prepare
+                _log.warning('read checkouts under %s were not pruned: %s', root, exc)
     return out

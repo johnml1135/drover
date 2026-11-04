@@ -191,6 +191,15 @@ def list_runs(conn, task_id):
     return [_jrow(r, "allowance_used") for r in conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY id", (task_id,))]
 
 
+def open_read_checkouts(conn):
+    """The read-checkout paths recorded by open runs (their `dispatch.access` manifests), which pruning must keep."""
+    rows = conn.execute("SELECT json_extract(c.value, '$.path') FROM runs r "
+                        "JOIN task_events e ON e.task_id=r.task_id AND e.kind='dispatch.access' "
+                        "AND json_extract(e.data, '$.run')=r.id, json_each(e.data, '$.read_checkouts') c "
+                        "WHERE r.ended IS NULL ORDER BY e.id")
+    return list(dict.fromkeys(row[0] for row in rows if row[0]))
+
+
 # ---- reorder -------------------------------------------------------------------------------------------
 
 def _siblings(conn, kind, row):

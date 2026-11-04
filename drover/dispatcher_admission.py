@@ -377,7 +377,8 @@ class AdmissionSteps:
             if task.get("read_access"):
                 task["read_checkouts"] = task_access.prepare(
                     task["read_access"], self.pipeline.all_repos(),
-                    Path(self.pipeline.runs_dir).parent / "read-checkouts")
+                    Path(self.pipeline.runs_dir).parent / "read-checkouts",
+                    pinned=self.port.open_read_checkouts())   # open runs' snapshots must outlive the prune
                 task["read_dirs"] = [r["path"] for r in task["read_checkouts"]]
             if task.get("write") is False:
                 if not task.get("read_dirs"):
