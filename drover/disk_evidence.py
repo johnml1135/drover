@@ -8,7 +8,7 @@ only `fresh_*` here make them, each a new read. A failed read is unknown: it rai
 import hashlib
 import os
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass
 from pathlib import Path
 
 from . import git_client, git_worktrees, ownership, placement, repos
@@ -18,25 +18,32 @@ from .disk_stage import StageClock, StageRequest
 _TOKEN = object()       # held here alone: no type checker runs, so each fresh proof's constructor checks it
 
 
-class _Fresh:
-    def __post_init__(self):
-        if self._token is not _TOKEN:
-            raise TypeError(f'{type(self).__name__} is made only by StageEvidence.fresh_*, read now')
+def _only_here(proof, token):
+    """The constructor rule. The token is an `InitVar` with no default: it is checked and dropped, never stored, so a
+    proof cannot be read for it, and a construction without it fails for want of the argument."""
+    if token is not _TOKEN:
+        raise TypeError(f'{type(proof).__name__} is made only by StageEvidence.fresh_*, read now')
 
 
 @dataclass(frozen=True)
-class FreshRegistrations(_Fresh):
+class FreshRegistrations:
     """The fresh proof of the registrations. Removal's final check takes no other kind."""
     refused: tuple[git_worktrees.Refusal, ...]      # empty means nothing objected
     overlaps: bool          # the target nests in, or holds, another place in the proof's reach
-    _token: object = field(default=None, repr=False, compare=False)
+    _token: InitVar[object]
+
+    def __post_init__(self, _token):
+        _only_here(self, _token)
 
 
 @dataclass(frozen=True)
-class FreshProcesses(_Fresh):
+class FreshProcesses:
     """A process proof taken now, with the same constructor rule."""
     proof: object           # placement's ProcessProof
-    _token: object = field(default=None, repr=False, compare=False)
+    _token: InitVar[object]
+
+    def __post_init__(self, _token):
+        _only_here(self, _token)
 
 
 def overlaps(target, own, reach) -> bool:

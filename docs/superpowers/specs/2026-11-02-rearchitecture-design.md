@@ -727,7 +727,7 @@ The one-sentence cut is: **evidence knows, authority rules, removal acts, stages
 ```python
 @dataclass(frozen=True)
 class FreshRegistrations:
-    """The fresh proof. Its constructor refuses without a private token held by this module,
+    """The fresh proof. Its constructor refuses without a private token held by this module, taken as a dataclass `InitVar` and never stored,
     because no type checker runs here. Removal's final check takes no other kind."""
     refused: tuple[Refusal, ...]       # empty means nothing objected
     overlaps: bool                     # the target nests in, or holds, another place in the proof's reach
@@ -740,7 +740,7 @@ class FreshProcesses:
 class StageEvidence:
     inventory: Inventory                                              # read-only; `contains_repository`, `summarize`, `save`, `peak_intermediate_bytes`
     def __init__(self, request: StageRequest, clock: StageClock, *,
-                 listings=git_worktrees.Listings, prove=git_worktrees.prove,
+                 listings=git_worktrees.Listings, prove=git_worktrees.prove,   # prove=None is accepted: it is git_worktrees.prove looked up at each proof
                  processes=placement.cleanup_processes): ...
     def listed(self, repo: str) -> Listing: ...                       # first pass; raises the repo's failure
     def every_registered(self) -> tuple[tuple[str, ...], ...]: ...    # first pass; raises if any repo failed
@@ -809,7 +809,7 @@ def rule_disposable_fresh(run: StageRun, machine, registration, processes: Fresh
 def rule_unit(run: StageRun, target, path, names) -> Ruling: ...                              # first pass
 def rule_unit_fresh(run: StageRun, unit: 'DisposableUnit', proof: FreshRegistrations) -> Ruling: ...
 def rule_temp_entry(run: StageRun, path) -> Ruling: ...
-def rule_cache_file(run: StageRun, path, info) -> Ruling: ...
+def rule_cache_file(run: StageRun, path, info, *, entry) -> Ruling: ...
 def protected_path(path, run: StageRun) -> bool: ...
 def repository_tree(path, *, boundary=None, proven=None) -> bool: ...
 def live_tree(path, run: StageRun) -> bool: ...

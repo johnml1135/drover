@@ -1,5 +1,6 @@
 """One stage run's evidence, held once: the inventory, the listings with the stage clock's patience, and the process
 proof with its report rows."""
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
@@ -139,6 +140,20 @@ class FreshProofs(unittest.TestCase):
         with self.assertRaises(TypeError):
             FreshProcesses(SimpleNamespace(busy=lambda path: False))
         self.assertFalse(hasattr(StageEvidence, 'listings'))      # the mutable Listings never leave the evidence
+
+    def test_a_proof_carries_no_token_to_read_back(self):
+        """The token is an `InitVar`: checked at construction and then gone, so a proof cannot be copied by reading it."""
+        evidence, _ = self.proving(Proof((), ()))
+        taken = StageEvidence(request(), clock_at([0.0]), processes=lambda **_: SimpleNamespace(busy=lambda p: False))
+        for proof in (evidence.fresh_registrations('/r/one', '/w/a', '/w/a', pointer=True), taken.fresh_processes()):
+            self.assertFalse(hasattr(proof, '_token'), type(proof))
+            self.assertNotIn('_token', [field.name for field in dataclasses.fields(proof)])
+            self.assertNotIn('_token', vars(proof))
+            self.assertNotIn('_token=', repr(proof))
+        for make in (lambda: FreshRegistrations((), False), lambda: FreshRegistrations((), False, None),
+                     lambda: FreshProcesses(object()), lambda: FreshProcesses(object(), object())):
+            with self.assertRaises(TypeError):
+                make()
 
     def proving(self, proof, times=None):
         """Evidence whose `prove` answers `proof`, and the calls it was asked."""
