@@ -1,6 +1,7 @@
 """python -m drover init, with scripted input and injected detections (nothing real is read or written)."""
 import io
 import json
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -9,6 +10,9 @@ from unittest import mock
 
 from drover import config, placement, repos, wizard, wizard_detect
 from drover.tool_discovery import DISCOVERY_SCRIPT
+from tests.fakeci import git_answers, git_spawns
+
+TIP = "c" * 40
 
 DRIVES = [{"path": "C:\\", "free_gb": 200.0, "total_gb": 500.0}, {"path": "R:\\", "free_gb": 600.0, "total_gb": 1000.0}]
 REPOS = [{"name": "alpha", "path": "R:\\repos\\alpha"}, {"name": "beta", "path": "R:\\repos\\beta"}]
@@ -54,10 +58,27 @@ class Base(unittest.TestCase):
         self.state = Path(self.tmp.name) / "state"
         self.out = io.StringIO()
         self.now = lambda: 1_800_000_000
+        self.git_asked = []
+
+    def git(self, repo, *args, timeout):
+        """The git the wizard's decision history and a repo's config read reach: `init` makes the `.git` folder, a
+        commit always has something staged, and no repo holds a versioned config. Any other verb fails the test.
+        `run_wizard` always answers with it; a test reaching git another way asks for it with `git_spawns`."""
+        while args[:1] == ("-c",):
+            args = args[2:]
+        self.git_asked.append((repo, args[0]))
+        if args[0] == "init":
+            (Path(repo) / ".git").mkdir()
+        answers = {"init": "", "status": "", "add": "", "diff": "config.toml\n", "commit": "", "rev-parse": TIP + "\n",
+                   "ls-tree": ""}
+        if args[0] not in answers:
+            raise AssertionError(f"unexpected git: {args!r}")
+        return subprocess.CompletedProcess(args, 0, answers[args[0]], "")
 
     def run_wizard(self, detect=None, inputs=(), **kw):
         script = Script(*inputs)
-        code = wizard.run(detect or fake(), script, self.out, state_dir=str(self.state), now=self.now, **kw)
+        with git_answers(self.git):
+            code = wizard.run(detect or fake(), script, self.out, state_dir=str(self.state), now=self.now, **kw)
         return code, script
 
     def config(self):
@@ -164,6 +185,7 @@ class Questions(Base):
             wizard.run(d, Script(*inputs), self.out, state_dir=str(self.state))
 
     def test_a_missing_tool_asks_whether_to_add_the_seat_and_yes_is_the_default(self):
+        git_spawns(self, self.git)
         d = fake(tools=lambda distro=None: {"claude": TOOLS["claude"], "codex": {"windows": None, "wsl": None}})
         inputs = [""] * 7 + [""] * 5 + ["n"] + [""] * 3      # claude seat questions; "add a codex seat anyway?" no; director...
         code = wizard.run(d, Script(*inputs[:12], "n", *([""] * 20)), self.out, state_dir=str(self.state))
@@ -181,6 +203,7 @@ class Answers(Base):
 
 
     def test_main_reads_an_answers_file_and_the_defaults_flag(self):
+        git_spawns(self, self.git)
         f = Path(self.tmp.name) / "a.toml"
         f.write_text("ui_port = 7777\n[[repos]]\nname = 'x'\nrepo = 'R:\\x'\n", encoding="utf-8")
         code = wizard.main(["--defaults", "--answers", str(f), "--state-dir", str(self.state)], detect=fake(), out=self.out)
@@ -208,10 +231,10 @@ class Answers(Base):
 
 class Writing(Base):
     def test_rerun_preserves_machine_repo_behavior_without_versioned_config(self):
-        from tests.gitfix import Repo
-        fixture = Repo()
-        self.addCleanup(fixture.cleanup)
-        machine = {"name": "alpha", "repo": str(fixture.repo),
+        git_spawns(self, self.git)
+        checkout = Path(self.tmp.name) / "alpha"       # a reachable checkout whose HEAD holds no .drover/config.toml
+        checkout.mkdir()
+        machine = {"name": "alpha", "repo": str(checkout),
                    "scripts": {"test": "scripts/check.ps1", "lint": "scripts/lint.ps1"},
                    "run": {"platforms": ["wsl"], "default": "wsl",
                            "env": {"CHECK_MODE": "full"}, "sandbox_writable_roots": ["/tmp/check-cache"]},
@@ -221,7 +244,7 @@ class Writing(Base):
         path.parent.mkdir(parents=True)
         path.write_text(config.dumps(machine), encoding="utf-8")
         before = repos.load(machine)
-        self.assertFalse((fixture.repo / ".drover/config.toml").exists())
+        self.assertIn((str(checkout), "ls-tree"), self.git_asked)      # the versioned layer was read, and is empty
         for _ in range(2):
             code, _ = self.run_wizard(defaults=True, answers={"repos": [{"name": "alpha"}], "state_git": False})
             self.assertEqual(code, 0)

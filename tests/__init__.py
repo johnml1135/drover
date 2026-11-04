@@ -85,7 +85,6 @@ if "integration" not in os.environ.get("DROVER_TESTS", "").replace(",", " ").spl
         "tests.test_tuner",
         "tests.test_type_yaml",
         "tests.test_waiting_migration",
-        "tests.test_wizard",
         "tests.test_wizard_detection",
         "tests.test_wizard_scopes",
     }  # test modules still allowed to start processes or sleep (filled in below)

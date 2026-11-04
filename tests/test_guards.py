@@ -39,7 +39,7 @@ OVER = {
     "hub/runtime.py": 612,
 }
 
-IMPURE_CEILING = 56  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
+IMPURE_CEILING = 55  # len(tests.IMPURE): default-tier modules still allowed to start processes or sleep
 
 
 def sources():
