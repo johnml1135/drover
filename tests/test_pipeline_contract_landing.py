@@ -162,11 +162,13 @@ class Landing(Base):
             '[scripts]\ntest=".drover/scripts/drover/test.ps1"\n[gate]\nplatform="windows"\ndocs_only=false\n'
             '[land]\npolicy="single"\n[run.env]\nDROVER_FIXTURE_CODE=' + json.dumps(code) + '\n')
         db_path = Path(self.tmp.name) / 'l.db'
+        # The child must not import `tests`: tests/__init__ would replace Base's DROVER_HOME, and with it the disabled
+        # disk trackers, so the child would hold on the host's real free space.
         child_code = ('from hub.dispatch import LandingService; from hub.store import Store; '
-                      'from tests.fakeci import resources_go; '
                       'from hub.settings import Settings; '
                       f'service=LandingService(Store({str(db_path)!r}), Settings(runs_dir={str(self.runs)!r}), '
-                      f'repos_dir={str(pdir)!r}); service.ci.resource_check=resources_go; service.tick()')
+                      f'repos_dir={str(pdir)!r}); service.ci.resource_check=lambda **_: dict(verdict="go", reasons=[]); '
+                      'service.tick()')
         with open(Path(self.tmp.name) / 'landing-caller.log', 'w') as output:
             caller = subprocess.Popen([sys.executable, '-c', child_code], stdout=output, stderr=output)
             self.addCleanup(lambda: caller.poll() is None and caller.kill())
