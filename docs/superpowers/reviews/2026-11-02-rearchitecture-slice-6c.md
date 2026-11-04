@@ -46,7 +46,8 @@ The decision trace changed three scenes, all towards keeping (Task 44), and gain
 | Guards | `scripts/test.py` guards; default tier `tests.test_seams`, `test_guards`, `test_architecture` | 42 OK; OK (skipped=6) |
 | Task 45 integration | `DROVER_TESTS=integration` over M1 and M2 | `Ran 236 tests` OK (skipped=5); `Ran 52 tests` OK (skipped=3) |
 | Stage 4 fix | `scripts/test.py tests.test_disk_stage_removals tests.test_disk_registration_timeouts` | `Ran 35 tests`, 0 failed modules |
-| Full suite and WSL test at the ship commit | pending | pending |
+| Full suite at the ship commit | `scripts/test.py -j 4`, both tiers, at c8704e6 | default 4390 (28 skipped), 0 failed modules; integration 205 (14 skipped), 0 failed modules |
+| First slice-exit run (72cdb4d) | same | 3 regressions: Task 45's `SubprocessError` removal broke `test_pane_faults` and `test_disk_placement` (restored, 401a449, R1 = 11); `test_pipeline_contract_landing`'s restart child imported `tests` and read the real H: below the 50 GB hold (latent since 4be8324; fixed c8704e6) |
 
 ## Line budgets and public names (spec 7.4, restated)
 
@@ -81,8 +82,10 @@ To run once at slice end, each caught by a named test or trace scene:
 
 ## Test times
 
-pending
+Taken under load (a live cleanup apply and Motif test runs on the machine), so they overstate: default tier wall 226.5 s (4390 tests), integration wall 274.9 s (205 tests); integration modules over 60 s: `test_disk_registrations`, `test_disk_yanked`. The slice 6b ship run was 145.9 s / 198.9 s on a quieter machine. Re-time on an idle machine before the final checkpoint.
 
 ## Mutant gate
 
-pending
+52 mutants over b0524d5..82e7d58: 40 killed. Six equivalent (T44h, F8, F9, F17 POSIX-only, F19, F23; reasons in the workspace closeout). Six real gaps (T44e, T44f, T44g, S4e, F15, F21) got tests in 72cdb4d and are killed 6/6. T44f and T44g use a refusing clock subclass: a real `StageClock` cannot refuse `can_mutate` while not late.
+
+The stage-5 folder-unit task (46b: ccf0048, 5dfe5b0, e9adef7, 82e7d58) ran in this slice after the exit review: its trace re-record moves towards deletion only where the same files and bytes now go as one folder (36 entries, each verified by an independent Opus review). The repository-evidence rule stays as it is (a lone `config` or one git marker keeps the folder); narrowing it to git's git-dir shape inside stage-5 folder walks is an owner option.
