@@ -1,7 +1,6 @@
 """Checked worktree evidence and path-specific eviction; branches always survive."""
 import os
 from pathlib import Path
-import subprocess
 
 from . import disk_evidence, disk_registrations, disk_removal, placement
 from .disk_authority import LazyProof, inspect, quarantine, quarantine_observation, unlisted_live
@@ -42,7 +41,7 @@ def settled(run, *, runtime=None) -> None:
             return run.stop('settled_deadline', machine, [], repos[number:])
         try:
             listed = run.evidence.listed(machine['repo']).rows
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError) as error:
             run.error(dict(repo=machine['repo'], error=str(error)))
             continue
         found = {}
@@ -64,7 +63,7 @@ def settled(run, *, runtime=None) -> None:
                 for row in answer['errors']:
                     run.error(row)
                 run.reclaimed(answer['reclaimed_bytes'])
-            except (OSError, ValueError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError) as error:
                 row = item(entry['worktree'], 'unavailable', error=str(error))
                 if request['apply']:
                     quarantine(run, machine, row)
@@ -90,7 +89,7 @@ def registrations(request, machine, listed, runtime, run):
         for row in disk_registrations.report(request, machine, listed, found, store, evidence=run.evidence, clock=run.clock):
             run.add(row)
         return found
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError) as error:
         run.error(dict(repo=machine['repo'], error=str(error)))
         return None     # lost folders unknown: the caller must not judge this repo's orphans
 
@@ -120,7 +119,7 @@ def unlisted(request, machine, listed, skip=(), *, run):
             row = quarantine(run, machine, row)
             if request['apply'] and row['action'] == 'candidate':
                 row = disk_removal.remove_worktree(run, row, store=CleanupState(request.get('state_dir')))
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError) as error:
             row.update(action='keep', reason_code='unavailable', error=str(error))
             quarantine(run, machine, row)
         out.append(row)

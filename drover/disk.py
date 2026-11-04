@@ -2,7 +2,6 @@
 import json
 import math
 import shutil
-import subprocess
 import uuid
 
 from . import compaction_hold, config, disk_runtime, placement
@@ -46,7 +45,7 @@ def _wsl_used(cfg):
     distro = tracker_distro(cfg)
     try:
         up = placement.wsl_running(distro)
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         up = False
     return placement.wsl_used_gb(distro, up)
 
@@ -331,7 +330,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                         continue
                 if placement.cleanup_claim_alive(identity) is False:
                     dead.add(claim['id'])
-            except (subprocess.SubprocessError, OSError):
+            except OSError:
                 if unresolved and _claim_age(directory, claim, now) > UNKNOWN_CLAIM_MAX_S:
                     dead.add(claim['id'])   # a claim whose process cannot be read for a day is released
                     continue
@@ -341,7 +340,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     if any(row['level'] not in ('ok', 'unknown') for row in episode_rows):
         try:
             identity = placement.cleanup_identity()
-        except (subprocess.SubprocessError, OSError):
+        except OSError:
             return result
     # A held cleanup lock would make a triggered run fail at once; do not spawn one per tick. The compaction holds that
     # lock for its whole window, which is no stale lock, and the hold already defers every cleanup.

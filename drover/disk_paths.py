@@ -1,5 +1,4 @@
 """Safe declared path stages. No inferred tool, repository or language policy."""
-import subprocess
 from pathlib import Path
 
 from . import disk_removal, placement, process
@@ -158,7 +157,7 @@ def disposable_rows(run):
                                 row['reason_code'] = ruling.reason_code
                                 if ruling.detail is not None:       # a read failed partway: kept as unknown
                                     row['error'] = ruling.detail
-                        except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
+                        except (OSError, ValueError, StopIteration) as error:
                             row.update(action='keep', reason_code=OUTPUT_UNAVAILABLE, error=str(error))
                         if row['action'] == 'candidate':
                             yield row, DisposableUnit(machine=machine, registration=entry, evidence=evidence, touched=touched,
@@ -167,9 +166,9 @@ def disposable_rows(run):
                             run.add(row)
                         if count < len(units) and run.clock.late():
                             return run.stop('output_deadline', machine, listed[position:], request['repos'][number + 1:])
-                except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
+                except (OSError, ValueError, StopIteration) as error:
                     run.add(item(entry['worktree'], OUTPUT_UNAVAILABLE, repo=machine['repo'], error=str(error)))
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError) as error:
             run.add(item(machine['repo'], 'repository_unavailable', error=str(error)))
             run.error(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
 
@@ -231,7 +230,7 @@ def report(run) -> None:
                                 row = item(path, 'untracked_or_ignored')
                                 row.update(inventory.summarize(dirty + ignored), owner=owner)
                                 rows.append(row)
-                        except (OSError, ValueError, subprocess.SubprocessError) as error:
+                        except (OSError, ValueError) as error:
                             worktree_row['status_error'] = str(error)
                 finally:
                     for row in rows:
@@ -245,7 +244,7 @@ def report(run) -> None:
                             return run.stop('report_deadline', machine, [], repos[number + 1:])
                         if str(path) not in registered and placement.cleanup_contains(request['drive']['path'], str(path)):
                             run.add(measured(path, 'unlisted_folder'))
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError) as error:
             run.error(dict(repo=machine['repo'], error=str(error)))
         run.checkpoint()
     for root_text in request['paths'].get('report_roots', []):

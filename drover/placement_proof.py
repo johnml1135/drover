@@ -2,7 +2,6 @@
 import copy
 import os
 import re
-import subprocess
 import json
 import time
 from pathlib import Path
@@ -121,7 +120,7 @@ class _CleanupProcesses:
                         started = time.monotonic()
                         try:
                             fresh = {str(row['pid']): row for row in _cim_rows(self.timeout_s, refresh)}
-                        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                        except (OSError, ValueError, KeyError, TypeError) as error:
                             fresh = {}
                             self.query_failure = dict(error=str(error), elapsed_s=time.monotonic() - started,
                                 reason_code='process_query_timeout' if isinstance(error, TimeoutError)
@@ -161,7 +160,7 @@ class _CleanupProcesses:
                         after = None    # no answer keeps every row
                     if after is not None:
                         self._drop_exited(after)
-            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError, KeyError, TypeError) as error:
                 self.unknown = True
                 self.query_failure = dict(reason_code='process_visibility_unavailable', error=str(error))
             return
@@ -298,7 +297,7 @@ class _CleanupProcesses:
                     and identity.get('birth') not in (None, '', 'absent')
                     and current == identity):
                 return record['cwd']
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        except (OSError, ValueError, KeyError, TypeError):
             pass
         return None
 

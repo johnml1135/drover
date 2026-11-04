@@ -5,7 +5,6 @@ import json
 import math
 import os
 import socket
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -15,6 +14,7 @@ from typing import Callable
 from . import config, disk, disk_budget, disk_evidence, disk_runtime, disk_state, durable, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
+from .disk_inventory import bound_report
 from .disk_stage import StageRequest
 
 
@@ -58,7 +58,6 @@ def _valid_result(value):
 
 
 def _save_report(state_dir, result):
-    from .disk_inventory import bound_report
     bound_report(result)
     disk_state.save_file(state_dir, 'last-report.json', result)
 
@@ -118,7 +117,7 @@ def _windows_paths(cfg, base):
     try:
         proof = placement.cleanup_windows_proof(paths=base['policy'], state_dir=base['state_dir'], budget=True)
         return (proof.wsl_paths(disk.tracker_distro(cfg)), proof.unreadable) if proof else (None, [])
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError):
         return None, []
 
 
@@ -312,7 +311,6 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             cache.unlink(missing_ok=True)
         for cache in (state_dir / 'disk').glob('processes-' + inventory_id + '*.json'):
             cache.unlink(missing_ok=True)
-        from .disk_inventory import bound_report
         bound_report(result)
         # Persist report evidence independently of the short outbox transaction.
         pending = 'pending-notices-' + uuid.uuid4().hex + '.json'

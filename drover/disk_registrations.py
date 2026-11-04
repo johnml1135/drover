@@ -8,7 +8,6 @@ Nothing here removes or rewrites a working file."""
 import os
 import posixpath
 import re
-import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -321,7 +320,7 @@ def report(request, machine, listed, found, store, *, evidence, clock):
             else:
                 verdict, branch, why, maybe = judge(machine, path, listed, rel, history=history,
                                                       own_drive=placement.cleanup_contains(request['drive']['path'], text))
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError) as error:
             verdict, branch, why, maybe = 'unproven', None, f'could not be matched: {error}', None
         row.update(branch=branch, detail=why, suggestion=maybe)
         if verdict != 'repair':
@@ -332,7 +331,7 @@ def report(request, machine, listed, found, store, *, evidence, clock):
             try:
                 journal = reregister(request, machine, path, target, branch, store, evidence=evidence, clock=clock)
                 row.update(action='reregistered', **({'error': journal} if journal else {}))
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError, RuntimeError) as error:
                 row.update(action='keep', reason_code='lost_registration_failed', error=str(error))
         rows.append(row)
     return rows
@@ -374,7 +373,7 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
             raise ValueError('registration did not take')
         evidence.repaired(repo, path)
         return close_journal(store, record, 'completed', clock)
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         try:
             if not moved and place.exists():
                 git_client.mutate(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout_s=cap)

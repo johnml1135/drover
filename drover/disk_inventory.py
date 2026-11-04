@@ -6,7 +6,7 @@ import os
 import stat
 from pathlib import Path
 
-from . import disk_state, git_client, placement
+from . import disk_state, git_client, placement, repos
 
 LIMIT = 20
 CACHE_LIMIT_BYTES = 4 * 1024 * 1024
@@ -231,8 +231,7 @@ def worktree_roots(machine, *, this_side=False):
     """A repo's worktree roots: the Windows root and the WSL ext4 root (ADR 0007). `this_side` keeps only the roots
     this process can open; each side inventories and removes only what it owns."""
     roots = [machine['worktrees']] if machine.get('worktrees') else []   # per-path side checks stay with the callers
-    from . import repos
-    wsl = repos.worktree_root(machine, 'wsl') if machine.get('name') else None   # derived: never a machine fact
+    wsl =repos.worktree_root(machine, 'wsl') if machine.get('name') else None   # derived: never a machine fact
     if wsl and not (this_side and placement.cleanup_side() != 'wsl'):
         roots.append(wsl)
     return [Path(placement.native(r)) for r in roots]

@@ -23,6 +23,8 @@ R6_CLUSTER = tuple(f'drover/{name}.py' for name in (
     'disk_temp', 'disk_worktrees'))
 R9_NAMED = ('drover.git_worktrees.parse', 'drover.git_worktrees.AdminFiles')
 R9_CALLERS = ('drover/disk_evidence.py',)      # from slice 6a every fresh proof is `StageEvidence.fresh_registrations`
+R7_FIRST_PASS = ('listed', 'every_registered', 'processes', 'rule_disposable', 'rule_unit')
+R7_FRESH = ('FreshRegistrations', 'FreshProcesses')
 
 
 def only(*allowed):
@@ -189,6 +191,17 @@ def r6(path, node, aliases, inside):
     return int(any(project_module(name) for name in imported(path, node, aliases)))
 
 
+def r7(path, node, aliases, inside):
+    """Section 13: no first-pass call in `disk_removal`; a fresh proof's constructor is called only in `disk_evidence`."""
+    if not isinstance(node, ast.Call):
+        return 0
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ''
+    if path == 'drover/disk_removal.py' and name in R7_FIRST_PASS:
+        return 1
+    return int(path != 'drover/disk_evidence.py' and name in R7_FRESH)
+
+
 def r8(path, node, aliases, inside):
     if path == 'drover/git_worktrees.py' or not isinstance(node, (ast.Call, ast.List, ast.Tuple)):
         return 0
@@ -206,7 +219,7 @@ def r9(path, node, aliases, inside):
     return int(is_named(node, named, aliases))
 
 
-RULES = {'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5, 'R6': r6, 'R8': r8, 'R9': r9}
+RULES = {'R1': r1, 'R2': r2, 'R3': r3, 'R4': r4, 'R5': r5, 'R6': r6, 'R7': r7, 'R8': r8, 'R9': r9}
 
 
 def rule_violations(rule, sources):
@@ -305,6 +318,18 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.found('R6', 'drover/ci.py', text), [])
         self.assertEqual(self.found('R6', 'drover/disk_paths.py', 'class C:\n    from . import repos\n'), [])
 
+    def test_r7_sees_a_first_pass_call_in_removal_and_a_fresh_constructor_outside_evidence(self):
+        text = ('def f(evidence, run):\n    evidence.listed(r)\n    evidence.every_registered()\n    evidence.processes()\n'
+                '    rule_disposable(run)\n    authority.rule_unit(run)\n')
+        self.assertEqual(self.found('R7', 'drover/disk_removal.py', text), [('f', 5)])
+        fresh = ('def f(evidence, run):\n    evidence.fresh_processes()\n    authority.rule_unit_fresh(run)\n'
+                 '    rule_disposable_fresh(run)\n')
+        self.assertEqual(self.found('R7', 'drover/disk_removal.py', fresh), [])
+        self.assertEqual(self.found('R7', 'drover/disk_authority.py', text), [])
+        make = 'def f():\n    return FreshRegistrations((), False), disk_evidence.FreshProcesses(proof)\n'
+        self.assertEqual(self.found('R7', 'drover/disk_removal.py', make), [('f', 2)])
+        self.assertEqual(self.found('R7', 'drover/disk_evidence.py', make), [])
+
     def test_r8_sees_the_literal_in_a_call_a_list_and_a_tuple(self):
         for text in ("git(repo, 'worktree', 'list', '--porcelain')", "args = ['worktree', 'list']",
                      "args = ('-C', repo, 'worktree', 'list')", 'git("worktree", "list")'):
@@ -394,6 +419,27 @@ class Seams(unittest.TestCase):
 
     def rows_of(self, rule):
         return {key[1:]: count for key, count in found_rows().items() if key[0] == rule}
+
+    def test_r7_no_first_pass_call_in_disk_removal(self):
+        self.assertIn('drover/disk_removal.py', parsed('drover'))
+        self.assertEqual({key: count for key, count in found_rows().items()
+                          if key[0] == 'R7' and key[1] == 'drover/disk_removal.py'}, {})
+
+    def test_r7_fresh_constructors_appear_only_in_disk_evidence(self):
+        self.assertEqual({key: count for key, count in found_rows().items() if key[0] == 'R7'}, {})
+
+    def test_r6_count_is_exactly_the_three_stated_rows(self):
+        self.assertEqual(self.rows_of('R6'), {('drover/disk_preflight.py', 'check_cache_folders'): 1,
+                                              ('drover/disk_runtime.py', 'run_detached'): 1,
+                                              ('drover/disk_runtime.py', 'cleanup_runtime'): 1})
+
+    def test_r1_is_exactly_the_nine_stated_modules(self):
+        self.assertEqual(sorted({path for path, _ in self.rows_of('R1')}),
+                         sorted(['drover/ci.py', 'drover/disk_cleanup.py', 'drover/pane_status_hook.py',
+                                 'drover/placement_exec.py', 'drover/placement_tree.py', 'drover/runner.py',
+                                 'drover/runner_supervise.py', 'hub/runtime.py', 'hub/watchdog.py']))
+        self.assertEqual(self.rows_of('R1')[('drover/disk_cleanup.py', 'locked_command')], 1)
+        self.assertNotIn(('drover/disk_cleanup.py', '<module>'), self.rows_of('R1'))
 
     def test_r8_literal_only_in_git_worktrees_and_its_exceptions(self):
         self.assertEqual(self.rows_of('R8'), {('drover/origin.py', 'fast_forward'): 1})     # its section 13 end row

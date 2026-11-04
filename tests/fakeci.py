@@ -47,7 +47,8 @@ def answering(run):
 
 
 def answer_spawns(case, run):
-    """Every `process` spawn in `case` goes to `run`, as `answering` says, until the test ends."""
+    """Every `process` spawn in `case` goes to `run`, as `answering` says, until the test ends. The shape for spawns
+    that are not git (herdr, schedulers, launchers, taskkill); a git answer goes through `git_answers` (Task 45 ruling)."""
     patcher = mock.patch.object(process, 'subprocess', answering(run))
     patcher.start()
     case.addCleanup(patcher.stop)

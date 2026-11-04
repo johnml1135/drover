@@ -2,7 +2,6 @@
 import argparse
 import datetime
 import math
-import subprocess
 import sys
 from pathlib import Path
 
@@ -18,7 +17,7 @@ def add(repo: str, path: str, ref: str, *, owner: str, lease_until: float) -> st
     placement.add_worktree(repo, path, '--', path, ref)
     try:
         ownership.tag(path, Path(placement.native(repo)).name, owner, lease_until)
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError) as error:
         raise RuntimeError(f'created {path} but could not record ownership: {error}') from error
     return path
 
@@ -38,7 +37,7 @@ def main(argv=None) -> int:
         if until.tzinfo is None:
             raise ValueError('lease requires a timezone')
         value = add(args.repo, args.path, args.ref, owner=args.owner, lease_until=until.timestamp())
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         return 2
     print(value)

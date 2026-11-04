@@ -16,9 +16,9 @@ from .disk_stage import StageRequest, read_rows
 
 
 def cleanup_runtime(cfg):
-    from .disk import _free
-    from .resources import cleanup_pressure
-    return CleanupRuntime(time.time, _free, cleanup_call, placement.disk_toast, lambda: cleanup_pressure(cfg))
+    from . import disk, resources       # both import this module at load, so both stay deferred
+    return CleanupRuntime(time.time, disk._free, cleanup_call, placement.disk_toast,
+                          lambda: resources.cleanup_pressure(cfg))
 
 
 def cleanup_call(side: str, request: StageRequest) -> dict:

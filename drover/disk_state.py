@@ -8,7 +8,6 @@ State locks cover only file IO; callers perform subprocess work outside them.
 import json
 import os
 import socket
-import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -25,7 +24,7 @@ def holder_dead(owner: dict) -> bool:
         return False
     try:
         return placement.cleanup_claim_alive(dict(pid=owner.get('pid'), birth=birth, side=owner['side'])) is False
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         return False
 
 
@@ -88,7 +87,7 @@ class CleanupLock:
         from . import placement
         try:
             identity = placement.cleanup_identity()
-        except (OSError, subprocess.SubprocessError):
+        except OSError:
             identity = dict(birth=None, side=placement.cleanup_side())
         (self.path / 'owner.json').write_text(json.dumps({
             'token': self.token, 'pid': os.getpid(), 'host': socket.gethostname(),
