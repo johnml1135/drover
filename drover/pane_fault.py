@@ -6,6 +6,7 @@ place. A tick carries on either way. No exception's text is ever written, becaus
 traceback's frames show only where it happened.
 """
 import sqlite3
+import subprocess
 import traceback
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from .launch import AdmissionHeld
 from .ledger import disk_notices, ops_panes
 from .pane_read import PaneRefused
 
-EXPECTED = (HerdrRefused, HerdrUnavailable, PaneRefused, AdmissionHeld, OSError)
+EXPECTED = (HerdrRefused, HerdrUnavailable, PaneRefused, AdmissionHeld, OSError, subprocess.SubprocessError)
 LEDGER_BUSY = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
 
 

@@ -1,8 +1,10 @@
 [
 {"rule": "R1", "module": "drover/ci.py", "where": "<module>", "count": 1, "reason": "A gate step spawns here. Section 13 end row."},
 {"rule": "R1", "module": "drover/disk_cleanup.py", "where": "locked_command", "count": 1, "reason": "`locked_command` spawns here. Section 13 end row."},
+{"rule": "R1", "module": "drover/pane_fault.py", "where": "<module>", "count": 1, "reason": "Defence in depth (Appendix C): direct spawners remain, so a stray TimeoutExpired is an expected warning, never a bug notice. Stays."},
 {"rule": "R1", "module": "drover/pane_status_hook.py", "where": "<module>", "count": 1, "reason": "Standalone hook script, run without the package. Section 13 end row."},
 {"rule": "R1", "module": "drover/placement_exec.py", "where": "<module>", "count": 1, "reason": "ADR-0002: `spawn_worker` and `detach`. Section 13 end row."},
+{"rule": "R1", "module": "drover/placement_proof.py", "where": "<module>", "count": 1, "reason": "Defence in depth (Appendix C): a stray TimeoutExpired from a process query means visibility unavailable and keep, never a crash. Stays."},
 {"rule": "R1", "module": "drover/placement_tree.py", "where": "<module>", "count": 1, "reason": "ADR-0002: waits on and kills the process tree. Section 13 end row."},
 {"rule": "R1", "module": "drover/runner.py", "where": "<module>", "count": 1, "reason": "ADR-0002. Section 13 end row. The import names nothing in this file at the base."},
 {"rule": "R1", "module": "drover/runner_supervise.py", "where": "<module>", "count": 1, "reason": "ADR-0002: stdin for the run child. Section 13 end row."},

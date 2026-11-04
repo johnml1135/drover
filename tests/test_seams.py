@@ -433,10 +433,12 @@ class Seams(unittest.TestCase):
                                               ('drover/disk_runtime.py', 'run_detached'): 1,
                                               ('drover/disk_runtime.py', 'cleanup_runtime'): 1})
 
-    def test_r1_is_exactly_the_nine_stated_modules(self):
+    def test_r1_is_exactly_the_eleven_stated_modules(self):
+        # pane_fault and placement_proof name SubprocessError as defence in depth: direct spawners remain (Appendix C).
         self.assertEqual(sorted({path for path, _ in self.rows_of('R1')}),
-                         sorted(['drover/ci.py', 'drover/disk_cleanup.py', 'drover/pane_status_hook.py',
-                                 'drover/placement_exec.py', 'drover/placement_tree.py', 'drover/runner.py',
+                         sorted(['drover/ci.py', 'drover/disk_cleanup.py', 'drover/pane_fault.py',
+                                 'drover/pane_status_hook.py', 'drover/placement_exec.py', 'drover/placement_proof.py',
+                                 'drover/placement_tree.py', 'drover/runner.py',
                                  'drover/runner_supervise.py', 'hub/runtime.py', 'hub/watchdog.py']))
         self.assertEqual(self.rows_of('R1')[('drover/disk_cleanup.py', 'locked_command')], 1)
         self.assertNotIn(('drover/disk_cleanup.py', '<module>'), self.rows_of('R1'))
