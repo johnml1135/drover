@@ -53,7 +53,6 @@ if "integration" not in os.environ.get("DROVER_TESTS", "").replace(",", " ").spl
         "tests.test_disk_state",
         "tests.test_disk_trigger",
         "tests.test_disk_worktree_add",
-        "tests.test_disk_worktrees",
         "tests.test_dispatcher_impure",
         "tests.test_garden",
         "tests.test_garden_branch",
