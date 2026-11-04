@@ -20,9 +20,12 @@ class RunOutput:
 
     @classmethod
     def from_event(cls, value: dict | None) -> 'RunOutput | None':
-        if not value or not value.get('base'):
+        if not isinstance(value, dict) or not isinstance(value.get('base'), str) or not value['base']:
             return None
-        return cls(value['base'], tuple(value.get('scope_files') or ()), value.get('worktree'))
+        files, tree = value.get('scope_files'), value.get('worktree')
+        if files is not None and not isinstance(files, (list, tuple)) or tree is not None and not isinstance(tree, str):
+            return None
+        return cls(value['base'], tuple(f for f in files or () if isinstance(f, str)), tree)
 
     def owns(self, worktree: str | None) -> bool:
         """True when the task still has the worktree this run started in."""

@@ -144,8 +144,8 @@ def git_proof(repo, branch, base_ref, commits=(), start=None):
 def _evidence(conn, task_id):
     done = [e['data'] for e in ops.events(conn, task_id=task_id, kind='worker-done')
             if SHA.fullmatch(e['data'].get('sha') or '')]
-    bases = {e['data'].get('run'): (o.base if (o := run_output.RunOutput.from_event(e['data'].get('output_snapshot'))) else None)
-             for e in ops.events(conn, task_id=task_id, kind='run-launching')}
+    bases = {e['data'].get('run'): out and out.base for e in ops.events(conn, task_id=task_id, kind='run-launching')
+             for out in [run_output.RunOutput.from_event(e['data'].get('output_snapshot'))]}
     first = next((e['data'].get('run') for e in ops.events(conn, task_id=task_id, kind='run-started')
                   if e['data'].get('role') == 'worker'), None)
     start, commits = bases.get(first), [d['sha'] for d in done]
