@@ -162,6 +162,23 @@ class DisposableRules(unittest.TestCase):
         with self.assertRaises(TypeError):
             disk_authority.rule_unit_fresh(run, unit, SimpleNamespace(refused=(), overlaps=False))
 
+    def test_rule_unit_fresh_reports_the_first_refusal(self):
+        target = self.tree / 'bin'
+        unit = disk_authority.DisposableUnit(machine=self.machine, registration=self.entry,
+                                             evidence=(self.tree, 'head', None, ['bin']), touched=set(), target=target,
+                                             measured={}, row={})
+        run = SimpleNamespace(request=stage(), evidence=StageEvidence(stage(), StageClock(1800), processes=None))
+        changed, unknown = Refusal('/repo', str(self.tree), 'changed', 'A'), Refusal('/repo', None, 'unknown', 'B')
+        cases = (((changed, unknown), ('keep', 'output_evidence_unavailable', 'disposable registration changed (A)')),
+                 ((unknown, changed), ('keep', 'registration_unknown', 'disposable registration changed (B)')))
+        for refused, expected in cases:
+            evidence = StageEvidence(stage(), StageClock(1800), processes=None,
+                                     prove=lambda *_, **__: Proof(refused, ()))
+            fresh = evidence.fresh_registrations('/repo', target, self.tree, pointer=True)
+            with self.subTest(first=refused[0].why):
+                ruling = disk_authority.rule_unit_fresh(run, unit, fresh)
+                self.assertEqual((ruling.action, ruling.reason_code, ruling.detail), expected)
+
 
 class Worktree:
     """A StageEvidence fake for the reads `inspect` asks of one listed worktree; `head` is never read on a missing row."""

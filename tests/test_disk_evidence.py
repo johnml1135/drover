@@ -1,6 +1,7 @@
 """One stage run's evidence, held once: the inventory, the listings with the stage clock's patience, and the process
 proof with its report rows."""
 import dataclasses
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -396,6 +397,10 @@ class Reads(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, '^snapshot busy$'):
             disk_evidence.snapshot(self.machine, self.worktree, evidence=evidence)
         fresh.assert_called_once_with()
+
+    def test_git_out_states_its_timeout(self):
+        """FF3: a read names its patience; the signature carries no default."""
+        self.assertIs(inspect.signature(disk_evidence.git_out).parameters['timeout_s'].default, inspect.Parameter.empty)
 
 
 if __name__ == '__main__':
