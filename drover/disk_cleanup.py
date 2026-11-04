@@ -236,7 +236,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
             free = row['free_gb']
             drive = dict(row, warn_gb=tracker['warn_gb'])
             result['drives'].append(drive)
-            for stage in range(1, 5 if mode == 'daily' else 7):
+            for stage in range(1, 6 if mode == 'daily' else 7):     # daily: stage 5 under its idle rule, never 6
                 # Report all scopes, even when healthy. Unknown readings cannot authorize mutation.
                 # A wsl claim is no reason to run a drive's stages, report-only or not: only a claimed drive runs them.
                 if wsl_claim and row['name'] not in claims:

@@ -21,8 +21,6 @@ class Outputs(WorktreeCase):
         branches = self.branches()
         self.cleanup()
         self.assertTrue(output.exists())
-        self.cleanup(apply=True, mode='daily')
-        self.assertTrue(output.exists(), 'daily maintenance stops before stage five')
         result = self.cleanup(apply=True)
         self.assertFalse(output.exists())
         self.assertTrue(wt.is_dir())
@@ -166,6 +164,38 @@ class Outputs(WorktreeCase):
         output.write_text('rebuildable')
         self.age(wt, idle)
         return wt, output
+
+    def test_daily_on_healthy_drive_removes_idle_declared_output(self):
+        wt, output = self.same_day_tree('daily idle', 3 * 3600)
+        self.free = 180
+        branches = self.branches()
+        dry = self.cleanup(mode='daily')
+        self.assertIn(dict(drive='test-drive', stage=5), dry['stages'])
+        self.assertTrue(output.exists())
+        self.assertTrue(any(i['stage'] == 5 and i.get('action') == 'candidate' and
+                            Path(i['path']) == output.parent for i in dry['items']), dry['items'])
+        result = self.cleanup(apply=True, mode='daily')
+        self.assertFalse(output.exists())
+        self.assertTrue(any(i['stage'] == 5 and i.get('action') == 'removed' for i in result['items']))
+        self.assertTrue(wt.is_dir())
+        self.assertEqual(self.branches(), branches)
+        self.assertNotIn(6, {s['stage'] for s in result['stages']})
+
+    def test_daily_keeps_output_of_worktree_active_within_idle_limit(self):
+        wt, output = self.same_day_tree('daily active', 3600)
+        self.free = 180
+        self.cleanup(mode='daily')
+        self.cleanup(apply=True, mode='daily')
+        self.assertTrue(output.exists())
+
+    def test_daily_keeps_tracked_file_inside_declared_folder(self):
+        wt, output = self.same_day_tree('daily tracked', 3 * 3600)
+        self.r.track(wt, 'generated/result')
+        self.age(wt, 3 * 3600)
+        self.free = 180
+        self.cleanup(mode='daily')
+        self.cleanup(apply=True, mode='daily')
+        self.assertEqual(output.read_text(), 'rebuildable')
 
     def test_same_day_idle_worktree_outputs_removed_after_threshold_but_worktree_survives(self):
         wt, output = self.same_day_tree('same day', 3 * 3600)

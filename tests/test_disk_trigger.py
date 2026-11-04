@@ -83,7 +83,7 @@ class Trigger(DiskCase):
             self.calls.clear()
             disk_cleanup.run(self.cfg, mode='daily', apply=True, runtime=self.runtime())
             stages = sorted({req['stage'] for _, req in self.calls})
-            self.assertEqual(stages, [1, 2, 3, 4])
+            self.assertEqual(stages, [1, 2, 3, 4, 5])
 
     def test_duplicate_readers_and_failed_launch_do_not_lose_trigger(self):
         from drover import disk, disk_state

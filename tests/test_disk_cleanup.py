@@ -16,7 +16,7 @@ class Modes(DiskCase):
         self.assertFalse(result['exhausted'])
         self.assertTrue(result['applied'])
 
-    def test_daily_only_one_through_four(self):
+    def test_daily_runs_one_through_five_never_six(self):
         for free in (80., 180.):
             with self.subTest(free=free):
                 self.free = free
@@ -24,7 +24,7 @@ class Modes(DiskCase):
                 self.calls.clear()
                 result = self.run_cleanup(mode='daily', apply=True, real=False)
                 stages = [request['stage'] for side, request in self.calls]
-                self.assertEqual(sorted(set(stages)), [1, 2, 3, 4])
+                self.assertEqual(sorted(set(stages)), [1, 2, 3, 4, 5])
                 self.assertEqual(stages, sorted(stages))
                 self.assertEqual(result['mode'], 'daily')
 

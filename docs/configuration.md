@@ -260,7 +260,10 @@ committed local default branch configured by the machine's `default_branch`
 Worktree branches and machine files cannot widen the declarations. If the default
 branch cannot be resolved or read, cleanup retains the affected content and
 reports the unavailable evidence. Stage 5 removes only matching ignored/untracked
-files, checking tracked files against each worktree's own index. At warn
+files, checking tracked files against each worktree's own index. Daily
+maintenance (`--mode daily`) runs stages 1 through 5 even on a healthy drive, so
+declared outputs of idle worktrees are removed without waiting for pressure; stage 6
+is never part of daily. At ok, warn
 or queue, a worktree must have no process using it and be idle at least
 `[disk_cleanup] worktree_output_idle_s` (default 7200, 2 h); at hold or critical,
 any age qualifies. This limit applies only to removing these disposable paths, which
