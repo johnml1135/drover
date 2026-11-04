@@ -46,7 +46,6 @@ if "integration" not in os.environ.get("DROVER_TESTS", "").replace(",", " ").spl
         "tests.test_disk_ci_admission",
         "tests.test_disk_fix6",
         "tests.test_disk_fix7",
-        "tests.test_disk_fix8",
         "tests.test_disk_fixes",
         "tests.test_disk_lock_wrapper",
         "tests.test_disk_ownership",

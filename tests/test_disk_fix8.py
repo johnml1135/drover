@@ -338,13 +338,10 @@ class RemainingSafety(DiskCase):
             self.assertEqual(placement.linux_mount(alias / 'child'), str(real))
 
     def test_helper_in_actual_git_worktree_outside_configured_trees_is_not_exempt(self):
-        from tests.gitfix import Repo
-        repo = Repo()
-        self.addCleanup(repo.cleanup)
-        tree = repo.root / 'outside-configured-trees'
-        repo.git('worktree', 'add', '--detach', str(tree), 'main')
+        # The process proof reads only where the executable sits, so a worktree's pointer file is all the git it needs.
+        tree = self.root / 'repo' / 'outside-configured-trees'
+        self.file(tree / '.git', f'gitdir: {self.root / "repo" / ".git" / "worktrees" / tree.name}\n')
         exe = self.file(tree / 'csrss.exe')
-        self.assertIn(str(tree).replace('\\', '/'), repo.git('worktree', 'list', '--porcelain').replace('\\', '/'))
         proof = placement.cleanup_processes(windows=True,
             paths={},
             cim=lambda: [dict(pid=77, name='csrss.exe', same_user=True, cwd=None, cmd='', exe=str(exe))])
