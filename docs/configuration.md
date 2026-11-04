@@ -268,13 +268,15 @@ max_idle_hours = 2
 ```
 
 Claude Code's per-session temp folders (`<project>\<session>`) are units at depth 2. The root lies inside the
-`...\AppData\Local\Temp` temp root, as a temp entry that is a build root, so it gets no temp row:
+`...\AppData\Local\Temp` temp root, as a temp entry that is a build root, so it gets no temp row.
+A session that is open but quiet counts as idle once it has written nothing for `max_idle_hours`, its scratch folder
+included, so the example allows a day:
 
 ```toml
 [[disk_cleanup.build_roots]]
 path = 'C:\Users\johnm\AppData\Local\Temp\claude'
 placement = "windows"
-max_idle_hours = 2
+max_idle_hours = 24
 unit_depth = 2
 ```
 

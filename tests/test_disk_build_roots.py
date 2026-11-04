@@ -416,12 +416,12 @@ class BuildRootConfig(DiskCase):
             "[[disk_cleanup.build_roots]]\n"
             "path = 'C:\\Users\\johnm\\AppData\\Local\\Temp\\claude'\n"
             "placement = \"windows\"\n"
-            "max_idle_hours = 2\n"
+            "max_idle_hours = 24\n"
             "unit_depth = 2\n", encoding='utf-8')
         loaded = config.load(home)
         self.assertEqual(loaded['disk_cleanup']['build_roots'],
                          [dict(path='C:\\Users\\johnm\\AppData\\Local\\Temp\\claude', placement='windows',
-                               max_idle_hours=2, unit_depth=2)])
+                               max_idle_hours=24, unit_depth=2)])
 
     def test_validation_errors(self):
         root = str(self.root / 'targets')
