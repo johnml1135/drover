@@ -10,7 +10,7 @@ from pathlib import Path
 from . import git_client, ownership, placement
 from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, LazyProof, decide, disposable_status, ignored_outside, \
     inspect, quarantine, rule_disposable_fresh, rule_unit_fresh, unlisted_live
-from .disk_evidence import _out, identity, registration_identity, snapshot
+from .disk_evidence import git_out, identity, registration_identity, snapshot
 from .disk_inventory import safe_path
 
 JOURNAL_PAUSES_S = (0.05, 0.2)      # before a `completed` or `failed` append's second and third tries
@@ -22,7 +22,7 @@ class LinePassed(Exception):
 
 
 def unlock_at(repo, path, *, timeout_s):
-    _out(repo, 'worktree', 'unlock', '--', path, timeout_s=timeout_s)
+    git_out(repo, 'worktree', 'unlock', '--', path, timeout_s=timeout_s)
 
 
 def lock_at(repo, path, reason, *, timeout_s):
@@ -34,14 +34,14 @@ def lock_at(repo, path, reason, *, timeout_s):
 
 
 def discard_at(repo, path, evidence, *, timeout_s):
-    _out(repo, 'worktree', 'remove', '--force', '--', path, timeout_s=timeout_s)
+    git_out(repo, 'worktree', 'remove', '--force', '--', path, timeout_s=timeout_s)
     evidence.took(repo, path)
 
 
 def rescue_at(repo, ref, head, *, timeout_s):
     """The update and its verifying `rev-parse`, both inside the journalled window, so both take the cap (6.1:643)."""
-    _out(repo, 'update-ref', ref, head, '', timeout_s=timeout_s)
-    if _out(repo, 'rev-parse', ref, timeout_s=timeout_s).strip() != head:
+    git_out(repo, 'update-ref', ref, head, '', timeout_s=timeout_s)
+    if git_out(repo, 'rev-parse', ref, timeout_s=timeout_s).strip() != head:
         raise ValueError('rescue ref verification failed')
 
 

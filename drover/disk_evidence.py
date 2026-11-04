@@ -54,8 +54,9 @@ def overlaps(target, own, reach) -> bool:
                for other in reach)
 
 
-# Any failure is the ValueError every disk tuple holds: git's stderr, or why it did not end.
-def _out(repo, *args, env=None, timeout_s=git_client.NORMAL):
+def git_out(repo, *args, timeout_s, env=None):
+    """The disk family's git step: stdout, or the ValueError every disk tuple holds (git's stderr, or why it did not
+    end). There is no default timeout: a read states its patience, a mutating step its clock's `mutation_cap()`."""
     return git_client.out(str(repo), *map(str, args), timeout_s=timeout_s, env=env,
                           error=lambda f: ValueError(str(f) if f.why == 'timeout' else f.err.strip() or 'git command failed'))
 
@@ -181,7 +182,7 @@ class StageEvidence:
 
     def _read(self, repo, *args, env=None):
         """One read's git stdout, its timeout the clock's patience when it starts (section 6.1)."""
-        return _out(repo, *args, env=env, timeout_s=self._clock.patience(git_client.NORMAL))
+        return git_out(repo, *args, env=env, timeout_s=self._clock.patience(git_client.NORMAL))
 
     def _ask(self, repo, *args):
         return git_client.ask(repo, *args, timeout_s=self._clock.patience(git_client.NORMAL), no=(1,))

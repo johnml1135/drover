@@ -83,7 +83,7 @@ def registrations(request, machine, listed, runtime, run, later=()):
     as its folder settles. Past the line before a lost folder, the stage stops: `listed` and the repos in `later` stay
     unreached."""
     try:
-        for row in disk_registrations.protect(request, machine):
+        for row in disk_registrations.protect(request, machine, run.clock):
             run.add(row)
         found = disk_registrations.lost(machine, listed)
         store = runtime.state if runtime and runtime.state is not None else CleanupState(request.get('state_dir'))

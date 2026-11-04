@@ -15,7 +15,7 @@ from pathlib import Path
 from . import durable, git_client, git_worktrees, placement
 from .disk_inventory import safe_path, worktree_roots
 from .disk_stage import item
-from .disk_evidence import _out
+from .disk_evidence import git_out
 from .disk_removal import close_journal
 
 OTHER_DRIVE = "suggestion on its own drive's pass"   # in place of a suggestion for a folder off the stage's drive
@@ -38,7 +38,8 @@ def owning_side(admin, pointer):
 
 
 def common_dir(machine):
-    return Path(placement.native(_out(machine['repo'], 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()))
+    common = git_out(machine['repo'], 'rev-parse', '--path-format=absolute', '--git-common-dir', timeout_s=git_client.NORMAL)
+    return Path(placement.native(common.strip()))
 
 
 def pointer_at(admin):
@@ -51,10 +52,12 @@ def pointer_at(admin):
     return raw, Path(placement.native(where)).parent
 
 
-def protect(request, machine):
+def protect(request, machine, clock):
     """Prevent: the repo's prune expiry is `never` and every worktree is locked with its side (or a note already there).
     A report changes nothing. The lock file is written directly, as `git worktree lock --reason` does: Windows git
-    cannot address a Linux worktree by its path. A worktree this side can see is gone is left prunable."""
+    cannot address a Linux worktree by its path. A worktree this side can see is gone is left prunable. The expiry
+    write is a mutation (section 6.1): it takes `clock`'s mutation cap and starts only while the clock can finish it;
+    refused, its row is kept with the reason and nothing is written."""
     repo, out, apply = machine['repo'], [], request['apply']
     common = common_dir(machine)
     expiry = git_client.ask(repo, 'config', '--get', 'gc.worktreePruneExpire', timeout_s=git_client.NORMAL, no=(1,))
@@ -64,9 +67,11 @@ def protect(request, machine):
     if current != 'never':
         row = item(repo, 'prune_expiry_unset', repo=repo, name=machine['name'], value=current or None)
         row.update(action='report')
-        if apply:
+        if apply and not clock.can_mutate():
+            row.update(action='keep', error='protect deadline: past the stage line, the prune expiry was not written')
+        elif apply:
             try:
-                _out(repo, 'config', 'gc.worktreePruneExpire', 'never')
+                git_out(repo, 'config', 'gc.worktreePruneExpire', 'never', timeout_s=clock.mutation_cap())
                 row.update(action='configured')
             except ValueError as error:
                 row.update(action='keep', error=str(error))
@@ -98,9 +103,11 @@ def differing(repo, path, ref):
     """(files that differ, tracked files): the branch's tree against the directory, using a disposable index."""
     with tempfile.TemporaryDirectory(prefix='disk-index-') as directory:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / 'index'))
-        _out(repo, 'read-tree', ref, env=env)
-        total = [n for n in _out(repo, 'ls-files', '-z', env=env).split('\0') if n]
-        changed = [n for n in _out(repo, '--work-tree=' + str(path), 'diff', '--name-only', '-z', env=env).split('\0') if n]
+        def read(*args):
+            return [n for n in git_out(repo, *args, env=env, timeout_s=git_client.NORMAL).split('\0') if n]
+        read('read-tree', ref)
+        total = read('ls-files', '-z')
+        changed = read('--work-tree=' + str(path), 'diff', '--name-only', '-z')
     return len(changed), len(total)
 
 
@@ -161,7 +168,7 @@ class History:
         return value
 
     def _git(self, *args):
-        return _out(self._repo, *args, timeout_s=self._timeout_s())
+        return git_out(self._repo, *args, timeout_s=self._timeout_s())
 
     def introduced(self, blob) -> str:
         """The commit `git log --branches -1 --find-object=<blob>` names, or ''."""
@@ -213,7 +220,7 @@ def suggest(repo, path, *, history=None):
     SUGGEST ranked trees; this reads one blob per file, at most five, against the repo's `History`). Never applied."""
     history = history or History(repo, timeout_s=lambda: git_client.LONG)
     for name in newest_files(path):
-        blob = _out(repo, 'hash-object', '--path=' + name, '--', str(path / name)).strip()
+        blob = git_out(repo, 'hash-object', '--path=' + name, '--', str(path / name), timeout_s=git_client.NORMAL).strip()
         commit = history.introduced(blob)
         if not commit:
             continue
@@ -365,10 +372,10 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
                                    timeout_s=cap)
             durable.move(place / '.git', path / '.git', wait=durable.NO_WAIT)
             moved = True
-        _out(repo, 'worktree', 'repair', str(path), timeout_s=cap)
+        git_out(repo, 'worktree', 'repair', str(path), timeout_s=cap)
         admin = Path(placement.native(evidence.gitdir(path)))
         if not (admin / 'index').exists():
-            _out(path, 'reset', '-q', timeout_s=cap)
+            git_out(path, 'reset', '-q', timeout_s=cap)
         if git_worktrees.listing(repo, timeout_s=clock.patience(git_worktrees.LISTING_TIMEOUT_S)).row(path) is None:
             raise ValueError('registration did not take')
         evidence.repaired(repo, path)

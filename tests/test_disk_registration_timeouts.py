@@ -11,7 +11,7 @@ from drover import disk_registrations, disk_removal, disk_worktrees, git_client,
 from drover.disk_stage import StageClock
 from tests.disk_fixture import answer, listing_answers, stage_run, staged
 
-TIMEOUT = ValueError('git rev-parse failed: timeout')      # what a git timeout gives the disk callers, through `_out`
+TIMEOUT = ValueError('git rev-parse failed: timeout')      # what a git timeout gives the disk callers, through `git_out`
 SPAWN_TIMEOUT = subprocess.TimeoutExpired(['git'], 60)    # the spawn's own, below git_client
 MACHINE = dict(name='alpha', repo='/repo')
 CLOCK = StageClock(1800)
@@ -154,7 +154,7 @@ class ReregisterClock(unittest.TestCase):
             return git_worktrees.Listing(repo, (dict(worktree=str(orphan)),))
         evidence = SimpleNamespace(repaired=lambda repo, path: told.append((repo, path)), gitdir=lambda path: str(tmp / 'admin'))
         with patch.object(placement, 'add_worktree', side_effect=add), \
-                patch.object(disk_registrations, '_out', return_value=''), \
+                patch.object(disk_registrations, 'git_out', return_value=''), \
                 patch.object(git_worktrees, 'listing', side_effect=listing):
             disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
                                           SimpleNamespace(append=records.append), evidence=evidence,
@@ -184,7 +184,7 @@ class ReregisterClock(unittest.TestCase):
                     (Path(place) / '.git').write_text('gitdir: new', encoding='utf-8')
                 evidence = SimpleNamespace(repaired=lambda repo, path: None, gitdir=lambda path: str(tmp / 'admin'))
                 with patch.object(placement, 'add_worktree', side_effect=add), \
-                        patch.object(disk_registrations, '_out', return_value=''), \
+                        patch.object(disk_registrations, 'git_out', return_value=''), \
                         patch.object(git_worktrees, 'listing', return_value=git_worktrees.Listing('/repo', (dict(worktree=str(orphan)),))), \
                         patch.object(disk_removal, 'time', SimpleNamespace(monotonic=time.monotonic, sleep=pauses.append)):
                     answer = disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None,
@@ -207,7 +207,7 @@ class ReregisterClock(unittest.TestCase):
             asked.append((args[1] if args[0] == 'worktree' else args[0], timeout_s))
             return ''
         with patch.object(placement, 'add_worktree', side_effect=add), \
-                patch.object(disk_registrations, '_out', side_effect=out), \
+                patch.object(disk_registrations, 'git_out', side_effect=out), \
                 patch.object(git_worktrees, 'listing', return_value=git_worktrees.Listing('/repo', (dict(worktree=str(orphan)),))):
             disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None, 'b',
                                           SimpleNamespace(append=lambda record: None),
@@ -429,6 +429,55 @@ class UnknownLostFolders(unittest.TestCase):
             out = staged(disk_worktrees.settled, dict(request(), repos=[MACHINE]), runtime=None)
         self.assertEqual([e['repo'] for e in out['errors']], ['/repo'])
         unlisted.assert_not_called()
+
+
+class ProtectClock(unittest.TestCase):
+    """S-I2: the prune-expiry write is a mutation. It takes the stage clock's mutation cap, not the 60 s read default,
+    and starts only while the clock can finish it; a refusal is the row kept, with nothing written or removed."""
+    EXPIRE = ('config', 'gc.worktreePruneExpire', 'never')
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.common, self.asked = Path(tmp.name), []
+
+    def git(self, repo, *args, timeout):
+        self.asked.append((args, timeout))
+        if args[:2] == ('config', '--get'):
+            return subprocess.CompletedProcess(args, 1, '', '')        # unset
+        if args[0] == 'rev-parse':
+            return subprocess.CompletedProcess(args, 0, str(self.common) + '\n', '')
+        return subprocess.CompletedProcess(args, 0, '', '')
+
+    def writes(self):
+        return [timeout for args, timeout in self.asked if args == self.EXPIRE]
+
+    def test_the_prune_expiry_write_takes_the_mutation_cap(self):
+        from tests.fakeci import git_answers
+        with git_answers(self.git):
+            [row] = disk_registrations.protect(request(apply=True), MACHINE, StageClock(100, clock=at(10)))
+        self.assertEqual((row['action'], self.writes()), ('configured', [4]))      # 100 s: a 4 s cap, not 60 s
+
+    def test_past_the_line_the_prune_expiry_is_not_written(self):
+        from tests.fakeci import git_answers
+        with git_answers(self.git):
+            [row] = disk_registrations.protect(request(apply=True), MACHINE, StageClock(1800, clock=at(1700)))
+        self.assertEqual(self.writes(), [])
+        self.assertEqual((row['reason_code'], row['action']), ('prune_expiry_unset', 'keep'))
+        self.assertEqual(row['error'], 'protect deadline: past the stage line, the prune expiry was not written')
+
+    def test_past_the_line_the_stage_keeps_the_row_and_removes_nothing(self):
+        from tests.fakeci import git_answers
+        run = stage_run(dict(request(apply=True), repos=[MACHINE]), clock=at(1700))
+        with git_answers(self.git), \
+                patch.object(disk_registrations, 'lost', return_value=found('one')), \
+                patch.object(disk_registrations, 'reregister', side_effect=AssertionError('nothing may start')):
+            disk_worktrees.registrations(run.request.decide_view(), MACHINE, [], None, run)
+        out = answer(run)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual([(r['reason_code'], r['action']) for r in out['items']],
+                         [('prune_expiry_unset', 'keep'), ('settled_deadline', 'report')])
+        self.assertEqual(out['errors'], [])
 
 
 if __name__ == '__main__':
