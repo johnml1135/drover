@@ -2,10 +2,10 @@
 import json
 import os
 
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase
 
 
-class Report(WorktreeCase):
+class Report(MemoryWorktreeCase):
     def test_reports_every_nonautomatic_category_without_mutation(self):
         dirty = self.worktree('dirty inventory')
         self.r.commit('pending.txt', cwd=dirty)
