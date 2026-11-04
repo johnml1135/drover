@@ -181,12 +181,15 @@ class OutputStageCost(BudgetCase):
 
     def test_deadline_between_units_of_one_worktree_names_it_and_the_rest(self):
         self.trees_with(2, 3)
-        with self.costing('remove_disposable', 45., disk_removal):        # the 80 s line passes with the first worktree's second unit
+        # The 80 s line passes as the first worktree's second unit starts: that unit keeps, and the stage stops after it.
+        with self.costing('remove_disposable', 45., disk_removal):
             answer = self.stage5(apply=True, worker_timeout_s=100)
         late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
         done = [i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']
-        self.assertEqual((len(late), len(done), answer['errors']), (1, 2, []))
-        self.assertEqual({Path(i['root']).name for i in done}, {Path(late[0]['worktrees'][0]).name})
+        kept = [i for i in answer['items'] if i.get('reason_code') == 'removal_deadline']
+        self.assertEqual((len(late), len(done), len(kept), answer['errors']), (1, 1, 1, []))
+        self.assertEqual((done[0]['action'], kept[0]['action']), ('removed', 'keep'))
+        self.assertEqual({Path(i['root']).name for i in done + kept}, {Path(late[0]['worktrees'][0]).name})
         self.assertEqual(len(late[0]['worktrees']), 2)
         self.assertEqual(late[0]['repos'], [])
         self.assertEqual(late[0]['count'], 2)

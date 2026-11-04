@@ -1,5 +1,5 @@
-"""Removal (section 7.3): every deletion by path in the disk family, each re-proven immediately before; a worktree,
-temp or cache removal starts only while the stage clock can finish it. A worktree's is journalled first; between journal `planned` and `completed`
+"""Removal (section 7.3): every deletion by path in the disk family, each re-proven immediately before and started
+only while the stage clock can finish it. A worktree's is journalled first; between journal `planned` and `completed`
 every git step takes the stage clock's `mutation_cap()`. No remove_* checkpoints: each ends in its row."""
 import shutil
 import time
@@ -181,8 +181,8 @@ def prune_emptied(target, removed, touched):
 def remove_disposable(run, unit: DisposableUnit) -> None:
     """Section 7.3 for a disposable unit: the listing's row and status; a fresh process proof through
     `rule_disposable_fresh`, tracked, and the compare with the first pass; `fresh_registrations` (pointer: `.git` must
-    be there) and `rule_unit_fresh`; then each path, its bytes counted on `run` as it goes. Any change keeps the unit;
-    `unit.row` carries the end. No `can_mutate()` gate yet: the stage loops' `late()` checks are all (Task 44 report)."""
+    be there) and `rule_unit_fresh`; then, while the clock can finish it, each path, its bytes counted on `run` as it
+    goes. Any change keeps the unit; a clock that cannot keeps it as `removal_deadline`. `unit.row` carries the end."""
     machine, entry, evidence, touched, target, measured, row = (
         unit.machine, unit.registration, unit.evidence, unit.touched, unit.target, unit.measured, unit.row)
     path = evidence[0]
@@ -205,6 +205,8 @@ def remove_disposable(run, unit: DisposableUnit) -> None:
         ruling = rule_unit_fresh(run, unit, run.evidence.fresh_registrations(machine['repo'], target, path, pointer=True))
         if ruling.action != 'candidate':
             return row.update(action='keep', reason_code=ruling.reason_code, error=ruling.detail)
+        if not run.clock.can_mutate():      # past the line, or too little time left: no path goes
+            return row.update(action='keep', reason_code=REMOVAL_DEADLINE)
         for name, known in measured.items():
             leaf = Path(name)
             # status expands ignored directories to leaves; only empty directories reach here.
