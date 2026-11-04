@@ -119,7 +119,12 @@ class Migration(unittest.TestCase):
             config.validate(proposed)
             virtual_only = {'trackers': [disk('virtual-host', '~/repos', wsl_source='vhdx',
                                               queue_gb=95.0, hold_gb=35.0)]}
-            with patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Fixture') as _placement_patch_5, patch('drover.placement_host.vhdx_dir', _placement_patch_5):
+            # The VHDX host is H: on either side: WSL reads vhdx_dir, Windows reads the Lxss registry. Both are faked,
+            # so the machine's real VHDX location (wherever WSL lives now) is never read.
+            hosted = lambda: {placement.distro(): 'H:'}
+            with patch.object(placement, 'vhdx_dir', return_value='/mnt/h/WSL/Fixture') as _placement_patch_5, patch('drover.placement_host.vhdx_dir', _placement_patch_5), \
+                    patch.object(placement, 'detect_vhdx_drives', side_effect=hosted) as _registry, \
+                    patch('drover.placement_host.detect_vhdx_drives', _registry):
                 resolved = config.migrate_disk_config(virtual_only)['trackers'][0]
             self.assertEqual(placement.drive(resolved['path']), 'H')
             self.assertEqual(levels(resolved), (150, 95, 35, 25))
