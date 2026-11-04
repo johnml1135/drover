@@ -1,12 +1,12 @@
 """The temporary-folder stage of a cleanup: external build roots first, each unit idle past its limit removed on a
 fresh proof; then the temp roots, each entry proven safe within a scan budget, then removed."""
-import shutil
 import time
 from pathlib import Path
 
-from . import placement
+from . import disk_removal, placement
 from .disk_authority import LazyProof, rule_build_unit, rule_build_unit_fresh, rule_temp_entry
 from .disk_inventory import repository_root, safe_path
+from .disk_removal import REMOVAL_DEADLINE
 from .disk_stage import item, within
 
 
@@ -16,12 +16,6 @@ class TempBudgetExceeded(ValueError):
 
 def _builds(request):
     return {Path(entry['path']).absolute() for entry in request['paths'].get('build_roots', [])}
-
-
-def remove_entry(path):
-    """The stage's one removal: a folder's tree, or a file. Never follows a link: rmtree refuses one, and every walk
-    before it kept a tree holding one."""
-    shutil.rmtree(path) if path.is_dir() else path.unlink()
 
 
 def temp_facts(path, request, *, budget, cached, children, run):
@@ -132,7 +126,7 @@ def build_roots(run, request) -> bool:
                 ruling = rule_build_unit(run, path, measured, entry=entry, processes=first)
                 if ruling.action == 'candidate' and request['apply']:
                     if not run.clock.can_mutate():      # it would not end in time: it never starts, and the stage stops
-                        run.add(dict(row, reason_code='removal_deadline'))
+                        run.add(dict(row, reason_code=REMOVAL_DEADLINE))
                         run.stop('temp_deadline', None, [], [])
                         return True
                     fresh = evidence.fresh_processes(regenerable=True)
@@ -141,9 +135,11 @@ def build_roots(run, request) -> bool:
                 row.update(action=ruling.action, reason_code=ruling.reason_code,
                            **({'error': ruling.detail} if ruling.detail else {}))
                 if ruling.action == 'candidate' and request['apply']:
-                    remove_entry(path)
-                    row['action'] = 'removed'
-                    run.reclaimed(row['bytes'])
+                    disk_removal.remove_temp_entry(run, row, path)
+                    if row['reason_code'] == REMOVAL_DEADLINE:      # the line passed while it was proven again
+                        run.add(row)
+                        run.stop('temp_deadline', None, [], [])
+                        return True
             except TempBudgetExceeded:
                 run.add(dict(row, action='keep', reason_code='build_root_partial'))
                 run.stop('temp_deadline', None, [], [])
@@ -199,9 +195,8 @@ def temporary(run) -> None:
                                 if current.busy(str(path)):
                                     row.update(action='keep', reason_code=getattr(current, 'reason', None) or 'process_busy')
                                 elif temp_facts(path, request, budget=budget, cached={}, children={}, run=run) == {k: row[k] for k in ('files', 'bytes', 'age_s')} and placement.cleanup_contains(request['drive']['path'], str(path)):
-                                    remove_entry(path)
-                                    row['action'] = 'removed'
-                                    run.reclaimed(row['bytes'])
+                                    disk_removal.remove_temp_entry(run, row, path)
+                                    line = row['reason_code'] == REMOVAL_DEADLINE       # proven again past the line
                 except TempBudgetExceeded:
                     partial, line = True, run.clock.late()      # the root's budget, or the stage's own line
                     row.update(action='keep', reason_code='temp_root_partial')
@@ -210,7 +205,7 @@ def temporary(run) -> None:
                 run.add(row)
                 if request['apply']:
                     run.checkpoint()        # between entries: this one's removal is done or never started
-                if partial:
+                if partial or line:
                     break
         except OSError as error:
             run.error(dict(path=str(root), error=str(error)))

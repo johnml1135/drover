@@ -88,7 +88,10 @@
     "drover.disk_worktrees.overlaps_worktrees",
     "drover.disk_paths.output_evidence",
     "drover.disk_worktrees.inspect",
-    "drover.disk_worktrees.quarantine"
+    "drover.disk_worktrees.quarantine",
+    "drover.disk_paths.remove_output",
+    "drover.disk_paths.prune_emptied",
+    "drover.disk_temp.remove_entry"
   ],
   "removed_receipt_fields": [
     "infra"

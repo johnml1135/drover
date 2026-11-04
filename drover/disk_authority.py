@@ -15,6 +15,7 @@ from .disk_state import CleanupState
 
 OUTPUT_IDLE_S = 2 * 3600  # disk_cleanup.worktree_output_idle_s default
 CLOSED_IDLE_S = 3 * 86400
+OUTPUT_UNAVAILABLE = 'output_evidence_unavailable'      # every disposable path kept for want of evidence
 
 
 @dataclass(frozen=True)
@@ -314,7 +315,7 @@ def ignored_outside(path, ignored, declarations):
 
 def _unavailable(detail):
     """The keep every refused disposable path carries; `detail` is the row's `error`, as the decision trace reads it."""
-    return Ruling('keep', 'output_evidence_unavailable', detail)
+    return Ruling('keep', OUTPUT_UNAVAILABLE, detail)
 
 
 def _disposable(run, machine, registration, proof, touched):
@@ -386,7 +387,7 @@ def rule_unit(run, target, path, names) -> Ruling:
             elif len(names) > 1:
                 protected.append(leaf)
     except (OSError, ValueError, StopIteration) as error:
-        return Ruling('keep', 'output_evidence_unavailable', str(error), dict(measured={}, protected=tuple(protected)))
+        return Ruling('keep', OUTPUT_UNAVAILABLE, str(error), dict(measured={}, protected=tuple(protected)))
     facts = dict(measured=measured, protected=tuple(protected))
     return Ruling('candidate', 'declared_disposable', facts=facts) if measured else Ruling('keep', 'protected', facts=facts)
 
@@ -398,7 +399,7 @@ def rule_unit_fresh(run, unit: DisposableUnit, proof: FreshRegistrations) -> Rul
         raise TypeError('rule_unit_fresh takes a FreshRegistrations, proven now')
     if proof.refused:
         first = proof.refused[0]
-        return Ruling('keep', 'registration_unknown' if first.why == 'unknown' else 'output_evidence_unavailable',
+        return Ruling('keep', 'registration_unknown' if first.why == 'unknown' else OUTPUT_UNAVAILABLE,
                       f'disposable registration changed ({first.detail})')
     path, proven = unit.evidence[0], set()
     if proof.overlaps or \

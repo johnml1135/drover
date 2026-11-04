@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from drover.disk_stage import StageRequest
-from drover import config, disk_authority, disk_paths, disk_runtime, disk_side, git_worktrees, placement
+from drover import config, disk_authority, disk_paths, disk_removal, disk_runtime, disk_side, git_worktrees, placement
 from drover import placement_host, placement_paths, placement_worker, process
 from tests.disk_budget_fixture import BudgetCase
 from tests.disk_fixture import DiskCase, placement_processes, stage_run
@@ -155,14 +155,14 @@ class OutputStageCost(BudgetCase):
         self.assertEqual(few, many)
         self.assertEqual(few, 1)
 
-    def costing(self, name, seconds):
-        """Each call of disk_paths' `name` takes `seconds` of the stage's clock."""
-        real = getattr(disk_paths, name)
+    def costing(self, name, seconds, module=disk_paths):
+        """Each call of `module`'s `name` takes `seconds` of the stage's clock."""
+        real = getattr(module, name)
 
         def slow(*args, **options):
             self.clock += seconds
             return real(*args, **options)
-        return patch.object(disk_paths, name, slow)
+        return patch.object(module, name, slow)
 
     def test_outputs_deadline_returns_partial_report_instead_of_worker_timeout(self):
         self.trees_with(4, 1)
@@ -181,7 +181,7 @@ class OutputStageCost(BudgetCase):
 
     def test_deadline_between_units_of_one_worktree_names_it_and_the_rest(self):
         self.trees_with(2, 3)
-        with self.costing('remove_output', 45.):        # the 80 s line passes with the first worktree's second unit
+        with self.costing('remove_disposable', 45., disk_removal):        # the 80 s line passes with the first worktree's second unit
             answer = self.stage5(apply=True, worker_timeout_s=100)
         late = [i for i in answer['items'] if i.get('reason_code') == 'output_deadline']
         done = [i for i in answer['items'] if i.get('reason_code') == 'declared_disposable']

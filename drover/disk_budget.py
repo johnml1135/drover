@@ -1,12 +1,12 @@
 """Budget purge: disposable paths go, least recently used first, until WSL used space reaches the target.
 
 This module only orders the candidates and decides when to stop. What is disposable, what is idle and what may be
-removed are disk_authority's rules, and disk_paths' revalidated removal is the only one. Used space inside WSL is the
-WSL side's own."""
+removed are disk_authority's rules, and disk_removal's revalidated `remove_disposable` is the only removal. Used space
+inside WSL is the WSL side's own."""
 import math
 import os
 
-from . import placement
+from . import disk_removal, placement
 from .disk_paths import disposable_rows
 
 SIDE = 'wsl'
@@ -58,9 +58,9 @@ def purge(run) -> dict:
     if request.budget.get('windows_paths') is None:
         run.add(processes_unknown(request.drive['path'], target))
         return dict(budget=dict(status='processes_unknown', used_gb=None, target_gb=target, shortfall_bytes=None))
-    remove, pending = {}, []
-    for row, removal in disposable_rows(run):
-        remove[id(row)] = removal
+    units, pending = {}, []
+    for row, unit in disposable_rows(run):
+        units[id(row)] = unit
         pending.append(row)
     late = run.stopped      # gathering ran out of time
     used, short = _used(), None
@@ -81,7 +81,7 @@ def purge(run) -> dict:
             late = True
             break
         pending = [row for row in pending if row is not batch[0]]
-        remove[id(batch[0])]()
+        disk_removal.remove_disposable(run, units[id(batch[0])])
         run.add(batch[0])
         run.checkpoint()
         used = _used()

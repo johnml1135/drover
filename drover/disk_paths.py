@@ -1,13 +1,12 @@
 """Safe declared path stages. No inferred tool, repository or language policy."""
 import subprocess
-from functools import partial
 from pathlib import Path
 
-from . import placement, process
-from .disk_authority import DisposableUnit, disposable_match, protected_path, rule_cache_file, rule_disposable, \
-    rule_disposable_fresh, rule_unit, rule_unit_fresh
-from .disk_evidence import registration_identity
+from . import disk_removal, placement, process
+from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, disposable_match, protected_path, rule_cache_file, \
+    rule_disposable, rule_unit
 from .disk_inventory import safe_path, worktree_roots
+from .disk_removal import REMOVAL_DEADLINE
 from .disk_stage import item
 
 
@@ -26,7 +25,7 @@ def caches(run) -> None:
         row.update(argv=entry['argv'], action='candidate')
         if request['apply']:
             if not run.clock.can_mutate():      # it would not end in time: it never starts, and the stage stops
-                run.add(dict(row, action='keep', reason_code='removal_deadline'))
+                run.add(dict(row, action='keep', reason_code=REMOVAL_DEADLINE))
                 return run.stop('cache_deadline', None, [], [])
             done = process.run(process.Command(entry['argv'], 120, cwd=entry['cwd']))
             if done.kind != 'exited':
@@ -75,77 +74,22 @@ def folder_cache(run, request, entry):
             if request['apply']:
                 proof = run.evidence.fresh_processes().proof
                 if not run.clock.can_mutate():      # the line passed while it was proven: it stays, as in stage 2
-                    run.add(dict(row, action='keep', reason_code='removal_deadline'))
+                    run.add(dict(row, action='keep', reason_code=REMOVAL_DEADLINE))
                     return run.stop('cache_deadline', None, [], []) or True
                 if proof.busy(str(path)):
                     row.update(action='keep', reason_code=getattr(proof, 'reason', None) or 'process_busy')
                 elif protected_path(path, run):
                     row.update(action='keep', reason_code='protected')
-                elif path.stat() == info and placement.cleanup_contains(request['drive']['path'], str(path)):
-                    path.unlink()
-                    row['action'] = 'removed'
-                    run.reclaimed(info.st_size)
+                else:
+                    disk_removal.remove_cache_file(run, row, path, info)
             run.add(row)
+            if row['reason_code'] == REMOVAL_DEADLINE:      # the removal's own clock check refused it
+                return run.stop('cache_deadline', None, [], []) or True
             if request['apply']:
                 run.checkpoint()        # between removals: this one is done or never started
     except (OSError, ValueError) as error:
         run.error(dict(path=str(root), error=str(error)))
     return False
-
-
-def prune_emptied(target, removed, touched):
-    """Folders a removal emptied go with it, deepest first, up to the target; rmdir only ever takes an empty one."""
-    folders = set()
-    for name in removed:
-        parent = Path(name).parent
-        while parent not in folders:
-            folders.add(parent)
-            if parent == target:
-                break
-            parent = parent.parent
-    for folder in sorted(folders, key=lambda p: len(p.parts), reverse=True):
-        try:
-            folder.rmdir()
-            touched.add(folder.parent)
-        except OSError:
-            pass
-
-
-def remove_output(request, run, machine, entry, evidence, touched, target, measured, row):
-    """The one removal of declared outputs: `target` is proven again now, as one unit, immediately before its paths
-    (`measured`, name -> facts when listed) go, and any change keeps them. Bytes count on `run` as each path goes."""
-    path = evidence[0]
-    try:
-        current = run.evidence.row(machine['repo'], entry['worktree'])
-        current_dirty, current_ignored = run.evidence.status(path)
-        if registration_identity(current or {}) != registration_identity(entry):
-            raise ValueError('disposable registration changed')
-        fresh = rule_disposable_fresh(run, machine, current, run.evidence.fresh_processes(), touched=touched)
-        if fresh.action != 'candidate':
-            return row.update(action='keep', reason_code=fresh.reason_code, error=fresh.detail)
-        fresh_evidence = tuple(fresh.facts[key] for key in ('path', 'head', 'tag', 'declarations'))
-        tracked = {str(path / name) for name in run.evidence.tracked(path, target.relative_to(path))}
-        if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
-                fresh_evidence[1:] != evidence[1:] or \
-                set(measured) - set(current_dirty + current_ignored) or \
-                tracked & set(measured) or (tracked and str(target) in measured) or \
-                any(run.evidence.measure(Path(name)) != known for name, known in measured.items()):
-            raise ValueError('disposable evidence changed')
-        unit = DisposableUnit(machine, entry, evidence, touched, target, measured, row)
-        ruling = rule_unit_fresh(run, unit, run.evidence.fresh_registrations(machine['repo'], target, path, pointer=True))
-        if ruling.action != 'candidate':
-            return row.update(action='keep', reason_code=ruling.reason_code, error=ruling.detail)
-        for name, known in measured.items():
-            leaf = Path(name)
-            # status expands ignored directories to leaves; only empty directories reach here.
-            leaf.rmdir() if leaf.is_dir() else leaf.unlink()
-            touched.add(leaf.parent)
-            run.reclaimed(known['bytes'])
-        if str(target) not in measured:
-            prune_emptied(target, measured, touched)
-        row['action'] = 'removed'
-    except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
-        row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
 
 
 def output_units(names, path, tracked, declarations, whole):
@@ -167,9 +111,9 @@ def output_units(names, path, tracked, declarations, whole):
 
 
 def disposable_rows(run):
-    """Yield (row, remove) for each unit of declared ignored/untracked outputs, its row not yet added: the consumer
-    adds it once decided, after remove(), the one revalidated removal, if it calls that. Whatever is not eligible is
-    added as kept, never yielded. Past the clock's line it stops between units with the one `output_deadline` row."""
+    """Yield (row, unit) for each unit of declared ignored/untracked outputs, its row (`unit.row`) not yet added: the
+    consumer adds it once decided, after `disk_removal.remove_disposable(run, unit)`, the one revalidated removal, if
+    it calls that. Whatever is not eligible is added as kept, never yielded. Past the clock's line it stops between units with the one `output_deadline` row."""
     request, stage = run.request.decide_view(), run.evidence
     budget = bool(request.get('budget'))
     for number, machine in enumerate(request['repos']):
@@ -215,15 +159,16 @@ def disposable_rows(run):
                                 if ruling.detail is not None:       # a read failed partway: kept as unknown
                                     row['error'] = ruling.detail
                         except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
-                            row.update(action='keep', reason_code='output_evidence_unavailable', error=str(error))
+                            row.update(action='keep', reason_code=OUTPUT_UNAVAILABLE, error=str(error))
                         if row['action'] == 'candidate':
-                            yield row, partial(remove_output, request, run, machine, entry, evidence, touched, target, measured, row)
+                            yield row, DisposableUnit(machine=machine, registration=entry, evidence=evidence, touched=touched,
+                                                      target=target, measured=measured, row=row)
                         else:
                             run.add(row)
                         if count < len(units) and run.clock.late():
                             return run.stop('output_deadline', machine, listed[position:], request['repos'][number + 1:])
                 except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as error:
-                    run.add(item(entry['worktree'], 'output_evidence_unavailable', repo=machine['repo'], error=str(error)))
+                    run.add(item(entry['worktree'], OUTPUT_UNAVAILABLE, repo=machine['repo'], error=str(error)))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             run.add(item(machine['repo'], 'repository_unavailable', error=str(error)))
             run.error(dict(repo=machine['repo'], reason_code='repository_unavailable', error=str(error)))
@@ -232,9 +177,9 @@ def disposable_rows(run):
 def outputs(run) -> None:
     """Remove only declared ignored/untracked files; source edits always survive. Each unit's row is added once its
     removal has run, and sent before the next unit starts."""
-    for row, remove in disposable_rows(run):
+    for row, unit in disposable_rows(run):
         if run.request.apply:
-            remove()
+            disk_removal.remove_disposable(run, unit)
         run.add(row)
         if run.request.apply:
             run.checkpoint()

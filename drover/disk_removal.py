@@ -1,16 +1,19 @@
-"""Journalled removal (section 7.3): take away what authority allowed, journalled first and re-proven immediately before.
-Between journal `planned` and `completed` every git step takes the stage clock's `mutation_cap()`."""
+"""Removal (section 7.3): every deletion by path in the disk family, each re-proven immediately before; a worktree,
+temp or cache removal starts only while the stage clock can finish it. A worktree's is journalled first; between journal `planned` and `completed`
+every git step takes the stage clock's `mutation_cap()`. No remove_* checkpoints: each ends in its row."""
 import shutil
 import time
 import uuid
 from pathlib import Path
 
 from . import git_client, ownership, placement
-from .disk_authority import LazyProof, decide, ignored_outside, inspect, quarantine, unlisted_live
+from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, LazyProof, decide, ignored_outside, inspect, quarantine, \
+    rule_disposable_fresh, rule_unit_fresh, unlisted_live
 from .disk_evidence import _out, identity, registration_identity, snapshot
 from .disk_inventory import safe_path
 
 JOURNAL_PAUSES_S = (0.05, 0.2)      # before a `completed` or `failed` append's second and third tries
+REMOVAL_DEADLINE = 'removal_deadline'       # a removal the stage clock could not finish never starts
 
 
 def unlock_at(repo, path, *, timeout_s):
@@ -37,17 +40,21 @@ def rescue_at(repo, ref, head, *, timeout_s):
         raise ValueError('rescue ref verification failed')
 
 
-def _close(store, record, phase, cap, row):
-    """Append `completed` or `failed` with a few short tries inside `cap`; a journal still unwritable joins the row's
-    error rather than being lost."""
-    end = time.monotonic() + cap
+def close_journal(store, record, phase, clock, row=None):
+    """Append `completed` or `failed` with a few short tries inside both the clock's mutation cap and what is left of
+    the stage. None once written; a journal still unwritable is returned, joined to `row`'s error when given, rather
+    than being lost."""
+    end = time.monotonic() + min(clock.mutation_cap(), clock.left())
     for pause in JOURNAL_PAUSES_S + (None,):
         try:
-            return store.append(dict(record, phase=phase))
+            store.append(dict(record, phase=phase))
+            return None
         except OSError as error:
             if pause is None or time.monotonic() + pause >= end:
-                row['error'] = '; '.join(filter(None, (row.get('error'), f'journal {phase} failed: {error}')))
-                return None
+                note = f'journal {phase} failed: {error}'
+                if row is not None:
+                    row['error'] = '; '.join(filter(None, (row.get('error'), note)))
+                return note
             time.sleep(pause)
 
 
@@ -108,7 +115,7 @@ def remove_worktree(run, selected: dict, *, store) -> dict:
             if excluded:
                 return validate(excluded=excluded)
         if not clock.can_mutate():      # past the line, or too little time left for its capped steps: nothing starts
-            current.update(action='keep', reason_code='removal_deadline')
+            current.update(action='keep', reason_code=REMOVAL_DEADLINE)
             return current
         rescue = 'refs/drover/disk-rescue/' + uuid.uuid4().hex if not row.get('branch') else None
         target = row['branch'].removeprefix('refs/heads/') if row.get('branch') else row['head']
@@ -128,7 +135,7 @@ def remove_worktree(run, selected: dict, *, store) -> dict:
         if row.get('unlisted') and unlisted_live(run, path):
             row.update(action='keep', reason_code='live_owner')
             quarantine(run, machine, row)
-            _close(store, record, 'failed', cap, row)
+            close_journal(store, record, 'failed', clock, row)
             return row
         if row.get('side_lock'):
             unlock_at(repo, path, timeout_s=cap)
@@ -138,7 +145,7 @@ def remove_worktree(run, selected: dict, *, store) -> dict:
         else:
             discard_at(repo, path, evidence, timeout_s=cap)
         row.update(action='removed', manifest=record['id'])
-        _close(store, record, 'completed', cap, row)
+        close_journal(store, record, 'completed', clock, row)
     except (OSError, ValueError) as error:
         message = str(error)
         if unlocked:
@@ -149,5 +156,86 @@ def remove_worktree(run, selected: dict, *, store) -> dict:
                 message += f'; lock restore failed: {relock}'
         row.update(action='keep' if row['action'] != 'removed' else 'removed', error=message)
         if planned:
-            _close(store, record, 'failed', cap, row)
+            close_journal(store, record, 'failed', clock, row)
     return row
+
+
+def prune_emptied(target, removed, touched):
+    """Folders a removal emptied go with it, deepest first, up to the target; rmdir only ever takes an empty one."""
+    folders = set()
+    for name in removed:
+        parent = Path(name).parent
+        while parent not in folders:
+            folders.add(parent)
+            if parent == target:
+                break
+            parent = parent.parent
+    for folder in sorted(folders, key=lambda p: len(p.parts), reverse=True):
+        try:
+            folder.rmdir()
+            touched.add(folder.parent)
+        except OSError:
+            pass
+
+
+def remove_disposable(run, unit: DisposableUnit) -> None:
+    """Section 7.3 for a disposable unit: the listing's row and status; a fresh process proof through
+    `rule_disposable_fresh`, tracked, and the compare with the first pass; `fresh_registrations` (pointer: `.git` must
+    be there) and `rule_unit_fresh`; then each path, its bytes counted on `run` as it goes. Any change keeps the unit;
+    `unit.row` carries the end. No `can_mutate()` gate yet: the stage loops' `late()` checks are all (Task 44 report)."""
+    machine, entry, evidence, touched, target, measured, row = (
+        unit.machine, unit.registration, unit.evidence, unit.touched, unit.target, unit.measured, unit.row)
+    path = evidence[0]
+    try:
+        current = run.evidence.row(machine['repo'], entry['worktree'])
+        current_dirty, current_ignored = run.evidence.status(path)
+        if registration_identity(current or {}) != registration_identity(entry):
+            raise ValueError('disposable registration changed')
+        fresh = rule_disposable_fresh(run, machine, current, run.evidence.fresh_processes(), touched=touched)
+        if fresh.action != 'candidate':
+            return row.update(action='keep', reason_code=fresh.reason_code, error=fresh.detail)
+        fresh_evidence = tuple(fresh.facts[key] for key in ('path', 'head', 'tag', 'declarations'))
+        tracked = {str(path / name) for name in run.evidence.tracked(path, target.relative_to(path))}
+        if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
+                fresh_evidence[1:] != evidence[1:] or \
+                set(measured) - set(current_dirty + current_ignored) or \
+                tracked & set(measured) or (tracked and str(target) in measured) or \
+                any(run.evidence.measure(Path(name)) != known for name, known in measured.items()):
+            raise ValueError('disposable evidence changed')
+        ruling = rule_unit_fresh(run, unit, run.evidence.fresh_registrations(machine['repo'], target, path, pointer=True))
+        if ruling.action != 'candidate':
+            return row.update(action='keep', reason_code=ruling.reason_code, error=ruling.detail)
+        for name, known in measured.items():
+            leaf = Path(name)
+            # status expands ignored directories to leaves; only empty directories reach here.
+            leaf.rmdir() if leaf.is_dir() else leaf.unlink()
+            touched.add(leaf.parent)
+            run.reclaimed(known['bytes'])
+        if str(target) not in measured:
+            prune_emptied(target, measured, touched)
+        row['action'] = 'removed'
+    except (OSError, ValueError, StopIteration) as error:      # git_client turns every spawn failure into one of these
+        row.update(action='keep', reason_code=OUTPUT_UNAVAILABLE, error=str(error))
+
+
+def remove_temp_entry(run, row, path) -> None:
+    """A temp entry or build unit its stage has just proven again: a folder's tree, or a file, its row's bytes counted.
+    Never follows a link: rmtree refuses one, and every walk before it kept a tree holding one. A clock that cannot
+    finish it keeps it as `removal_deadline`; a failed removal raises for the stage's row, as before."""
+    if not run.clock.can_mutate():
+        return row.update(action='keep', reason_code=REMOVAL_DEADLINE)
+    shutil.rmtree(path) if path.is_dir() else path.unlink()
+    row['action'] = 'removed'
+    run.reclaimed(row['bytes'])
+
+
+def remove_cache_file(run, row, path, info) -> None:
+    """One cache file its stage has just proven again, removed only while it is as measured (`info`) and on the drive,
+    its size counted. A clock that cannot finish it keeps it as `removal_deadline`; a failed unlink raises for the
+    stage, as before."""
+    if not run.clock.can_mutate():
+        return row.update(action='keep', reason_code=REMOVAL_DEADLINE)
+    if path.stat() == info and placement.cleanup_contains(run.request.drive['path'], str(path)):
+        path.unlink()
+        row['action'] = 'removed'
+        run.reclaimed(info.st_size)

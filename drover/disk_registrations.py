@@ -17,6 +17,7 @@ from . import durable, git_client, git_worktrees, placement
 from .disk_inventory import safe_path, worktree_roots
 from .disk_stage import item
 from .disk_evidence import _out
+from .disk_removal import close_journal
 
 OTHER_DRIVE = "suggestion on its own drive's pass"   # in place of a suggestion for a folder off the stage's drive
 THRESHOLD = 10   # percent of the branch's tracked files that may differ from the directory
@@ -329,8 +330,8 @@ def report(request, machine, listed, found, store, *, evidence, clock):
             row.update(action='report')
         else:
             try:
-                reregister(request, machine, path, target, branch, store, evidence=evidence, clock=clock)
-                row.update(action='reregistered')
+                journal = reregister(request, machine, path, target, branch, store, evidence=evidence, clock=clock)
+                row.update(action='reregistered', **({'error': journal} if journal else {}))
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 row.update(action='keep', reason_code='lost_registration_failed', error=str(error))
         rows.append(row)
@@ -342,7 +343,8 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
     move its `.git` file over the orphan's, repair both pointers, and rebuild a missing index. The old `.git` file is
     kept under the state directory first and never overwritten. Nothing starts unless `clock` can still finish it;
     inside the journalled window each mutating step takes the clock's mutation cap and the verifying listing its
-    patience (section 6.1)."""
+    patience (section 6.1). `completed` and `failed` take disk_removal's journal retries; a `completed` still unwritable
+    is returned for the row, the repair having taken, and a `failed` one joins the error raised."""
     if not clock.can_mutate():
         raise ValueError('repair deadline: past the stage line, the repair did not start')
     repo, cap = machine['repo'], clock.mutation_cap()
@@ -371,13 +373,15 @@ def reregister(request, machine, path, target, branch, store, *, evidence, clock
         if git_worktrees.listing(repo, timeout_s=clock.patience(git_worktrees.LISTING_TIMEOUT_S)).row(path) is None:
             raise ValueError('registration did not take')
         evidence.repaired(repo, path)
-        store.append(dict(record, phase='completed'))
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        return close_journal(store, record, 'completed', clock)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         try:
             if not moved and place.exists():
                 git_client.mutate(repo, 'worktree', 'remove', '-f', '-f', str(place), timeout_s=cap)
         finally:
-            store.append(dict(record, phase='failed'))
+            journal = close_journal(store, record, 'failed', clock)
+        if journal:
+            raise ValueError(f'{error}; {journal}') from error
         raise
     finally:
         for leftover in (place, holder):    # empty by now; rmdir never removes content

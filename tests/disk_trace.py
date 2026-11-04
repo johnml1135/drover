@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_paths, disk_removal, placement, placement_proof, process
+from drover import disk_budget, disk_removal, placement, placement_proof, process
 from drover.disk_stage import StageClock
 from tests.disk_fixture import DAY, DiskCase, served
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
@@ -25,7 +25,7 @@ from tests.placement_trace import normalize
 TRACE = Path(__file__).with_name('disk_decision_trace.json')
 PATCH_TARGETS = (process,)                      # each module whose `subprocess` TraceGit replaces: every command reaches it
 REMOVAL = (disk_removal, 'remove_worktree')     # where a mid-stage change lands: after selection, before revalidation
-OUTPUT_REMOVAL = (disk_paths, 'remove_output')  # the same for a disposable path
+OUTPUT_REMOVAL = (disk_removal, 'remove_disposable')  # the same for a disposable path
 WORKTREE_SIDE, CLEANUP_LINK = placement.worktree_side, placement.cleanup_link
 
 
@@ -63,8 +63,8 @@ class Scene(SceneTree):
     def at_removal(self, real):
         def remove(first, *selected, **options):
             change, self.midstage = self.midstage, None
-            if change:      # the removal reads `tasks` from the stage's evidence (`first` is remove_output's request or the run)
-                change(dict(tasks=(options.get('run') or (selected[0] if isinstance(first, dict) else first)).evidence._request.tasks))
+            if change:      # the removal reads `tasks` from the stage's evidence; `first` is the run either way
+                change(dict(tasks=(options.get('run') or first).evidence._request.tasks))
             return real(first, *selected, **options)
         return remove
 

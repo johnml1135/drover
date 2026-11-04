@@ -275,7 +275,7 @@ class OutputsContracts(GitWorktreeCase):
 class Revalidation(WorktreeCase):
     def test_apply_still_revalidates_registrations_fresh(self):
         """A registration made after the first pass protects the unit: removal measures the proof, not the listing."""
-        from drover import disk_paths, git_worktrees, placement
+        from drover import disk_paths, disk_removal, git_worktrees, placement
         tree = self.worktree('late registration')
         output = tree / 'generated' / 'result'
         output.parent.mkdir()
@@ -284,10 +284,11 @@ class Revalidation(WorktreeCase):
         request, proof = self.stage5_request(apply=True)
         with mock.patch.object(disk_paths.placement, 'cleanup_processes', return_value=proof), \
                 mock.patch.object(disk_paths.placement, 'physical_disk_path', return_value=str(self.root)):
-            row, remove = next(disk_paths.disposable_rows(stage_run(request)))
+            run = stage_run(request)
+            row, unit = next(disk_paths.disposable_rows(run))
             self.assertEqual(row['action'], 'candidate')
             reach = (placement.cleanup_parts(output / 'nested'),)
             with mock.patch.object(git_worktrees, 'prove', return_value=git_worktrees.Proof((), reach)):
-                remove()
+                disk_removal.remove_disposable(run, unit)
         self.assertEqual(output.read_text(), 'rebuildable')
         self.assertEqual((row['action'], row['reason_code']), ('keep', 'output_evidence_unavailable'))

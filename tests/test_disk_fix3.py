@@ -13,7 +13,7 @@ from drover import disk_runtime, process
 @contextmanager
 def output_facts(path, side, registrations=None):
     """A source-free checkout: fake Git observations, real path protection probes."""
-    from drover import disk_paths
+    from drover import disk_paths, disk_removal
     from drover.disk_authority import Ruling
     from drover.disk_evidence import StageEvidence
     entries = [dict(worktree=str(p), HEAD='head', branch='refs/heads/test', locked=side)
@@ -28,7 +28,7 @@ def output_facts(path, side, registrations=None):
          patch.object(StageEvidence, 'status', side_effect=status) as observed_status, \
          patch.object(StageEvidence, 'tracked', return_value=[]), \
          patch.object(disk_paths, 'rule_disposable', side_effect=judged), \
-         patch.object(disk_paths, 'rule_disposable_fresh', side_effect=judged):
+         patch.object(disk_removal, 'rule_disposable_fresh', side_effect=judged):
         yield observed_status
 
 

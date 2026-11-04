@@ -1,12 +1,13 @@
 """A slow folder must not void a repo's cleanup report: a git timeout is one folder's unproven row, not the repo's."""
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_registrations, disk_worktrees, git_client, git_worktrees, placement
+from drover import disk_registrations, disk_removal, disk_worktrees, git_client, git_worktrees, placement
 from drover.disk_stage import StageClock
 from tests.disk_fixture import answer, listing_answers, stage_run, staged
 
@@ -160,6 +161,37 @@ class ReregisterClock(unittest.TestCase):
                                           clock=StageClock(1800, clock=at(1400)))
         self.assertEqual(asked, [40])       # patience(400) 40 s before the line, not 400 s
         self.assertEqual(([r['phase'] for r in records], told), (['planned', 'completed'], [('/repo', orphan)]))
+
+    def test_a_completed_append_takes_the_removal_journal_retries(self):
+        """Task 43's carry: a repair that took is not reported failed for one missed `completed` append, and a journal
+        that stays unwritable is returned for the row, not raised."""
+        for misses, records_left, note in ((1, ['planned', 'completed'], None),
+                                           (9, ['planned'], 'journal completed failed: journal busy')):
+            with self.subTest(misses=misses):
+                tmp, orphan = self.orphan()
+                (tmp / 'admin').mkdir()
+                (tmp / 'admin' / 'index').write_text('', encoding='utf-8')
+                records, tried, pauses = [], [], []
+
+                def append(record, tried=tried, records=records, misses=misses):
+                    tried.append(record['phase'])
+                    if record['phase'] == 'completed' and tried.count('completed') <= misses:
+                        raise OSError('journal busy')
+                    records.append(record)
+
+                def add(repo, place, *args, **kwargs):
+                    Path(place).mkdir(parents=True)
+                    (Path(place) / '.git').write_text('gitdir: new', encoding='utf-8')
+                evidence = SimpleNamespace(repaired=lambda repo, path: None, gitdir=lambda path: str(tmp / 'admin'))
+                with patch.object(placement, 'add_worktree', side_effect=add), \
+                        patch.object(disk_registrations, '_out', return_value=''), \
+                        patch.object(git_worktrees, 'listing', return_value=git_worktrees.Listing('/repo', (dict(worktree=str(orphan)),))), \
+                        patch.object(disk_removal, 'time', SimpleNamespace(monotonic=time.monotonic, sleep=pauses.append)):
+                    answer = disk_registrations.reregister(dict(now=0, state_dir=str(tmp / 'state')), MACHINE, orphan, None,
+                                                           'b', SimpleNamespace(append=append), evidence=evidence,
+                                                           clock=StageClock(1800, clock=at(10)))
+                self.assertEqual(([r['phase'] for r in records], answer), (records_left, note))
+                self.assertEqual(pauses, list(disk_removal.JOURNAL_PAUSES_S[:misses]))
 
     def test_the_repair_steps_take_the_mutation_cap(self):
         tmp, orphan = self.orphan()
