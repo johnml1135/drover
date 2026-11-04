@@ -41,7 +41,7 @@ class Disposable(unittest.TestCase):
                                repos=(dict(name='alpha', repo='/repo'),), policy={}, state_dir='/state', tasks={})
         self.real = StageEvidence(request, StageClock(1800), prove=self.prove,
                                   processes=lambda **_: SimpleNamespace(busy=lambda path: False, reason=None))
-        self.run = SimpleNamespace(request=request, evidence=self, clock=SimpleNamespace(can_mutate=self.can_mutate),
+        self.run = SimpleNamespace(request=request, evidence=self, clock=SimpleNamespace(can_mutate=self.can_mutate, late=lambda: False),
                                    reclaimed=lambda size: self.order.append(('reclaimed', size)),
                                    checkpoint=abandoned, add=abandoned, stop=abandoned, error=abandoned)
 

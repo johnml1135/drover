@@ -235,9 +235,8 @@ def quarantine(run, machine, row, *, store=None):
 @dataclass(frozen=True)
 class DisposableUnit:
     """One unit of declared disposable paths as the first pass found it: first-pass values only. `registration` is
-    the listing row, `evidence` the (path, head, tag, declarations) `rule_disposable` gave, `measured` name -> facts,
-    a name being a folder where `disposable_status` reported it whole, and `untracked` the measured names it listed
-    untracked rather than ignored."""
+    the listing row, `evidence` the (path, head, tag, declarations) `rule_disposable` gave, `measured` name -> facts
+    (a folder `disposable_status` listed whole is one name), `untracked` the measured names listed `??`, not `!!`."""
     machine: Mapping
     registration: Mapping
     evidence: tuple
@@ -250,15 +249,33 @@ class DisposableUnit:
 
 def disposable_status(run, path, declarations):
     """(dirty, ignored) for stage 5's units at `path`, read the same way on the first pass and at removal, dry run and
-    apply alike: as git reports them, so a folder it reports whole (nothing under it tracked) is one name, unless a
-    listed folder is not itself declared; a budget purge, whose units are declared prefixes, lists every path."""
+    apply alike: as git reports them, so a folder it reports whole (nothing under it tracked) is one name. A listed
+    folder not itself declared, where a declaration could match below it, is replaced by every path under it, from one
+    expanded status; other folders stay whole. A budget purge, whose units are declared prefixes, lists every path."""
     expand = bool(run.request.budget)
     dirty, ignored = run.evidence.status(path, expand=expand)
-    if not expand and declarations and any(
-            Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
-            for name in dirty + ignored):
-        dirty, ignored = run.evidence.status(path)
-    return dirty, ignored
+    if expand or not declarations:
+        return dirty, ignored
+    opened = {Path(name) for name in dirty + ignored if Path(name).is_dir() and
+              not disposable_match(Path(name).relative_to(path), declarations) and
+              open_below(Path(name).relative_to(path), declarations)}
+    if not opened:
+        return dirty, ignored
+    every = run.evidence.status(path)
+    return tuple([name for name in listed if Path(name) not in opened] +
+                 [name for name in all_names if any(f == Path(name) or f in Path(name).parents for f in opened)]
+                 for listed, all_names in zip((dirty, ignored), every))
+
+
+def open_below(relative, declarations):
+    """Whether a declaration could match a path strictly below the folder `relative` (`**` takes any parts)."""
+    def below(names, pattern):
+        if not names or not pattern:
+            return bool(pattern) and not names
+        if pattern[0] == '**':
+            return below(names, pattern[1:]) or below(names[1:], pattern)
+        return fnmatch.fnmatchcase(names[0], pattern[0]) and below(names[1:], pattern[1:])
+    return any(below(Path(relative).parts, tuple(pattern.split('/'))) for pattern in declarations)
 
 
 def repository_tree(path, *, boundary=None, proven=None):

@@ -2,6 +2,7 @@
 only while the stage clock can finish it. A worktree's is journalled first; between journal `planned` and `completed`
 every git step takes the stage clock's `mutation_cap()`. No remove_* checkpoints: each ends in its row."""
 import shutil
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,10 @@ from .disk_inventory import safe_path
 
 JOURNAL_PAUSES_S = (0.05, 0.2)      # before a `completed` or `failed` append's second and third tries
 REMOVAL_DEADLINE = 'removal_deadline'       # a removal the stage clock could not finish never starts
+
+
+class LinePassed(Exception):
+    """The stage clock's line passed partway through a unit: what went is counted, the rest stays."""
 
 
 def unlock_at(repo, path, *, timeout_s):
@@ -179,32 +184,52 @@ def prune_emptied(target, removed, touched):
 
 
 def take_folder(run, folder, known) -> None:
-    """A folder `disposable_status` listed whole, or an empty one: walked first, so a link or a path off the drive
-    anywhere under it, or files and bytes other than `known` (its measure), keep all of it, as each path would have
-    kept itself; then each file unlinked and counted on `run` as it goes, each folder after what it held. Never
-    follows a link: one met on the way stops it there."""
-    def refuse_link(path):
+    """A folder `disposable_status` listed whole, or an empty one: walked first, so a link, a path off the drive or on
+    another device anywhere under it, or files and bytes other than `known` (its measure), keep all of it, as each path
+    would have kept itself. Then each file is unlinked and counted on `run` as it goes, each folder after what it held,
+    each only while its folder is still the one walked (no link, same device and inode), so a folder swapped for a link
+    stops it there; and only while the clock's line has not passed (`LinePassed`). Never follows a link."""
+    walked, order = {}, []      # folder -> (st_dev, st_ino); (path, is a folder, size) children first
+
+    def concrete(path):
         if placement.cleanup_link(path):
             raise ValueError('link or reparse point: ' + str(path))
-        if not placement.cleanup_contains(run.request.drive['path'], str(path)):
-            raise ValueError('path left the drive: ' + str(path))
+        info = path.lstat()
+        if walked and info.st_dev != walked[folder][0]:
+            raise ValueError('another device: ' + str(path))
+        return info
 
     def walk(directory):
-        refuse_link(directory)
+        info = concrete(directory)
+        if not placement.cleanup_contains(run.request.drive['path'], str(directory)):
+            raise ValueError('path left the drive: ' + str(directory))
+        walked[directory] = (info.st_dev, info.st_ino)
         for child in sorted(directory.iterdir()):
-            refuse_link(child)
-            yield from walk(child) if child.is_dir() else (child,)
-        yield directory
-    paths = list(walk(folder))
-    files = [path for path in paths if not path.is_dir()]
-    if (len(files), sum(path.lstat().st_size for path in files)) != (known['files'], known['bytes']):
+            info = concrete(child)
+            if stat.S_ISDIR(info.st_mode):
+                walk(child)
+            elif not placement.cleanup_contains(run.request.drive['path'], str(child)):
+                raise ValueError('path left the drive: ' + str(child))
+            else:
+                order.append((child, False, info.st_size))
+        order.append((directory, True, 0))
+
+    def unchanged(directory):
+        info = concrete(directory)
+        if (info.st_dev, info.st_ino) != walked[directory]:
+            raise ValueError('folder changed during removal: ' + str(directory))
+    walk(folder)
+    files = [size for _, is_folder, size in order if not is_folder]
+    if (len(files), sum(files)) != (known['files'], known['bytes']):
         raise ValueError('disposable folder changed: ' + str(folder))
-    for path in paths:
-        refuse_link(path)
-        if path.is_dir():
+    for path, is_folder, size in order:
+        if run.clock.late():
+            raise LinePassed()
+        unchanged(path if is_folder else path.parent)
+        if is_folder:
             path.rmdir()
         else:
-            size = path.lstat().st_size
+            concrete(path)
             path.unlink()
             run.reclaimed(size)
 
@@ -214,8 +239,8 @@ def remove_disposable(run, unit: DisposableUnit) -> None:
     a folder it listed whole must still be listed whole, as untracked or ignored as it was; a fresh process proof
     through `rule_disposable_fresh`, tracked, and the compare with the first pass; `fresh_registrations` (pointer:
     `.git` must be there) and `rule_unit_fresh`; then, while the clock can finish it, each path, its bytes counted on
-    `run` as it goes. Any change keeps the unit; a clock that cannot keeps it as `removal_deadline`. `unit.row`
-    carries the end."""
+    `run` as it goes. Any change keeps the unit; a clock that cannot start it, or whose line passes partway, keeps it
+    as `removal_deadline`. `unit.row` carries the end."""
     machine, entry, evidence, touched, target, measured, row = (
         unit.machine, unit.registration, unit.evidence, unit.touched, unit.target, unit.measured, unit.row)
     path = evidence[0]
@@ -241,7 +266,9 @@ def remove_disposable(run, unit: DisposableUnit) -> None:
             return row.update(action='keep', reason_code=ruling.reason_code, error=ruling.detail)
         if not run.clock.can_mutate():      # past the line, or too little time left: no path goes
             return row.update(action='keep', reason_code=REMOVAL_DEADLINE)
-        for name, known in measured.items():
+        for count, (name, known) in enumerate(measured.items()):
+            if count and run.clock.late():      # a unit of many paths stops between them at the line
+                raise LinePassed()
             leaf = Path(name)
             if leaf.is_dir() or placement.cleanup_link(leaf):       # a folder listed whole; a link refuses there
                 take_folder(run, leaf, known)
@@ -252,6 +279,8 @@ def remove_disposable(run, unit: DisposableUnit) -> None:
         if str(target) not in measured:
             prune_emptied(target, measured, touched)
         row['action'] = 'removed'
+    except LinePassed:      # partway: what went is counted, the rest stays for the next run
+        row.update(action='keep', reason_code=REMOVAL_DEADLINE)
     except (OSError, ValueError, StopIteration) as error:      # git_client turns every spawn failure into one of these
         row.update(action='keep', reason_code=OUTPUT_UNAVAILABLE, error=str(error))
 

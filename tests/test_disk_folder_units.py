@@ -45,6 +45,16 @@ class StageUnits(MemoryWorktreeCase):
         self.assertEqual([row['path'] for row, _ in applied], [row['path'] for row, _ in dry])
         self.assertEqual([(row['files'], row['bytes']) for row, _ in applied], [(3, 15)])
 
+    def test_an_undeclared_ignored_folder_leaves_the_declared_folder_one_unit(self):
+        """`data` is ignored and not declared, and no declaration could match below it: it does not expand the
+        worktree, so `generated` stays one unit."""
+        (self.tree / 'data' / 'inner').mkdir(parents=True)
+        (self.tree / 'data' / 'inner' / 'keep').write_bytes(b'not declared')
+        self.age(self.tree, 4 * 86400)
+        for apply in (False, True):
+            _, rows = self.rows(apply)
+            self.assertEqual([row['path'] for row, _ in rows], [str(self.folder)])
+
     def test_an_ignored_folder_is_removed_as_one_unit_with_one_status_one_measure_one_prove(self):
         from drover.disk_evidence import StageEvidence
         measured, real_measure = [], StageEvidence.measure
@@ -97,7 +107,9 @@ class FolderRemoval(unittest.TestCase):
                                state_dir='/state', tasks={})
         self.real = StageEvidence(request, StageClock(1800), prove=self.prove,
                                   processes=lambda **_: SimpleNamespace(busy=lambda path: False, reason=None))
-        self.run = SimpleNamespace(request=request, evidence=self, clock=SimpleNamespace(can_mutate=lambda: True),
+        self.past_line = lambda: False      # the stage clock's `late()`
+        clock = SimpleNamespace(can_mutate=lambda: True, late=lambda: self.past_line())
+        self.run = SimpleNamespace(request=request, evidence=self, clock=clock,
                                    reclaimed=lambda size: self.order.append(('reclaimed', size)),
                                    checkpoint=abandoned, add=abandoned, stop=abandoned, error=abandoned)
         self.measured = {str(self.bin): self.real.measure(self.bin)}
@@ -221,6 +233,65 @@ class FolderRemoval(unittest.TestCase):
         self.assertTrue(gone)
         self.assertEqual(sorted(size for kind, size in self.order if kind == 'reclaimed'),
                          sorted(path_size for path, path_size in zip(self.files, (3, 5, 7)) if path in gone))
+
+    def test_a_subfolder_swapped_for_a_link_mid_removal_stops_the_folder(self):
+        """`bin/sub` becomes a link to a folder holding files of the same names once `bin/a` has gone: no unlink
+        reaches through it, the unit keeps, and only `a`'s bytes count."""
+        outside = self.root / 'outside'
+        outside.mkdir()
+        for name in ('b', 'c'):
+            (outside / name).write_bytes(b'precious')
+        real_unlink, swapped = Path.unlink, []
+
+        def unlink(path, *args, **kwargs):
+            real_unlink(path, *args, **kwargs)
+            if not swapped:
+                swapped.append(path)
+                (self.bin / 'sub').rename(self.root / 'moved')
+                (self.bin / 'sub').symlink_to(outside, target_is_directory=True)
+        with mock.patch.object(Path, 'unlink', unlink):
+            row = self.remove()
+        self.assertEqual(swapped, [self.bin / 'a'])
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'output_evidence_unavailable'))
+        self.assertEqual(sorted(path.name for path in outside.iterdir()), ['b', 'c'])
+        self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
+
+    def test_a_line_passed_mid_folder_stops_it_as_removal_deadline(self):
+        """The clock is read as each path goes: past the line the rest stays, and what went is counted."""
+        self.past_line = lambda: any(step[0] == 'reclaimed' for step in self.order)
+        row = self.remove()
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'removal_deadline'))
+        self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
+        self.assertEqual(self.left(), self.files[1:])
+
+
+class Expansion(unittest.TestCase):
+    """`disposable_status` expands only the collapsed folders a declaration could match below."""
+    def test_only_folders_a_declaration_could_reach_below_are_expanded(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        tree = Path(folder.name).absolute() / 'w'
+        leaves = {name: tree / name for name in ('target/x', '.vs/y', 'src/lib/obj/o', 'src/keep')}
+        for path in leaves.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'x')
+        calls = []
+
+        def status(path, *, expand=True):
+            calls.append(expand)
+            if expand:
+                return [str(leaves['src/lib/obj/o']), str(leaves['src/keep'])], \
+                    [str(leaves['target/x']), str(leaves['.vs/y'])]
+            return [str(tree / 'src')], [str(tree / 'target'), str(tree / '.vs')]
+        run = SimpleNamespace(request=SimpleNamespace(budget=None), evidence=SimpleNamespace(status=status))
+        dirty, ignored = disk_authority.disposable_status(run, tree, ('target', 'src/*/obj'))
+        self.assertEqual(calls, [False, True])
+        self.assertEqual(sorted(dirty), sorted([str(leaves['src/lib/obj/o']), str(leaves['src/keep'])]))
+        self.assertEqual(ignored, [str(tree / 'target'), str(tree / '.vs')])
+        calls.clear()
+        self.assertEqual(disk_authority.disposable_status(run, tree, ('target',)),
+                         ([str(tree / 'src')], [str(tree / 'target'), str(tree / '.vs')]))
+        self.assertEqual(calls, [False])
 
 
 def abandoned(*_, **__):
