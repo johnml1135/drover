@@ -382,6 +382,17 @@ class BuildRootCadence(DiskCase):
         self.tick()
         self.assertEqual(self.builds, [])
 
+    def test_a_triggered_cleanup_waits_a_tick_behind_a_build_roots_launch(self):
+        from drover import disk_state
+        self.cfg['disk_cleanup']['cooldown_s'] = 0
+        disk_state.update(self.state, lambda s: s.update(automation={'apply': False}))
+        self.free = 120.        # warn: a triggered cleanup is due too
+        self.tick()
+        self.assertEqual((self.builds, self.launches), ([self.now], []), 'the build-roots run is taking the lock')
+        self.now += 60
+        self.tick()
+        self.assertEqual((len(self.builds), self.launches), (1, [1]))
+
     def test_a_failed_launch_restores_the_last_start(self):
         from drover import disk, disk_state
         disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 7200)))

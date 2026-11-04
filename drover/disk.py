@@ -269,12 +269,13 @@ def _build_roots_tick(cfg, directory, now, compacting, launch):
     last one started, whatever any drive's level and outside the cleanup cooldown. Its start is kept in state, so a
     restarted hub waits out the interval; a launch that fails puts the previous start back. The run itself takes the
     cleanup lock, and skips when it is held, so no claim is kept. None during a WSL compaction, whose window holds
-    that lock."""
+    that lock. True when it launched: the run is about to take the lock, so this tick claims no triggered cleanup,
+    which would meet that lock and fail."""
     from . import disk_state
     from .config_defaults import BUILD_ROOT_INTERVAL_S
     policy = cfg.get('disk_cleanup', {})
     if compacting or not any(entry.get('placement') == 'windows' for entry in policy.get('build_roots', [])):
-        return
+        return False
     interval = policy.get('build_root_interval_s', BUILD_ROOT_INTERVAL_S)
     def due(state):
         previous = (state.get('build_roots') or {}).get('last_start')
@@ -285,9 +286,9 @@ def _build_roots_tick(cfg, directory, now, compacting, launch):
     try:
         start, previous = disk_state.update(directory, due)
     except BlockingIOError:
-        return
+        return False
     if not start:
-        return
+        return False
     try:
         launch() if launch is not None else disk_runtime.cleanup_enqueue(
             cfg, dict(id='build-roots', applied=True), mode='build-roots')
@@ -303,6 +304,7 @@ def _build_roots_tick(cfg, directory, now, compacting, launch):
         except BlockingIOError:
             pass
         raise
+    return True
 
 
 def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None, wsl_used=None,
@@ -342,7 +344,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     result['pause'] |= bool(result['critical_tokens'])
     from .disk_cleanup import retry_notices
     retry_notices(cfg)
-    _build_roots_tick(cfg, directory, now, compacting, build_enqueue)
+    building = _build_roots_tick(cfg, directory, now, compacting, build_enqueue)
     # Process checks and receipt IO happen outside the short state transaction.
     try:
         observed = disk_state.read(directory)
@@ -429,7 +431,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 state.setdefault('notice_episodes', {}).pop(row['name'], None)
                 continue
             baseline = episode.get('post' if applied else 'report_post')
-            if blocker is not None:
+            if blocker is not None or building:     # a build-roots run launched this tick is taking the lock
                 continue
             if claim or (baseline is not None and free > baseline - RETRIGGER_DROP_GB):
                 continue
