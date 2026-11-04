@@ -222,6 +222,10 @@ _Avoid_: Blocked
 One pass that reads an external backlog and proposes its items as tasks for the owner to approve.
 _Avoid_: Batch
 
+**Run output record**:
+What a run's output is judged against: its base, scope and worktree, stored with the run's launch so recovery can still judge it.
+_Avoid_: snapshot
+
 ## Checks, CI and merging
 
 **Checks**:
@@ -317,6 +321,46 @@ _Avoid_: Garden run, batch
 **Cleanup candidate**:
 One item a cleanup run proposes to delete, shown in the Inbox until approved or declined.
 _Avoid_: Garden deletion
+
+**Worktree registration**:
+Git's record of a worktree, held in the repository's `worktrees/` admin directory. Distinct from a repo registration, which is Drover's file about a repo.
+_Avoid_: entry
+
+**Stage listing**:
+The real `git worktree list` of one repo, made once in a stage run. It is the authority for selection and for a repo's failure.
+_Avoid_: cache, snapshot
+
+**Fresh proof**:
+Admin files read at the moment of a removal and compared with the stage listing. It can only refuse.
+_Avoid_: revalidation, recheck
+
+**Stage evidence**:
+What one stage run has established, held once. Not "run evidence": a run is one worker's attempt at a task.
+_Avoid_: cache, snapshot
+
+**Stage run**:
+One cleanup stage on one side, from the start of its clock to its last row. It qualifies run and does not mean one.
+_Avoid_: worker call
+
+**Unknown registration**:
+An admin directory the fresh proof cannot read whole. It refuses; it never authorises.
+_Avoid_: broken entry
+
+**Partial stage**:
+A stage run cut off before it covered everything.
+
+**Stage clock**:
+The one time limit of a stage run.
+
+**Stage row**:
+One settled line of a stage run's answer.
+
+**Ruling**:
+The disk cleanup authority's answer on one path: candidate, keep or report, with its reason.
+_Avoid_: verdict, decision
+
+**Wait class**:
+The stated time a file operation outlasts a reader: routine, ordinary, release or terminal.
 
 ## Rules the vocabulary encodes
 

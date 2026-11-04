@@ -4,6 +4,7 @@ import json
 from . import brief, compaction_hold, config, contract, durable, repos, route as routing, runner, task_access, task_context
 from .ledger import ops
 from .pipeline import WorktreeRefused
+from .run_output import RunOutput
 from .dispatcher_admission import (MAX_FINISH_TRIES, MAX_ROTATIONS, MAX_PROVIDER_ERRORS, BACKOFF_MAX_MIN,
                                    ENV_BLOCK_KINDS, PENDING_KEY, failures, at_top, ladders)
 
@@ -241,13 +242,13 @@ class FinishSteps:
             if st == 'blocked' and not env_block:
                 return self._continue_worker(task_id, run_id, spec, result, usage)
             try:
-                snapshot = spec.get('output_snapshot')
+                output = RunOutput.from_event(spec.get('output_snapshot'))
                 task = p.get_task(task_id)
-                if not snapshot or task.get('worktree') != snapshot.get('worktree'):
+                if not output or not output.owns(task.get('worktree')):
                     raise WorktreeRefused("run output snapshot is unavailable or worktree changed")
-                task = {**task, 'scope_files': snapshot['scope_files']}
+                task = {**task, 'scope_files': list(output.scope_files)}
                 message = (str(task.get('title') or task_id).strip() or task_id) if env_block else rec.get('commit_message') or ''
-                sha = self.pipeline.commit_ready(task, run_id, message, base=snapshot['base'],
+                sha = self.pipeline.commit_ready(task, run_id, message, base=output.base,
                                                  sha=rec.get('sha') if st == 'done' else None)
             except (WorktreeRefused, OSError) as e:
                 if env_block and str(e) == 'no changes':

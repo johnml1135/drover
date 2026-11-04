@@ -360,6 +360,12 @@ class Seams(unittest.TestCase):
         names = {name.split('.')[0] for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))}
         self.assertLessEqual(names, set(sys.stdlib_module_names))
 
+    def test_run_output_imports_no_drover_module(self):
+        path, tree = 'drover/run_output.py', parsed('drover')['drover/run_output.py']
+        self.assertEqual(rule_violations('R5', {path: tree}), [])
+        names = {name.split('.')[0] for node, _, _ in scoped(tree) for name in imported(path, node, aliases_of(path, tree))}
+        self.assertLessEqual(names, set(sys.stdlib_module_names))
+
     def test_process_imports_only_placement_paths_and_compaction_hold(self):
         path, tree = 'drover/process.py', parsed('drover')['drover/process.py']
         self.assertEqual(rule_violations('R5', {path: tree}), [])

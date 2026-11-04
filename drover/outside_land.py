@@ -17,7 +17,7 @@ import logging
 import re
 import time
 
-from . import ci, config, decide as decide_module, disk, dispatch_repos, git_client, landing, placement, repos
+from . import ci, config, decide as decide_module, disk, dispatch_repos, git_client, landing, placement, repos, run_output
 from .ledger import disk_notices, ops, ops_bypass, scope, states, tx
 
 INTERVAL_S = 600
@@ -144,7 +144,7 @@ def git_proof(repo, branch, base_ref, commits=(), start=None):
 def _evidence(conn, task_id):
     done = [e['data'] for e in ops.events(conn, task_id=task_id, kind='worker-done')
             if SHA.fullmatch(e['data'].get('sha') or '')]
-    bases = {e['data'].get('run'): (e['data'].get('output_snapshot') or {}).get('base')
+    bases = {e['data'].get('run'): (o.base if (o := run_output.RunOutput.from_event(e['data'].get('output_snapshot'))) else None)
              for e in ops.events(conn, task_id=task_id, kind='run-launching')}
     first = next((e['data'].get('run') for e in ops.events(conn, task_id=task_id, kind='run-started')
                   if e['data'].get('role') == 'worker'), None)

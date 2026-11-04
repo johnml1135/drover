@@ -90,7 +90,7 @@ class ScopeBase(unittest.TestCase):
         """The snapshot the dispatcher records as the run begins in this worktree."""
         port = SimpleNamespace(get_task=lambda tid: self.task, set_status=lambda *a, **k: self.fail("sent to owner"))
         steps = SimpleNamespace(port=port, pipeline=self.pipe())
-        return LaunchSteps._output_snapshot(steps, self.task, str(self.wt))["base"]
+        return LaunchSteps._output_snapshot(steps, self.task, str(self.wt)).base
 
     def land_from_start(self, base):
         return self.pipe().commit_ready(self.task, 1, "m", base=base)

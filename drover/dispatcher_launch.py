@@ -2,6 +2,7 @@
 import uuid
 
 from . import contract, repos
+from .run_output import RunOutput
 from . import config as config_mod
 from . import launch as launch_mod
 from .launch_usage import SETUP_ERROR
@@ -40,7 +41,7 @@ class LaunchSteps:
         except Exception as error:
             p.set_status(task['id'], 'needs-owner', reason=f'run base cannot be verified: {error}'[:300])
             return None
-        return {'base': base, 'scope_files': current.get('scope_files') or [], 'worktree': current.get('worktree')}
+        return RunOutput(base, tuple(current.get('scope_files') or ()), current.get('worktree'))
 
     def _spawn(self, task, route, policy, placement, cwd, b, role, extra=None, run_id=None):
         """Start one run of `role` (worker or review) for the brief `b`; returns its run id, or None on a launch error."""
@@ -80,7 +81,7 @@ class LaunchSteps:
                 "idle_s": self._idle_s(policy), "system_append": b["system_append"], "user_prompt": b["user_prompt"],
                 "allowance_before": contract.used_from_headroom(self._reading_for_route(route)), **(extra or {})}
         if output_snapshot is not None:
-            spec['output_snapshot'] = output_snapshot
+            spec['output_snapshot'] = output_snapshot.to_event()
         if role == "planner":
             spec.update(write=False, sandbox='read-only', wall_s=600, idle_s=120)
         if role == "review":
