@@ -58,16 +58,33 @@ def replay(conn, cfg, now):
         return []
     reports = []
     # The full cleanup's report, and the build-roots run's, kept apart so an hourly build-roots run never replaces it.
+    # Each file is read once per version (its mtime and size, kept in disk state), so a pass that finds nothing new
+    # costs two stats. A build-roots report is an event only when it removed something or has a failed row.
+    seen = dict(state.get('journalled') or {})
     for name in ('last-report.json', 'last-build-roots.json'):
+        path = state_dir / 'disk' / name
         try:
-            report = json.loads((state_dir / 'disk' / name).read_text(encoding='utf-8'))
-            ident = hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
-            with tx(conn):
-                if not any(e['data']['id'] == ident for e in ops.events(conn, kind='disk.report')):
-                    ops.event(conn, 'disk.report', 'disk', dict(id=ident, report=report))
-                    reports.append(ident)
-        except (OSError, ValueError):
+            info = path.stat()
+            version = [info.st_mtime_ns, info.st_size]
+            if seen.get(name) == version:
+                continue
+            report = json.loads(path.read_text(encoding='utf-8'))
+            worth = name != 'last-build-roots.json' or report.get('errors') or \
+                any(item.get('action') == 'removed' for item in report.get('items', []))
+            if worth:
+                ident = hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
+                with tx(conn):
+                    if not any(e['data']['id'] == ident for e in ops.events(conn, kind='disk.report')):
+                        ops.event(conn, 'disk.report', 'disk', dict(id=ident, report=report))
+                        reports.append(ident)
+            seen[name] = version
+        except (OSError, ValueError, AttributeError):
             pass
+    if seen != (state.get('journalled') or {}):
+        try:
+            disk_state.update(state_dir, lambda current: current.update(journalled=seen))
+        except BlockingIOError:
+            pass        # read again next pass; the event's id keeps it recorded once
     retracted = [ident for ident, entry in state.get('outbox', {}).items()
                  if entry.get('retracted') and entry['acknowledged']]
     for ident in retracted:

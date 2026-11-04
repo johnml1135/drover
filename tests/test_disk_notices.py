@@ -214,7 +214,8 @@ class Notices(MemoryWorktreeCase):
         payload = self.file(self.report_root / 'retained')
         result = self.run_cleanup()
         # A build-roots run's report is journalled beside the full one, which it never replaces.
-        disk_state.save_file(self.state, 'last-build-roots.json', dict(mode='build-roots', applied=True, items=[], errors=[]))
+        disk_state.save_file(self.state, 'last-build-roots.json', dict(mode='build-roots', applied=True, errors=[],
+                                                                       items=[dict(path='u', action='removed')]))
         conn = connect(self.root / 'inventory.db')
         self.addCleanup(conn.close)
         disk_notices.replay(conn, self.cfg, self.now)
@@ -225,6 +226,31 @@ class Notices(MemoryWorktreeCase):
         self.assertEqual(full['data']['report']['items'], result['items'])
         self.assertTrue(any(i['path'] == str(payload) for i in full['data']['report']['items']))
         self.assertEqual(ops.open_questions(conn), [])
+
+    def test_a_build_roots_report_is_recorded_only_when_it_removed_or_failed_and_each_file_is_read_once(self):
+        import os
+        from drover import disk_state
+        from drover.ledger import connect, disk_notices
+        conn = connect(self.root / 'builds.db')
+        self.addCleanup(conn.close)
+        def recorded():
+            return [json.loads(row[0])['report'] for row in
+                    conn.execute("SELECT data FROM task_events WHERE kind='disk.report' ORDER BY id")]
+        def report(at, **rows):
+            path = disk_state.save_file(self.state, 'last-build-roots.json', dict(
+                mode='build-roots', applied=True, items=rows.get('items', []), errors=rows.get('errors', []), at=at))
+            os.utime(self.state / 'disk' / 'last-build-roots.json', (at, at))
+        report(1_000, items=[dict(path='u', action='keep', reason_code='build_root_recent')])
+        disk_notices.replay(conn, self.cfg, self.now)
+        self.assertEqual(recorded(), [], 'nothing removed and nothing failed: no event')
+        report(2_000, items=[dict(path='u', action='removed', reason_code='build_root_idle')])
+        disk_notices.replay(conn, self.cfg, self.now)
+        report(3_000, errors=[dict(path='r', error='denied')])
+        disk_notices.replay(conn, self.cfg, self.now)
+        self.assertEqual([r['at'] for r in recorded()], [2_000, 3_000])
+        with patch('drover.ledger.ops.events', side_effect=AssertionError('re-read')),                 patch('drover.ledger.ops.event', side_effect=AssertionError('re-recorded')):
+            disk_notices.replay(conn, self.cfg, self.now)      # unchanged files: neither parsed nor looked up again
+        self.assertEqual(len(recorded()), 2)
 
     def test_snapshot_marks_every_nonterminal_task_as_owned(self):
         from drover.ledger import connect, ops, states, disk_notices
