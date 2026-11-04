@@ -53,14 +53,16 @@ boundary. Each prepare keeps the two most recently used snapshots per source and
 branch, every snapshot an open run recorded in its access manifest, and the ones
 it just made or reused; it removes the rest, and leftover `read-*` clones older
 than an hour. Last use is kept in `read-checkouts/.index.json`, outside every
-checkout. Replan inspection reuses the newest snapshot of a branch; a batch that
-starts takes a fresh one at the current tip. Snapshots are listed in the brief and read through their absolute paths;
-they are never passed to `--add-dir`, which grants write access. Drover clears
-inherited extra writable roots, disables the shared `/tmp` and `$TMPDIR` write
-roots, and refuses snapshots overlapping the writable workspace. Write workers
-receive a private per-run scratch directory as their only extra writable root,
-with `TMPDIR`, `TEMP` and `TMP` set to that directory. Approval escalation is
-disabled. Tasks with `write: false` force `-s read-only` and do not create a
+checkout. An index that exists but cannot be read prunes nothing, and the
+snapshots found beside it are kept for a day. Replan inspection reuses the
+newest snapshot of a branch; a batch that starts takes a fresh one at the
+current tip. Snapshots are listed in the brief and read through their absolute
+paths; they are never passed to `--add-dir`, which grants write access. Drover
+clears inherited extra writable roots, disables the shared `/tmp` and `$TMPDIR`
+write roots, and refuses snapshots overlapping the writable workspace. Write
+workers receive a private per-run scratch directory as their only extra writable
+root, with `TMPDIR`, `TEMP` and `TMP` set to that directory. Approval escalation
+is disabled. Tasks with `write: false` force `-s read-only` and do not create a
 task worktree or writable scratch directory. These settings use the documented
 [Codex sandbox configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
 Before accepting any worker outcome, Drover checks read snapshot

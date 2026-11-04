@@ -283,6 +283,47 @@ class AccessTests(unittest.TestCase):
             names = {p.name for p in root.iterdir() if p.is_dir()}
             self.assertEqual(names, {Path(read['path']).name, 'read-new'})
 
+    def test_a_corrupt_index_prunes_nothing_and_adopts_what_it_finds_for_a_day(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            batch = {'a' * 24, 'b' * 24}            # an enrolled, unlaunched batch's snapshots: no manifest pins them
+            for name in batch:
+                (root / name / '.git').mkdir(parents=True)
+            (root / task_access.INDEX).write_text('{"trunc', encoding='utf-8')     # a crash cut it short
+            with git_answers(fake), self.assertLogs('drover.task_access', 'WARNING') as logged:
+                first = task_access.prepare(['p'], cfg, root)[0]
+            self.assertIn('unreadable', ' '.join(logged.output))
+            self.assertEqual(self._keys(root), batch | {Path(first['path']).name})
+            json.loads((root / task_access.INDEX).read_text(encoding='utf-8'))      # rewritten whole
+            with git_answers(fake):
+                for sha in ('1' * 40, '2' * 40, '3' * 40):          # the next prepares still keep the adopted ones
+                    fake.move('main', sha)
+                    last = task_access.prepare(['p'], cfg, root)[0]
+            self.assertTrue(batch <= self._keys(root))
+            later = time.time() + task_access.ADOPTED_S + 1
+            with git_answers(fake), patch.object(task_access.time, 'time', return_value=later):
+                task_access.prepare(['p'], cfg, root)
+            self.assertFalse(batch & self._keys(root))
+            self.assertIn(Path(last['path']).name, self._keys(root))
+
+    def test_the_index_is_written_with_sync(self):
+        from drover import durable
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            with git_answers(fake), patch.object(durable, 'write_json', wraps=durable.write_json) as wrote:
+                task_access.prepare(['p'], cfg, root)
+            self.assertEqual([c.kwargs['sync'] for c in wrote.call_args_list], [True])
+
+    def test_a_malformed_record_is_dropped_not_a_failure_every_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            root.mkdir()
+            (root / task_access.INDEX).write_text(json.dumps({'e' * 24: {'seq': '3', 'sha': 5, 'source': 'x',
+                                                                         'branch': 'main'}}), encoding='utf-8')
+            with git_answers(fake):
+                self.assertEqual(len(task_access.prepare(['p'], cfg, root, reuse=True)), 1)
+
     def test_read_only_file_does_not_stop_removal(self):
         import os
         import stat

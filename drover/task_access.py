@@ -20,11 +20,12 @@ import time
 
 from . import config, durable, git_client, placement, repos, task_context
 
-_LOCK = threading.Lock()
+_LOCK = threading.Lock()      # in-process only: one dispatcher per state dir (dispatcher.lock) is what makes it enough
 KEEP = 2                                     # snapshots kept per (source, branch), newest by last use
 INDEX = '.index.json'                        # key -> {source, branch, sha, used, seq}; outside every checkout
 _KEY = re.compile(r'[0-9a-f]{24}')
 TEMP_AGE_S = 3600                            # an unfinished `read-*` clone this old is left over
+ADOPTED_S = 86400                            # a snapshot found beside an unreadable index is kept this long
 _log = logging.getLogger(__name__)
 
 
@@ -57,13 +58,33 @@ def verify(reads):
             raise ValueError(f'read-only checkout changed: {path}')
 
 
+def _record(value):
+    """An index record whose `seq`, `sha` and `adopted` have their types; any other is dropped, not a failure."""
+    return isinstance(value, dict) and type(value.get('seq', 0)) is int and isinstance(value.get('sha', ''), str)         and type(value.get('adopted', 0)) in (int, float)
+
+
 def _load(root):
-    """The last-use index; missing or unreadable counts as empty (those entries are then least recently used)."""
+    """(index, unreadable). A missing index is empty: what is in the root is then unindexed, and pruned. An index
+    that exists but cannot be read is `unreadable`: a crash cut it short, so nothing is known about what is there."""
     try:
         data = json.loads((root / INDEX).read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {}, False
     except (OSError, ValueError):
-        return {}
-    return {k: v for k, v in data.items() if _KEY.fullmatch(k) and isinstance(v, dict)} if isinstance(data, dict) else {}
+        return {}, True
+    if not isinstance(data, dict):
+        return {}, True
+    return {k: v for k, v in data.items() if _KEY.fullmatch(k) and _record(v)}, False
+
+
+def _adopt(root, index):
+    """Beside an unreadable index, record each snapshot folder it no longer names as adopted now, so it is kept for
+    ADOPTED_S: it may be an enrolled batch's that no manifest pins yet."""
+    now = time.time()
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if _KEY.fullmatch(entry.name) and entry.name not in index and entry.is_dir(follow_symlinks=False):
+                index[entry.name] = {'adopted': now, 'seq': 0}
 
 
 def _newest(index, root, source, branch):
@@ -80,7 +101,8 @@ def _touch(index, key, **rec):
 def _remove(path):
     """Remove one tree; a read-only file (the old chmod) has its attribute cleared and is retried. Never raises."""
     def retry(func, target, _exc):
-        os.chmod(target, stat.S_IWRITE)
+        if not os.path.islink(target):          # a link's target may be outside the root
+            os.chmod(target, stat.S_IWRITE)
         func(target)
     try:
         if sys.version_info >= (3, 12):
@@ -102,6 +124,7 @@ def _prune(root, index, keep):
         if source is not None and branch is not None:
             keep.update(key for _, key in sorted(ranked, reverse=True)[:KEEP])
     now = time.time()
+    keep.update(key for key, rec in index.items() if now - rec.get('adopted', -ADOPTED_S) < ADOPTED_S)
     with os.scandir(root) as entries:
         listed = list(entries)
     for entry in listed:
@@ -127,7 +150,7 @@ def prepare(entries, configured=None, root=None, *, pinned: Iterable[str] = (), 
     root = Path(root or config.state_path('read-checkouts')).resolve()
     out = []
     with _LOCK:
-        index = _load(root)
+        index, unreadable = _load(root)
         for entry in entries:
             name, branch = task_context.split_read(entry)
             prog = configured.get(name.lower())
@@ -183,8 +206,13 @@ def prepare(entries, configured=None, root=None, *, pinned: Iterable[str] = (), 
             # Kept by name: a pinned path may spell the root differently from this call.
             keep = {Path(r['path']).name for r in out} | {Path(str(p)).name for p in pinned}
             try:
-                _prune(root, index, keep)
-                durable.write_json(root / INDEX, index, sync=False)
+                if unreadable:      # nothing is known of what is here: prune nothing, and keep what is found a while
+                    _log.warning('read checkout index %s is unreadable: nothing pruned, its snapshots kept for %d s',
+                                 root / INDEX, ADOPTED_S)
+                    _adopt(root, index)
+                else:
+                    _prune(root, index, keep)
+                durable.write_json(root / INDEX, index, sync=True)     # a torn index is what `unreadable` guards
             except Exception as exc:                     # bounding the folder must never fail a prepare
                 _log.warning('read checkouts under %s were not pruned: %s', root, exc)
     return out
