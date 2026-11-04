@@ -196,11 +196,12 @@ class StageRun:
 
     def add(self, row: dict) -> None:
         """The only way in: the row is settled now, so later changes to the caller's dict do not cross."""
-        row = copy.deepcopy(row)
+        capped = dict(row)      # capped before the copy, so a long list is never copied whole
         for key in ('dirty', 'ignored', 'excluded'):
             if key in row:
-                row[key + '_count'] = len(row[key])
-                row[key] = row[key][:self._limit]
+                capped[key + '_count'] = len(row[key])
+                capped[key] = row[key][:self._limit]
+        row = copy.deepcopy(capped)
         root = self._root_of(row)
         if root is None:
             self._pending.append(_line(row=row))

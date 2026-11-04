@@ -180,7 +180,15 @@ class OutputStageCost(BudgetCase):
         self.assertEqual(len(left) + len(evaluated), 4)
 
     def test_deadline_between_units_of_one_worktree_names_it_and_the_rest(self):
-        self.trees_with(2, 3)
+        # A folder git reports whole is one unit: three units are a file and two declared folders.
+        self.r.commit('.drover/config.toml', config.dumps({
+            'schema_version': 1, 'cleanup': {'disposable': ['generated', 'data', 'unit-*']}}))
+        for _ in range(2):
+            tree = self.worktree(f'w{self.tree_count}')
+            for name in ('unit-0', 'generated/unit-1', 'data/unit-2'):
+                (tree / name).parent.mkdir(exist_ok=True)
+                (tree / name).write_text('x')
+            self.age(tree, 4 * 86400)
         # The 80 s line passes as the first worktree's second unit starts: that unit keeps, and the stage stops after it.
         with self.costing('remove_disposable', 45., disk_removal):
             answer = self.stage5(apply=True, worker_timeout_s=100)

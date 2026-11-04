@@ -46,7 +46,7 @@ class Folders(LocalSide):
         self.assertFalse((tree / 'generated').exists())
         self.assertEqual(self.receipt()['reclaimed_bytes'], 40 * SIZE)
 
-    def test_ordinary_output_stage_still_proves_each_path(self):
+    def test_ordinary_output_stage_proves_the_folder_once_as_its_dry_run_lists_it(self):
         self.free = 80.
         tree, paths = self.leaves('many', 5)
         self.r.commit('pending.txt', cwd=tree)      # unmerged, so stage 4 leaves the worktree for stage 5
@@ -55,8 +55,9 @@ class Folders(LocalSide):
         watch, calls = self.statuses(tree)
         with watch:
             self.run_cleanup(apply=True)
-        self.assertGreaterEqual(len(calls), 5)
-        self.assertFalse([p for p in paths if p.exists()])
+        # Stage 4's look, stage 5's listing and the folder's one revalidation, as git reports it whole, then stage 6.
+        self.assertEqual(calls, [dict(expand=True), dict(expand=False), dict(expand=False), dict(expand=False)])
+        self.assertFalse((tree / 'generated').exists())
 
     def test_a_change_inside_a_folder_keeps_all_of_it(self):
         tree, paths = self.leaves('changing', 3)

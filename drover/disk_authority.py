@@ -235,7 +235,9 @@ def quarantine(run, machine, row, *, store=None):
 @dataclass(frozen=True)
 class DisposableUnit:
     """One unit of declared disposable paths as the first pass found it: first-pass values only. `registration` is
-    the listing row, `evidence` the (path, head, tag, declarations) `rule_disposable` gave, `measured` name -> facts."""
+    the listing row, `evidence` the (path, head, tag, declarations) `rule_disposable` gave, `measured` name -> facts,
+    a name being a folder where `disposable_status` reported it whole, and `untracked` the measured names it listed
+    untracked rather than ignored."""
     machine: Mapping
     registration: Mapping
     evidence: tuple
@@ -243,6 +245,20 @@ class DisposableUnit:
     target: Path
     measured: Mapping
     row: dict
+    untracked: frozenset = frozenset()
+
+
+def disposable_status(run, path, declarations):
+    """(dirty, ignored) for stage 5's units at `path`, read the same way on the first pass and at removal, dry run and
+    apply alike: as git reports them, so a folder it reports whole (nothing under it tracked) is one name, unless a
+    listed folder is not itself declared; a budget purge, whose units are declared prefixes, lists every path."""
+    expand = bool(run.request.budget)
+    dirty, ignored = run.evidence.status(path, expand=expand)
+    if not expand and declarations and any(
+            Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
+            for name in dirty + ignored):
+        dirty, ignored = run.evidence.status(path)
+    return dirty, ignored
 
 
 def repository_tree(path, *, boundary=None, proven=None):

@@ -192,9 +192,9 @@ class Trace(unittest.TestCase):
         self.keeps('identity_changed_by_tag.applied', '<TMP>/worktrees/alpha.worktrees/w', 'identity_changed')
 
     def test_a_task_row_naming_a_path_keeps_the_worktree_and_what_is_under_it(self):
-        for label, unit in (('dry', 'bin'), ('applied', 'bin/x')):     # a dry status collapses the folder
+        for label in ('dry', 'applied'):     # status collapses the folder, applied as dry
             self.keeps(f'busy_task_at_path.{label}', '<TMP>/worktrees/alpha.worktrees/w', 'busy')
-            self.keeps(f'output_task_at_path.{label}', f'<TMP>/worktrees/alpha.worktrees/w/{unit}', 'live_owner')
+            self.keeps(f'output_task_at_path.{label}', '<TMP>/worktrees/alpha.worktrees/w/bin', 'live_owner')
 
     def test_a_temp_entry_holding_a_protected_root_is_protected(self):
         for label in ('dry', 'applied'):

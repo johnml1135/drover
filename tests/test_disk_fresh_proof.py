@@ -22,7 +22,7 @@ TIMED_OUT = 'git worktree failed: timeout'       # a timed-out `worktree` step's
 
 
 def row_at(trace, *paths):
-    return next(row for row in trace['rows'] if row['path'] in (paths or (TREE, TREE + '/bin/x')))
+    return next(row for row in trace['rows'] if row['path'] in (paths or (TREE, TREE + '/bin')))
 
 
 def admin(scene, name='w', repo='alpha'):
@@ -151,7 +151,7 @@ class FreshProof(unittest.TestCase):
         trace = scene.record(apply=True)
         self.assertEqual((row_at(trace, path)['reason_code'], trace['deleted']), ('nested_worktree', []))
         trace = scene.record(apply=True, stage=5)
-        self.assertEqual((row_at(trace, path + '/bin/x')['reason_code'], trace['deleted']), ('protected', []))
+        self.assertEqual((row_at(trace, path + '/bin')['reason_code'], trace['deleted']), ('protected', []))
 
     def test_an_unreadable_locked_never_reads_as_unlocked(self):
         for stage, name, repo in ((4, 'w', 'alpha'), (5, 'w', 'alpha'), (5, 'b', 'beta')):     # stage 5 has listed every repo by then
@@ -179,7 +179,7 @@ class FreshProof(unittest.TestCase):
                 scene.midstage = lambda request: change(scene)
                 trace = scene.record(apply=True, stage=stage)
                 self.assertEqual((row_at(trace)['action'], row_at(trace)['reason_code']), ('keep', reason))
-                self.assertEqual(row_at(trace, BETA, BETA + '/bin/x')['action'], neighbour)
+                self.assertEqual(row_at(trace, BETA, BETA + '/bin')['action'], neighbour)
 
     def test_a_target_file_gone_after_the_evidence_is_unknown(self):
         for stage, last in ((4, 'merge-base'), (5, 'ls-files')):

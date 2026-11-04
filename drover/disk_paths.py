@@ -2,8 +2,8 @@
 from pathlib import Path
 
 from . import disk_removal, placement, process
-from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, disposable_match, protected_path, rule_cache_file, \
-    rule_disposable, rule_unit
+from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, disposable_match, disposable_status, protected_path, \
+    rule_cache_file, rule_disposable, rule_unit
 from .disk_inventory import safe_path, worktree_roots
 from .disk_removal import REMOVAL_DEADLINE
 from .disk_stage import item
@@ -130,12 +130,7 @@ def disposable_rows(run):
                     evidence = tuple(judged.facts[key] for key in ('path', 'head', 'tag', 'declarations'))
                     path, head, tag, declarations = evidence
                     idle = dict(idle_s=stage.measure(path)['age_s']) if budget else {}
-                    expand = request['apply'] or budget
-                    dirty, ignored = stage.status(path, expand=expand)
-                    if not expand and declarations and any(
-                            Path(name).is_dir() and not disposable_match(Path(name).relative_to(path), declarations)
-                            for name in dirty + ignored):
-                        dirty, ignored = stage.status(path)
+                    dirty, ignored = disposable_status(run, path, declarations)      # apply's units are the dry run's
                     tracked = set(stage.tracked(path))
                     touched = set()     # shared by this worktree's removals, in whatever order they run
                     units = output_units(dirty + ignored, path, tracked, declarations, budget)
@@ -161,7 +156,8 @@ def disposable_rows(run):
                             row.update(action='keep', reason_code=OUTPUT_UNAVAILABLE, error=str(error))
                         if row['action'] == 'candidate':
                             yield row, DisposableUnit(machine=machine, registration=entry, evidence=evidence, touched=touched,
-                                                      target=target, measured=measured, row=row)
+                                                      target=target, measured=measured, row=row,
+                                                      untracked=frozenset(set(measured) & set(dirty)))
                         else:
                             run.add(row)
                         if count < len(units) and run.clock.late():

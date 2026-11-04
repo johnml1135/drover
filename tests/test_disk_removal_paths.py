@@ -50,7 +50,7 @@ class Disposable(unittest.TestCase):
         self.order.append('row')
         return dict(self.entry)
 
-    def status(self, path):
+    def status(self, path, *, expand=True):
         self.order.append('status')
         return [], list(self.names)
 

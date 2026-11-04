@@ -7,8 +7,8 @@ import uuid
 from pathlib import Path
 
 from . import git_client, ownership, placement
-from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, LazyProof, decide, ignored_outside, inspect, quarantine, \
-    rule_disposable_fresh, rule_unit_fresh, unlisted_live
+from .disk_authority import OUTPUT_UNAVAILABLE, DisposableUnit, LazyProof, decide, disposable_status, ignored_outside, \
+    inspect, quarantine, rule_disposable_fresh, rule_unit_fresh, unlisted_live
 from .disk_evidence import _out, identity, registration_identity, snapshot
 from .disk_inventory import safe_path
 
@@ -178,17 +178,50 @@ def prune_emptied(target, removed, touched):
             pass
 
 
+def take_folder(run, folder, known) -> None:
+    """A folder `disposable_status` listed whole, or an empty one: walked first, so a link or a path off the drive
+    anywhere under it, or files and bytes other than `known` (its measure), keep all of it, as each path would have
+    kept itself; then each file unlinked and counted on `run` as it goes, each folder after what it held. Never
+    follows a link: one met on the way stops it there."""
+    def refuse_link(path):
+        if placement.cleanup_link(path):
+            raise ValueError('link or reparse point: ' + str(path))
+        if not placement.cleanup_contains(run.request.drive['path'], str(path)):
+            raise ValueError('path left the drive: ' + str(path))
+
+    def walk(directory):
+        refuse_link(directory)
+        for child in sorted(directory.iterdir()):
+            refuse_link(child)
+            yield from walk(child) if child.is_dir() else (child,)
+        yield directory
+    paths = list(walk(folder))
+    files = [path for path in paths if not path.is_dir()]
+    if (len(files), sum(path.lstat().st_size for path in files)) != (known['files'], known['bytes']):
+        raise ValueError('disposable folder changed: ' + str(folder))
+    for path in paths:
+        refuse_link(path)
+        if path.is_dir():
+            path.rmdir()
+        else:
+            size = path.lstat().st_size
+            path.unlink()
+            run.reclaimed(size)
+
+
 def remove_disposable(run, unit: DisposableUnit) -> None:
-    """Section 7.3 for a disposable unit: the listing's row and status; a fresh process proof through
-    `rule_disposable_fresh`, tracked, and the compare with the first pass; `fresh_registrations` (pointer: `.git` must
-    be there) and `rule_unit_fresh`; then, while the clock can finish it, each path, its bytes counted on `run` as it
-    goes. Any change keeps the unit; a clock that cannot keeps it as `removal_deadline`. `unit.row` carries the end."""
+    """Section 7.3 for a disposable unit: the listing's row and `disposable_status`, read as the first pass read it, so
+    a folder it listed whole must still be listed whole, as untracked or ignored as it was; a fresh process proof
+    through `rule_disposable_fresh`, tracked, and the compare with the first pass; `fresh_registrations` (pointer:
+    `.git` must be there) and `rule_unit_fresh`; then, while the clock can finish it, each path, its bytes counted on
+    `run` as it goes. Any change keeps the unit; a clock that cannot keeps it as `removal_deadline`. `unit.row`
+    carries the end."""
     machine, entry, evidence, touched, target, measured, row = (
         unit.machine, unit.registration, unit.evidence, unit.touched, unit.target, unit.measured, unit.row)
     path = evidence[0]
     try:
         current = run.evidence.row(machine['repo'], entry['worktree'])
-        current_dirty, current_ignored = run.evidence.status(path)
+        current_dirty, current_ignored = disposable_status(run, path, evidence[3])
         if registration_identity(current or {}) != registration_identity(entry):
             raise ValueError('disposable registration changed')
         fresh = rule_disposable_fresh(run, machine, current, run.evidence.fresh_processes(), touched=touched)
@@ -196,10 +229,11 @@ def remove_disposable(run, unit: DisposableUnit) -> None:
             return row.update(action='keep', reason_code=fresh.reason_code, error=fresh.detail)
         fresh_evidence = tuple(fresh.facts[key] for key in ('path', 'head', 'tag', 'declarations'))
         tracked = {str(path / name) for name in run.evidence.tracked(path, target.relative_to(path))}
+        names = set(measured)
         if placement.cleanup_parts(fresh_evidence[0]) != placement.cleanup_parts(evidence[0]) or \
                 fresh_evidence[1:] != evidence[1:] or \
-                set(measured) - set(current_dirty + current_ignored) or \
-                tracked & set(measured) or (tracked and str(target) in measured) or \
+                (names & unit.untracked) - set(current_dirty) or (names - unit.untracked) - set(current_ignored) or \
+                tracked & names or (tracked and str(target) in measured) or \
                 any(run.evidence.measure(Path(name)) != known for name, known in measured.items()):
             raise ValueError('disposable evidence changed')
         ruling = rule_unit_fresh(run, unit, run.evidence.fresh_registrations(machine['repo'], target, path, pointer=True))
@@ -209,10 +243,12 @@ def remove_disposable(run, unit: DisposableUnit) -> None:
             return row.update(action='keep', reason_code=REMOVAL_DEADLINE)
         for name, known in measured.items():
             leaf = Path(name)
-            # status expands ignored directories to leaves; only empty directories reach here.
-            leaf.rmdir() if leaf.is_dir() else leaf.unlink()
+            if leaf.is_dir() or placement.cleanup_link(leaf):       # a folder listed whole; a link refuses there
+                take_folder(run, leaf, known)
+            else:
+                leaf.unlink()
+                run.reclaimed(known['bytes'])
             touched.add(leaf.parent)
-            run.reclaimed(known['bytes'])
         if str(target) not in measured:
             prune_emptied(target, measured, touched)
         row['action'] = 'removed'
