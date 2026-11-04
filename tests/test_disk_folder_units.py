@@ -256,6 +256,46 @@ class FolderRemoval(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in outside.iterdir()), ['b', 'c'])
         self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
 
+    def test_a_filesystem_reporting_no_inode_keeps_the_folder(self):
+        """With `st_ino` 0 the inode compare proves nothing, so the unit keeps and nothing goes."""
+        real = Path.lstat
+
+        def lstat(path, *args, **kwargs):
+            info = real(path, *args, **kwargs)
+            return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_size=info.st_size, st_ino=0)
+        with mock.patch.object(Path, 'lstat', lstat):
+            row = self.remove()
+        self.kept_whole(row)
+        self.assertIn('inode', row['error'])
+
+    def test_a_folder_two_levels_above_the_file_swapped_for_a_link_stops_the_folder(self):
+        """`bin/sub` holds `deep/`, which holds the files; `bin/sub` becomes a link to a folder with the same names
+        once `bin/a` has gone: the parent of the next file resolves through the link to another inode, so nothing
+        outside the unit is unlinked."""
+        for name in ('b', 'c'):
+            (self.bin / 'sub' / 'deep').mkdir(exist_ok=True)
+            (self.bin / 'sub' / name).rename(self.bin / 'sub' / 'deep' / name)
+        self.files = [self.bin / 'a', self.bin / 'sub' / 'deep' / 'b', self.bin / 'sub' / 'deep' / 'c']
+        self.measured = {str(self.bin): self.real.measure(self.bin)}
+        outside = self.root / 'outside'
+        (outside / 'deep').mkdir(parents=True)
+        for name in ('b', 'c'):
+            (outside / 'deep' / name).write_bytes(b'precious')
+        real_unlink, swapped = Path.unlink, []
+
+        def unlink(path, *args, **kwargs):
+            real_unlink(path, *args, **kwargs)
+            if not swapped:
+                swapped.append(path)
+                (self.bin / 'sub').rename(self.root / 'moved')
+                (self.bin / 'sub').symlink_to(outside, target_is_directory=True)
+        with mock.patch.object(Path, 'unlink', unlink):
+            row = self.remove()
+        self.assertEqual(swapped, [self.bin / 'a'])
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'output_evidence_unavailable'))
+        self.assertEqual(sorted(path.name for path in (outside / 'deep').iterdir()), ['b', 'c'])
+        self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
+
     def test_a_line_passed_mid_folder_stops_it_as_removal_deadline(self):
         """The clock is read as each path goes: past the line the rest stays, and what went is counted."""
         self.past_line = lambda: any(step[0] == 'reclaimed' for step in self.order)

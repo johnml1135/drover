@@ -203,6 +203,8 @@ def take_folder(run, folder, known) -> None:
         info = concrete(directory)
         if not placement.cleanup_contains(run.request.drive['path'], str(directory)):
             raise ValueError('path left the drive: ' + str(directory))
+        if not info.st_ino:
+            raise ValueError('no inode to hold the folder to: ' + str(directory))
         walked[directory] = (info.st_dev, info.st_ino)
         for child in sorted(directory.iterdir()):
             info = concrete(child)
@@ -216,7 +218,7 @@ def take_folder(run, folder, known) -> None:
 
     def unchanged(directory):
         info = concrete(directory)
-        if (info.st_dev, info.st_ino) != walked[directory]:
+        if not info.st_ino or (info.st_dev, info.st_ino) != walked[directory]:
             raise ValueError('folder changed during removal: ' + str(directory))
     walk(folder)
     files = [size for _, is_folder, size in order if not is_folder]
