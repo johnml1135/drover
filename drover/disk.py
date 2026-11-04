@@ -538,7 +538,14 @@ def main(argv=None):
                         if disk_state.read(config.state_dir(cfg)).get('report_scope') != scope_key(cfg):
                             raise ValueError('complete a dry report for the same cleanup scope before apply')
                     return disk_runtime.cleanup_enqueue(cfg, {'applied': args.apply, 'id': 'scheduled'})
-            answer = tick(cfg, enqueue=enqueue)
+            from . import disk_state
+            # A command-line tick applies its build-roots run only when it is no dry run and automation is applied;
+            # the hub's own tick (no build_enqueue) applies on the declaration alone.
+            automated = bool(disk_state.read(config.state_dir(cfg)).get('automation', {}).get('apply'))
+            applied = not args.dry_run and automated
+            def build_enqueue():
+                return disk_runtime.cleanup_enqueue(cfg, {'applied': applied, 'id': 'build-roots'}, mode='build-roots')
+            answer = tick(cfg, enqueue=enqueue, build_enqueue=build_enqueue)
         print(json.dumps(answer, indent=2))
         return 0
     except (OSError, ValueError, RuntimeError) as error:

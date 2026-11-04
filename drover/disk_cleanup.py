@@ -222,14 +222,14 @@ def _serve_here(request):
     return asdict(read_rows(out.getvalue()))
 
 
-def _build_roots_run(cfg, runtime):
+def _build_roots_run(cfg, runtime, apply):
     """`mode='build-roots'`: stage 2's Windows build roots alone, served in this process on every tracked drive that
-    holds one, applied at any free-space level. A declared build root is the owner's authorization to remove its idle
-    units, so no dry report or automation flag is asked for, and none is written: this run sets no `report_scope` and
+    holds one, at any free-space level; report-only when `apply` is false. A declared build root is the owner's
+    authorization to remove its idle units, so no dry report or automation flag is asked for, and none is written: this run sets no `report_scope` and
     saves its report as `last-build-roots.json`, not `last-report.json`. The unit's own guards all stay. No worker is
     started on either side. A root on the other side is reported and left to the full cleanup's stage 2; a held cleanup
     lock skips the run, quietly."""
-    result = dict(mode=BUILD_ROOTS, applied=True, drives=[], stages=[], items=[], errors=[], exhausted=False,
+    result = dict(mode=BUILD_ROOTS, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False,
                   peak_intermediate_bytes=0)
     state_dir = config.state_dir(cfg)
     entries = cfg['disk_cleanup'].get('build_roots', [])
@@ -258,7 +258,7 @@ def _build_roots_run(cfg, runtime):
             drive = dict(row, warn_gb=tracker['warn_gb'])
             result['drives'].append(drive)
             result['stages'].append(dict(drive=row['name'], stage=2))
-            request = StageRequest(stage=2, side=here, mode=BUILD_ROOTS, apply=True, now=runtime.now(), drive=drive,
+            request = StageRequest(stage=2, side=here, mode=BUILD_ROOTS, apply=apply, now=runtime.now(), drive=drive,
                                    repos=machines, policy=dict(cfg['disk_cleanup'], build_roots=holds),
                                    state_dir=str(state_dir), tasks=tasks)     # no inventory id: no cache to drop
             progress.begin(row['name'], 2, here)
@@ -278,7 +278,7 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
         raise ValueError('unknown cleanup mode')
     runtime = disk_runtime.cleanup_runtime(cfg) if runtime is None else runtime
     if mode == BUILD_ROOTS:
-        return _build_roots_run(cfg, runtime)
+        return _build_roots_run(cfg, runtime, apply)
     result = dict(mode=mode, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False, peak_intermediate_bytes=0)
     state_dir = config.state_dir(cfg)
     tasks = _task_snapshot(state_dir)
@@ -445,16 +445,15 @@ def main(argv=None):
         return locked_command(config.get(), command)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('daily', 'on-demand', 'triggered', BUILD_ROOTS), default='on-demand',
-                        help='build-roots: the Windows build roots alone, always applied, on the declaration alone')
+                        help='build-roots: the Windows build roots alone, on the declaration alone; applied unless '
+                             '--dry-run')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--apply', action='store_true')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
-    if args.mode == BUILD_ROOTS and args.dry_run:
-        parser.error('--mode build-roots always applies; it has no dry run')
     try:
-        answer = run(mode=args.mode, apply=args.apply)
+        answer = run(mode=args.mode, apply=not args.dry_run if args.mode == BUILD_ROOTS else args.apply)
         if args.json:
             print(json.dumps(answer, indent=2))
         else:

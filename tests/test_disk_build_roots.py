@@ -297,7 +297,7 @@ class BuildRootsRun(BuildRootsCase):
 
     def build_run(self):
         with placement_processes():
-            return self.run_cleanup(mode='build-roots')
+            return self.run_cleanup(mode='build-roots', apply=True)
 
     def test_a_healthy_drive_loses_an_idle_unit_and_keeps_a_recent_one_without_a_report_or_automation(self):
         from drover import disk_state
@@ -337,13 +337,24 @@ class BuildRootsRun(BuildRootsCase):
         self.assertEqual((row['action'], row['reason_code'], row['side']), ('keep', 'build_root_other_side', 'wsl'))
         self.assertEqual(self.calls, [])
 
-    def test_the_command_line_has_the_mode_and_no_dry_run_for_it(self):
+    def test_the_command_line_applies_unless_it_is_a_dry_run(self):
         from drover import disk_cleanup
-        with patch.object(disk_cleanup, 'run', return_value=dict(mode='build-roots', applied=True, items=[], errors=[])) as ran,                 patch('sys.stdout'):
-            self.assertEqual(disk_cleanup.main(['--mode', 'build-roots']), 0)
-        ran.assert_called_once_with(mode='build-roots', apply=False)       # it applies whatever --apply says
-        with self.assertRaises(SystemExit), patch('sys.stderr'):
-            disk_cleanup.main(['--mode', 'build-roots', '--dry-run'])
+        for argv, apply in ((['--mode', 'build-roots'], True), (['--mode', 'build-roots', '--apply'], True),
+                            (['--mode', 'build-roots', '--dry-run'], False)):
+            with self.subTest(argv=argv):
+                with patch.object(disk_cleanup, 'run', return_value=dict(
+                        mode='build-roots', applied=apply, items=[], errors=[])) as ran, patch('sys.stdout'):
+                    self.assertEqual(disk_cleanup.main(argv), 0)
+                ran.assert_called_once_with(mode='build-roots', apply=apply)
+
+    def test_a_report_only_run_names_the_candidate_and_removes_nothing(self):
+        idle = self.unit('idle', 3 * HOUR)
+        with placement_processes():
+            result = self.run_cleanup(mode='build-roots', apply=False)
+        self.assertFalse(result['applied'])
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, idle)],
+                         [('candidate', 'build_root_idle')])
+        self.assertTrue(idle.exists())
 
     def test_a_held_cleanup_lock_skips_the_run_without_error(self):
         from drover import disk_state

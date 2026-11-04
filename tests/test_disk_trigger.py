@@ -385,6 +385,31 @@ class BuildRootCadence(DiskCase):
                 self.tick()
                 self.assertEqual(self.builds, [self.now])
 
+    def test_the_hub_tick_launches_an_applied_run(self):
+        from drover import disk
+        launched = []
+        with patch.object(disk_runtime, 'cleanup_enqueue', lambda cfg, claim, mode='triggered':
+                          launched.append((claim['applied'], mode)) or {}):
+            disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, wsl_used=lambda: None,
+                      enqueue=lambda: {})
+        self.assertEqual(launched, [(True, 'build-roots')])
+
+    def test_a_command_line_tick_applies_only_with_apply_and_automation(self):
+        from drover import disk, disk_state
+        cases = ((['tick', '--dry-run'], True, False), (['tick'], False, False), (['tick'], True, True),
+                 (['tick', '--apply'], False, False), (['tick', '--apply'], True, True), (['tick', '--dry-run'], False, False))
+        for argv, automation, applied in cases:
+            with self.subTest(argv=argv, automation=automation):
+                disk_state.update(self.state, lambda s: s.update(automation={'apply': automation}))
+                launched = []
+                def tick(cfg, enqueue=None, build_enqueue=None, **_):
+                    build_enqueue()
+                    return {}
+                with patch.object(disk, 'tick', tick), patch('sys.stdout'),                         patch.object(disk_runtime, 'cleanup_enqueue', lambda cfg, claim, mode='triggered':
+                                     launched.append((claim['applied'], mode)) or {}):
+                    self.assertEqual(disk.main(argv), 0)
+                self.assertEqual(launched, [(applied, 'build-roots')])
+
     def test_a_restart_does_not_relaunch_at_once(self):
         from drover import disk_state
         disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 60)))
