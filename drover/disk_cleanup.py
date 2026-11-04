@@ -20,6 +20,7 @@ from .disk_inventory import bound_report
 from .disk_stage import StageRequest, item, read_rows
 
 BUILD_ROOTS = 'build-roots'
+BUILD_ROOTS_WAIT_S = 1800       # a daily or triggered run waits this long for a build-roots run's lock
 
 
 def _repos(cfg, errors=None):
@@ -237,7 +238,7 @@ def _build_roots_run(cfg, runtime, apply):
     served = [entry for entry in entries if entry['placement'] == here]
     with contextlib.ExitStack() as stack:
         try:
-            stack.enter_context(disk_state.CleanupLock(state_dir))
+            stack.enter_context(disk_state.CleanupLock(state_dir, mode=BUILD_ROOTS))
         except BlockingIOError:
             return dict(result, skipped='locked')
         for entry in entries:
@@ -282,7 +283,8 @@ def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None)
     result = dict(mode=mode, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False, peak_intermediate_bytes=0)
     state_dir = config.state_dir(cfg)
     tasks = _task_snapshot(state_dir)
-    with disk_state.CleanupLock(state_dir):
+    waits = (BUILD_ROOTS, BUILD_ROOTS_WAIT_S) if mode in ('daily', 'triggered') else None
+    with disk_state.CleanupLock(state_dir, mode=mode, wait_for=waits):
         progress = _Progress(state_dir)
         key = scope_key(cfg)
         if apply and disk_state.read(state_dir).get('report_scope') != key:

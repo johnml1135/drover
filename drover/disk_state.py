@@ -71,10 +71,16 @@ class CleanupLock:
     _sleep = staticmethod(time.sleep)
     _clock = staticmethod(time.monotonic)
 
-    def __init__(self, state_dir: Path):
+    wait_for_pause = 5.0      # seconds between looks while waiting for a holder of `wait_for`'s mode
+
+    def __init__(self, state_dir: Path, *, mode=None, wait_for=None):
+        """`mode` is written to the owner record, so a contender can tell what holds the lock. `wait_for`, a
+        (mode, seconds) pair, waits up to that long for a live holder of that mode instead of failing at once."""
         self.path = Path(state_dir) / 'disk-cleanup.lock'
         self.token = uuid.uuid4().hex
         self.acquired = False
+        self.mode = mode
+        self.wait_for = wait_for
 
     def _owner(self):
         try:
@@ -91,7 +97,7 @@ class CleanupLock:
             identity = dict(birth=None, side=placement.cleanup_side())
         (self.path / 'owner.json').write_text(json.dumps({
             'token': self.token, 'pid': os.getpid(), 'host': socket.gethostname(),
-            'created': time.time(), 'side': identity.get('side'), 'birth': identity.get('birth')}),
+            'created': time.time(), 'side': identity.get('side'), 'birth': identity.get('birth'), 'mode': self.mode}),
             encoding='utf-8')
 
     def _reclaim(self, stale):
@@ -145,8 +151,11 @@ class CleanupLock:
                 if stale is not None and holder_dead(stale):
                     self._reclaim(stale)
                     return self
+                pause = self.pause
                 if stale is None:
                     limit = max(self.wait_live, self.wait_missing)  # holder may sit between mkdir and owner.json
+                elif self.wait_for and stale.get('mode') == self.wait_for[0]:
+                    limit, pause = max(self.wait_live, self.wait_for[1]), self.wait_for_pause
                 else:
                     limit = self.wait_live
                 now = self._clock()
@@ -154,7 +163,7 @@ class CleanupLock:
                     deadline = now
                 if now - deadline >= limit:
                     raise self._busy() from None
-                self._sleep(self.pause)
+                self._sleep(pause)
                 continue
             break
         self.acquired = True

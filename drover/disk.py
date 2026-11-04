@@ -274,49 +274,58 @@ def _quiet(now):
     return BUILD_ROOTS_QUIET[0] <= (at.tm_hour, at.tm_min) < BUILD_ROOTS_QUIET[1]
 
 
+BUILD_ROOTS_STARTING_S = 120   # a build-roots run launched this recently may not have taken the cleanup lock yet
+
+
+def _build_roots_starting(state, now):
+    """Whether a build-roots run was launched, by this process or another, so recently that its child may still be
+    starting: it has not taken the lock, so `lock_blocker` cannot see it. A launch that failed is not starting."""
+    builds = state.get('build_roots') or {}
+    start = builds.get('last_start')
+    return start is not None and 0 <= now - start < BUILD_ROOTS_STARTING_S and \
+        (builds.get('error') or {}).get('at') != start
+
+
 def _build_roots_tick(cfg, directory, now, compacting, launch):
     """Launch a build-roots run when a Windows build root is declared and `build_root_interval_s` has passed since the
-    last one started, whatever any drive's level and outside the cleanup cooldown. Its start is kept in state, so a
-    restarted hub waits out the interval; a launch that fails puts the previous start back. The run itself takes the
-    cleanup lock, and skips when it is held, so no claim is kept. None during a WSL compaction, whose window holds
-    that lock, nor from 02:30 to 04:00 local, so none holds it when the daily apply starts at 03:00 (a run is cut off
-    well inside 30 min at the default worker timeout). True when it launched: the run is about to take the lock, so this tick claims no triggered cleanup,
-    which would meet that lock and fail."""
+    last start, whatever any drive's level and outside the cleanup cooldown. The start is kept in state, so a restarted
+    hub waits out the interval; a start in the future (the clock set back) is due at once. None runs on a side other
+    than Windows, during a WSL compaction, whose window holds the cleanup lock, or from 02:30 to 04:00 local, so none
+    holds that lock when the daily apply starts at 03:00. A launch that fails is logged and recorded in state as
+    `build_roots.error`; it never raises out of the tick, and its start stands, so it is retried once an interval."""
     from . import disk_state
     from .config_defaults import BUILD_ROOT_INTERVAL_S
     policy = cfg.get('disk_cleanup', {})
     declared = any(entry.get('placement') == 'windows' for entry in policy.get('build_roots', []))
-    if compacting or _quiet(now) or not declared:
-        return False
+    if placement.cleanup_side() != 'windows' or compacting or _quiet(now) or not declared:
+        return
     interval = policy.get('build_root_interval_s', BUILD_ROOT_INTERVAL_S)
     def due(state):
-        previous = (state.get('build_roots') or {}).get('last_start')
-        if previous is not None and now - previous < interval:
-            return False, previous
-        state['build_roots'] = dict(state.get('build_roots') or {}, last_start=now)
-        return True, previous
+        builds = state.get('build_roots') or {}
+        previous = builds.get('last_start')
+        if previous is not None and 0 <= now - previous < interval:
+            return False
+        state['build_roots'] = dict(builds, last_start=now)
+        return True
     try:
-        start, previous = disk_state.update(directory, due)
+        if not disk_state.update(directory, due):
+            return
     except BlockingIOError:
-        return False
-    if not start:
-        return False
+        return
     try:
         launch() if launch is not None else disk_runtime.cleanup_enqueue(
             cfg, dict(id='build-roots', applied=True), mode='build-roots')
-    except BaseException:
-        def restore(state):
-            if (state.get('build_roots') or {}).get('last_start') == now:
-                if previous is None:
-                    state['build_roots'].pop('last_start', None)
-                else:
-                    state['build_roots']['last_start'] = previous
+    except Exception as error:      # a failed launch never stops the dispatcher tick that called this one
+        import logging
+        logging.getLogger(__name__).warning('build-roots run was not launched: %s', error)
+        def failed(state):
+            builds = state.setdefault('build_roots', {})
+            if builds.get('last_start') == now:
+                builds['error'] = dict(at=now, error=str(error) or type(error).__name__)
         try:
-            disk_state.update(directory, restore)
+            disk_state.update(directory, failed)
         except BlockingIOError:
             pass
-        raise
-    return True
 
 
 def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None, wsl_used=None,
@@ -356,7 +365,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     result['pause'] |= bool(result['critical_tokens'])
     from .disk_cleanup import retry_notices
     retry_notices(cfg)
-    building = _build_roots_tick(cfg, directory, now, compacting, build_enqueue)
+    _build_roots_tick(cfg, directory, now, compacting, build_enqueue)
     # Process checks and receipt IO happen outside the short state transaction.
     try:
         observed = disk_state.read(directory)
@@ -443,7 +452,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
                 state.setdefault('notice_episodes', {}).pop(row['name'], None)
                 continue
             baseline = episode.get('post' if applied else 'report_post')
-            if blocker is not None or building:     # a build-roots run launched this tick is taking the lock
+            if blocker is not None or _build_roots_starting(state, now):    # it is about to take the lock
                 continue
             if claim or (baseline is not None and free > baseline - RETRIGGER_DROP_GB):
                 continue

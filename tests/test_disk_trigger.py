@@ -433,18 +433,52 @@ class BuildRootCadence(DiskCase):
         self.assertEqual((self.builds, self.launches), ([self.now], []), 'the build-roots run is taking the lock')
         self.now += 60
         self.tick()
+        self.assertEqual(self.launches, [], 'its child may still be starting')
+        self.now += 60
+        self.tick()
         self.assertEqual((len(self.builds), self.launches), (1, [1]))
 
-    def test_a_failed_launch_restores_the_last_start(self):
+    def test_a_failed_launch_is_logged_recorded_and_retried_once_an_interval_without_raising(self):
         from drover import disk, disk_state
-        disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 7200)))
+        failures = []
         def fail():
+            failures.append(self.now)
             raise OSError('no python')
-        with self.assertRaises(OSError):
-            disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, wsl_used=lambda: None,
-                      enqueue=lambda: {}, build_enqueue=fail)
-        self.assertEqual(disk_state.read(self.state)['build_roots']['last_start'], self.now - 7200)
+        def tick():
+            return disk.tick(self.cfg, now=self.now, reader=lambda path: 120., wsl_used=lambda: None,
+                             enqueue=lambda: self.launches.append(1) or {}, build_enqueue=fail)
+        self.cfg['disk_cleanup']['cooldown_s'] = 0
+        with self.assertLogs('drover.disk', 'WARNING'):
+            result = tick()
+        self.assertIn('drives', result)
+        builds = disk_state.read(self.state)['build_roots']
+        self.assertEqual(builds['error'], dict(at=self.now, error='no python'))
+        self.assertEqual(self.launches, [1], 'a failed launch is no lock holder: the triggered cleanup is claimed')
+        for _ in range(3):
+            self.now += 900
+            tick()
+        self.assertEqual(len(failures), 1, 'no retry before the interval')
+        self.now += 900
+        tick()
+        self.assertEqual(len(failures), 2)
 
+    def test_a_start_in_the_future_is_due_at_once(self):
+        from drover import disk_state
+        disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now + 86400)))
+        self.tick()
+        self.assertEqual(self.builds, [self.now])
+
+    def test_no_launch_off_windows(self):
+        from drover import placement
+        with patch.object(placement, 'cleanup_side', return_value='wsl'):
+            self.tick()
+        self.assertEqual(self.builds, [])
+
+    def test_no_launch_during_a_compaction_hold(self):
+        from drover import compaction_hold
+        with patch.object(compaction_hold, 'active', return_value=True):
+            self.tick()
+        self.assertEqual(self.builds, [])
 
 class DetachedConfig(DiskCase):
     """A detached run reads config.toml itself, so it sees an edit made after the hub loaded its config."""
@@ -488,3 +522,96 @@ class DetachedConfig(DiskCase):
             disk_runtime.cleanup_enqueue(self.cfg, dict(id='build-roots', applied=True), mode='build-roots')
         [argv] = launched
         self.assertEqual(argv[4:6], ['1', 'build-roots'])
+
+
+class BuildRootsLock(DiskCase):
+    """A build-roots run names its mode in the lock's owner record. A daily or triggered run waits up to 30 minutes
+    for such a holder; any other holder still fails it at once. A tick claims no triggered cleanup while a
+    build-roots run holds the lock or was launched moments ago, in this process or another."""
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+        self.clock = [0.0]
+        self.slept = []
+
+    def held(self, mode):
+        from drover import disk_state
+        lock = disk_state.CleanupLock(self.state, mode=mode)
+        lock.__enter__()
+        self.addCleanup(lambda: lock.acquired and lock.__exit__(None, None, None))
+        return lock
+
+    def waiting(self, release_after=None):
+        """Patch the lock's clock and sleep: each sleep moves the clock on; the holder is released after `release_after` s."""
+        from drover import disk_state
+        def sleep(seconds):
+            self.slept.append(seconds)
+            self.clock[0] += seconds
+            if release_after is not None and self.clock[0] >= release_after and self.holder.acquired:
+                self.holder.__exit__(None, None, None)
+        return patch.multiple(disk_state.CleanupLock, _sleep=staticmethod(sleep),
+                              _clock=staticmethod(lambda: self.clock[0]))
+
+    def test_the_owner_record_names_the_mode(self):
+        import json
+        self.held('build-roots')
+        owner = json.loads((self.state / 'disk-cleanup.lock' / 'owner.json').read_text(encoding='utf-8'))
+        self.assertEqual(owner['mode'], 'build-roots')
+
+    def test_a_daily_run_waits_for_a_build_roots_holder(self):
+        self.holder = self.held('build-roots')
+        with self.waiting(release_after=600):
+            result = self.run_cleanup(mode='daily', real=False)
+        self.assertEqual(result['mode'], 'daily')
+        self.assertGreaterEqual(self.clock[0], 600)
+        self.assertLess(self.clock[0], 1800)
+
+    def test_a_triggered_run_waits_too_but_not_past_thirty_minutes(self):
+        self.holder = self.held('build-roots')
+        with self.waiting(), self.assertRaises(BlockingIOError):
+            self.run_cleanup(mode='triggered', real=False)
+        self.assertGreaterEqual(self.clock[0], 1800)
+        self.assertLess(self.clock[0], 1800 + 60)
+
+    def test_any_other_holder_fails_a_daily_run_at_once(self):
+        self.holder = self.held('triggered')
+        with self.waiting(), self.assertRaises(BlockingIOError):
+            self.run_cleanup(mode='daily', real=False)
+        self.assertLess(self.clock[0], 5)
+
+    def triggered_due(self):
+        from drover import disk, disk_state
+        self.cfg['disk_cleanup']['cooldown_s'] = 0
+        self.cfg['disk_cleanup']['build_roots'] = [dict(path=str(self.root / 'targets'), placement='windows',
+                                                        max_idle_hours=2)]
+        launches = []
+        def tick():
+            disk.tick(self.cfg, now=self.now, reader=lambda path: 120., wsl_used=lambda: None,
+                      enqueue=lambda: launches.append(1) or {}, build_enqueue=lambda: {})
+        return launches, tick
+
+    def test_a_tick_claims_nothing_while_a_build_roots_run_holds_the_lock(self):
+        from drover import disk_state
+        launches, tick = self.triggered_due()
+        disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 600)))
+        self.holder = self.held('build-roots')
+        tick()
+        self.assertEqual(launches, [])
+        self.assertIsNone(disk_state.read(self.state).get('episodes', {}).get('test-drive', {}).get('claim'))
+        self.holder.__exit__(None, None, None)
+        self.now += 60
+        tick()
+        self.assertEqual(launches, [1])
+
+    def test_a_tick_in_another_process_claims_nothing_while_the_child_is_starting(self):
+        from drover import disk_state
+        launches, tick = self.triggered_due()
+        # another process launched a build-roots run 30 s ago; its child has not taken the lock yet
+        disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 30)))
+        tick()
+        self.assertEqual(launches, [])
+        self.now += 120
+        tick()
+        self.assertEqual(launches, [1])
