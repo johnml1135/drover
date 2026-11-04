@@ -105,11 +105,6 @@ class Replanning:
                 assignment = assign(task, inputs)
                 if assignment is None:
                     continue
-                if not isinstance(inputs, _Fresh):   # it can start: take its snapshots at the current tip
-                    inputs = inspected[task['id']] = _Fresh(self._inputs(task, fresh=True))
-                    assignment = assign(task, inputs)
-                    if assignment is None:
-                        continue
                 identity = (str(inputs['repo']).strip().casefold(), *(assignment.get(k) for k in
                             ('backend', 'seat', 'model', 'effort', 'harness', 'placement')))
                 item = dict(task=task, inputs=inputs, runs=p.list_runs(task['id']), notes=p.owner_notes(task['id']),
@@ -130,7 +125,9 @@ class Replanning:
                              or scope.any_overlap(task['scope_files'], r['task']['scope_files']))
                 return (0 if same_epic else 1 if connected else 2, r['order'])
             others = sorted((c for c in candidates if c is not seed and c[2] == identity), key=preference)
-            selected = [seed, *others[:MAX_REPLAN_TASKS - 1]]
+            selected = [c for c in (seed, *others[:MAX_REPLAN_TASKS - 1]) if self._at_tip(c, inspected, candidates, now)]
+            if seed not in selected:
+                continue
             while selected:
                 ordered = sorted(selected, key=lambda c: c[0]['order'])
                 try:
@@ -157,6 +154,21 @@ class Replanning:
                 return None
             return self._prepared(started, assignment, built)
         return None
+
+    def _at_tip(self, candidate, inspected, candidates, now):
+        """A member about to start takes its read snapshots at the current tip; inspection reused the newest one.
+        Without this a moved branch would make the start's freshness check fail. A failure defers the request."""
+        request, _, _, item = candidate
+        if isinstance(item['inputs'], _Fresh):
+            return True
+        try:
+            item['inputs'] = inspected[request['task_id']] = _Fresh(self._inputs(item['task'], fresh=True))
+            return True
+        except (OSError, ValueError, WorktreeRefused) as exc:
+            inspected[request['task_id']] = exc
+            self._defer(request, exc, now)
+            candidates.remove(candidate)
+            return False
 
     def _fresh(self, batch):
         fresh = {}

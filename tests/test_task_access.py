@@ -386,6 +386,11 @@ class AccessTests(unittest.TestCase):
             fresh = planning._inputs(task, fresh=True)
             self.assertNotEqual(fresh['head'], first['head'])
             self.assertEqual(len(self._keys(root)), len(before) + 1)
+            # A real clone is pruned too, read-only git object files included.
+            repo.commit('moved.txt', 'moved again')
+            planning._inputs(task, fresh=True)
+            self.assertFalse(Path(first['checkout']).exists())
+            self.assertEqual(len(self._keys(root)), 2)
 
     def test_brief_states_access_and_kind(self):
         b = brief.assemble(dict(id='T-a', title='Read', kind='research', write=False,
