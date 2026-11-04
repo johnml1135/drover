@@ -264,17 +264,29 @@ def budget_notice(state, outcome, *, applied=True, processes=()):
              f"{BUDGET_OUTCOMES.get(outcome, 'no reason recorded')}.{named}"))
 
 
+BUILD_ROOTS_QUIET = ((2, 30), (4, 0))      # local [start, end): no build-roots run may hold the lock at the 03:00 daily
+
+
+def _quiet(now):
+    """Whether `now` falls in BUILD_ROOTS_QUIET, local time."""
+    import time
+    at = time.localtime(now)
+    return BUILD_ROOTS_QUIET[0] <= (at.tm_hour, at.tm_min) < BUILD_ROOTS_QUIET[1]
+
+
 def _build_roots_tick(cfg, directory, now, compacting, launch):
     """Launch a build-roots run when a Windows build root is declared and `build_root_interval_s` has passed since the
     last one started, whatever any drive's level and outside the cleanup cooldown. Its start is kept in state, so a
     restarted hub waits out the interval; a launch that fails puts the previous start back. The run itself takes the
     cleanup lock, and skips when it is held, so no claim is kept. None during a WSL compaction, whose window holds
-    that lock. True when it launched: the run is about to take the lock, so this tick claims no triggered cleanup,
+    that lock, nor from 02:30 to 04:00 local, so none holds it when the daily apply starts at 03:00 (a run is cut off
+    well inside 30 min at the default worker timeout). True when it launched: the run is about to take the lock, so this tick claims no triggered cleanup,
     which would meet that lock and fail."""
     from . import disk_state
     from .config_defaults import BUILD_ROOT_INTERVAL_S
     policy = cfg.get('disk_cleanup', {})
-    if compacting or not any(entry.get('placement') == 'windows' for entry in policy.get('build_roots', [])):
+    declared = any(entry.get('placement') == 'windows' for entry in policy.get('build_roots', []))
+    if compacting or _quiet(now) or not declared:
         return False
     interval = policy.get('build_root_interval_s', BUILD_ROOT_INTERVAL_S)
     def due(state):

@@ -252,7 +252,8 @@ Declaring a build root is the owner's authorization to remove its idle units, so
 cleaned on their own, whatever any drive's free space, with no dry report and no `automation.apply`. The hub launches
 `drover disk-cleanup --mode build-roots` once every `[disk_cleanup] build_root_interval_s` (default 3600, finite and
 positive) while at least one Windows build root is declared, outside the 6 h cleanup cooldown; it records each start in
-the disk state, so a restarted hub waits out the interval. That run serves only the Windows build roots, in its own
+the disk state, so a restarted hub waits out the interval. It launches none from 02:30 to 04:00 local time, so no
+build-roots run holds the cleanup lock when the daily apply starts at 03:00. That run serves only the Windows build roots, in its own
 process, on every tracked drive that holds one, and starts no worker on either side; a WSL build root is reported and
 left to the full cleanup's stage 2. Every guard above still applies. It takes the cleanup lock and skips when another
 cleanup holds it. It writes no `report_scope`, saves its rows as `disk/last-build-roots.json` (journalled like the full

@@ -340,6 +340,8 @@ class BuildRootCadence(DiskCase):
                                                         max_idle_hours=2)]
         self.free = 500.        # level ok: no triggered cleanup is due
         self.launches, self.builds = [], []
+        from datetime import datetime
+        self.now = datetime(2033, 5, 18, 12, 0).timestamp()      # local noon: outside the 02:30 to 04:00 quiet hours
 
     def tick(self):
         from drover import disk
@@ -367,6 +369,21 @@ class BuildRootCadence(DiskCase):
         self.now += 600
         self.tick()
         self.assertEqual(len(self.builds), 2)
+
+    def test_no_launch_from_half_past_two_to_four_local_so_the_daily_apply_finds_the_lock_free(self):
+        from datetime import datetime
+        for hour, minute in ((2, 30), (3, 0), (3, 59)):
+            self.now = datetime(2033, 5, 18, hour, minute).timestamp()       # naive: local time
+            self.tick()
+        self.assertEqual(self.builds, [])
+        for hour, minute in ((2, 29), (4, 0)):
+            with self.subTest(at=(hour, minute)):
+                self.builds.clear()
+                from drover import disk_state
+                disk_state.update(self.state, lambda s: s.pop('build_roots', None))
+                self.now = datetime(2033, 5, 18, hour, minute).timestamp()
+                self.tick()
+                self.assertEqual(self.builds, [self.now])
 
     def test_a_restart_does_not_relaunch_at_once(self):
         from drover import disk_state
