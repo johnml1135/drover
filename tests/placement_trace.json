@@ -11,10 +11,11 @@
    "argv": [
     "<PY>",
     "-c",
-    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(json.loads(sys.argv[2]),sys.argv[3]==\"1\")",
+    "import sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(sys.argv[2]==\"1\",sys.argv[3])",
     "<ROOT>",
     true,
     "0",
+    "triggered",
     "claim-absent"
    ],
    "env_has_path": true,
@@ -31,10 +32,11 @@
    "argv": [
     "<PY>",
     "-c",
-    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(json.loads(sys.argv[2]),sys.argv[3]==\"1\")",
+    "import sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(sys.argv[2]==\"1\",sys.argv[3])",
     "<ROOT>",
     true,
     "0",
+    "triggered",
     "claim-error"
    ],
    "env_has_path": true,
@@ -51,10 +53,11 @@
    "argv": [
     "<PY>",
     "-c",
-    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(json.loads(sys.argv[2]),sys.argv[3]==\"1\")",
+    "import sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(sys.argv[2]==\"1\",sys.argv[3])",
     "<ROOT>",
     true,
     "1",
+    "triggered",
     "claim-identity"
    ],
    "env_has_path": true,
@@ -74,10 +77,11 @@
    "argv": [
     "<PY>",
     "-c",
-    "import json,sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(json.loads(sys.argv[2]),sys.argv[3]==\"1\")",
+    "import sys;sys.path.insert(0,sys.argv[1]);from drover.disk_runtime import run_detached;run_detached(sys.argv[2]==\"1\",sys.argv[3])",
     "<ROOT>",
     true,
     "0",
+    "triggered",
     "claim-none"
    ],
    "env_has_path": true,

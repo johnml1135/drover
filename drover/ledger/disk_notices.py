@@ -57,15 +57,17 @@ def replay(conn, cfg, now):
     except BlockingIOError:
         return []
     reports = []
-    try:
-        report = json.loads((state_dir / 'disk' / 'last-report.json').read_text(encoding='utf-8'))
-        ident = hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
-        with tx(conn):
-            if not any(e['data']['id'] == ident for e in ops.events(conn, kind='disk.report')):
-                ops.event(conn, 'disk.report', 'disk', dict(id=ident, report=report))
-                reports.append(ident)
-    except (OSError, ValueError):
-        pass
+    # The full cleanup's report, and the build-roots run's, kept apart so an hourly build-roots run never replaces it.
+    for name in ('last-report.json', 'last-build-roots.json'):
+        try:
+            report = json.loads((state_dir / 'disk' / name).read_text(encoding='utf-8'))
+            ident = hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
+            with tx(conn):
+                if not any(e['data']['id'] == ident for e in ops.events(conn, kind='disk.report')):
+                    ops.event(conn, 'disk.report', 'disk', dict(id=ident, report=report))
+                    reports.append(ident)
+        except (OSError, ValueError):
+            pass
     retracted = [ident for ident, entry in state.get('outbox', {}).items()
                  if entry.get('retracted') and entry['acknowledged']]
     for ident in retracted:

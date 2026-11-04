@@ -264,13 +264,56 @@ def budget_notice(state, outcome, *, applied=True, processes=()):
              f"{BUDGET_OUTCOMES.get(outcome, 'no reason recorded')}.{named}"))
 
 
-def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None, wsl_used=None) -> dict:
+def _build_roots_tick(cfg, directory, now, compacting, launch):
+    """Launch a build-roots run when a Windows build root is declared and `build_root_interval_s` has passed since the
+    last one started, whatever any drive's level and outside the cleanup cooldown. Its start is kept in state, so a
+    restarted hub waits out the interval; a launch that fails puts the previous start back. The run itself takes the
+    cleanup lock, and skips when it is held, so no claim is kept. None during a WSL compaction, whose window holds
+    that lock."""
+    from . import disk_state
+    from .config_defaults import BUILD_ROOT_INTERVAL_S
+    policy = cfg.get('disk_cleanup', {})
+    if compacting or not any(entry.get('placement') == 'windows' for entry in policy.get('build_roots', [])):
+        return
+    interval = policy.get('build_root_interval_s', BUILD_ROOT_INTERVAL_S)
+    def due(state):
+        previous = (state.get('build_roots') or {}).get('last_start')
+        if previous is not None and now - previous < interval:
+            return False, previous
+        state['build_roots'] = dict(state.get('build_roots') or {}, last_start=now)
+        return True, previous
+    try:
+        start, previous = disk_state.update(directory, due)
+    except BlockingIOError:
+        return
+    if not start:
+        return
+    try:
+        launch() if launch is not None else disk_runtime.cleanup_enqueue(
+            cfg, dict(id='build-roots', applied=True), mode='build-roots')
+    except BaseException:
+        def restore(state):
+            if (state.get('build_roots') or {}).get('last_start') == now:
+                if previous is None:
+                    state['build_roots'].pop('last_start', None)
+                else:
+                    state['build_roots']['last_start'] = previous
+        try:
+            disk_state.update(directory, restore)
+        except BlockingIOError:
+            pass
+        raise
+
+
+def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=None, wsl_used=None,
+         build_enqueue=None) -> dict:
     """Observe even while paused; short claims precede all background work.
 
     Machine load never defers a cleanup, which runs on a CPU cap at low priority; `gate` is accepted and ignored.
     Only the lock and the cooldown defer, and state['cleanup_deferred'] records when and why.
     Free space on a drive and GB used inside WSL trigger independently: WSL at purge or stop claims its own
-    episode named 'wsl'. `wsl_used` is a callable returning that reading (default: read it without starting WSL)."""
+    episode named 'wsl'. `wsl_used` is a callable returning that reading (default: read it without starting WSL).
+    A build-roots run has its own cadence (_build_roots_tick); `build_enqueue` launches it (default: detached)."""
     import json
     import time
     import uuid
@@ -299,6 +342,7 @@ def tick(cfg: dict | None = None, *, now=None, reader=None, enqueue=None, gate=N
     result['pause'] |= bool(result['critical_tokens'])
     from .disk_cleanup import retry_notices
     retry_notices(cfg)
+    _build_roots_tick(cfg, directory, now, compacting, build_enqueue)
     # Process checks and receipt IO happen outside the short state transaction.
     try:
         observed = disk_state.read(directory)

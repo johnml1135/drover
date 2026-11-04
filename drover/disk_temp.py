@@ -93,10 +93,31 @@ def build_facts(path, request, *, clock, device):
     return dict(files=files, bytes=size, age_s=max(0, request['now'] - newest))
 
 
+def _units(run, root, depth):
+    """The units of `root`: its subfolders at `depth` 1, or at 2 the subfolders of each subfolder, a link among them
+    included, which its rule keeps. Files are no units. At depth 2 a link in the root is kept with a row and never
+    followed, and a folder whose listing fails gets an error row; its siblings are still listed."""
+    def folders(parent):
+        return sorted(p for p in parent.iterdir() if placement.cleanup_link(p) or p.is_dir())
+    if depth == 1:
+        return folders(root)
+    units = []
+    for parent in sorted(root.iterdir()):
+        if placement.cleanup_link(parent):
+            run.add(item(parent, 'protected', error='a link above the build units is never followed'))
+        elif parent.is_dir():
+            try:
+                units.extend(folders(parent))
+            except OSError as error:
+                run.error(dict(path=str(parent), error=str(error)))
+    return units
+
+
 def build_roots(run, request) -> bool:
-    """Stage 2's external build roots, each immediate subfolder one unit, judged by `rule_build_unit` on the proof for
-    regenerable output. On apply a candidate goes after a fresh such proof and a walk that finds it unchanged. True when
-    the clock's line stopped the stage, with the one `temp_deadline` row: what it has not reached stays."""
+    """Stage 2's external build roots, each subfolder at the entry's `unit_depth` (1, or 2 for `root/<a>/<b>`) one
+    unit, judged by `rule_build_unit` on the proof for regenerable output; a folder above the units, and the files in
+    it, stay. On apply a candidate goes after a fresh such proof and a walk that finds it unchanged. True when the
+    clock's line stopped the stage, with the one `temp_deadline` row: what it has not reached stays."""
     evidence = run.evidence
     first = LazyProof(lambda: evidence.processes(regenerable=True))      # taken only when a unit reaches it
     for entry in sorted(request['paths'].get('build_roots', []), key=lambda e: e['path']):
@@ -111,7 +132,7 @@ def build_roots(run, request) -> bool:
             if not root.is_dir():       # not made yet: nothing to judge
                 continue
             device = root.stat().st_dev     # every path of every unit must be on the root's own device
-            units = sorted(p for p in root.iterdir() if placement.cleanup_link(p) or p.is_dir())   # a file is no unit
+            units = _units(run, root, entry.get('unit_depth', 1))
         except OSError as error:
             run.error(dict(path=str(root), error=str(error)))
             continue

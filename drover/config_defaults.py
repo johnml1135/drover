@@ -26,6 +26,10 @@ PROCESS_IGNORE = [*PROCESS_IGNORE_R11_WINDOWS,
                   'RtkAudUService64.exe', 'WacomHost.exe', 'Wacom_Tablet.exe', 'remoting_desktop.exe',
                   'taskhostw.exe', 'dllhost.exe', *PROCESS_IGNORE_WSL]
 
+# Seconds between the hub's build-roots runs, `[disk_cleanup] build_root_interval_s`. It is no DEFAULTS entry: a
+# configuration that does not set it keeps its cleanup report scope, which hashes the whole table.
+BUILD_ROOT_INTERVAL_S = 3600
+
 
 def windows_or_wsl(platform, env):
     """The platform fact the default disk trackers depend on: a Windows host, or WSL running on one."""

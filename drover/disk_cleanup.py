@@ -1,21 +1,25 @@
 """Machine-wide staged cleanup; side workers own candidate safety decisions."""
+import contextlib
 import copy
 import hashlib
+import io
 import json
 import math
 import os
 import socket
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from . import config, disk, disk_budget, disk_evidence, disk_runtime, disk_state, durable, placement, repos
+from . import config, disk, disk_budget, disk_evidence, disk_runtime, disk_side, disk_state, durable, placement, repos
 from .disk_cleanup_decisions import CleanupRuntime, evaluate
 from .disk_cleanup_notices import _notices, _report_notices, retry_notices
 from .disk_inventory import bound_report
-from .disk_stage import StageRequest
+from .disk_stage import StageRequest, item, read_rows
+
+BUILD_ROOTS = 'build-roots'
 
 
 def _repos(cfg, errors=None):
@@ -211,11 +215,70 @@ def _finish_wsl(state_dir, claim, receipt, at):
         pass
 
 
+def _serve_here(request):
+    """One stage served in this process, its lines read back as `cleanup_call` reads a worker's."""
+    out = io.BytesIO()
+    disk_side.serve(request.to_wire(), out=out)
+    return asdict(read_rows(out.getvalue()))
+
+
+def _build_roots_run(cfg, runtime):
+    """`mode='build-roots'`: stage 2's Windows build roots alone, served in this process on every tracked drive that
+    holds one, applied at any free-space level. A declared build root is the owner's authorization to remove its idle
+    units, so no dry report or automation flag is asked for, and none is written: this run sets no `report_scope` and
+    saves its report as `last-build-roots.json`, not `last-report.json`. The unit's own guards all stay. No worker is
+    started on either side. A root on the other side is reported and left to the full cleanup's stage 2; a held cleanup
+    lock skips the run, quietly."""
+    result = dict(mode=BUILD_ROOTS, applied=True, drives=[], stages=[], items=[], errors=[], exhausted=False,
+                  peak_intermediate_bytes=0)
+    state_dir = config.state_dir(cfg)
+    entries = cfg['disk_cleanup'].get('build_roots', [])
+    here = 'windows' if placement.cleanup_side() == 'windows' else None
+    served = [entry for entry in entries if entry['placement'] == here]
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(disk_state.CleanupLock(state_dir))
+        except BlockingIOError:
+            return dict(result, skipped='locked')
+        for entry in entries:
+            if entry['placement'] != here:
+                result['items'].append(dict(item(entry['path'], 'build_root_other_side'), stage=2, side=entry['placement']))
+        progress = _Progress(state_dir)
+        machines = _repos(cfg, result['errors']) if served else []
+        tasks = _task_snapshot(state_dir)
+        local = CleanupRuntime(runtime.now, runtime.read, lambda side, request: _serve_here(request), runtime.toast)
+        drives = set()
+        for row in disk.read(cfg, reader=runtime.read) if served else ():
+            holds = [entry for entry in served if row['path'] is not None and
+                     placement.cleanup_contains(row['path'], entry['path'])]
+            if not holds or placement.cleanup_normalize(row['path']) in drives:
+                continue
+            drives.add(placement.cleanup_normalize(row['path']))
+            tracker = next(t for t in cfg['trackers'] if t['name'] == row['name'])
+            drive = dict(row, warn_gb=tracker['warn_gb'])
+            result['drives'].append(drive)
+            result['stages'].append(dict(drive=row['name'], stage=2))
+            request = StageRequest(stage=2, side=here, mode=BUILD_ROOTS, apply=True, now=runtime.now(), drive=drive,
+                                   repos=machines, policy=dict(cfg['disk_cleanup'], build_roots=holds),
+                                   state_dir=str(state_dir), tasks=tasks)     # no inventory id: no cache to drop
+            progress.begin(row['name'], 2, here)
+            _serve_stage(local, progress, result, state_dir, here, request)
+        progress.done()
+        bound_report(result)
+        try:
+            disk_state.save_file(state_dir, 'last-build-roots.json', result)
+        except OSError as error:
+            result['errors'].append(dict(reason_code='report_persistence_failed', error=str(error)))
+    return result
+
+
 def run(cfg: dict | None = None, *, mode='on-demand', apply=False, runtime=None) -> dict:
     cfg = config.get() if cfg is None else cfg
-    if mode not in ('on-demand', 'triggered', 'daily'):
+    if mode not in ('on-demand', 'triggered', 'daily', BUILD_ROOTS):
         raise ValueError('unknown cleanup mode')
     runtime = disk_runtime.cleanup_runtime(cfg) if runtime is None else runtime
+    if mode == BUILD_ROOTS:
+        return _build_roots_run(cfg, runtime)
     result = dict(mode=mode, applied=apply, drives=[], stages=[], items=[], errors=[], exhausted=False, peak_intermediate_bytes=0)
     state_dir = config.state_dir(cfg)
     tasks = _task_snapshot(state_dir)
@@ -381,12 +444,15 @@ def main(argv=None):
             command = command[1:]
         return locked_command(config.get(), command)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=('daily', 'on-demand', 'triggered'), default='on-demand')
+    parser.add_argument('--mode', choices=('daily', 'on-demand', 'triggered', BUILD_ROOTS), default='on-demand',
+                        help='build-roots: the Windows build roots alone, always applied, on the declaration alone')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--apply', action='store_true')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
+    if args.mode == BUILD_ROOTS and args.dry_run:
+        parser.error('--mode build-roots always applies; it has no dry run')
     try:
         answer = run(mode=args.mode, apply=args.apply)
         if args.json:

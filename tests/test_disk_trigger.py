@@ -7,7 +7,9 @@ from unittest.mock import patch
 
 from tests.disk_fixture import DiskCase
 from tests.fakeci import answer_spawns
-from drover import disk_runtime
+from drover import config as _config, disk_runtime
+
+REAL_GET = _config.get      # bound before any test patches it
 
 
 class Trigger(DiskCase):
@@ -140,20 +142,20 @@ class Trigger(DiskCase):
         from types import SimpleNamespace
         from drover import placement
         target = self.root / "literal ' command.json"
-        cfg = {**self.cfg, 'test_output': str(target)}
+        (self.state / 'config.toml').write_text('[disk_cleanup]\ncooldown_s = 123\n', encoding='utf-8')
         def detach(argv, env, log):
-            shim = ('import sys,types,json;'
+            shim = ('import sys,types,json,os;'
                     'm=types.ModuleType("drover.disk_cleanup");'
-                    'm.run=lambda cfg,**kw: open(cfg["test_output"],"w").write(json.dumps([cfg,kw]));'
+                    'm.run=lambda cfg,**kw: open(os.environ["DROVER_TEST_OUTPUT"],"w").write(json.dumps([cfg,kw]));'
                     'sys.modules["drover.disk_cleanup"]=m;')
-            done = subprocess.run([*argv[:2], shim + argv[2], *argv[3:]], env=env,
-                                  capture_output=True, text=True, timeout=10)
+            done = subprocess.run([*argv[:2], shim + argv[2], *argv[3:]], env=dict(env, DROVER_TEST_OUTPUT=str(target)),
+                                  capture_output=True, text=True, timeout=30)
             self.assertEqual(done.returncode, 0, done.stderr)
             return SimpleNamespace(pid=os.getpid()), False
         with patch.object(placement, 'detach', side_effect=detach):
-            disk_runtime.cleanup_enqueue(cfg, {'id': 'literal-token', 'applied': True})
+            disk_runtime.cleanup_enqueue(self.cfg, {'id': 'literal-token', 'applied': True})
         saved, kwargs = json.loads(target.read_text())
-        self.assertEqual(saved, cfg)
+        self.assertEqual(saved['disk_cleanup']['cooldown_s'], 123)     # its own read of config.toml, not the hub's
         self.assertEqual(kwargs, {'mode': 'triggered', 'apply': True})
 
     def test_two_low_drives_share_one_machine_cleanup(self):
@@ -325,3 +327,111 @@ class ProcessQueryTimeout(DiskCase):
         with patch('drover.placement.cleanup_identity', side_effect=TimeoutError('identity read timed out')) as _placement_patch_6, patch('drover.placement_process.cleanup_identity', _placement_patch_6), patch('drover.placement_proof.cleanup_identity', _placement_patch_6):
             result = disk.tick(self.cfg, now=self.now, reader=lambda path: 60, enqueue=lambda: {})
         self.assertIn('drives', result)
+
+
+class BuildRootCadence(DiskCase):
+    """The hub launches a build-roots run on its own interval, at any drive level and outside the cleanup cooldown."""
+    def setUp(self):
+        super().setUp()
+        mapping = patch('drover.placement.physical_disk_path', return_value=str(self.root))
+        mapping.start()
+        self.addCleanup(mapping.stop)
+        self.cfg['disk_cleanup']['build_roots'] = [dict(path=str(self.root / 'targets'), placement='windows',
+                                                        max_idle_hours=2)]
+        self.free = 500.        # level ok: no triggered cleanup is due
+        self.launches, self.builds = [], []
+
+    def tick(self):
+        from drover import disk
+        return disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, wsl_used=lambda: None,
+                         enqueue=lambda: self.launches.append(1) or {},
+                         build_enqueue=lambda: self.builds.append(self.now) or {})
+
+    def test_launches_when_the_interval_has_passed_and_not_again_before(self):
+        from drover import disk_state
+        self.tick()
+        self.assertEqual(self.builds, [self.now])
+        self.assertEqual(disk_state.read(self.state)['build_roots']['last_start'], self.now)
+        for advance in (60, 3000, 539):
+            self.now += advance
+            self.tick()
+        self.assertEqual(len(self.builds), 1, 'the default interval is 3600 s')
+        self.now += 1
+        self.tick()
+        self.assertEqual(len(self.builds), 2)
+        self.assertEqual(self.launches, [])
+
+    def test_the_interval_is_configurable(self):
+        self.cfg['disk_cleanup']['build_root_interval_s'] = 600
+        self.tick()
+        self.now += 600
+        self.tick()
+        self.assertEqual(len(self.builds), 2)
+
+    def test_a_restart_does_not_relaunch_at_once(self):
+        from drover import disk_state
+        disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 60)))
+        self.tick()
+        self.assertEqual(self.builds, [])
+
+    def test_no_launch_without_a_windows_build_root(self):
+        self.cfg['disk_cleanup']['build_roots'] = [dict(path='/home/someone/targets', placement='wsl', max_idle_hours=2)]
+        self.tick()
+        del self.cfg['disk_cleanup']['build_roots']
+        self.now += 7200
+        self.tick()
+        self.assertEqual(self.builds, [])
+
+    def test_a_failed_launch_restores_the_last_start(self):
+        from drover import disk, disk_state
+        disk_state.update(self.state, lambda s: s.update(build_roots=dict(last_start=self.now - 7200)))
+        def fail():
+            raise OSError('no python')
+        with self.assertRaises(OSError):
+            disk.tick(self.cfg, now=self.now, reader=lambda path: self.free, wsl_used=lambda: None,
+                      enqueue=lambda: {}, build_enqueue=fail)
+        self.assertEqual(disk_state.read(self.state)['build_roots']['last_start'], self.now - 7200)
+
+
+class DetachedConfig(DiskCase):
+    """A detached run reads config.toml itself, so it sees an edit made after the hub loaded its config."""
+    def test_the_detached_run_reads_a_config_change_made_after_the_hub_loaded_it(self):
+        import json
+        import sys
+        from types import SimpleNamespace
+        from drover import config, disk_cleanup, placement
+        home = self.root / 'home'
+        home.mkdir()
+        (home / 'config.toml').write_text('[disk_cleanup]\ncooldown_s = 100\n', encoding='utf-8')
+        with patch.dict(os.environ, {'DROVER_HOME': str(home)}):
+            hub = config.load()
+            self.assertEqual(hub['disk_cleanup']['cooldown_s'], 100)
+            launched = []
+            with patch.object(placement, 'detach', lambda argv, env, stream: launched.append(argv) or
+                              (SimpleNamespace(pid=4242), False)), \
+                    patch.object(placement, 'cleanup_identity', return_value=dict(pid=4242, birth='b', side=self.side)):
+                disk_runtime.cleanup_enqueue(hub, dict(id='c1', applied=False))
+            [argv] = launched
+            self.assertFalse(any('cooldown_s' in arg for arg in argv), 'the hub config is not passed')
+            (home / 'config.toml').write_text('[disk_cleanup]\ncooldown_s = 200\n', encoding='utf-8')
+            ran = []
+            code_args = argv[3:]
+            self.addCleanup(config.reset)
+            with patch.object(config, 'get', REAL_GET), \
+                    patch.object(placement, 'lower_priority'), patch.object(placement, 'limit_cpus'), \
+                    patch.object(disk_cleanup, 'run', lambda cfg, **kw: ran.append((cfg, kw))):
+                disk_runtime.run_detached(code_args[1] == '1', code_args[2])
+        [(cfg, options)] = ran
+        self.assertEqual(cfg['disk_cleanup']['cooldown_s'], 200)
+        self.assertEqual(options, dict(mode='triggered', apply=False))
+
+    def test_a_build_roots_launch_names_its_mode(self):
+        from types import SimpleNamespace
+        from drover import placement
+        launched = []
+        with patch.object(placement, 'detach', lambda argv, env, stream: launched.append(argv) or
+                          (SimpleNamespace(pid=4242), False)), \
+                patch.object(placement, 'cleanup_identity', return_value=dict(pid=4242, birth='b', side=self.side)):
+            disk_runtime.cleanup_enqueue(self.cfg, dict(id='build-roots', applied=True), mode='build-roots')
+        [argv] = launched
+        self.assertEqual(argv[4:6], ['1', 'build-roots'])

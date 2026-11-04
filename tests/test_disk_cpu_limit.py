@@ -52,7 +52,8 @@ elif sys.argv[1] == 'direct':
 else:                                # the detached coordinator, up to the moment it would start work
     seen = []
     disk_cleanup.run = lambda cfg, **options: seen.append(state())
-    disk_runtime.run_detached({'disk_cleanup': {'cpu_limit': 2}}, False)
+    config.get = lambda: {'disk_cleanup': {'cpu_limit': 2}}     # the config.toml it would read
+    disk_runtime.run_detached(False)
     print(json.dumps(dict(bits=bits, ran=seen)))
 '''
 
@@ -111,8 +112,8 @@ class Coordinator(unittest.TestCase):
 
     def test_no_cap_configured_runs_uncapped(self):
         with patch.object(placement, 'lower_priority') as lower, patch.object(placement, 'limit_cpus') as limit, \
-                patch('drover.disk_cleanup.run', return_value='ran') as run:
-            self.assertEqual(disk_runtime.run_detached({}, True), 'ran')
+                patch('drover.disk_cleanup.run', return_value='ran') as run,                 patch.object(config, 'get', return_value={}), patch.object(config, 'reset'):
+            self.assertEqual(disk_runtime.run_detached(True), 'ran')
         lower.assert_called_once_with()
         limit.assert_not_called()
         run.assert_called_once_with({}, mode='triggered', apply=True)

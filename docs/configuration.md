@@ -232,8 +232,11 @@ folder cleanup removes least recently used files first and stops at warn. Reposi
 
 `[[disk_cleanup.build_roots]]` declares a folder that builds outside any repository write into, such as the
 `CARGO_TARGET_DIR` folders under `C:\cargo-targets`. Each entry needs an absolute `path` and the `placement` its path is
-on (`"windows"` or `"wsl"`), and accepts `max_idle_hours` (default 2). Each immediate subfolder is one unit; files
-directly in the root are left alone. Stage 2 removes a unit once its newest file or folder is older than
+on (`"windows"` or `"wsl"`), and accepts `max_idle_hours` (default 2) and `unit_depth` (1 or 2, default 1). At depth 1
+each immediate subfolder is one unit; files directly in the root are left alone. At depth 2 each subfolder of a
+subfolder (`root\<a>\<b>`) is one unit, judged and removed exactly as a depth-1 unit is; files directly in `root\<a>`
+stay, a `root\<a>` left empty stays, and a link at either level is never followed. Stage 2 removes a unit once its
+newest file or folder is older than
 `max_idle_hours`, no process uses it, and, just before removal, a fresh process check and a second walk find it
 unchanged. A unit can be rebuilt, so the process check for these units, unlike the temp roots', does not count a
 process whose executable cannot be read when its name is in `process_ignore`. A unit holding a link, a junction, `.git`,
@@ -245,11 +248,34 @@ folder listed in both `temp_roots` and `build_roots` is handled once, as a build
 a build root is not scanned as temp, a temp entry that is a build root gets no temp row, and a temp entry holding one
 deeper is kept whole.
 
+Declaring a build root is the owner's authorization to remove its idle units, so the Windows build roots are also
+cleaned on their own, whatever any drive's free space, with no dry report and no `automation.apply`. The hub launches
+`drover disk-cleanup --mode build-roots` once every `[disk_cleanup] build_root_interval_s` (default 3600, finite and
+positive) while at least one Windows build root is declared, outside the 6 h cleanup cooldown; it records each start in
+the disk state, so a restarted hub waits out the interval. That run serves only the Windows build roots, in its own
+process, on every tracked drive that holds one, and starts no worker on either side; a WSL build root is reported and
+left to the full cleanup's stage 2. Every guard above still applies. It takes the cleanup lock and skips when another
+cleanup holds it. It writes no `report_scope`, saves its rows as `disk/last-build-roots.json` (journalled like the full
+report, never replacing `last-report.json`), and is no applied daily report for the 3 clean applied days. A detached
+cleanup, triggered or build-roots, reads `config.toml` itself, so an edit counts from the next run without restarting
+the hub.
+
 ```toml
 [[disk_cleanup.build_roots]]
 path = 'C:\cargo-targets'
 placement = "windows"
 max_idle_hours = 2
+```
+
+Claude Code's per-session temp folders (`<project>\<session>`) are units at depth 2. The root lies inside the
+`...\AppData\Local\Temp` temp root, as a temp entry that is a build root, so it gets no temp row:
+
+```toml
+[[disk_cleanup.build_roots]]
+path = 'C:\Users\johnm\AppData\Local\Temp\claude'
+placement = "windows"
+max_idle_hours = 2
+unit_depth = 2
 ```
 
 Committed `.drover/config.toml` may declare `[cleanup] disposable = []`:

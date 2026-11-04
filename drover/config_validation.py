@@ -246,7 +246,7 @@ def _absolute_machine_path(value):
 
 def _cleanup_policy(raw):
     defaults = DEFAULTS["disk_cleanup"]
-    _unknown(raw, {*defaults, "build_roots"}, ["disk_cleanup"])
+    _unknown(raw, {*defaults, "build_roots", "build_root_interval_s"}, ["disk_cleanup"])
     out = {}
     for key in ('worker_timeout_s', 'process_query_timeout_s', 'temp_root_budget_s', 'cooldown_s',
                 'worktree_output_idle_s'):
@@ -299,18 +299,24 @@ def _cleanup_policy(raw):
             out["caches"].append(dict(argv=argv, cwd=entry["cwd"], placement=side))
     if "build_roots" in raw:       # only when set, so a configuration without it keeps its report scope
         out["build_roots"] = _build_roots(raw["build_roots"])
+    if "build_root_interval_s" in raw:     # likewise; BUILD_ROOT_INTERVAL_S when unset
+        interval = raw["build_root_interval_s"]
+        if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
+            raise ConfigError("disk_cleanup.build_root_interval_s must be finite and positive")
+        out["build_root_interval_s"] = interval
     return out
 
 
 def _build_roots(entries):
-    """`[[disk_cleanup.build_roots]]`: an absolute `path` on its `placement`'s side, and `max_idle_hours` (default 2).
+    """`[[disk_cleanup.build_roots]]`: an absolute `path` on its `placement`'s side, `max_idle_hours` (default 2) and
+    `unit_depth`, 1 or 2 (default 1, kept only when set, so a configuration without it keeps its report scope).
     Roots never nest. The protected-root and git-tree checks need the filesystem: disk_preflight makes them."""
     if not isinstance(entries, list):
         raise ConfigError("disk_cleanup.build_roots must be a list")
     out = []
     for i, entry in enumerate(entries):
         path = ["disk_cleanup", "build_roots", i]
-        _unknown(entry, {"path", "placement", "max_idle_hours"}, path)
+        _unknown(entry, {"path", "placement", "max_idle_hours", "unit_depth"}, path)
         if not _absolute_machine_path(entry.get("path")):
             raise ConfigError(f"{_where(path)}.path must be absolute")
         side = _choice(entry.get("placement"), PLACEMENTS, path + ["placement"])
@@ -324,7 +330,11 @@ def _build_roots(entries):
             known = placement.cleanup_parts(other["path"])
             if parts[:len(known)] == known or known[:len(parts)] == parts:
                 raise ConfigError(f"{_where(path)}.path must not nest with another build root")
-        out.append(dict(path=entry["path"], placement=side, max_idle_hours=hours))
+        depth = entry.get("unit_depth", 1)
+        if type(depth) is not int or depth not in (1, 2):
+            raise ConfigError(f"{_where(path)}.unit_depth must be 1 or 2")
+        out.append(dict(path=entry["path"], placement=side, max_idle_hours=hours,
+                        **({"unit_depth": depth} if "unit_depth" in entry else {})))
     return out
 
 

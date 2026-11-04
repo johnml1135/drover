@@ -160,7 +160,7 @@ def collect():
                 answer = RUNTIME.cleanup_enqueue(cfg, dict(applied=label == 'identity', id='claim-' + label))
             call = launched[0]
             enqueue[label] = dict(answer=answer, stream=call['stream'], env_has_path=call['env_has_path'],
-                                  argv=call['argv'][:4] + [json.loads(call['argv'][4]) == cfg] + call['argv'][5:])
+                                  argv=call['argv'][:4] + [json.dumps(cfg) not in call['argv']] + call['argv'][4:])
         enqueue['log_directory'] = sorted(p.name for p in (state / 'disk').glob('cleanup.log'))
         trace['enqueue'] = enqueue
 

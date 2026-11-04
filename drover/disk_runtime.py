@@ -187,22 +187,26 @@ def _arrived(output: bytes):
         return None
 
 
-def run_detached(cfg, apply):
-    """The detached coordinator: low priority and the CPU cap before any work, as every worker it starts has."""
-    from .disk_cleanup import run
+def run_detached(apply, mode='triggered'):
+    """The detached coordinator: low priority and the CPU cap before any work, as every worker it starts has. It loads
+    config.toml itself, from the DROVER_HOME it inherits, so an edit made since the hub loaded its config counts."""
+    from . import disk_cleanup
+    config.reset()
+    cfg = config.get()
     placement.lower_priority()
     cap = cfg.get('disk_cleanup', {}).get('cpu_limit')
     if cap:
         placement.limit_cpus(cap)
-    return run(cfg, mode='triggered', apply=apply)
+    return disk_cleanup.run(cfg, mode=mode, apply=apply)
 
 
-def cleanup_enqueue(cfg, claim):
-    """Detached fixed cleanup entry point pinned independently of the hub cwd."""
-    code = ('import json,sys;sys.path.insert(0,sys.argv[1]);'
-            'from drover.disk_runtime import run_detached;run_detached(json.loads(sys.argv[2]),sys.argv[3]=="1")')
+def cleanup_enqueue(cfg, claim, mode='triggered'):
+    """Detached fixed cleanup entry point pinned independently of the hub cwd. `cfg` names the state directory for the
+    log; the run reads its own config (run_detached)."""
+    code = ('import sys;sys.path.insert(0,sys.argv[1]);'
+            'from drover.disk_runtime import run_detached;run_detached(sys.argv[2]=="1",sys.argv[3])')
     argv = [sys.executable, '-c', code, str(Path(__file__).resolve().parents[1]),
-            json.dumps(cfg), '1' if claim['applied'] else '0', claim['id']]
+            '1' if claim['applied'] else '0', mode, claim['id']]
     log = Path(config.state_dir(cfg)) / 'disk' / 'cleanup.log'
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stream:

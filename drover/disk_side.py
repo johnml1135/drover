@@ -8,10 +8,11 @@ from .disk_evidence import StageEvidence
 from .disk_inventory import LIMIT, root_of
 from .disk_paths import caches, outputs, report
 from .disk_stage import StageClock, StageRequest, StageRun
-from .disk_temp import temporary
+from .disk_temp import build_roots, temporary
 from .disk_worktrees import settled
 
 PROVEN = (2, 3, 4, 5)        # the stages that take a process proof before they start
+BUILD_ROOTS = 'build-roots'  # the mode whose stage 2 is the build roots alone, on their own proof
 
 
 def serve(wire: dict, *, out: BinaryIO, clock_factory=StageClock) -> None:
@@ -25,9 +26,10 @@ def serve(wire: dict, *, out: BinaryIO, clock_factory=StageClock) -> None:
     run = StageRun(request, clock, out=out, root_of=root_of(policy, request.repos), limit=LIMIT)
     run.scope_errors.extend(scope_errors)
     run.evidence = StageEvidence(request, clock)
-    if request.stage in PROVEN:
+    only_builds = request.mode == BUILD_ROOTS and request.stage == 2
+    if request.stage in PROVEN and not only_builds:
         run.evidence.processes()
-    extra = STAGES.get(request.stage, _nothing)(run) or {}
+    extra = (_build_roots if only_builds else STAGES.get(request.stage, _nothing))(run) or {}
     if not request.apply and request.stage < 6:
         run.evidence.inventory.save()
     for row in run.evidence.process_rows():
@@ -37,6 +39,11 @@ def serve(wire: dict, *, out: BinaryIO, clock_factory=StageClock) -> None:
 
 def _nothing(run):
     return {}
+
+
+def _build_roots(run):
+    """Stage 2 for a build-roots run: the build roots alone, never the temp roots."""
+    build_roots(run, run.request.decide_view())
 
 
 def trim(run) -> None:

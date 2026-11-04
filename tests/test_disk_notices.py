@@ -209,17 +209,21 @@ class Notices(MemoryWorktreeCase):
         self.assertEqual(self.toasts, [])
 
     def test_general_inventory_is_exposed_through_hub_replay(self):
+        from drover import disk_state
         from drover.ledger import connect, ops, disk_notices
         payload = self.file(self.report_root / 'retained')
         result = self.run_cleanup()
+        # A build-roots run's report is journalled beside the full one, which it never replaces.
+        disk_state.save_file(self.state, 'last-build-roots.json', dict(mode='build-roots', applied=True, items=[], errors=[]))
         conn = connect(self.root / 'inventory.db')
         self.addCleanup(conn.close)
         disk_notices.replay(conn, self.cfg, self.now)
         disk_notices.replay(conn, self.cfg, self.now)
         events = ops.events(conn, kind='disk.report')
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]['data']['report']['items'], result['items'])
-        self.assertTrue(any(i['path'] == str(payload) for i in events[0]['data']['report']['items']))
+        self.assertEqual(sorted(e['data']['report']['mode'] for e in events), sorted([result['mode'], 'build-roots']))
+        [full] = [e for e in events if e['data']['report']['mode'] == result['mode']]
+        self.assertEqual(full['data']['report']['items'], result['items'])
+        self.assertTrue(any(i['path'] == str(payload) for i in full['data']['report']['items']))
         self.assertEqual(ops.open_questions(conn), [])
 
     def test_snapshot_marks_every_nonterminal_task_as_owned(self):

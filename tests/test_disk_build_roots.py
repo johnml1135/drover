@@ -3,6 +3,7 @@ once idle past its `max_idle_hours`, on a process proof with the budget treatmen
 unchanged."""
 import itertools
 import os
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,7 +11,7 @@ from unittest.mock import patch
 from drover import config, disk_preflight, placement, placement_proof
 from drover.disk_stage import StageClock
 from drover.disk_temp import temporary
-from tests.disk_fixture import DAY, DiskCase, staged
+from tests.disk_fixture import DAY, DiskCase, placement_processes, staged
 
 HOUR = 3600
 IGNORED = 'csrss.exe'
@@ -23,7 +24,8 @@ def unreadable(name):
     return dict(pid=4242, name=name, same_user=None, cwd=None, cmd=None, session_id=1, exe=None)
 
 
-class BuildRoots(DiskCase):
+class BuildRootsCase(DiskCase):
+    """A build root `cargo-targets` under the test tree, and units made in it."""
     def setUp(self):
         super().setUp()
         self.build = self.root / 'cargo-targets'
@@ -39,6 +41,8 @@ class BuildRoots(DiskCase):
     def rows(self, result, path):
         return [i for i in result['items'] if i.get('path') == str(path)]
 
+
+class BuildRoots(BuildRootsCase):
     # --- the whole cleanup, through scope and the stage wiring
 
     def test_idle_unit_is_a_candidate_and_removed_on_apply(self):
@@ -281,6 +285,105 @@ class BuildRoots(DiskCase):
         self.assertTrue(loose.exists())
 
 
+
+@unittest.skipUnless(placement.cleanup_side() == 'windows', 'the build-roots run serves Windows-placement roots')
+class BuildRootsRun(BuildRootsCase):
+    """`mode='build-roots'`: only the Windows build roots, in this process, applied at any drive level on the owner's
+    declaration alone; no worker, no dry report, no other stage."""
+
+    def setUp(self):
+        super().setUp()
+        self.free = 500.        # far above warn: a healthy drive
+
+    def build_run(self):
+        with placement_processes():
+            return self.run_cleanup(mode='build-roots')
+
+    def test_a_healthy_drive_loses_an_idle_unit_and_keeps_a_recent_one_without_a_report_or_automation(self):
+        from drover import disk_state
+        idle, recent = self.unit('idle', 3 * HOUR), self.unit('recent', HOUR)
+        result = self.build_run()
+        self.assertTrue(result['applied'])
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, idle)], [('removed', 'build_root_idle')])
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, recent)], [('keep', 'build_root_recent')])
+        self.assertFalse(idle.exists())
+        self.assertTrue(recent.exists())
+        state = disk_state.read(self.state)
+        self.assertNotIn('report_scope', state)
+        self.assertNotIn('automation', state)
+        self.assertFalse((self.state / 'disk' / 'last-report.json').exists())
+        self.assertTrue((self.state / 'disk' / 'last-build-roots.json').exists())
+
+    def test_no_worker_is_started_and_no_other_stage_has_a_row(self):
+        self.unit('idle', 3 * HOUR)
+        self.file(self.temp_root / 'old temp', age=30 * DAY)
+        result = self.build_run()
+        self.assertEqual(self.calls, [])       # no worker on either side: the runtime was never asked
+        self.assertEqual({r.get('stage') for r in result['items'] + result['errors']}, {2})
+        self.assertTrue((self.temp_root / 'old temp').exists())
+        self.assertEqual({s['stage'] for s in result['stages']}, {2})
+
+    def test_a_busy_unit_is_kept(self):
+        busy = self.unit('busy', 3 * DAY)
+        self.busy_paths.add(str(busy / 'debug'))
+        result = self.build_run()
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, busy)], [('keep', 'process_busy')])
+        self.assertTrue(busy.exists())
+
+    def test_a_root_on_the_other_side_is_reported_not_removed(self):
+        self.cfg['disk_cleanup']['build_roots'].append(dict(path='/home/someone/targets', placement='wsl', max_idle_hours=2))
+        result = self.build_run()
+        [row] = [r for r in result['items'] if r['path'] == '/home/someone/targets']
+        self.assertEqual((row['action'], row['reason_code'], row['side']), ('keep', 'build_root_other_side', 'wsl'))
+        self.assertEqual(self.calls, [])
+
+    def test_the_command_line_has_the_mode_and_no_dry_run_for_it(self):
+        from drover import disk_cleanup
+        with patch.object(disk_cleanup, 'run', return_value=dict(mode='build-roots', applied=True, items=[], errors=[])) as ran,                 patch('sys.stdout'):
+            self.assertEqual(disk_cleanup.main(['--mode', 'build-roots']), 0)
+        ran.assert_called_once_with(mode='build-roots', apply=False)       # it applies whatever --apply says
+        with self.assertRaises(SystemExit), patch('sys.stderr'):
+            disk_cleanup.main(['--mode', 'build-roots', '--dry-run'])
+
+    def test_a_held_cleanup_lock_skips_the_run_without_error(self):
+        from drover import disk_state
+        idle = self.unit('idle', 3 * HOUR)
+        with disk_state.CleanupLock(self.state):
+            result = self.build_run()
+        self.assertEqual((result['items'], result['errors'], result.get('skipped')), ([], [], 'locked'))
+        self.assertTrue(idle.exists())
+
+    def test_unit_depth_two_removes_an_idle_session_and_keeps_an_active_one_and_the_parent_files(self):
+        self.cfg['disk_cleanup']['build_roots'][0]['unit_depth'] = 2
+        project = self.build / 'project'
+        idle = self.file(project / 'old-session' / 'tasks' / 'out.txt', age=3 * HOUR).parents[1]
+        active = self.file(project / 'live-session' / 'out.txt', age=60).parent
+        loose = self.file(project / 'notes.txt', age=30 * DAY)
+        self.age(idle, 3 * HOUR)
+        self.age(project / 'live-session', 60)
+        result = self.build_run()
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, idle)], [('removed', 'build_root_idle')])
+        self.assertEqual([(r['action'], r['reason_code']) for r in self.rows(result, active)], [('keep', 'build_root_recent')])
+        self.assertEqual(self.rows(result, project), [])
+        self.assertFalse(idle.exists())
+        self.assertTrue(active.exists())
+        self.assertTrue(loose.exists())
+
+    def test_unit_depth_two_leaves_an_emptied_parent_and_never_follows_a_link_parent(self):
+        self.cfg['disk_cleanup']['build_roots'][0]['unit_depth'] = 2
+        target = self.file(self.root / 'precious' / 'session' / 'keep.txt', age=30 * DAY).parents[1]
+        self.age(target, 30 * DAY)
+        (self.build / 'linked').symlink_to(target, target_is_directory=True)
+        lone = self.file(self.build / 'project' / 'only-session' / 'x', age=3 * DAY).parent
+        self.age(lone, 3 * DAY)
+        result = self.build_run()
+        self.assertEqual([r['action'] for r in self.rows(result, lone)], ['removed'])
+        self.assertTrue((self.build / 'project').is_dir())
+        [link] = self.rows(result, self.build / 'linked')
+        self.assertEqual((link['action'], link['reason_code']), ('keep', 'protected'))
+        self.assertTrue((target / 'session' / 'keep.txt').exists())
+
+
 class BuildRootConfig(DiskCase):
     def validated(self, *entries):
         return config.validate(dict(disk_cleanup=dict(build_roots=list(entries))))['disk_cleanup']['build_roots']
@@ -291,6 +394,34 @@ class BuildRootConfig(DiskCase):
                          [dict(path=root, placement=self.side, max_idle_hours=2)])
         self.assertEqual(self.validated(dict(path=root, placement=self.side, max_idle_hours=0.5))[0]['max_idle_hours'], 0.5)
         self.assertNotIn('build_roots', config.validate({})['disk_cleanup'])     # an unset key leaves the scope as it was
+        self.assertEqual(self.validated(dict(path=root, placement=self.side, unit_depth=2))[0]['unit_depth'], 2)
+        self.assertNotIn('unit_depth', self.validated(dict(path=root, placement=self.side))[0])     # nor an unset depth
+
+    def test_build_root_interval(self):
+        self.assertNotIn('build_root_interval_s', config.validate({})['disk_cleanup'])   # unset: the scope is as it was
+        self.assertEqual(config.validate(dict(disk_cleanup=dict(build_root_interval_s=600)))['disk_cleanup']
+                         ['build_root_interval_s'], 600)
+        for bad in (0, -1, float('inf'), float('nan'), True, '3600'):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(config.ConfigError, 'build_root_interval_s'):
+                    config.validate(dict(disk_cleanup=dict(build_root_interval_s=bad)))
+
+    @unittest.skipUnless(placement.cleanup_side() == 'windows', 'a Windows path')
+    def test_the_documented_claude_temp_root_loads_inside_its_temp_root(self):
+        home = self.root / 'home'
+        home.mkdir()
+        (home / 'config.toml').write_text(
+            "[disk_cleanup]\n"
+            "temp_roots = ['C:\\Users\\johnm\\AppData\\Local\\Temp']\n"
+            "[[disk_cleanup.build_roots]]\n"
+            "path = 'C:\\Users\\johnm\\AppData\\Local\\Temp\\claude'\n"
+            "placement = \"windows\"\n"
+            "max_idle_hours = 2\n"
+            "unit_depth = 2\n", encoding='utf-8')
+        loaded = config.load(home)
+        self.assertEqual(loaded['disk_cleanup']['build_roots'],
+                         [dict(path='C:\\Users\\johnm\\AppData\\Local\\Temp\\claude', placement='windows',
+                               max_idle_hours=2, unit_depth=2)])
 
     def test_validation_errors(self):
         root = str(self.root / 'targets')
@@ -304,6 +435,10 @@ class BuildRootConfig(DiskCase):
                            ([dict(path=root, placement=self.side, max_idle_hours=0)], 'max_idle_hours'),
                            ([dict(path=root, placement=self.side, max_idle_hours=float('inf'))], 'max_idle_hours'),
                            ([dict(path=root, placement=self.side, max_idle_hours=True)], 'max_idle_hours'),
+                           ([dict(path=root, placement=self.side, unit_depth=0)], 'unit_depth'),
+                           ([dict(path=root, placement=self.side, unit_depth=3)], 'unit_depth'),
+                           ([dict(path=root, placement=self.side, unit_depth='2')], 'unit_depth'),
+                           ([dict(path=root, placement=self.side, unit_depth=True)], 'unit_depth'),
                            ([dict(path=root, placement=self.side), dict(path=root + '/inner', placement=self.side)], 'nest')):
             with self.subTest(bad=bad):
                 with self.assertRaisesRegex(config.ConfigError, words):
