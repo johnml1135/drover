@@ -155,7 +155,9 @@ def build_roots(run, request) -> bool:
                     ruling = rule_build_unit_fresh(run, path, measured, again, entry=entry, processes=fresh)
                 row.update(action=ruling.action, reason_code=ruling.reason_code,
                            **({'error': ruling.detail} if ruling.detail else {}))
-                if ruling.action == 'candidate' and request['apply']:
+                if ruling.action == 'candidate' and request['apply'] and not safe_path(path):
+                    row.update(action='keep', reason_code='protected', error='a link appeared above the unit')
+                elif ruling.action == 'candidate' and request['apply']:
                     disk_removal.remove_temp_entry(run, row, path)
                     if row['reason_code'] == REMOVAL_DEADLINE:      # the line passed while it was proven again
                         run.add(row)

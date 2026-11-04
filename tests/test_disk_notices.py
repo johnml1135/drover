@@ -248,7 +248,8 @@ class Notices(MemoryWorktreeCase):
         report(3_000, errors=[dict(path='r', error='denied')])
         disk_notices.replay(conn, self.cfg, self.now)
         self.assertEqual([r['at'] for r in recorded()], [2_000, 3_000])
-        with patch('drover.ledger.ops.events', side_effect=AssertionError('re-read')),                 patch('drover.ledger.ops.event', side_effect=AssertionError('re-recorded')):
+        with patch('drover.ledger.ops.events', side_effect=AssertionError('re-read')), \
+                patch('drover.ledger.ops.event', side_effect=AssertionError('re-recorded')):
             disk_notices.replay(conn, self.cfg, self.now)      # unchanged files: neither parsed nor looked up again
         self.assertEqual(len(recorded()), 2)
 

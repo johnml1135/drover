@@ -166,11 +166,12 @@ class StageEvidence:
 
     def process_rows(self) -> list[dict]:
         """The report rows of the proofs taken: processes out of scope, unreadable ones, and failed queries. None
-        before the first pass's proof."""
-        if self._proof is None:
+        before the first pass's proof, the regenerable one included (a build-roots run takes only that one)."""
+        first = self._proof if self._proof is not None else self._regenerable
+        if first is None:
             return []
         rows = []
-        foreign = placement.proof_diagnostics(self._proof)[0]
+        foreign = placement.proof_diagnostics(first)[0]
         if foreign:
             rows.append(dict(action='report', reason_code='process_out_of_scope', count=foreign))
         unreadable = list(self._diagnostics.values())

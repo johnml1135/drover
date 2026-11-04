@@ -405,7 +405,8 @@ class BuildRootCadence(DiskCase):
                 def tick(cfg, enqueue=None, build_enqueue=None, **_):
                     build_enqueue()
                     return {}
-                with patch.object(disk, 'tick', tick), patch('sys.stdout'),                         patch.object(disk_runtime, 'cleanup_enqueue', lambda cfg, claim, mode='triggered':
+                with patch.object(disk, 'tick', tick), patch('sys.stdout'), \
+                        patch.object(disk_runtime, 'cleanup_enqueue', lambda cfg, claim, mode='triggered':
                                      launched.append((claim['applied'], mode)) or {}):
                     self.assertEqual(disk.main(argv), 0)
                 self.assertEqual(launched, [(applied, 'build-roots')])

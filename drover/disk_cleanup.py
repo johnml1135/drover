@@ -248,13 +248,14 @@ def _build_roots_run(cfg, runtime, apply):
         machines = _repos(cfg, result['errors']) if served else []
         tasks = _task_snapshot(state_dir)
         local = CleanupRuntime(runtime.now, runtime.read, lambda side, request: _serve_here(request), runtime.toast)
-        drives = set()
+        drives, reached = set(), set()
         for row in disk.read(cfg, reader=runtime.read) if served else ():
             holds = [entry for entry in served if row['path'] is not None and
                      placement.cleanup_contains(row['path'], entry['path'])]
             if not holds or placement.cleanup_normalize(row['path']) in drives:
                 continue
             drives.add(placement.cleanup_normalize(row['path']))
+            reached.update(entry['path'] for entry in holds)
             tracker = next(t for t in cfg['trackers'] if t['name'] == row['name'])
             drive = dict(row, warn_gb=tracker['warn_gb'])
             result['drives'].append(drive)
@@ -264,6 +265,9 @@ def _build_roots_run(cfg, runtime, apply):
                                    state_dir=str(state_dir), tasks=tasks)     # no inventory id: no cache to drop
             progress.begin(row['name'], 2, here)
             _serve_stage(local, progress, result, state_dir, here, request)
+        for entry in served:
+            if entry['path'] not in reached:      # no enabled tracker holds its drive: never served, so say so
+                result['items'].append(dict(item(entry['path'], 'build_root_untracked_drive'), stage=2, side=here))
         progress.done()
         bound_report(result)
         try:

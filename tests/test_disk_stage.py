@@ -429,7 +429,7 @@ class CutOff(DiskCase):
         self.run_with({6: stopped(6, 'report_deadline')})
         out = disk_cleanup.remove_approved(self.cfg, str(self.root / 'r'), str(self.root / 't'), runtime=self.runtime())
         self.assertIn(self.REFUSED, json.dumps(out['errors']))
-        with patch.object(disk, 'tick', lambda cfg, enqueue: enqueue()), redirect_stderr(io.StringIO()) as said,                 patch.object(disk_runtime, 'cleanup_enqueue', return_value={}):
+        with patch.object(disk, 'tick', lambda cfg, enqueue, **_: enqueue()), redirect_stderr(io.StringIO()) as said,                 patch.object(disk_runtime, 'cleanup_enqueue', return_value={}):
             self.assertEqual(disk.main(['tick', '--apply']), 1)                    # disk.py:481
         self.assertIn(self.REFUSED, said.getvalue())
         with patch.object(disk_schedule_steps, 'schedule_plan', return_value=dict(files={}, argv=[])),                 self.assertRaisesRegex(ValueError, self.REFUSED):

@@ -112,7 +112,8 @@ class Coordinator(unittest.TestCase):
 
     def test_no_cap_configured_runs_uncapped(self):
         with patch.object(placement, 'lower_priority') as lower, patch.object(placement, 'limit_cpus') as limit, \
-                patch('drover.disk_cleanup.run', return_value='ran') as run,                 patch.object(config, 'get', return_value={}), patch.object(config, 'reset'):
+                patch('drover.disk_cleanup.run', return_value='ran') as run, \
+                patch.object(config, 'get', return_value={}), patch.object(config, 'reset'):
             self.assertEqual(disk_runtime.run_detached(True), 'ran')
         lower.assert_called_once_with()
         limit.assert_not_called()

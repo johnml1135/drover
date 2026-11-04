@@ -59,8 +59,9 @@ def verify(reads):
 
 
 def _record(value):
-    """An index record whose `seq`, `sha` and `adopted` have their types; any other is dropped, not a failure."""
-    return isinstance(value, dict) and type(value.get('seq', 0)) is int and isinstance(value.get('sha', ''), str)         and type(value.get('adopted', 0)) in (int, float)
+    """An index record whose `seq`, `sha` and `adopted` have their types; any other is adopted, not a failure."""
+    return isinstance(value, dict) and type(value.get('seq', 0)) is int and isinstance(value.get('sha', ''), str) \
+        and type(value.get('adopted', 0)) in (int, float)
 
 
 def _load(root):
@@ -74,7 +75,9 @@ def _load(root):
         return {}, True
     if not isinstance(data, dict):
         return {}, True
-    return {k: v for k, v in data.items() if _KEY.fullmatch(k) and _record(v)}, False
+    # A malformed record says as little as an unreadable index: its folder is adopted, kept for ADOPTED_S.
+    return {k: v if _record(v) else {'adopted': time.time(), 'seq': 0} for k, v in data.items() if _KEY.fullmatch(k)}, \
+        False
 
 
 def _adopt(root, index):

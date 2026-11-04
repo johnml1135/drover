@@ -356,6 +356,37 @@ class BuildRootsRun(BuildRootsCase):
                          [('candidate', 'build_root_idle')])
         self.assertTrue(idle.exists())
 
+    def test_an_unreadable_process_is_named_in_the_report(self):
+        from drover import disk_cleanup
+        idle = self.unit('idle', 3 * HOUR)
+        self.cfg['disk_cleanup']['process_ignore'] = [IGNORED]
+        def processes(**options):
+            return placement_proof._CleanupProcesses(windows=True, cim=lambda: [dict(READABLE), unreadable('mystery.exe')],
+                                                     paths=options['paths'], budget=options['budget'])
+        with placement_processes(), patch.object(placement, 'cleanup_processes', processes), \
+                patch.object(placement, 'physical_disk_path', return_value=str(self.root)):
+            result = disk_cleanup.run(self.cfg, mode='build-roots', apply=True, runtime=self.runtime())
+        self.assertTrue(idle.exists())
+        self.assertIn('process_visibility_unavailable', [r['reason_code'] for r in result['items']])
+
+    def test_a_root_on_no_tracked_drive_has_a_row(self):
+        idle = self.unit('idle', 3 * HOUR)
+        self.cfg['trackers'][0]['enabled'] = False
+        result = self.build_run()
+        [row] = self.rows(result, self.build)
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'build_root_untracked_drive'))
+        self.assertTrue(idle.exists())
+
+    def test_a_link_that_appears_above_the_unit_before_removal_keeps_it(self):
+        from drover import disk_temp
+        idle = self.unit('idle', 3 * HOUR)
+        answers = iter((True, False))       # the root as listed, then the unit just before it goes
+        with patch.object(disk_temp, 'safe_path', side_effect=lambda path: next(answers)):
+            result = self.build_run()
+        [row] = self.rows(result, idle)
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'protected'))
+        self.assertTrue(idle.exists())
+
     def test_a_held_cleanup_lock_skips_the_run_without_error(self):
         from drover import disk_state
         idle = self.unit('idle', 3 * HOUR)

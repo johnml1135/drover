@@ -324,6 +324,16 @@ class AccessTests(unittest.TestCase):
             with git_answers(fake):
                 self.assertEqual(len(task_access.prepare(['p'], cfg, root, reuse=True)), 1)
 
+    def test_the_folder_of_a_malformed_record_is_adopted_not_pruned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake, cfg, root = self._fake(tmp)
+            (root / ('f' * 24) / '.git').mkdir(parents=True)
+            (root / task_access.INDEX).write_text(json.dumps({'f' * 24: {'seq': 'x'}}), encoding='utf-8')
+            with git_answers(fake):
+                task_access.prepare(['p'], cfg, root)
+            self.assertIn('f' * 24, self._keys(root))
+            self.assertIn('adopted', json.loads((root / task_access.INDEX).read_text(encoding='utf-8'))['f' * 24])
+
     def test_read_only_file_does_not_stop_removal(self):
         import os
         import stat
