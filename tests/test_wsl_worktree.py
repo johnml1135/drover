@@ -201,10 +201,10 @@ class CleanupCoversBothRoots(unittest.TestCase):
         self.assertEqual(disk_inventory.worktree_roots({"worktrees": "H:\\x"}), [Path(placement.native("H:\\x"))])
 
 
-from tests.test_disk_worktrees import WorktreeCase
+from tests.disk_memory import MemoryWorktreeCase
 
 
-class CleanupScansWslRoot(WorktreeCase):
+class CleanupScansWslRoot(MemoryWorktreeCase):
     def test_an_unregistered_folder_under_the_owning_root_is_reported(self):
         wsl_root = self.r.root / 'ext4'
         owning_root = self.trees if self.side == 'windows' else wsl_root / 'alpha.worktrees'
