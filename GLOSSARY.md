@@ -103,7 +103,7 @@ A tracker for one drive. Its reading is cheap and runs on a schedule even when t
 _Avoid_: Disk check, space monitor
 
 **Disk cleanup**:
-The staged reclaim of disk space across the machine's repositories and declared paths, run daily, on demand, and whenever a disk tracker drops below its warn level. Each cleanup stage runs only while the drive is still below warn. It removes only what can be regenerated or restored, and lists everything else for the owner.
+The staged reclaim of disk space across the machine's repositories and declared paths, run daily, on demand, and whenever a disk tracker drops below its warn level. An on-demand or triggered run moves to the next stage only while the drive is still below warn; a daily run takes stages 1 to 5 on any drive, removing declared outputs only from worktrees idle past the idle limit. It removes only what can be regenerated or restored, and lists everything else for the owner.
 _Avoid_: Garden, sweep, prune, tend
 
 **Disposable path**:
