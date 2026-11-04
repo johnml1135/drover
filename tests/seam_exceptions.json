@@ -31,7 +31,6 @@
 {"rule": "R4", "module": "drover/disk_paths.py", "where": "remove_output", "count": 2, "reason": "Disposable path removal; moves to disk_removal in Task 44."},
 {"rule": "R4", "module": "drover/disk_registrations.py", "where": "reregister", "count": 1, "reason": "An empty repair holder, kept by `rmdir`. Stays."},
 {"rule": "R4", "module": "drover/disk_temp.py", "where": "remove_entry", "count": 2, "reason": "Temp and build-root removal; moves to disk_removal in Task 44."},
-{"rule": "R4", "module": "drover/disk_worktrees.py", "where": "remove", "count": 1, "reason": "Worktree removal; moves to disk_removal in Task 43."},
 {"rule": "R5", "module": "drover/placement_git.py", "where": "reachable", "count": 1, "reason": "Imports git_client in the function: git_client imports placement_git at load (section 5.2). Stays."},
 {"rule": "R5", "module": "drover/placement_git.py", "where": "worktree_metadata", "count": 1, "reason": "Imports git_client in the function: git_client imports placement_git at load; path mapping stays here (ADR-0007, section 5.2). Stays."},
 {"rule": "R6", "module": "drover/disk_cleanup.py", "where": "_save_report", "count": 1, "reason": "Deferred import of disk_inventory; the layering needs none of it, so it goes in slice 6, by Task 45 at the latest."},

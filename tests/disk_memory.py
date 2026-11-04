@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 
-from drover import config, disk_cleanup, disk_evidence, disk_worktrees, git_worktrees, ownership, placement, repos
+from drover import config, disk_cleanup, disk_evidence, disk_removal, disk_worktrees, git_worktrees, ownership, placement, repos
 from drover.disk_evidence import StageEvidence
 from drover.git_worktrees import Proof, Refusal
 from tests.disk_fixture import DiskCase
@@ -178,12 +178,13 @@ class MemoryWorktreeCase(ProcessFreeDiskCase):
                     (StageEvidence, 'gitdir', lambda p: str(repository(p).repo / '.git' / Path(p).name)),
                     (StageEvidence, 'tracked', lambda p, relative=None: [n for n in repository(p).tree(p)['tracked']
                         if relative is None or n == str(relative).replace('\\', '/') or n.startswith(str(relative).rstrip('/') + '/')]),
-                    (disk_worktrees, 'unlock_at', lambda repo, p, *, timeout_s: repository(repo).lock(p, None)),
-                    (disk_worktrees, 'lock_at', lambda repo, p, reason, *, timeout_s: repository(repo).lock(p, reason)),
-                    (disk_worktrees, 'discard_at', lambda repo, p, evidence, *, timeout_s: (repository(repo).discard(p), evidence.took(repo, p))),
-                    (disk_worktrees, 'rescue_at', lambda repo, ref, head, *, timeout_s: None),
+                    (disk_removal, 'unlock_at', lambda repo, p, *, timeout_s: repository(repo).lock(p, None)),
+                    (disk_removal, 'lock_at', lambda repo, p, reason, *, timeout_s: repository(repo).lock(p, reason)),
+                    (disk_removal, 'discard_at', lambda repo, p, evidence, *, timeout_s: (repository(repo).discard(p), evidence.took(repo, p))),
+                    (disk_removal, 'rescue_at', lambda repo, ref, head, *, timeout_s: None),
                     (disk_worktrees, 'registrations', lambda *args: {}),    # process-free; real git is tested in test_disk_registrations
                     (disk_evidence, 'snapshot', snapshot),
+                    (disk_removal, 'snapshot', snapshot),      # removal's own binding of it
                     (placement, 'worktree_metadata', metadata),
                     (repos, 'wsl_worktrees_root', lambda: str(self.root / 'ext4'))]
         for module, name, value in bindings:

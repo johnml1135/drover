@@ -7,8 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_authority, disk_inventory, disk_paths, disk_state, disk_worktrees, placement
-from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
+from drover import disk_authority, disk_inventory, disk_paths, disk_removal, disk_state, disk_worktrees, placement
+from tests.disk_fixture import DiskCase, MemoryCleanupState, agreeing_proof, listing_answers, stage_request, staged
 from tests.fakeci import git_answers
 
 
@@ -169,9 +169,9 @@ class DefaultBranchPolicy(DiskCase):
         self.feature = 'schema_version=1\n[cleanup]\ndisposable=["bin", "src/**"]\n'
         selected = dict(path=str(self.wt), repo=str(self.repo), head='old-head',
                         reason_code='settled', action='candidate', ignored=[str(self.src)])
-        with patch.object(disk_worktrees, 'inspect', return_value=selected.copy()):
-            request, run = stage_request(self.request)
-            answer = disk_worktrees.remove(request, selected, run=run)
+        with patch.object(disk_removal, 'inspect', return_value=selected.copy()):
+            _, run = stage_request(self.request)
+            answer = disk_removal.remove_worktree(run, selected, store=MemoryCleanupState())
         self.assertEqual(answer['reason_code'], 'ignored_content')
         self.assertTrue(self.src.exists())
 

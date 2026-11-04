@@ -56,6 +56,7 @@
     "drover.placement.wsl_worktrees_root",
     "drover.placement_paths.wsl_worktrees_root",
     "drover.disk_worktrees.entries",
+    "drover.disk_worktrees.remove",
     "drover.disk_registrations._entries",
     "drover.placement_exec.wsl_control",
     "drover.placement.wsl_control",

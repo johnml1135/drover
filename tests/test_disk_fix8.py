@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from drover import disk_state, placement
-from tests.disk_fixture import DiskCase, agreeing_proof, listing_answers, stage_request, staged
+from tests.disk_fixture import DiskCase, MemoryCleanupState, agreeing_proof, listing_answers, stage_request, staged
 
 
 class Processes(DiskCase):
@@ -274,15 +274,15 @@ class SafetyDecisions(DiskCase):
         self.assertEqual(result['items'][0]['action'], 'candidate')
 
     def test_remove_revalidation_finds_registration_with_variant_spelling(self):
-        from drover import disk_worktrees
+        from drover import disk_removal
         # Reach the inspect seam, then deliberately refuse removal. This proves
         # canonical selection without touching any filesystem or Git metadata.
         machine = dict(repo=r'H:\REPO')
-        request, run = stage_request(dict(repos=[machine], now=self.now))
+        _, run = stage_request(dict(repos=[machine], now=self.now))
         selected = dict(path=r'H:\tree', repo='/mnt/h/repo', reason_code='unsettled')
         with listing_answers([dict(worktree=r'\\?\H:\TREE')]), agreeing_proof(), \
-                patch.object(disk_worktrees, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
-            result = disk_worktrees.remove(request, selected, run=run)
+                patch.object(disk_removal, 'inspect', return_value=dict(action='keep', reason_code='dirty')) as check:
+            result = disk_removal.remove_worktree(run, selected, store=MemoryCleanupState())
         self.assertTrue(check.called)
         self.assertEqual(result['reason_code'], 'revalidation_changed')
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_worktrees, placement
+from drover import disk_budget, disk_removal, disk_worktrees, placement
 from drover.disk_stage import StageClock
 from tests.disk_fixture import MemoryCleanupState, agreeing_proof, listing_answers, served, stage_request
 from tests.disk_fixture import stage_run as stage_run_for
@@ -57,14 +57,14 @@ class Removals(unittest.TestCase):
 
     def remove(self, clock, **changes):
         store, events, self.discarded = MemoryCleanupState(), [], []
-        request, run = stage_request(dict(repos=[MACHINE], apply=True, now=1.0, drive=dict(path='/'), state_dir=None))
+        _, run = stage_request(dict(repos=[MACHINE], apply=True, now=1.0, drive=dict(path='/'), state_dir=None))
         run.clock = clock
         with listing_answers([dict(worktree=GONE)]), agreeing_proof(), \
-                patch.object(disk_worktrees, 'inspect', return_value=gone_row(**changes)), \
+                patch.object(disk_removal, 'inspect', return_value=gone_row(**changes)), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
-                patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a, **k: (events.append('discard'),
-                                                                                         self.discarded.append(k))):
-            row = disk_worktrees.remove(request, gone_row(**changes), store=store, run=run)
+                patch.object(disk_removal, 'discard_at', side_effect=lambda *a, **k: (events.append('discard'),
+                                                                                       self.discarded.append(k))):
+            row = disk_removal.remove_worktree(run, gone_row(**changes), store=store)
         return row, [r['phase'] for r in store.journal], events
 
     def test_past_the_line_before_planned_keeps_removal_deadline(self):
@@ -78,8 +78,8 @@ class Removals(unittest.TestCase):
         asked = []
         def step(name):
             return lambda *a, timeout_s: asked.append((name, timeout_s))
-        with patch.object(disk_worktrees, 'rescue_at', side_effect=step('rescue')), \
-                patch.object(disk_worktrees, 'unlock_at', side_effect=step('unlock')):
+        with patch.object(disk_removal, 'rescue_at', side_effect=step('rescue')), \
+                patch.object(disk_removal, 'unlock_at', side_effect=step('unlock')):
             row, _, _ = self.remove(StageClock(100, clock=at(10)), branch=None, side_lock='wsl')
         self.assertEqual(row['action'], 'removed')
         self.assertEqual((asked, self.discarded), ([('rescue', 4), ('unlock', 4)], [dict(timeout_s=4)]))     # 6.1:643
@@ -110,11 +110,12 @@ class Removals(unittest.TestCase):
         with listing_answers(listed), agreeing_proof(), \
                 patch.object(placement, 'cleanup_processes', return_value=SimpleNamespace(busy=lambda path: False)), \
                 patch.object(disk_worktrees, 'inspect', return_value=gone_row()), \
+                patch.object(disk_removal, 'inspect', return_value=gone_row()), \
                 patch.object(disk_worktrees, 'quarantine_observation', side_effect=lambda r, m, value, **_: dict(row=value)), \
                 patch.object(disk_worktrees, 'registrations', return_value={}), \
                 patch.object(disk_worktrees, 'unlisted', return_value=[]), \
                 patch.object(placement, 'cleanup_contains', return_value=True), \
-                patch.object(disk_worktrees, 'discard_at', side_effect=lambda *a, **k: events.append('discard')):
+                patch.object(disk_removal, 'discard_at', side_effect=lambda *a, **k: events.append('discard')):
             disk_worktrees.settled(run, runtime=SimpleNamespace(state=store, evidence=None))
         self.assertEqual(events.count('planned'), 2)
         for start in (i for i, event in enumerate(events) if event == 'planned'):

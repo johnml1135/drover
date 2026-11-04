@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from drover import disk_budget, disk_paths, disk_worktrees, placement, placement_proof, process
+from drover import disk_budget, disk_paths, disk_removal, placement, placement_proof, process
 from drover.disk_stage import StageClock
 from tests.disk_fixture import DAY, DiskCase, served
 from tests.disk_trace_compare import Change, compare  # noqa: F401  part of this interface
@@ -24,7 +24,7 @@ from tests.placement_trace import normalize
 
 TRACE = Path(__file__).with_name('disk_decision_trace.json')
 PATCH_TARGETS = (process,)                      # each module whose `subprocess` TraceGit replaces: every command reaches it
-REMOVAL = (disk_worktrees, 'remove')            # where a mid-stage change lands: after selection, before revalidation
+REMOVAL = (disk_removal, 'remove_worktree')     # where a mid-stage change lands: after selection, before revalidation
 OUTPUT_REMOVAL = (disk_paths, 'remove_output')  # the same for a disposable path
 WORKTREE_SIDE, CLEANUP_LINK = placement.worktree_side, placement.cleanup_link
 
@@ -61,11 +61,11 @@ class Scene(SceneTree):
         return self.free_gb.pop(0) if len(self.free_gb) > 1 else self.free_gb[0]
 
     def at_removal(self, real):
-        def remove(request, *selected, **options):
+        def remove(first, *selected, **options):
             change, self.midstage = self.midstage, None
-            if change:      # the removal reads `tasks` from the stage's evidence, so a change to it lands there too
-                change(dict(request, tasks=(options.get('run') or selected[0]).evidence._request.tasks))
-            return real(request, *selected, **options)
+            if change:      # the removal reads `tasks` from the stage's evidence (`first` is remove_output's request or the run)
+                change(dict(tasks=(options.get('run') or (selected[0] if isinstance(first, dict) else first)).evidence._request.tasks))
+            return real(first, *selected, **options)
         return remove
 
     def serve(self, apply, now, approved, timeout, tasks, stage=4, level=None, mode='on-demand', budget=None):
