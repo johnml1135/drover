@@ -216,6 +216,14 @@ class StrayAndLostFolders(unittest.TestCase):
         self.assertEqual((stop['path'], stop['worktrees'], stop['repos']), ('/repo', [], []))
         self.assertEqual(out['reclaimed_bytes'], 5)
 
+    def test_a_stray_folder_stop_names_the_later_repos_as_unreached(self):
+        self.run = stage_run_for(dict(repos=[MACHINE, dict(name='beta', repo='/other'), dict(name='gamma', repo='/third')],
+                                      apply=True, now=1.0, drive=dict(path='/'), state_dir=self.state),
+                                 clock=lambda: self.now[0])
+        self.strays(late=True)
+        [stop] = [r for r in answer(self.run)['items'] if r['reason_code'] == 'settled_deadline']
+        self.assertEqual((stop['path'], stop['worktrees'], stop['repos'], stop['count']), ('/repo', [], ['/other', '/third'], 2))
+
     def test_a_kill_after_the_first_stray_removal_keeps_its_row_and_bytes(self):
         with self.assertRaises(Killed):
             self.strays(kill=True)

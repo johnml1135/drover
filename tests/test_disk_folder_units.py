@@ -296,6 +296,36 @@ class FolderRemoval(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in (outside / 'deep').iterdir()), ['b', 'c'])
         self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
 
+    def test_a_file_swapped_for_a_link_before_its_unlink_is_kept_and_its_target_untouched(self):
+        """`bin/sub/b` becomes a link to a file outside once `bin/a` has gone: the unlink would take the link only,
+        yet the unit must read kept, not removed."""
+        outside = self.root / 'outside'
+        outside.write_bytes(b'precious')
+        real_unlink, swapped = Path.unlink, []
+
+        def unlink(path, *args, **kwargs):
+            real_unlink(path, *args, **kwargs)
+            if not swapped:
+                swapped.append(path)
+                real_unlink(self.bin / 'sub' / 'b')
+                (self.bin / 'sub' / 'b').symlink_to(outside)
+        with mock.patch.object(Path, 'unlink', unlink):
+            row = self.remove()
+        self.assertEqual(swapped, [self.bin / 'a'])
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'output_evidence_unavailable'))
+        self.assertEqual(outside.read_bytes(), b'precious')
+        self.assertTrue((self.bin / 'sub' / 'b').is_symlink())
+        self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
+
+    def test_a_unit_of_two_files_stops_between_them_when_the_line_passes(self):
+        self.measured = {str(path): self.real.measure(path) for path in self.files[:2]}
+        self.listed = ([], list(self.measured))      # git lists the two files one by one
+        self.past_line = lambda: any(step[0] == 'reclaimed' for step in self.order)
+        row = self.remove()
+        self.assertEqual((row['action'], row['reason_code']), ('keep', 'removal_deadline'))
+        self.assertEqual(self.left(), self.files[1:])
+        self.assertEqual([step for step in self.order if step[0] == 'reclaimed'], [('reclaimed', 3)])
+
     def test_a_line_passed_mid_folder_stops_it_as_removal_deadline(self):
         """The clock is read as each path goes: past the line the rest stays, and what went is counted."""
         self.past_line = lambda: any(step[0] == 'reclaimed' for step in self.order)
